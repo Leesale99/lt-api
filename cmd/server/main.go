@@ -20,7 +20,7 @@ func main() {
 	var cfg config
 
 	flag.IntVar(&cfg.port, "port", 4000, "API server port")
-	flag.StringVar(&cfg.env, "env", "development", "Environment (deevlopment|staging|production")
+	flag.StringVar(&cfg.env, "env", "development", "Environment (devlopment|staging|production)")
 	fmt.Println("Hello World")
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
