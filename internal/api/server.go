@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	game "lt-api.aleksrdvn.com/internal/game"
 )
 
 type Application struct {
@@ -12,15 +14,13 @@ type Application struct {
 	Port    int
 	Env     string
 	Logger  *slog.Logger
+	Game    *game.Service
 }
 
 func (app *Application) Serve() error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/healthcheck", app.healthcheckHandler)
-
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", app.Port),
-		Handler:      mux,
+		Handler:      app.routes(),
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
