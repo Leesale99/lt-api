@@ -55,3 +55,12 @@ func (s *Service) GetSeasons(ids []int) ([]Season, error) {
 
 	return seasons, nil
 }
+
+type Team struct {
+	ID          int       `json:"id"`
+	CreatedAt   time.Time `json:"-"`
+	Name        string    `json:"name"`
+	Logo        string    `json:"logo"`
+	Description string    `json:"description"`
+	Version     int       `json:"version"`
+}
