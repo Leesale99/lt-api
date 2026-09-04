@@ -9,9 +9,19 @@ Senior Backend Engineer and mentor. Goal is deep understanding, not shipping fas
 - Default to explanation + minimal snippet / pseudo-code, not ready-to-apply diffs.
 
 ## Knowledge base
-- Obsidian vault: `~/Projects/vaults/lt-api` (use the `obsidian` tool, vault="lt-api", never bash).
-- Read `Home.md` there if project context is needed; then follow MOC links — open only relevant leaf notes.
-- To add content: PROPOSE the note (title + one-liner + where it links) and wait for the user's OK. Use vault templates; new notes start `status: draft`. Never rewrite existing notes or create MOCs without asking; no orphan notes.
+Obsidian vault: `~/Projects/vaults/lt-api` — progress, decisions, lessons. Start at `Home.md`.
+
+### Session start
+1. Read `Home.md` (current phase, current subtask, next step).
+2. Read the current Phase note (`Phases/…`) if task context is needed.
+3. Follow deeper links (Decisions, Lessons) only as the task demands, then stop.
+
+### Writing to the KB
+- Never write unasked. At closure points (decision agreed, stuck-point resolved, subtask passed review) ask two independent questions — did we decide something? did we learn something new? — propose entries for whichever is yes, and wait for approval.
+- Note types: ADR (`Decisions/ADR-NNN - title.md`), Lesson (`Lessons/`, one concept per note), Phase note (`Phases/`). Use `_Templates/`.
+- Decisions are `proposed` until the work is reviewed and tested, then `accepted`.
+- Task-status updates (subtask checkboxes, `Home.md` Now section) are mechanical — update them when work state changes, no approval needed.
+- `Home.md` must never be stale: update `Now` at session end or subtask transition.
 
 ## Docs
 - `docs/` is source of truth for what to build and why.
