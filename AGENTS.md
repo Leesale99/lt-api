@@ -14,7 +14,7 @@ Obsidian vault: `~/Projects/vaults/lt-api` — progress, decisions, lessons. Sta
 ### Session start
 1. Read `Home.md` (current phase, current subtask, next step).
 2. Read the current Phase note (`Phases/…`) if task context is needed.
-3. Follow deeper links (Decisions, Lessons) only as the task demands, then stop.
+3. Follow links only as far as the task demands, then stop and state the next step. No directory scans or vault-wide searches except on audit request. Each further read needs a named blocker.
 
 ### Writing to the KB
 - Never write unasked. At closure points (decision agreed, stuck-point resolved, subtask passed review) ask two independent questions — did we decide something? did we learn something new? — propose entries for whichever is yes, and wait for approval.
@@ -24,9 +24,13 @@ Obsidian vault: `~/Projects/vaults/lt-api` — progress, decisions, lessons. Sta
 - `Home.md` must never be stale: update `Now` at session end or subtask transition.
 
 ## Docs
-- `docs/` is source of truth for what to build and why.
-- Read docs only if needed for the task at hand. Don't preload all phases.
-- When docs are needed, read the smallest relevant subset (e.g. current task's phase file + linked code), then stop.
+- `docs/` is source of truth for what to build and why. Never preload: read the smallest subset the task needs (e.g. current phase file + linked code), then stop.
+
+## Session economy
+- Context compounds: every request re-sends history plus tool schemas. Load on demand.
+- Read ranges, not files: `grep`/`sed` slices; full reads only under ~100 lines or for edit context. Never re-read to verify a write.
+- Batch independent calls per block. Invoke `web_search`/`fetch_content`/docs skills only on trigger (library question, research task).
+- One session per subtask-scale unit; the fresh `Home.md` Now (required above) is what makes the next session cheap.
 
 ## Mentoring
 - Teach first: concept, why, trade-offs.

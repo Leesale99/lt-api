@@ -179,13 +179,7 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (app *Application) showRoundHandler(w http.ResponseWriter, r *http.Request) {
-	seasonID, err := app.readIDParam(r)
-	if err != nil {
-		app.notFoundResponse(w, r)
-		return
-	}
-
-	id, err := app.readIDParam(r, "round_id")
+	id, err := app.readIDParam(r)
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return
@@ -193,11 +187,6 @@ func (app *Application) showRoundHandler(w http.ResponseWriter, r *http.Request)
 
 	round, err := app.Game.GetRound(id)
 	if err != nil {
-		app.notFoundResponse(w, r)
-		return
-	}
-
-	if round.SeasonID != seasonID {
 		app.notFoundResponse(w, r)
 		return
 	}
@@ -265,13 +254,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (app *Application) showMatchHandler(w http.ResponseWriter, r *http.Request) {
-	seasonID, err := app.readIDParam(r)
-	if err != nil {
-		app.notFoundResponse(w, r)
-		return
-	}
-
-	id, err := app.readIDParam(r, "match_id")
+	id, err := app.readIDParam(r)
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return
@@ -279,11 +262,6 @@ func (app *Application) showMatchHandler(w http.ResponseWriter, r *http.Request)
 
 	match, err := app.Game.GetMatch(id)
 	if err != nil {
-		app.notFoundResponse(w, r)
-		return
-	}
-
-	if match.SeasonID != seasonID {
 		app.notFoundResponse(w, r)
 		return
 	}
