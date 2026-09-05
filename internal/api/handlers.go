@@ -29,7 +29,7 @@ func (app *Application) showSeasonHandler(w http.ResponseWriter, r *http.Request
 
 	season, err := app.Game.GetSeason(id)
 	if err != nil {
-		http.NotFound(w, r)
+		app.notFoundResponse(w, r)
 		return
 	}
 
@@ -65,9 +65,9 @@ func (app *Application) createTeamHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	err = app.writeJSON(w, http.StatusOK, envelope{"team": team}, nil)
+	err = app.writeJSON(w, http.StatusCreated, envelope{"team": team}, nil)
 	if err != nil {
-		app.badRequestResponse(w, r, err)
+		app.serverErrorResponse(w, r, err)
 	}
 }
 
@@ -86,6 +86,6 @@ func (app *Application) showTeamHandler(w http.ResponseWriter, r *http.Request) 
 
 	err = app.writeJSON(w, http.StatusOK, envelope{"team": team}, nil)
 	if err != nil {
-		app.badRequestResponse(w, r, err)
+		app.serverErrorResponse(w, r, err)
 	}
 }

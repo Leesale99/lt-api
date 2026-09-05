@@ -1,8 +1,10 @@
 package game
 
 import (
-	"fmt"
+	"errors"
 )
+
+var ErrRecordNotFound = errors.New("record not found")
 
 type Service struct {
 	seasons []Season
@@ -17,23 +19,29 @@ func NewService() *Service {
 }
 
 func (s *Service) GetSeason(id int) (Season, error) {
-	for _, s := range seasonsData {
-		if s.ID == id {
-			return s, nil
+	if id < 1 {
+		return Season{}, ErrRecordNotFound
+	}
+
+	for _, season := range s.seasons {
+		if season.ID == id {
+			return season, nil
 		}
 	}
 
-	err := fmt.Errorf("no season found with id: %v", id)
-	return Season{}, err
+	return Season{}, ErrRecordNotFound
 }
 
 func (s *Service) GetTeam(id int) (Team, error) {
+	if id < 1 {
+		return Team{}, ErrRecordNotFound
+	}
+
 	for _, t := range s.teams {
 		if t.ID == id {
 			return t, nil
 		}
 	}
 
-	err := fmt.Errorf("no team found with id: %v", id)
-	return Team{}, err
+	return Team{}, ErrRecordNotFound
 }
