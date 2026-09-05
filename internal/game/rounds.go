@@ -1,10 +1,16 @@
 package game
 
 import (
+	"fmt"
 	"time"
 
 	"lt-api.aleksrdvn.com/internal/validator"
 )
+
+// roundsPerSeason is the total number of rounds in a season. The league has
+// 20 teams playing each other home and away (double round-robin): 38 rounds
+// of 10 matches each.
+const roundsPerSeason = 38
 
 type Round struct {
 	ID        int       `json:"id"`
@@ -36,7 +42,7 @@ var roundsData = []Round{
 
 func ValidateRound(v *validator.Validator, round Round) {
 	v.Check(round.SeasonID > 0, "season_id", "must be provided")
-	v.Check(round.Number > 0 && round.Number <= 38, "number", "must be between 1 and 38")
+	v.Check(round.Number > 0 && round.Number <= roundsPerSeason, "number", fmt.Sprintf("must be between 1 and %d", roundsPerSeason))
 	v.Check(round.Status != "", "status", "must be provided")
 	v.Check(validator.PermittedValue(round.Status, "open", "closed"), "status", "must be one of: open, closed")
 }

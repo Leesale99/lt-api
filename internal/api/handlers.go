@@ -132,19 +132,29 @@ func (app *Application) showTeamHandler(w http.ResponseWriter, r *http.Request) 
 
 func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		SeasonID int    `json:"season_id"`
-		Number   int    `json:"number"`
-		Status   string `json:"status"`
+		Number int    `json:"number"`
+		Status string `json:"status"`
 	}
 
-	err := app.readJSON(w, r, &input)
+	seasonID, err := app.readIDParam(r)
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	if _, err := app.Game.GetSeason(seasonID); err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	err = app.readJSON(w, r, &input)
 	if err != nil {
 		app.badRequestResponse(w, r, err)
 		return
 	}
 
 	round := game.Round{
-		SeasonID: input.SeasonID,
+		SeasonID: seasonID,
 		Number:   input.Number,
 		Status:   input.Status,
 	}
@@ -169,6 +179,12 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (app *Application) showRoundHandler(w http.ResponseWriter, r *http.Request) {
+	seasonID, err := app.readIDParam(r)
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
 	id, err := app.readIDParam(r, "round_id")
 	if err != nil {
 		app.notFoundResponse(w, r)
@@ -181,6 +197,11 @@ func (app *Application) showRoundHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if round.SeasonID != seasonID {
+		app.notFoundResponse(w, r)
+		return
+	}
+
 	err = app.writeJSON(w, http.StatusOK, envelope{"round": round}, nil)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
@@ -189,7 +210,6 @@ func (app *Application) showRoundHandler(w http.ResponseWriter, r *http.Request)
 
 func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		SeasonID   int         `json:"season_id"`
 		RoundID    int         `json:"round_id"`
 		HomeTeamID int         `json:"home_team_id"`
 		AwayTeamID int         `json:"away_team_id"`
@@ -198,14 +218,25 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		Score      *game.Score `json:"score"`
 	}
 
-	err := app.readJSON(w, r, &input)
+	seasonID, err := app.readIDParam(r)
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	if _, err := app.Game.GetSeason(seasonID); err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	err = app.readJSON(w, r, &input)
 	if err != nil {
 		app.badRequestResponse(w, r, err)
 		return
 	}
 
 	match := game.Match{
-		SeasonID:   input.SeasonID,
+		SeasonID:   seasonID,
 		RoundID:    input.RoundID,
 		HomeTeamID: input.HomeTeamID,
 		AwayTeamID: input.AwayTeamID,
@@ -234,6 +265,12 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (app *Application) showMatchHandler(w http.ResponseWriter, r *http.Request) {
+	seasonID, err := app.readIDParam(r)
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
 	id, err := app.readIDParam(r, "match_id")
 	if err != nil {
 		app.notFoundResponse(w, r)
@@ -242,6 +279,11 @@ func (app *Application) showMatchHandler(w http.ResponseWriter, r *http.Request)
 
 	match, err := app.Game.GetMatch(id)
 	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	if match.SeasonID != seasonID {
 		app.notFoundResponse(w, r)
 		return
 	}

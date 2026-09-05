@@ -71,6 +71,7 @@ func ValidateMatch(v *validator.Validator, match Match) {
 	v.Check(match.SeasonID > 0, "season_id", "must be provided")
 	v.Check(match.HomeTeamID > 0, "home_team_id", "must be provided")
 	v.Check(match.AwayTeamID > 0, "away_team_id", "must be provided")
+	v.Check(match.Status != "", "status", "must be provided")
 	v.Check(validator.PermittedValue(match.Status, "open", "closed"), "status", "must be one of: open, closed")
 	v.Check(match.Odds.Home > 0 && match.Odds.Away > 0, "odds", "must both be greater than zero")
 	if match.Score != nil {
