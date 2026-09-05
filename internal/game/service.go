@@ -12,6 +12,7 @@ type Service struct {
 	rounds  []Round
 	matches []Match
 	teams   []Team
+	players []Player
 }
 
 func NewService() *Service {
@@ -20,6 +21,7 @@ func NewService() *Service {
 		rounds:  roundsData,
 		matches: matchesData,
 		teams:   teamsData,
+		players: playersData,
 	}
 }
 
@@ -113,4 +115,27 @@ func (s *Service) InsertMatch(match Match) (Match, error) {
 
 	s.matches = append(s.matches, match)
 	return match, nil
+}
+
+func (s *Service) GetPlayer(id int) (Player, error) {
+	if id < 1 {
+		return Player{}, ErrRecordNotFound
+	}
+
+	for _, p := range s.players {
+		if p.ID == id {
+			return p, nil
+		}
+	}
+
+	return Player{}, ErrRecordNotFound
+}
+
+func (s *Service) InsertPlayer(player Player) (Player, error) {
+	player.ID = len(s.players) + 1
+	player.CreatedAt = time.Now().UTC()
+	player.Version = 1
+
+	s.players = append(s.players, player)
+	return player, nil
 }

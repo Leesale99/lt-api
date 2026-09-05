@@ -31,5 +31,9 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodGet, "/v1/teams/:id", app.showTeamHandler)
 	router.HandlerFunc(http.MethodPost, "/v1/teams", app.createTeamHandler)
 
+	// Players — hybrid per ADR-002: nested create, flat show
+	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/players", app.createPlayerHandler)
+	router.HandlerFunc(http.MethodGet, "/v1/players/:id", app.showPlayerHandler)
+
 	return app.recoverPanic(router)
 }
