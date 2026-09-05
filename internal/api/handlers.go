@@ -1,8 +1,10 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
+
+	game "lt-api.aleksrdvn.com/internal/game"
+	"lt-api.aleksrdvn.com/internal/validator"
 )
 
 func (app *Application) healthcheckHandler(w http.ResponseWriter, r *http.Request) {
@@ -18,23 +20,20 @@ func (app *Application) healthcheckHandler(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-func (app *Application) showSeasonsHandler(w http.ResponseWriter, r *http.Request) {
+func (app *Application) showSeasonHandler(w http.ResponseWriter, r *http.Request) {
 	id, err := app.readIDParam(r)
 	if err != nil {
-		http.NotFound(w, r)
+		app.notFoundResponse(w, r)
 		return
 	}
 
-	var ids []int
-	ids = append(ids, id)
-
-	seasons, err := app.Game.GetSeasons(ids)
+	season, err := app.Game.GetSeason(id)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
 
-	err = app.writeJSON(w, http.StatusOK, envelope{"seasons": seasons}, nil)
+	err = app.writeJSON(w, http.StatusOK, envelope{"season": season}, nil)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}
@@ -53,5 +52,40 @@ func (app *Application) createTeamHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	fmt.Fprintf(w, "%+v\n", input)
+	team := game.Team{
+		Name:        input.Name,
+		Logo:        input.Logo,
+		Description: input.Description,
+	}
+
+	v := validator.New()
+
+	if game.ValidateTeam(v, team); !v.Valid() {
+		app.failedValidationResponse(w, r, v.Errors)
+		return
+	}
+
+	err = app.writeJSON(w, http.StatusOK, envelope{"team": team}, nil)
+	if err != nil {
+		app.badRequestResponse(w, r, err)
+	}
+}
+
+func (app *Application) showTeamHandler(w http.ResponseWriter, r *http.Request) {
+	id, err := app.readIDParam(r)
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	team, err := app.Game.GetTeam(id)
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	err = app.writeJSON(w, http.StatusOK, envelope{"team": team}, nil)
+	if err != nil {
+		app.badRequestResponse(w, r, err)
+	}
 }

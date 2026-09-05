@@ -16,9 +16,10 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodGet, "/v1/healthcheck", app.healthcheckHandler)
 
 	// Seasons
-	router.HandlerFunc(http.MethodGet, "/v1/seasons/:id", app.showSeasonsHandler)
+	router.HandlerFunc(http.MethodGet, "/v1/seasons/:id", app.showSeasonHandler)
 
 	// Teams
+	router.HandlerFunc(http.MethodGet, "/v1/teams/:id", app.showTeamHandler)
 	router.HandlerFunc(http.MethodPost, "/v1/teams", app.createTeamHandler)
 
 	return app.recoverPanic(router)
