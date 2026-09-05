@@ -14,7 +14,8 @@ Obsidian vault: `~/Projects/vaults/lt-api` — progress, decisions, lessons. Sta
 ### Session start
 1. Read `Home.md` (current phase, current subtask, next step).
 2. Read the current Phase note (`Phases/…`) if task context is needed.
-3. Follow links only as far as the task demands, then stop and state the next step. No directory scans or vault-wide searches except on audit request. Each further read needs a named blocker.
+3. Before starting a new phase (or when a deferred event occurs): sweep the vault `Deferred/` folder. An item fires when a `trigger` entry is a phase-note wikilink matching the current phase in `Home.md`, or `event:<name>` for a declared event (known: `deployment` = any non-local deployment). On fire: add a side task to the current Phase note linking the item note, and set the item's frontmatter `status: active`. Do not delete the item at pickup; delete it only at closure, after promoting any Lessons.
+4. Follow links only as far as the task demands, then stop and state the next step. No directory scans or vault-wide searches except on audit request. Each further read needs a named blocker.
 
 ### Writing to the KB
 - Never write unasked. At closure points (decision agreed, stuck-point resolved, subtask passed review) ask two independent questions — did we decide something? did we learn something new? — propose entries for whichever is yes, and wait for approval.
