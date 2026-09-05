@@ -14,13 +14,17 @@ import (
 
 type envelope map[string]any
 
-func (app *Application) readIDParam(r *http.Request) (int, error) {
+func (app *Application) readIDParam(r *http.Request, idParam ...string) (int, error) {
+	key := "id"
+	if len(idParam) > 0 {
+		key = idParam[0]
+	}
 	params := httprouter.ParamsFromContext(r.Context())
 
-	id, err := strconv.Atoi(params.ByName("id"))
+	id, err := strconv.Atoi(params.ByName(key))
 
 	if err != nil || id < 1 {
-		return 0, errors.New("invalid id parameter")
+		return 0, fmt.Errorf("invalid %s", key)
 	}
 
 	return id, nil

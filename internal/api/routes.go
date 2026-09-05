@@ -17,6 +17,15 @@ func (app *Application) routes() http.Handler {
 
 	// Seasons
 	router.HandlerFunc(http.MethodGet, "/v1/seasons/:id", app.showSeasonHandler)
+	router.HandlerFunc(http.MethodPost, "/v1/seasons", app.createSeasonHandler)
+
+	// Rounds
+	router.HandlerFunc(http.MethodGet, "/v1/seasons/:id/rounds/:round_id", app.showRoundHandler)
+	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/rounds", app.createRoundHandler)
+
+	// Matches
+	router.HandlerFunc(http.MethodGet, "/v1/seasons/:id/matches/:match_id", app.showMatchHandler)
+	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/matches", app.createMatchHandler)
 
 	// Teams
 	router.HandlerFunc(http.MethodGet, "/v1/teams/:id", app.showTeamHandler)

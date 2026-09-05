@@ -1,6 +1,11 @@
 package game
 
-import "time"
+import (
+	"strings"
+	"time"
+
+	"lt-api.aleksrdvn.com/internal/validator"
+)
 
 type Season struct {
 	ID        int       `json:"id"`
@@ -19,7 +24,16 @@ var seasonsData = []Season{
 	{
 		ID:        2,
 		CreatedAt: time.Date(2026, time.August, 28, 15, 30, 0, 0, time.UTC),
-		State:     "open",
+		State:     "registration_open",
 		Version:   1,
 	},
+}
+
+var seasonStates = []string{"created", "registration_open", "in_progress", "closed"}
+
+func ValidateSeason(v *validator.Validator, season Season) {
+	state := strings.ToLower(season.State)
+
+	v.Check(state != "", "state", "must be provided")
+	v.Check(validator.PermittedValue(state, seasonStates...), "state", "Must be one of: created, registration_open, in_progress, closed")
 }
