@@ -19,7 +19,7 @@ type Application struct {
 	Port    int
 	Env     string
 	Logger  *slog.Logger
-	Game    *game.Service
+	Store   *game.Store
 }
 
 func (app *Application) Serve() error {

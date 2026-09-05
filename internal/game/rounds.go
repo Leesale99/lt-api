@@ -46,3 +46,30 @@ func ValidateRound(v *validator.Validator, round Round) {
 	v.Check(round.Status != "", "status", "must be provided")
 	v.Check(validator.PermittedValue(round.Status, "open", "closed"), "status", "must be one of: open, closed")
 }
+
+type RoundStore struct {
+	rounds []Round
+}
+
+func (s *RoundStore) Get(id int) (Round, error) {
+	if id < 1 {
+		return Round{}, ErrRecordNotFound
+	}
+
+	for _, round := range s.rounds {
+		if round.ID == id {
+			return round, nil
+		}
+	}
+
+	return Round{}, ErrRecordNotFound
+}
+
+func (s *RoundStore) Insert(round Round) (Round, error) {
+	round.ID = len(s.rounds) + 1
+	round.CreatedAt = time.Now().UTC()
+	round.Version = 1
+
+	s.rounds = append(s.rounds, round)
+	return round, nil
+}

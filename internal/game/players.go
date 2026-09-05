@@ -37,3 +37,30 @@ func ValidatePlayer(v *validator.Validator, player Player) {
 	v.Check(player.SeasonID > 0, "season_id", "must be provided")
 	v.Check(player.FavouriteTeamID > 0, "favourite_team_id", "must be provided")
 }
+
+type PlayerStore struct {
+	players []Player
+}
+
+func (s *PlayerStore) Get(id int) (Player, error) {
+	if id < 1 {
+		return Player{}, ErrRecordNotFound
+	}
+
+	for _, player := range s.players {
+		if player.ID == id {
+			return player, nil
+		}
+	}
+
+	return Player{}, ErrRecordNotFound
+}
+
+func (s *PlayerStore) Insert(player Player) (Player, error) {
+	player.ID = len(s.players) + 1
+	player.CreatedAt = time.Now().UTC()
+	player.Version = 1
+
+	s.players = append(s.players, player)
+	return player, nil
+}

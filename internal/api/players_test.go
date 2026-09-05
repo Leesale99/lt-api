@@ -17,7 +17,7 @@ import (
 func newTestApplication() *Application {
 	return &Application{
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Game:   game.NewService(),
+		Store:  game.NewStore(),
 	}
 }
 

@@ -78,3 +78,30 @@ func ValidateMatch(v *validator.Validator, match Match) {
 		v.Check(match.Score.Home >= 0 && match.Score.Away >= 0, "score", "must not be negative")
 	}
 }
+
+type MatchStore struct {
+	matches []Match
+}
+
+func (s *MatchStore) Get(id int) (Match, error) {
+	if id < 1 {
+		return Match{}, ErrRecordNotFound
+	}
+
+	for _, match := range s.matches {
+		if match.ID == id {
+			return match, nil
+		}
+	}
+
+	return Match{}, ErrRecordNotFound
+}
+
+func (s *MatchStore) Insert(match Match) (Match, error) {
+	match.ID = len(s.matches) + 1
+	match.CreatedAt = time.Now().UTC()
+	match.Version = 1
+
+	s.matches = append(s.matches, match)
+	return match, nil
+}

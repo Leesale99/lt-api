@@ -57,3 +57,30 @@ func validImageURL(s string) bool {
 	ext := strings.ToLower(strings.TrimPrefix(path.Ext(u.EscapedPath()), "."))
 	return validator.PermittedValue(ext, "png", "jpg", "jpeg", "svg", "webp")
 }
+
+type TeamStore struct {
+	teams []Team
+}
+
+func (s *TeamStore) Get(id int) (Team, error) {
+	if id < 1 {
+		return Team{}, ErrRecordNotFound
+	}
+
+	for _, team := range s.teams {
+		if team.ID == id {
+			return team, nil
+		}
+	}
+
+	return Team{}, ErrRecordNotFound
+}
+
+func (s *TeamStore) Insert(team Team) (Team, error) {
+	team.ID = len(s.teams) + 1
+	team.CreatedAt = time.Now().UTC()
+	team.Version = 1
+
+	s.teams = append(s.teams, team)
+	return team, nil
+}

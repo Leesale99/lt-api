@@ -30,7 +30,7 @@ func main() {
 		Env:     cfg.env,
 		Port:    cfg.port,
 		Logger:  logger,
-		Game:    game.NewService(),
+		Store:   game.NewStore(),
 	}
 
 	err := app.Serve()

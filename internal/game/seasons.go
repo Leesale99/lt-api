@@ -37,3 +37,30 @@ func ValidateSeason(v *validator.Validator, season Season) {
 	v.Check(state != "", "state", "must be provided")
 	v.Check(validator.PermittedValue(state, seasonStates...), "state", "Must be one of: created, registration_open, in_progress, closed")
 }
+
+type SeasonStore struct {
+	seasons []Season
+}
+
+func (s *SeasonStore) Get(id int) (Season, error) {
+	if id < 1 {
+		return Season{}, ErrRecordNotFound
+	}
+
+	for _, season := range s.seasons {
+		if season.ID == id {
+			return season, nil
+		}
+	}
+
+	return Season{}, ErrRecordNotFound
+}
+
+func (s *SeasonStore) Insert(season Season) (Season, error) {
+	season.ID = len(s.seasons) + 1
+	season.CreatedAt = time.Now().UTC()
+	season.Version = 1
+
+	s.seasons = append(s.seasons, season)
+	return season, nil
+}
