@@ -19,7 +19,7 @@ func TestShowSeasonHandler(t *testing.T) {
 			name:     "existing season",
 			url:      "/v1/seasons/1",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"state": "closed"`},
+			wantBody: []string{`"status": "closed"`},
 		},
 		{
 			name:     "unknown season",
@@ -70,9 +70,9 @@ func TestCreateSeasonHandler(t *testing.T) {
 	}{
 		{
 			name:     "valid season",
-			body:     `{"state":"in_progress"}`,
+			body:     `{"status":"in_progress"}`,
 			wantCode: http.StatusCreated,
-			wantBody: []string{`"state": "in_progress"`},
+			wantBody: []string{`"status": "in_progress"`},
 		},
 		{
 			name:     "empty body",
@@ -82,27 +82,27 @@ func TestCreateSeasonHandler(t *testing.T) {
 		},
 		{
 			name:     "badly-formed JSON",
-			body:     `{"state":`,
+			body:     `{"status":`,
 			wantCode: http.StatusBadRequest,
 			wantBody: []string{"badly-formed JSON"},
 		},
 		{
 			name:     "unknown field rejected",
-			body:     `{"state":"created","year":2026}`,
+			body:     `{"status":"created","year":2026}`,
 			wantCode: http.StatusBadRequest,
 			wantBody: []string{"unknown key"},
 		},
 		{
-			name:     "missing state",
+			name:     "missing status",
 			body:     `{}`,
 			wantCode: http.StatusUnprocessableEntity,
-			wantBody: []string{"state"},
+			wantBody: []string{"status"},
 		},
 		{
-			name:     "unknown state",
-			body:     `{"state":"playoff"}`,
+			name:     "unknown status",
+			body:     `{"status":"playoff"}`,
 			wantCode: http.StatusUnprocessableEntity,
-			wantBody: []string{"state"},
+			wantBody: []string{"status"},
 		},
 	}
 

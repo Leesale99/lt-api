@@ -10,7 +10,7 @@ import (
 type Season struct {
 	ID        int       `json:"id"`
 	CreatedAt time.Time `json:"-"`
-	State     string    `json:"state"`
+	Status    string    `json:"status"`
 	Version   int       `json:"version"`
 }
 
@@ -18,24 +18,24 @@ var seasonsData = []Season{
 	{
 		ID:        1,
 		CreatedAt: time.Date(2026, time.September, 4, 12, 0, 0, 0, time.UTC),
-		State:     "closed",
+		Status:    "closed",
 		Version:   1,
 	},
 	{
 		ID:        2,
 		CreatedAt: time.Date(2026, time.August, 28, 15, 30, 0, 0, time.UTC),
-		State:     "registration_open",
+		Status:    "created",
 		Version:   1,
 	},
 }
 
-var seasonStates = []string{"created", "registration_open", "in_progress", "closed"}
+var seasonStatuses = []string{"created", "open", "in_progress", "closed"}
 
 func ValidateSeason(v *validator.Validator, season Season) {
-	state := strings.ToLower(season.State)
+	status := strings.ToLower(season.Status)
 
-	v.Check(state != "", "state", "must be provided")
-	v.Check(validator.PermittedValue(state, seasonStates...), "state", "Must be one of: created, registration_open, in_progress, closed")
+	v.Check(status != "", "status", "must be provided")
+	v.Check(validator.PermittedValue(status, seasonStatuses...), "status", "Must be one of: created, open, in_progress, closed")
 }
 
 type SeasonStore struct {

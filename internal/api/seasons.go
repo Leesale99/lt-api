@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	game "lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/validator"
@@ -9,7 +10,7 @@ import (
 
 func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		State string `json:"state"`
+		Status string `json:"status"`
 	}
 
 	err := app.readJSON(w, r, &input)
@@ -19,7 +20,7 @@ func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	season := game.Season{
-		State: input.State,
+		Status: strings.ToLower(input.Status),
 	}
 
 	v := validator.New()

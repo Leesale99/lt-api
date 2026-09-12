@@ -39,13 +39,13 @@ var teamsData = []Team{
 
 func ValidateTeam(v *validator.Validator, team Team) {
 	v.Check(team.Name != "", "name", "must be provided")
-	v.Check(len(team.Name) <= 500, "name", "must not be more then 500 bytes long")
+	v.Check(len(team.Name) <= 500, "name", "must not be more than 500 bytes long")
 	v.Check(team.Logo != "", "logo", "must be provided")
 	if team.Logo != "" {
 		v.Check(validImageURL(team.Logo), "logo", "must be a valid image URL ending in png, jpg, jpeg, svg or webp")
 	}
 	v.Check(team.Description != "", "description", "must be provided")
-	v.Check(len(team.Description) <= 5000, "description", "must not be more then 5000 bytes long")
+	v.Check(len(team.Description) <= 5000, "description", "must not be more than 5000 bytes long")
 }
 
 func validImageURL(s string) bool {

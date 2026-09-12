@@ -40,11 +40,13 @@ var roundsData = []Round{
 	},
 }
 
+var roundsStatuses = []string{"created", "open", "closed"}
+
 func ValidateRound(v *validator.Validator, round Round) {
 	v.Check(round.SeasonID > 0, "season_id", "must be provided")
 	v.Check(round.Number > 0 && round.Number <= roundsPerSeason, "number", fmt.Sprintf("must be between 1 and %d", roundsPerSeason))
 	v.Check(round.Status != "", "status", "must be provided")
-	v.Check(validator.PermittedValue(round.Status, "open", "closed"), "status", "must be one of: open, closed")
+	v.Check(validator.PermittedValue(round.Status, roundsStatuses...), "status", "must be one of: created, open, closed")
 }
 
 type RoundStore struct {

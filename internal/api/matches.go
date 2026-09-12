@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	game "lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/validator"
@@ -39,7 +40,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		RoundID:    input.RoundID,
 		HomeTeamID: input.HomeTeamID,
 		AwayTeamID: input.AwayTeamID,
-		Status:     input.Status,
+		Status:     strings.ToLower(input.Status),
 		Odds:       input.Odds,
 		Score:      input.Score,
 	}

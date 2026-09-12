@@ -7,8 +7,8 @@ import (
 )
 
 type Odds struct {
-	Home int `json:"home"`
-	Away int `json:"away"`
+	Home float64 `json:"home"`
+	Away float64 `json:"away"`
 }
 
 type Score struct {
@@ -36,7 +36,11 @@ func (m Match) Winner() *int {
 	if m.Score.Home > m.Score.Away {
 		return &m.HomeTeamID
 	}
-	return &m.AwayTeamID
+	if m.Score.Home < m.Score.Away {
+		return &m.AwayTeamID
+	}
+
+	return nil
 }
 
 var matchesData = []Match{
@@ -66,14 +70,17 @@ var matchesData = []Match{
 	},
 }
 
+var matchStatuses = []string{"created", "open", "in_progress", "postponed", "closed"}
+
 func ValidateMatch(v *validator.Validator, match Match) {
 	v.Check(match.RoundID > 0, "round_id", "must be provided")
 	v.Check(match.SeasonID > 0, "season_id", "must be provided")
 	v.Check(match.HomeTeamID > 0, "home_team_id", "must be provided")
 	v.Check(match.AwayTeamID > 0, "away_team_id", "must be provided")
+	v.Check(match.HomeTeamID != match.AwayTeamID, "home_team_id", "home and away team cannot be the same")
 	v.Check(match.Status != "", "status", "must be provided")
-	v.Check(validator.PermittedValue(match.Status, "open", "closed"), "status", "must be one of: open, closed")
-	v.Check(match.Odds.Home > 0 && match.Odds.Away > 0, "odds", "must both be greater than zero")
+	v.Check(validator.PermittedValue(match.Status, matchStatuses...), "status", "must be one of: created, open, in_progress, postponed, closed")
+	v.Check(match.Odds.Home > 1 && match.Odds.Away > 1, "odds", "must both be greater than one")
 	if match.Score != nil {
 		v.Check(match.Score.Home >= 0 && match.Score.Away >= 0, "score", "must not be negative")
 	}

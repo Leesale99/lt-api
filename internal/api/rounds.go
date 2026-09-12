@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	game "lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/validator"
@@ -33,7 +34,7 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 	round := game.Round{
 		SeasonID: seasonID,
 		Number:   input.Number,
-		Status:   input.Status,
+		Status:   strings.ToLower(input.Status),
 	}
 
 	v := validator.New()
