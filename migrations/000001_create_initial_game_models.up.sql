@@ -7,17 +7,6 @@ CREATE TABLE teams (
   version integer NOT NULL DEFAULT 1
 );
 
-CREATE TABLE players (
-  id bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-  created_at timestamp(0) with time zone NOT NULL DEFAULT now(),
-  season_id bigint NOT NULL
-    CONSTRAINT players_season_id_fkey REFERENCES seasons ON DELETE CASCADE,
-  favorite_team_id bigint NOT NULL
-    CONSTRAINT players_favorite_team_id_fkey REFERENCES teams ON DELETE RESTRICT,
-  name text NOT NULL CONSTRAINT players_name_check CHECK (name <> '' AND octet_length(name) <= 200),
-  version integer NOT NULL DEFAULT 1
-);
-
 CREATE TABLE seasons (
   id bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   created_at timestamp(0) with time zone NOT NULL DEFAULT now(),
@@ -72,6 +61,17 @@ CREATE TABLE matches (
   CONSTRAINT matches_status_score_check CHECK (
     status = 'in_progress' OR status = 'closed' OR (home_score IS NULL AND away_score IS NULL)
   )
+);
+
+CREATE TABLE players (
+  id bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+  created_at timestamp(0) with time zone NOT NULL DEFAULT now(),
+  season_id bigint NOT NULL
+    CONSTRAINT players_season_id_fkey REFERENCES seasons ON DELETE CASCADE,
+  favorite_team_id bigint NOT NULL
+    CONSTRAINT players_favorite_team_id_fkey REFERENCES teams ON DELETE RESTRICT,
+  name text NOT NULL CONSTRAINT players_name_check CHECK (name <> '' AND octet_length(name) <= 200),
+  version integer NOT NULL DEFAULT 1
 );
 
 CREATE INDEX players_season_id_idx ON players (season_id);

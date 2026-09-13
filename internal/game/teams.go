@@ -1,11 +1,15 @@
 package game
 
 import (
+	"context"
+	"errors"
 	"net/url"
 	"path"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -16,25 +20,6 @@ type Team struct {
 	Logo        string    `json:"logo"`
 	Description string    `json:"description"`
 	Version     int       `json:"version"`
-}
-
-var teamsData = []Team{
-	{
-		ID:          1,
-		CreatedAt:   time.Date(2026, time.September, 4, 12, 0, 0, 0, time.UTC),
-		Name:        "Olympiacos",
-		Logo:        "http://example.com/small-logo.png",
-		Description: "Some text here",
-		Version:     1,
-	},
-	{
-		ID:          2,
-		CreatedAt:   time.Date(2026, time.September, 4, 12, 0, 0, 0, time.UTC),
-		Name:        "Real Madrid",
-		Logo:        "http://example.com/small-logo.png",
-		Description: "Some text here",
-		Version:     1,
-	},
 }
 
 func ValidateTeam(v *validator.Validator, team Team) {
@@ -59,7 +44,7 @@ func validImageURL(s string) bool {
 }
 
 type TeamStore struct {
-	teams []Team
+	pool *pgxpool.Pool
 }
 
 func (s *TeamStore) Get(id int) (Team, error) {
@@ -67,20 +52,49 @@ func (s *TeamStore) Get(id int) (Team, error) {
 		return Team{}, ErrRecordNotFound
 	}
 
-	for _, team := range s.teams {
-		if team.ID == id {
-			return team, nil
+	query := `
+			SELECT id, created_at, name, logo, description, version
+			FROM teams
+			WHERE id = $1
+	`
+
+	var team Team
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	err := s.pool.QueryRow(ctx, query, id).Scan(
+		&team.ID,
+		&team.CreatedAt,
+		&team.Name,
+		&team.Logo,
+		&team.Description,
+		&team.Version,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Team{}, ErrRecordNotFound
+		default:
+			return Team{}, err
 		}
 	}
 
-	return Team{}, ErrRecordNotFound
+	return team, nil
 }
 
 func (s *TeamStore) Insert(team Team) (Team, error) {
-	team.ID = len(s.teams) + 1
-	team.CreatedAt = time.Now().UTC()
-	team.Version = 1
+	query := `
+			INSERT INTO teams (name, logo, description)
+			VALUES ($1, $2, $3)
+			RETURNING id, created_at, version
+	`
+	args := []any{team.Name, team.Logo, team.Description}
 
-	s.teams = append(s.teams, team)
-	return team, nil
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&team.ID, &team.CreatedAt, &team.Version)
+
+	return team, err
 }

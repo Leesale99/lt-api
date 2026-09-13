@@ -1,6 +1,10 @@
 package game
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
 
 // ErrRecordNotFound is returned by store Get methods when no record with the
 // given ID exists.
@@ -17,11 +21,11 @@ type Store struct {
 	Players PlayerStore
 }
 
-func NewStore() *Store {
+func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{
 		Seasons: SeasonStore{seasons: seasonsData},
 		Rounds:  RoundStore{rounds: roundsData},
-		Teams:   TeamStore{teams: teamsData},
+		Teams:   TeamStore{pool},
 		Matches: MatchStore{matches: matchesData},
 		Players: PlayerStore{players: playersData},
 	}

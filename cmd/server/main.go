@@ -38,13 +38,13 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	db, err := openDB(cfg)
+	pool, err := openPool(cfg)
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
 	}
 
-	defer db.Close()
+	defer pool.Close()
 
 	logger.Info("database connection pool established")
 
@@ -53,7 +53,7 @@ func main() {
 		Env:     cfg.env,
 		Port:    cfg.port,
 		Logger:  logger,
-		Store:   game.NewStore(),
+		Store:   game.NewStore(pool),
 	}
 
 	err = app.Serve()
@@ -63,7 +63,7 @@ func main() {
 	}
 }
 
-func openDB(cfg config) (*pgxpool.Pool, error) {
+func openPool(cfg config) (*pgxpool.Pool, error) {
 	dbpool, err := pgxpool.New(context.Background(), cfg.db.dsn)
 	if err != nil {
 		return nil, err
