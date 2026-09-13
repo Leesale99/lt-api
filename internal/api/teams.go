@@ -1,8 +1,11 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 
+	"lt-api.aleksrdvn.com/internal/constants"
 	game "lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -33,9 +36,14 @@ func (app *Application) createTeamHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	team, err = app.Store.Teams.Insert(team)
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	team, err = app.Store.Teams.Insert(ctx, team)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		if !errors.Is(err, context.Canceled) {
+			app.serverErrorResponse(w, r, err)
+		}
 		return
 	}
 
@@ -52,9 +60,19 @@ func (app *Application) showTeamHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	team, err := app.Store.Teams.Get(id)
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	team, err := app.Store.Teams.Get(ctx, id)
 	if err != nil {
-		app.notFoundResponse(w, r)
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
 		return
 	}
 

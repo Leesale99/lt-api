@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -47,7 +47,7 @@ type TeamStore struct {
 	pool *pgxpool.Pool
 }
 
-func (s *TeamStore) Get(id int) (Team, error) {
+func (s *TeamStore) Get(ctx context.Context, id int) (Team, error) {
 	if id < 1 {
 		return Team{}, ErrRecordNotFound
 	}
@@ -59,9 +59,6 @@ func (s *TeamStore) Get(id int) (Team, error) {
 	`
 
 	var team Team
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
 
 	err := s.pool.QueryRow(ctx, query, id).Scan(
 		&team.ID,
@@ -83,16 +80,13 @@ func (s *TeamStore) Get(id int) (Team, error) {
 	return team, nil
 }
 
-func (s *TeamStore) Insert(team Team) (Team, error) {
+func (s *TeamStore) Insert(ctx context.Context, team Team) (Team, error) {
 	query := `
 			INSERT INTO teams (name, logo, description)
 			VALUES ($1, $2, $3)
 			RETURNING id, created_at, version
 	`
 	args := []any{team.Name, team.Logo, team.Description}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
 
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&team.ID, &team.CreatedAt, &team.Version)
 

@@ -1,8 +1,11 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 
+	"lt-api.aleksrdvn.com/internal/constants"
 	game "lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -43,9 +46,20 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if _, err := app.Store.Teams.Get(player.FavoriteTeamID); err != nil {
-		v.AddError("favorite_team_id", "must reference an existing team")
-		app.failedValidationResponse(w, r, v.Errors)
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	if _, err := app.Store.Teams.Get(ctx, player.FavoriteTeamID); err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			v.AddError("favorite_team_id", "must reference an existing team")
+			app.failedValidationResponse(w, r, v.Errors)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+
 		return
 	}
 
