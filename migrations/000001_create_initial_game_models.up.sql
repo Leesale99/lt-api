@@ -7,6 +7,17 @@ CREATE TABLE teams (
   version integer NOT NULL DEFAULT 1
 );
 
+CREATE TABLE players (
+  id bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+  created_at timestamp(0) with time zone NOT NULL DEFAULT now(),
+  season_id bigint NOT NULL
+    CONSTRAINT players_season_id_fkey REFERENCES seasons ON DELETE CASCADE,
+  favorite_team_id bigint NOT NULL
+    CONSTRAINT players_favorite_team_id_fkey REFERENCES teams ON DELETE RESTRICT,
+  name text NOT NULL CONSTRAINT players_name_check CHECK (name <> '' AND octet_length(name) <= 200),
+  version integer NOT NULL DEFAULT 1
+);
+
 CREATE TABLE seasons (
   id bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   created_at timestamp(0) with time zone NOT NULL DEFAULT now(),
@@ -63,7 +74,9 @@ CREATE TABLE matches (
   )
 );
 
-CREATE INDEX idx_rounds_season_id ON rounds (season_id);
-CREATE INDEX idx_matches_round_id ON matches (round_id);
-CREATE INDEX idx_matches_home_team_id ON matches (home_team_id);
-CREATE INDEX idx_matches_away_team_id ON matches (away_team_id);
+CREATE INDEX players_season_id_idx ON players (season_id);
+CREATE INDEX players_favorite_team_id_idx ON players (favorite_team_id);
+CREATE INDEX rounds_season_id_idx ON rounds (season_id);
+CREATE INDEX matches_round_id_idx ON matches (round_id);
+CREATE INDEX matches_home_team_id_idx ON matches (home_team_id);
+CREATE INDEX matches_away_team_id_idx ON matches (away_team_id);

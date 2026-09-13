@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -32,7 +33,7 @@ func TestShowPlayerHandler(t *testing.T) {
 			name:     "existing player",
 			url:      "/v1/players/1",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"season_id": 2`, `"favourite_team_id": 1`},
+			wantBody: []string{`"season_id": 2`, `"favorite_team_id": 1`},
 		},
 		{
 			name:     "unknown player",
@@ -85,28 +86,28 @@ func TestCreatePlayerHandler(t *testing.T) {
 		{
 			name:     "valid registration",
 			url:      "/v1/seasons/2/players",
-			body:     `{"favourite_team_id":1}`,
+			body:     `{"name":"John Doe","favorite_team_id":1}`,
 			wantCode: http.StatusCreated,
-			wantBody: []string{`"season_id": 2`, `"favourite_team_id": 1`},
+			wantBody: []string{`"season_id": 2`, `"name": "John Doe"`, `"favorite_team_id": 1`},
 		},
 		{
 			name:     "season takes effect from URL, not body",
 			url:      "/v1/seasons/2/players",
-			body:     `{"favourite_team_id":2}`,
+			body:     `{"name":"Jane Doe","favorite_team_id":2}`,
 			wantCode: http.StatusCreated,
-			wantBody: []string{`"season_id": 2`, `"favourite_team_id": 2`},
+			wantBody: []string{`"season_id": 2`, `"name": "Jane Doe"`, `"favorite_team_id": 2`},
 		},
 		{
 			name:     "unknown season",
 			url:      "/v1/seasons/999/players",
-			body:     `{"favourite_team_id":1}`,
+			body:     `{"name":"John Doe","favorite_team_id":1}`,
 			wantCode: http.StatusNotFound,
 			wantBody: []string{"could not be found"},
 		},
 		{
 			name:     "non-numeric season id",
 			url:      "/v1/seasons/abc/players",
-			body:     `{"favourite_team_id":1}`,
+			body:     `{"name":"John Doe","favorite_team_id":1}`,
 			wantCode: http.StatusNotFound,
 			wantBody: []string{"could not be found"},
 		},
@@ -120,37 +121,58 @@ func TestCreatePlayerHandler(t *testing.T) {
 		{
 			name:     "badly-formed JSON",
 			url:      "/v1/seasons/2/players",
-			body:     `{"favourite_team_id":`,
+			body:     `{"favorite_team_id":`,
 			wantCode: http.StatusBadRequest,
 			wantBody: []string{"badly-formed JSON"},
 		},
 		{
 			name:     "unknown field rejected",
 			url:      "/v1/seasons/2/players",
-			body:     `{"favourite_team_id":1,"nickname":"x"}`,
+			body:     `{"name":"John Doe","favorite_team_id":1,"nickname":"x"}`,
 			wantCode: http.StatusBadRequest,
 			wantBody: []string{"unknown key"},
 		},
 		{
-			name:     "missing favourite team",
+			name:     "missing name",
 			url:      "/v1/seasons/2/players",
-			body:     `{}`,
+			body:     `{"favorite_team_id":1}`,
 			wantCode: http.StatusUnprocessableEntity,
-			wantBody: []string{"favourite_team_id"},
+			wantBody: []string{"name"},
 		},
 		{
-			name:     "zero favourite team",
+			name:     "empty name",
 			url:      "/v1/seasons/2/players",
-			body:     `{"favourite_team_id":0}`,
+			body:     `{"name":"","favorite_team_id":1}`,
 			wantCode: http.StatusUnprocessableEntity,
-			wantBody: []string{"favourite_team_id"},
+			wantBody: []string{"name"},
+		},
+		{
+			name:     "name too long",
+			url:      "/v1/seasons/2/players",
+			body:     fmt.Sprintf(`{"name":"%s","favorite_team_id":1}`, strings.Repeat("a", 201)),
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"name"},
+		},
+		{
+			name:     "missing favorite team",
+			url:      "/v1/seasons/2/players",
+			body:     `{"name":"John Doe"}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"favorite_team_id"},
+		},
+		{
+			name:     "zero favorite team",
+			url:      "/v1/seasons/2/players",
+			body:     `{"name":"John Doe","favorite_team_id":0}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"favorite_team_id"},
 		},
 		{
 			name:     "team must exist",
 			url:      "/v1/seasons/2/players",
-			body:     `{"favourite_team_id":999}`,
+			body:     `{"name":"John Doe","favorite_team_id":999}`,
 			wantCode: http.StatusUnprocessableEntity,
-			wantBody: []string{"favourite_team_id", "existing team"},
+			wantBody: []string{"favorite_team_id", "existing team"},
 		},
 	}
 

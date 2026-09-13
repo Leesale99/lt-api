@@ -9,7 +9,8 @@ import (
 
 func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		FavouriteTeamID int `json:"favourite_team_id"`
+		Name           string `json:"name"`
+		FavoriteTeamID int    `json:"favorite_team_id"`
 	}
 
 	seasonID, err := app.readIDParam(r)
@@ -30,8 +31,9 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	player := game.Player{
-		SeasonID:        seasonID,
-		FavouriteTeamID: input.FavouriteTeamID,
+		SeasonID:       seasonID,
+		FavoriteTeamID: input.FavoriteTeamID,
+		Name:           input.Name,
 	}
 
 	v := validator.New()
@@ -41,8 +43,8 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if _, err := app.Store.Teams.Get(player.FavouriteTeamID); err != nil {
-		v.AddError("favourite_team_id", "must reference an existing team")
+	if _, err := app.Store.Teams.Get(player.FavoriteTeamID); err != nil {
+		v.AddError("favorite_team_id", "must reference an existing team")
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
