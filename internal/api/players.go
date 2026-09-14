@@ -84,7 +84,7 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 	headers := make(http.Header)
 	headers.Set("Location", fmt.Sprintf("/v1/players/%d", player.ID))
 
-	err = app.writeJSON(w, http.StatusCreated, envelope{"player": player}, nil)
+	err = app.writeJSON(w, http.StatusCreated, envelope{"player": player}, headers)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}

@@ -51,7 +51,7 @@ func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Reque
 	headers := make(http.Header)
 	headers.Set("Location", fmt.Sprintf("/v1/season/%d", season.ID))
 
-	err = app.writeJSON(w, http.StatusCreated, envelope{"season": season}, nil)
+	err = app.writeJSON(w, http.StatusCreated, envelope{"season": season}, headers)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}

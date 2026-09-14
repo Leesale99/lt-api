@@ -72,7 +72,7 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 	headers := make(http.Header)
 	headers.Set("Location", fmt.Sprintf("/v1/rounds/%d", round.ID))
 
-	err = app.writeJSON(w, http.StatusCreated, envelope{"round": round}, nil)
+	err = app.writeJSON(w, http.StatusCreated, envelope{"round": round}, headers)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}
