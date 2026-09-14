@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -46,6 +47,9 @@ func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
+
+	headers := make(http.Header)
+	headers.Set("Location", fmt.Sprintf("/v1/season/%d", season.ID))
 
 	err = app.writeJSON(w, http.StatusCreated, envelope{"season": season}, nil)
 	if err != nil {

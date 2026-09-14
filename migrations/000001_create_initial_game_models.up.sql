@@ -37,6 +37,7 @@ CREATE TABLE rounds (
 CREATE TABLE matches (
   id bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   created_at timestamp(0) with time zone NOT NULL DEFAULT now(),
+  starts_at timestamp(0) with time zone NOT NULL,
   season_id bigint NOT NULL
     CONSTRAINT matches_season_id_fkey REFERENCES seasons ON DELETE CASCADE,
   round_id bigint NOT NULL

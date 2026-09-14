@@ -23,6 +23,7 @@ type Score struct {
 type Match struct {
 	ID         int       `json:"id"`
 	CreatedAt  time.Time `json:"-"`
+	StartsAt   time.Time `json:"starts_at"`
 	SeasonID   int       `json:"season_id"`
 	RoundID    int       `json:"round_id"`
 	HomeTeamID int       `json:"home_team_id"`
@@ -48,7 +49,7 @@ func (m Match) Winner() *int {
 
 var matchStatuses = []string{"created", "open", "in_progress", "postponed", "closed"}
 
-func ValidateMatch(v *validator.Validator, match Match) {
+func ValidateMatch(v *validator.Validator, match Match, now time.Time) {
 	v.Check(match.RoundID > 0, "round_id", "must be provided")
 	v.Check(match.SeasonID > 0, "season_id", "must be provided")
 	v.Check(match.HomeTeamID > 0, "home_team_id", "must be provided")
@@ -56,6 +57,10 @@ func ValidateMatch(v *validator.Validator, match Match) {
 	v.Check(match.HomeTeamID != match.AwayTeamID, "home_team_id", "home and away team cannot be the same")
 	v.Check(match.Status != "", "status", "must be provided")
 	v.Check(validator.PermittedValue(match.Status, matchStatuses...), "status", "must be one of: created, open, in_progress, postponed, closed")
+	v.Check(!match.StartsAt.IsZero(), "starts_at", "must be provided")
+	if !match.StartsAt.IsZero() {
+		v.Check(match.StartsAt.After(now), "starts_at", "must be in the future")
+	}
 	bothNil := match.Score.Home == nil && match.Score.Away == nil
 	bothSet := match.Score.Home != nil && match.Score.Away != nil
 	v.Check(bothNil || bothSet, "score", "must contain both home and away values or neither")
@@ -79,7 +84,7 @@ func (s *MatchStore) Get(ctx context.Context, id int) (Match, error) {
 	}
 
 	query := `
-		SELECT  id, created_at, season_id, round_id, home_team_id, away_team_id, status, home_odds, away_odds, home_score, away_score, version
+		SELECT  id, created_at, starts_at, season_id, round_id, home_team_id, away_team_id, status, home_odds, away_odds, home_score, away_score, version
 		FROM matches
 		WHERE id = $1
 	`
@@ -89,6 +94,7 @@ func (s *MatchStore) Get(ctx context.Context, id int) (Match, error) {
 	err := s.pool.QueryRow(ctx, query, id).Scan(
 		&match.ID,
 		&match.CreatedAt,
+		&match.StartsAt,
 		&match.SeasonID,
 		&match.RoundID,
 		&match.HomeTeamID,
@@ -113,8 +119,8 @@ func (s *MatchStore) Get(ctx context.Context, id int) (Match, error) {
 
 func (s *MatchStore) Insert(ctx context.Context, match Match) (Match, error) {
 	query := `
-		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, starts_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, created_at, version
 	`
 	args := []any{
@@ -126,6 +132,7 @@ func (s *MatchStore) Insert(ctx context.Context, match Match) (Match, error) {
 		match.Odds.Away,
 		match.Score.Home,
 		match.Score.Away,
+		match.StartsAt,
 	}
 
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&match.ID, &match.CreatedAt, &match.Version)

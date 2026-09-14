@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"lt-api.aleksrdvn.com/internal/constants"
@@ -79,6 +80,9 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
+
+	headers := make(http.Header)
+	headers.Set("Location", fmt.Sprintf("/v1/players/%d", player.ID))
 
 	err = app.writeJSON(w, http.StatusCreated, envelope{"player": player}, nil)
 	if err != nil {

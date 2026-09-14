@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -67,6 +68,9 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
+
+	headers := make(http.Header)
+	headers.Set("Location", fmt.Sprintf("/v1/rounds/%d", round.ID))
 
 	err = app.writeJSON(w, http.StatusCreated, envelope{"round": round}, nil)
 	if err != nil {

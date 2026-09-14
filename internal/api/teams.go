@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"lt-api.aleksrdvn.com/internal/constants"
@@ -49,6 +50,9 @@ func (app *Application) createTeamHandler(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+
+	headers := make(http.Header)
+	headers.Set("Location", fmt.Sprintf("/v1/teams/%d", team.ID))
 
 	err = app.writeJSON(w, http.StatusCreated, envelope{"team": team}, nil)
 	if err != nil {

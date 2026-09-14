@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	game "lt-api.aleksrdvn.com/internal/game"
@@ -18,6 +19,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		HomeTeamID int        `json:"home_team_id"`
 		AwayTeamID int        `json:"away_team_id"`
 		Status     string     `json:"status"`
+		StartsAt   time.Time  `json:"starts_at"`
 		Odds       game.Odds  `json:"odds"`
 		Score      game.Score `json:"score"`
 	}
@@ -55,13 +57,14 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		HomeTeamID: input.HomeTeamID,
 		AwayTeamID: input.AwayTeamID,
 		Status:     strings.ToLower(input.Status),
+		StartsAt:   input.StartsAt,
 		Odds:       input.Odds,
 		Score:      input.Score,
 	}
 
 	v := validator.New()
 
-	if game.ValidateMatch(v, match); !v.Valid() {
+	if game.ValidateMatch(v, match, time.Now()); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
@@ -121,6 +124,9 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
+
+	headers := make(http.Header)
+	headers.Set("Location", fmt.Sprintf("/v1/matches/%d", match.ID))
 
 	err = app.writeJSON(w, http.StatusCreated, envelope{"match": match}, nil)
 	if err != nil {
