@@ -18,12 +18,16 @@ Obsidian vault: `~/Projects/vaults/lt-api` — progress, decisions, lessons. Sta
 4. Follow links only as far as the task demands, then stop and state the next step. No directory scans or vault-wide searches except on audit request. Each further read needs a named blocker.
 
 ### Writing to the KB
-- Vault writes (`obsidian` CLI) must be sequential, never batched in parallel — parallel writes can silently produce empty files. Always re-read a note after writing it. Known CLI quirks: `create file=` does not add the `.md` extension (use `path=` with `.md`); `move` needs `path=`, not `file=`.
+- Vault writes (`obsidian` CLI) must be sequential, never batched in parallel — parallel writes can silently produce empty files. Always re-read a note after writing it. Known CLI quirks: `create file=` does not add the `.md` extension (use `path=` with `.md`); `move` needs `path=`, not `file=`; multi-line `content=` truncates to the first line — for full-file multi-line writes use `eval code="require('fs').writeFileSync(<vaultPath>, Buffer.from('<base64>','base64').toString('utf8'))"` (generate the base64 via bash in the sandbox), then re-read to verify.
 - Never write unasked. At closure points (decision agreed, stuck-point resolved, task passed review) ask two independent questions — did we decide something? did we learn something new? — propose entries for whichever is yes, and wait for approval.
 - Note types: ADR (`Decisions/ADR-NNN - title.md`), Lesson (`Lessons/`, one concept per note), Phase note (`Phases/`). Use `_Templates/`.
 - Decisions are `proposed` until the work is reviewed and tested, then `accepted`.
 - Task-status updates (task checkboxes, `Home.md` Now section) are mechanical — update them when work state changes, no approval needed.
 - `Home.md` must never be stale: update `Now` at session end or task transition.
+
+## Sandbox environment
+- The tool sandbox runs in a Docker container, so `localhost`/`127.0.0.1` inside the sandbox is NOT the host machine. To reach services running on the host (e.g. PostgreSQL on 5432), use `host.docker.internal` instead: override DSNs per-command, e.g. `LT_API_TEST_DSN=postgres://lt_test:test@host.docker.internal:5432/postgres?sslmode=disable go test ./...` (do not edit `.envrc` — it is the host-side source of truth).
+- `go test` caches results; after changing environment/DSN, run `go clean -testcache` first or you may see a stale green run.
 
 ## Docs
 - `docs/` is source of truth for what to build and why. Never preload: read the smallest subset the task needs (e.g. current phase file + linked code), then stop.
