@@ -30,6 +30,11 @@ test/unit:
 test/db:
 	go test ./... -v
 
+## db/seed: reset and seed the dev database with the canonical dummy data (run db/migrations/up first)
+.PHONY: db/seed
+db/seed: confirm
+	go run ./cmd/seed -db-dsn=${LT_API_DSN} -reset
+
 ## db/psql: connect to the database using psql
 .PHONY: db/psql
 db/psql: 
