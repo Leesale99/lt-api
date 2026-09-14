@@ -53,3 +53,8 @@ func (app *Application) editConflictResponse(w http.ResponseWriter, r *http.Requ
 	message := "unable to update the record due to an edit conflict, please try again"
 	app.writeError(w, r, http.StatusConflict, message)
 }
+
+func (app *Application) recordInUseResponse(w http.ResponseWriter, r *http.Request) {
+	message := "the record is referenced by other records and cannot be deleted"
+	app.writeError(w, r, http.StatusConflict, message)
+}

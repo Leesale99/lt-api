@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -49,15 +50,32 @@ type TeamStore struct {
 }
 
 func (s *TeamStore) GetAll(ctx context.Context, name string, filters Filters) ([]Team, Metadata, error) {
+	// The name filter is included only when non-empty: a bare ILIKE keeps the
+	// trgm GIN index usable under generic (cached) plans, whereas the
+	// alternative `WHERE (name ILIKE $1 OR $1 = '')` degenerates to a seq scan
+	// once the statement is cached and $1 becomes opaque to the planner
+	// (verified via EXPLAIN ANALYZE under plan_cache_mode = force_generic_plan).
+	where := ""
+	args := []any{}
+	if name != "" {
+		where = " WHERE name ILIKE $1"
+		args = append(args, "%"+name+"%")
+	}
+
+	// fmt.Sprintf is safe here only because sortColumn()/sortDirection() are
+	// validated against the caller's SortSafelist — do not interpolate any
+	// other user input into this query. LIMIT/OFFSET positions trail the
+	// optional name filter, hence the len(args) arithmetic.
 	query := fmt.Sprintf(`
 		SELECT count(*) OVER(), id, created_at, name, logo, description, version
-		FROM teams
-		WHERE (name ILIKE $1 OR $1 = '')
+		FROM teams%s
 		ORDER BY %s %s, id ASC
-		LIMIT $2 OFFSET $3
-	`, filters.sortColumn(), filters.sortDirection())
+		LIMIT $%d OFFSET $%d
+	`, where, filters.sortColumn(), filters.sortDirection(), len(args)+1, len(args)+2)
 
-	rows, err := s.pool.Query(ctx, query, fmt.Sprintf("%%%s%%", name), filters.limit(), filters.offset())
+	args = append(args, filters.limit(), filters.offset())
+
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, Metadata{}, err
 	}
@@ -179,6 +197,16 @@ func (s *TeamStore) Delete(ctx context.Context, id int) error {
 	`
 	result, err := s.pool.Exec(ctx, query, id)
 	if err != nil {
+		// teams is referenced with ON DELETE RESTRICT by matches and players:
+		// a referenced team must not be deleted (domain decision), so map the
+		// FK violation to a sentinel instead of leaking it. Postgres raises
+		// 23001 (restrict_violation) for RESTRICT FKs and 23503
+		// (foreign_key_violation) for NO ACTION; pgerrcode inlined to avoid a
+		// dependency.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && (pgErr.Code == "23001" || pgErr.Code == "23503") {
+			return ErrRecordInUse
+		}
 		return err
 	}
 

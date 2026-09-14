@@ -11,6 +11,10 @@ var (
 	// given ID exists.
 	ErrRecordNotFound = errors.New("record not found")
 
+	// ErrRecordInUse is returned by store Delete methods when the record is
+	// still referenced by other rows (FK violation), so it must not be deleted.
+	ErrRecordInUse = errors.New("record in use")
+
 	// ErrEditConflict is returned by store update methods when the record's
 	// version has changed since it was read (optimistic concurrency check),
 	// meaning another request modified the row in the meantime.

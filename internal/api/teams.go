@@ -114,7 +114,7 @@ func (app *Application) updateTeamHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	if r.Header.Get("X-Expected-Version") != "" {
-		if strconv.Itoa(int(team.Version)) != r.Header.Get("X-Expected-Version") {
+		if strconv.Itoa(team.Version) != r.Header.Get("X-Expected-Version") {
 			app.editConflictResponse(w, r)
 			return
 		}
@@ -123,7 +123,7 @@ func (app *Application) updateTeamHandler(w http.ResponseWriter, r *http.Request
 	var input struct {
 		Name        *string `json:"name"`
 		Logo        *string `json:"logo"`
-		Description *string `json:"Description"`
+		Description *string `json:"description"`
 	}
 
 	err = app.readJSON(w, r, &input)
@@ -184,6 +184,8 @@ func (app *Application) deleteTeamHandler(w http.ResponseWriter, r *http.Request
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
+		case errors.Is(err, game.ErrRecordInUse):
+			app.recordInUseResponse(w, r)
 		case errors.Is(err, game.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
@@ -225,7 +227,12 @@ func (app *Application) listTeamsHandler(w http.ResponseWriter, r *http.Request)
 
 	teams, metadata, err := app.Store.Teams.GetAll(ctx, input.Name, input.Filters)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
 		return
 	}
 
