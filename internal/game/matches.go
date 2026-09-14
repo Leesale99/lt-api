@@ -1,8 +1,12 @@
 package game
 
 import (
+	"context"
+	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -12,8 +16,8 @@ type Odds struct {
 }
 
 type Score struct {
-	Home int `json:"home"`
-	Away int `json:"away"`
+	Home *int `json:"home"`
+	Away *int `json:"away"`
 }
 
 type Match struct {
@@ -25,49 +29,21 @@ type Match struct {
 	AwayTeamID int       `json:"away_team_id"`
 	Status     string    `json:"status"`
 	Odds       Odds      `json:"odds"`
-	Score      *Score    `json:"score"` // nil = match not played yet
+	Score      Score     `json:"score"`
 	Version    int       `json:"version"`
 }
 
 func (m Match) Winner() *int {
-	if m.Score == nil {
+	switch {
+	case m.Status != "closed":
+		return nil
+	case *m.Score.Home > *m.Score.Away:
+		return &m.HomeTeamID
+	case *m.Score.Away > *m.Score.Home:
+		return &m.AwayTeamID
+	default:
 		return nil
 	}
-	if m.Score.Home > m.Score.Away {
-		return &m.HomeTeamID
-	}
-	if m.Score.Home < m.Score.Away {
-		return &m.AwayTeamID
-	}
-
-	return nil
-}
-
-var matchesData = []Match{
-	{
-		ID:         1,
-		CreatedAt:  time.Date(2026, time.September, 4, 12, 0, 0, 0, time.UTC),
-		SeasonID:   1,
-		RoundID:    1,
-		HomeTeamID: 1, // Olympiacos
-		AwayTeamID: 2, // Real Madrid
-		Status:     "closed",
-		Odds:       Odds{Home: 2, Away: 4},
-		Score:      &Score{Home: 88, Away: 79}, // Olympiacos wins
-		Version:    1,
-	},
-	{
-		ID:         2,
-		CreatedAt:  time.Date(2026, time.September, 4, 12, 0, 0, 0, time.UTC),
-		SeasonID:   1,
-		RoundID:    2,
-		HomeTeamID: 2, // Real Madrid
-		AwayTeamID: 1, // Olympiacos
-		Status:     "open",
-		Odds:       Odds{Home: 5, Away: 2},
-		Score:      nil, // not played yet
-		Version:    1,
-	},
 }
 
 var matchStatuses = []string{"created", "open", "in_progress", "postponed", "closed"}
@@ -80,35 +56,79 @@ func ValidateMatch(v *validator.Validator, match Match) {
 	v.Check(match.HomeTeamID != match.AwayTeamID, "home_team_id", "home and away team cannot be the same")
 	v.Check(match.Status != "", "status", "must be provided")
 	v.Check(validator.PermittedValue(match.Status, matchStatuses...), "status", "must be one of: created, open, in_progress, postponed, closed")
-	v.Check(match.Odds.Home > 1 && match.Odds.Away > 1, "odds", "must both be greater than one")
-	if match.Score != nil {
-		v.Check(match.Score.Home >= 0 && match.Score.Away >= 0, "score", "must not be negative")
+	bothNil := match.Score.Home == nil && match.Score.Away == nil
+	bothSet := match.Score.Home != nil && match.Score.Away != nil
+	v.Check(bothNil || bothSet, "score", "must contain both home and away values or neither")
+	v.Check(bothNil || (*match.Score.Home >= 0 && *match.Score.Away >= 0), "score", "must not be negative")
+	switch {
+	case match.Status == "in_progress" || match.Status == "closed":
+		v.Check(match.Score.Home != nil, "score", "must be provided when the match is in progress or closed")
+	default: // created, open, postponed
+		v.Check(match.Score.Home == nil, "score", "must not be set before the match is in progress or closed")
 	}
+	v.Check(match.Odds.Home > 1 && match.Odds.Away > 1, "odds", "must both be greater than one")
 }
 
 type MatchStore struct {
-	matches []Match
+	pool *pgxpool.Pool
 }
 
-func (s *MatchStore) Get(id int) (Match, error) {
+func (s *MatchStore) Get(ctx context.Context, id int) (Match, error) {
 	if id < 1 {
 		return Match{}, ErrRecordNotFound
 	}
 
-	for _, match := range s.matches {
-		if match.ID == id {
-			return match, nil
+	query := `
+		SELECT  id, created_at, season_id, round_id, home_team_id, away_team_id, status, home_odds, away_odds, home_score, away_score, version
+		FROM matches
+		WHERE id = $1
+	`
+
+	var match Match
+
+	err := s.pool.QueryRow(ctx, query, id).Scan(
+		&match.ID,
+		&match.CreatedAt,
+		&match.SeasonID,
+		&match.RoundID,
+		&match.HomeTeamID,
+		&match.AwayTeamID,
+		&match.Odds.Home,
+		&match.Odds.Away,
+		&match.Score.Home,
+		&match.Score.Away,
+		&match.Version,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Match{}, ErrRecordNotFound
+		default:
+			return Match{}, err
 		}
 	}
 
-	return Match{}, ErrRecordNotFound
+	return match, nil
 }
 
-func (s *MatchStore) Insert(match Match) (Match, error) {
-	match.ID = len(s.matches) + 1
-	match.CreatedAt = time.Now().UTC()
-	match.Version = 1
+func (s *MatchStore) Insert(ctx context.Context, match Match) (Match, error) {
+	query := `
+		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, created_at, version
+	`
+	args := []any{
+		match.SeasonID,
+		match.RoundID,
+		match.HomeTeamID,
+		match.AwayTeamID,
+		match.Odds.Home,
+		match.Odds.Away,
+		match.Score.Home,
+		match.Score.Away,
+	}
 
-	s.matches = append(s.matches, match)
-	return match, nil
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&match.ID, &match.CreatedAt, &match.Version)
+
+	return match, err
 }

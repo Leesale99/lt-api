@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strings"
 
+	"lt-api.aleksrdvn.com/internal/constants"
 	game "lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -30,10 +33,18 @@ func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	season, err = app.Store.Seasons.Insert(season)
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	season, err = app.Store.Seasons.Insert(ctx, season)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
-		return
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		default:
+			app.serverErrorResponse(w, r, err)
+			return
+		}
 	}
 
 	err = app.writeJSON(w, http.StatusCreated, envelope{"season": season}, nil)
@@ -49,9 +60,19 @@ func (app *Application) showSeasonHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	season, err := app.Store.Seasons.Get(id)
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	season, err := app.Store.Seasons.Get(ctx, id)
 	if err != nil {
-		app.notFoundResponse(w, r)
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
 		return
 	}
 

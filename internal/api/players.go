@@ -22,8 +22,18 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if _, err := app.Store.Seasons.Get(seasonID); err != nil {
-		app.notFoundResponse(w, r)
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	if _, err := app.Store.Seasons.Get(ctx, seasonID); err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
 		return
 	}
 
@@ -46,9 +56,6 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
-	defer cancel()
-
 	if _, err := app.Store.Teams.Get(ctx, player.FavoriteTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -59,14 +66,18 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		default:
 			app.serverErrorResponse(w, r, err)
 		}
-
 		return
 	}
 
-	player, err = app.Store.Players.Insert(player)
+	player, err = app.Store.Players.Insert(ctx, player)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
-		return
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		default:
+			app.serverErrorResponse(w, r, err)
+			return
+		}
 	}
 
 	err = app.writeJSON(w, http.StatusCreated, envelope{"player": player}, nil)
@@ -82,9 +93,19 @@ func (app *Application) showPlayerHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	player, err := app.Store.Players.Get(id)
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	player, err := app.Store.Players.Get(ctx, id)
 	if err != nil {
-		app.notFoundResponse(w, r)
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
 		return
 	}
 

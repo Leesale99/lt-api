@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strings"
 
+	"lt-api.aleksrdvn.com/internal/constants"
 	game "lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -20,8 +23,18 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, err := app.Store.Seasons.Get(seasonID); err != nil {
-		app.notFoundResponse(w, r)
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	if _, err := app.Store.Seasons.Get(ctx, seasonID); err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
 		return
 	}
 
@@ -44,10 +57,15 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	round, err = app.Store.Rounds.Insert(round)
+	round, err = app.Store.Rounds.Insert(ctx, round)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
-		return
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		default:
+			app.serverErrorResponse(w, r, err)
+			return
+		}
 	}
 
 	err = app.writeJSON(w, http.StatusCreated, envelope{"round": round}, nil)
@@ -63,9 +81,19 @@ func (app *Application) showRoundHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	round, err := app.Store.Rounds.Get(id)
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	round, err := app.Store.Rounds.Get(ctx, id)
 	if err != nil {
-		app.notFoundResponse(w, r)
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
 		return
 	}
 

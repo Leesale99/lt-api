@@ -1,9 +1,13 @@
 package game
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -12,21 +16,6 @@ type Season struct {
 	CreatedAt time.Time `json:"-"`
 	Status    string    `json:"status"`
 	Version   int       `json:"version"`
-}
-
-var seasonsData = []Season{
-	{
-		ID:        1,
-		CreatedAt: time.Date(2026, time.September, 4, 12, 0, 0, 0, time.UTC),
-		Status:    "closed",
-		Version:   1,
-	},
-	{
-		ID:        2,
-		CreatedAt: time.Date(2026, time.August, 28, 15, 30, 0, 0, time.UTC),
-		Status:    "created",
-		Version:   1,
-	},
 }
 
 var seasonStatuses = []string{"created", "open", "in_progress", "closed"}
@@ -39,28 +28,47 @@ func ValidateSeason(v *validator.Validator, season Season) {
 }
 
 type SeasonStore struct {
-	seasons []Season
+	pool *pgxpool.Pool
 }
 
-func (s *SeasonStore) Get(id int) (Season, error) {
+func (s *SeasonStore) Get(ctx context.Context, id int) (Season, error) {
 	if id < 1 {
 		return Season{}, ErrRecordNotFound
 	}
 
-	for _, season := range s.seasons {
-		if season.ID == id {
-			return season, nil
+	query := `
+		SELECT id, created_at, status, version
+		FROM seasons
+		WHERE id = $1
+	`
+
+	var season Season
+
+	err := s.pool.QueryRow(ctx, query, id).Scan(
+		&season.ID,
+		&season.CreatedAt,
+		&season.Status,
+		&season.Version,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Season{}, ErrRecordNotFound
+		default:
+			return Season{}, err
 		}
 	}
 
-	return Season{}, ErrRecordNotFound
+	return season, nil
 }
 
-func (s *SeasonStore) Insert(season Season) (Season, error) {
-	season.ID = len(s.seasons) + 1
-	season.CreatedAt = time.Now().UTC()
-	season.Version = 1
+func (s *SeasonStore) Insert(ctx context.Context, season Season) (Season, error) {
+	query := `
+		INSERT INTO seasons (status)
+		VALUES ($1)
+		RETURNING id, created_at, version
+	`
+	err := s.pool.QueryRow(ctx, query, season.Status).Scan(&season.ID, &season.CreatedAt, &season.Version)
 
-	s.seasons = append(s.seasons, season)
-	return season, nil
+	return season, err
 }

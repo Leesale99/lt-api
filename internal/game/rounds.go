@@ -1,9 +1,13 @@
 package game
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -21,25 +25,6 @@ type Round struct {
 	Version   int       `json:"version"`
 }
 
-var roundsData = []Round{
-	{
-		ID:        1,
-		CreatedAt: time.Date(2026, time.September, 4, 12, 0, 0, 0, time.UTC),
-		SeasonID:  1,
-		Number:    1,
-		Status:    "closed",
-		Version:   1,
-	},
-	{
-		ID:        2,
-		CreatedAt: time.Date(2026, time.September, 4, 12, 0, 0, 0, time.UTC),
-		SeasonID:  1,
-		Number:    2,
-		Status:    "open",
-		Version:   1,
-	},
-}
-
 var roundsStatuses = []string{"created", "open", "closed"}
 
 func ValidateRound(v *validator.Validator, round Round) {
@@ -50,28 +35,49 @@ func ValidateRound(v *validator.Validator, round Round) {
 }
 
 type RoundStore struct {
-	rounds []Round
+	pool *pgxpool.Pool
 }
 
-func (s *RoundStore) Get(id int) (Round, error) {
+func (s *RoundStore) Get(ctx context.Context, id int) (Round, error) {
 	if id < 1 {
 		return Round{}, ErrRecordNotFound
 	}
 
-	for _, round := range s.rounds {
-		if round.ID == id {
-			return round, nil
+	query := `
+		SELECT id, created_at, season_id, number, status, version
+		FROM rounds
+		WHERE id = $1
+`
+	var round Round
+
+	err := s.pool.QueryRow(ctx, query, id).Scan(
+		&round.ID,
+		&round.CreatedAt,
+		&round.SeasonID,
+		&round.Number,
+		&round.Status,
+		&round.Version,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Round{}, ErrRecordNotFound
+		default:
+			return Round{}, err
 		}
 	}
-
-	return Round{}, ErrRecordNotFound
+	return round, nil
 }
 
-func (s *RoundStore) Insert(round Round) (Round, error) {
-	round.ID = len(s.rounds) + 1
-	round.CreatedAt = time.Now().UTC()
-	round.Version = 1
+func (s *RoundStore) Insert(ctx context.Context, round Round) (Round, error) {
+	query := `
+		INSERT INTO rounds (season_id, number, status)
+		VALUES ($1, $2, $3)
+		RETURNING id, created_at, version
+	`
+	args := []any{round.SeasonID, round.Number, round.Status}
 
-	s.rounds = append(s.rounds, round)
-	return round, nil
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&round.ID, &round.CreatedAt, &round.Version)
+
+	return round, err
 }

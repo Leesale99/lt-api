@@ -1,8 +1,12 @@
 package game
 
 import (
+	"context"
+	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -17,25 +21,6 @@ type Player struct {
 	Version        int       `json:"version"`
 }
 
-var playersData = []Player{
-	{
-		ID:             1,
-		CreatedAt:      time.Date(2026, time.September, 4, 12, 0, 0, 0, time.UTC),
-		Name:           "John Doe",
-		SeasonID:       2,
-		FavoriteTeamID: 1, // Olympiacos
-		Version:        1,
-	},
-	{
-		ID:             2,
-		CreatedAt:      time.Date(2026, time.September, 4, 12, 0, 0, 0, time.UTC),
-		Name:           "Janny From de Block",
-		SeasonID:       2,
-		FavoriteTeamID: 2, // Real Madrid
-		Version:        1,
-	},
-}
-
 func ValidatePlayer(v *validator.Validator, player Player) {
 	v.Check(player.SeasonID > 0, "season_id", "must be provided")
 	v.Check(player.Name != "", "name", "must be provided")
@@ -44,28 +29,50 @@ func ValidatePlayer(v *validator.Validator, player Player) {
 }
 
 type PlayerStore struct {
-	players []Player
+	pool *pgxpool.Pool
 }
 
-func (s *PlayerStore) Get(id int) (Player, error) {
+func (s *PlayerStore) Get(ctx context.Context, id int) (Player, error) {
 	if id < 1 {
 		return Player{}, ErrRecordNotFound
 	}
 
-	for _, player := range s.players {
-		if player.ID == id {
-			return player, nil
+	query := `
+		SELECT id, created_at, name, season_id, favorite_team_id, version
+		FROM players
+		WHERE id = $1
+	`
+	var player Player
+
+	err := s.pool.QueryRow(ctx, query, id).Scan(
+		&player.ID,
+		&player.CreatedAt,
+		&player.Name,
+		&player.SeasonID,
+		&player.FavoriteTeamID,
+		&player.Version,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Player{}, ErrRecordNotFound
+		default:
+			return Player{}, err
 		}
 	}
 
-	return Player{}, ErrRecordNotFound
+	return player, nil
 }
 
-func (s *PlayerStore) Insert(player Player) (Player, error) {
-	player.ID = len(s.players) + 1
-	player.CreatedAt = time.Now().UTC()
-	player.Version = 1
+func (s *PlayerStore) Insert(ctx context.Context, player Player) (Player, error) {
+	query := `
+		INSERT INTO players (name, season_id, favorite_team_id)
+		VALUES ($1, $2, $3)
+		RETURNING id, created_at, version
+	`
+	args := []any{player.Name, player.SeasonID, player.FavoriteTeamID}
 
-	s.players = append(s.players, player)
-	return player, nil
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&player.ID, &player.CreatedAt, &player.Version)
+
+	return player, err
 }

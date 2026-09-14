@@ -41,10 +41,13 @@ func (app *Application) createTeamHandler(w http.ResponseWriter, r *http.Request
 
 	team, err = app.Store.Teams.Insert(ctx, team)
 	if err != nil {
-		if !errors.Is(err, context.Canceled) {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		default:
 			app.serverErrorResponse(w, r, err)
+			return
 		}
-		return
 	}
 
 	err = app.writeJSON(w, http.StatusCreated, envelope{"team": team}, nil)

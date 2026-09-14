@@ -23,10 +23,10 @@ type Store struct {
 
 func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{
-		Seasons: SeasonStore{seasons: seasonsData},
-		Rounds:  RoundStore{rounds: roundsData},
+		Seasons: SeasonStore{pool},
+		Rounds:  RoundStore{pool},
 		Teams:   TeamStore{pool},
-		Matches: MatchStore{matches: matchesData},
-		Players: PlayerStore{players: playersData},
+		Matches: MatchStore{pool},
+		Players: PlayerStore{pool},
 	}
 }
