@@ -9,6 +9,8 @@ import (
 )
 
 func TestShowRoundHandler(t *testing.T) {
+	requireDB(t)
+
 	tests := []struct {
 		name     string
 		url      string
@@ -43,6 +45,7 @@ func TestShowRoundHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
 			app := newTestApplication()
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
@@ -62,6 +65,8 @@ func TestShowRoundHandler(t *testing.T) {
 }
 
 func TestCreateRoundHandler(t *testing.T) {
+	requireDB(t)
+
 	tests := []struct {
 		name     string
 		url      string
@@ -136,6 +141,7 @@ func TestCreateRoundHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
 			app := newTestApplication()
 
 			var reader io.Reader

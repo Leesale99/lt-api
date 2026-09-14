@@ -64,7 +64,7 @@ func ValidateMatch(v *validator.Validator, match Match, now time.Time) {
 	bothNil := match.Score.Home == nil && match.Score.Away == nil
 	bothSet := match.Score.Home != nil && match.Score.Away != nil
 	v.Check(bothNil || bothSet, "score", "must contain both home and away values or neither")
-	v.Check(bothNil || (*match.Score.Home >= 0 && *match.Score.Away >= 0), "score", "must not be negative")
+	v.Check(!bothSet || (*match.Score.Home >= 0 && *match.Score.Away >= 0), "score", "must not be negative")
 	switch {
 	case match.Status == "in_progress" || match.Status == "closed":
 		v.Check(match.Score.Home != nil, "score", "must be provided when the match is in progress or closed")
@@ -99,6 +99,7 @@ func (s *MatchStore) Get(ctx context.Context, id int) (Match, error) {
 		&match.RoundID,
 		&match.HomeTeamID,
 		&match.AwayTeamID,
+		&match.Status,
 		&match.Odds.Home,
 		&match.Odds.Away,
 		&match.Score.Home,
@@ -119,8 +120,8 @@ func (s *MatchStore) Get(ctx context.Context, id int) (Match, error) {
 
 func (s *MatchStore) Insert(ctx context.Context, match Match) (Match, error) {
 	query := `
-		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, starts_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, starts_at, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id, created_at, version
 	`
 	args := []any{
@@ -133,6 +134,7 @@ func (s *MatchStore) Insert(ctx context.Context, match Match) (Match, error) {
 		match.Score.Home,
 		match.Score.Away,
 		match.StartsAt,
+		match.Status,
 	}
 
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&match.ID, &match.CreatedAt, &match.Version)

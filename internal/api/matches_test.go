@@ -8,7 +8,14 @@ import (
 	"testing"
 )
 
+// Fixed future timestamp for happy-path bodies: starts_at must be in the
+// future relative to the handler's time.Now(), so any far-future date works
+// and keeps the cases deterministic.
+const futureStartsAt = `"starts_at":"2030-01-01T12:00:00Z"`
+
 func TestShowMatchHandler(t *testing.T) {
+	requireDB(t)
+
 	tests := []struct {
 		name     string
 		url      string
@@ -49,6 +56,7 @@ func TestShowMatchHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
 			app := newTestApplication()
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
@@ -68,6 +76,8 @@ func TestShowMatchHandler(t *testing.T) {
 }
 
 func TestCreateMatchHandler(t *testing.T) {
+	requireDB(t)
+
 	tests := []struct {
 		name     string
 		url      string
@@ -78,16 +88,23 @@ func TestCreateMatchHandler(t *testing.T) {
 		{
 			name:     "valid unplayed match",
 			url:      "/v1/seasons/1/matches",
-			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":2,"away":3}}`,
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":2,"away":3},` + futureStartsAt + `}`,
 			wantCode: http.StatusCreated,
 			wantBody: []string{`"season_id": 1`, `"round_id": 1`, `"home_team_id": 1`},
 		},
 		{
 			name:     "valid played match",
 			url:      "/v1/seasons/1/matches",
-			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"closed","odds":{"home":2,"away":3},"score":{"home":80,"away":75}}`,
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"closed","odds":{"home":2,"away":3},"score":{"home":80,"away":75},` + futureStartsAt + `}`,
 			wantCode: http.StatusCreated,
 			wantBody: []string{`"status": "closed"`, `"score"`},
+		},
+		{
+			name:     "happy path with starts_at",
+			url:      "/v1/seasons/1/matches",
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":2,"away":3},` + futureStartsAt + `}`,
+			wantCode: http.StatusCreated,
+			wantBody: []string{`"starts_at": "2030-01-01T12:00:00Z"`},
 		},
 		{
 			name:     "unknown season",
@@ -152,10 +169,53 @@ func TestCreateMatchHandler(t *testing.T) {
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"status"},
 		},
+		{
+			name:     "round in wrong season",
+			url:      "/v1/seasons/1/matches",
+			body:     `{"round_id":3,"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":2,"away":3},` + futureStartsAt + `}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"round_id", "must belong to a season id 1"},
+		},
+		{
+			name:     "partial score",
+			url:      "/v1/seasons/1/matches",
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"closed","odds":{"home":2,"away":3},"score":{"home":80},` + futureStartsAt + `}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"score", "must contain both home and away values or neither"},
+		},
+		{
+			name:     "closed without score",
+			url:      "/v1/seasons/1/matches",
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"closed","odds":{"home":2,"away":3},` + futureStartsAt + `}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"score", "must be provided when the match is in progress or closed"},
+		},
+		{
+			name:     "postponed with score",
+			url:      "/v1/seasons/1/matches",
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"postponed","odds":{"home":2,"away":3},"score":{"home":80,"away":75},` + futureStartsAt + `}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"score", "must not be set before the match is in progress or closed"},
+		},
+		{
+			name:     "starts_at missing",
+			url:      "/v1/seasons/1/matches",
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":2,"away":3}}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"starts_at", "must be provided"},
+		},
+		{
+			name:     "starts_at in the past",
+			url:      "/v1/seasons/1/matches",
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":2,"away":3},"starts_at":"2020-01-01T12:00:00Z"}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"starts_at", "must be in the future"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
 			app := newTestApplication()
 
 			var reader io.Reader

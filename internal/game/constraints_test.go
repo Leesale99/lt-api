@@ -4,11 +4,9 @@ package game
 // the same rules as the Go validators, and that the permitted status values
 // in the Go slices are accepted by the DB CHECKs (drift detection).
 //
-// Requires a running PostgreSQL. Set LT_API_TEST_DSN to an *admin* DSN
-// (the test creates and drops its own database):
-//
-//	LT_API_TEST_DSN="postgres://postgres:test@localhost:55432/postgres?sslmode=disable" \
-//	    go test ./internal/game/ -v
+// Requires a running PostgreSQL. LT_API_TEST_DSN (see .envrc) points at the
+// test database, which the harness creates and drops itself — the test role
+// needs only LOGIN + CREATEDB (see internal/testdb).
 //
 // Without LT_API_TEST_DSN the tests are skipped.
 
@@ -16,90 +14,64 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"lt-api.aleksrdvn.com/internal/testdb"
 )
 
-const (
-	testDBName = "ltapi_constraints_test"
-	migFile    = "../../migrations/000001_create_initial_game_models.up.sql"
-)
+const migFile = "../../migrations/000001_create_initial_game_models.up.sql"
 
 // PostgreSQL error codes (see pgerrcode; inlined to avoid the extra dependency).
 const (
-	errCheckViolation  = "23514"
-	errForeignKey      = "23503"
-	errUniqueViolation = "23505"
-	errUndefinedColumn = "42703"
-	errUndefinedTable  = "42P01"
+	errCheckViolation    = "23514"
+	errForeignKey        = "23503"
+	errRestrictViolation = "23001"
+	errUniqueViolation   = "23505"
+	errUndefinedColumn   = "42703"
+	errUndefinedTable    = "42P01"
 )
 
 var pool *pgxpool.Pool
 
+// TestMain always runs the full suite: unit tests in this package must run
+// on a DB-less machine too. Only the DB-backed tests skip, one by one, via
+// requireDB. Exiting before m.Run() would silently disable the whole
+// package — including `go test -list`.
 func TestMain(m *testing.M) {
-	adminDSN := os.Getenv("LT_API_TEST_DSN")
-	if adminDSN == "" {
-		fmt.Println("LT_API_TEST_DSN not set; skipping constraint tests")
-		os.Exit(0)
+	dsn := os.Getenv("LT_API_TEST_DSN")
+	if dsn == "" {
+		fmt.Println("LT_API_TEST_DSN not set; database-backed tests will be skipped")
+		os.Exit(m.Run())
 	}
 
 	ctx := context.Background()
 
-	admin, err := pgx.Connect(ctx, adminDSN)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "connect to admin DB: %v\n", err)
-		os.Exit(1)
-	}
-
 	// Fresh database per run: the migration itself is under test.
-	admin.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", testDBName))
-	if _, err := admin.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", testDBName)); err != nil {
-		fmt.Fprintf(os.Stderr, "create test DB: %v\n", err)
-		os.Exit(1)
-	}
-
-	u, err := url.Parse(adminDSN)
+	var teardown func()
+	var err error
+	pool, teardown, err = testdb.Setup(ctx, dsn, "game", migFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "parse DSN: %v\n", err)
-		os.Exit(1)
-	}
-	u.Path = "/" + testDBName
-
-	cfg, err := pgxpool.ParseConfig(u.String())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "parse test DSN: %v\n", err)
-		os.Exit(1)
-	}
-	// The migration file contains multiple statements; simple protocol allows that.
-	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
-
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "connect to test DB: %v\n", err)
-		os.Exit(1)
-	}
-
-	migSQL, err := os.ReadFile(migFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "read migration: %v\n", err)
-		os.Exit(1)
-	}
-	if _, err := pool.Exec(ctx, string(migSQL)); err != nil {
-		fmt.Fprintf(os.Stderr, "apply migration: %v\n", err)
+		// DSN set but unusable: fail loudly rather than report a green run
+		// that tested nothing.
+		fmt.Fprintf(os.Stderr, "test database setup: %v\n", err)
 		os.Exit(1)
 	}
 
 	code := m.Run()
-
-	pool.Close()
-	admin.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", testDBName))
-	admin.Close(ctx)
+	teardown()
 	os.Exit(code)
+}
+
+// requireDB skips a test when the database harness is unavailable.
+func requireDB(t *testing.T) {
+	t.Helper()
+	if pool == nil {
+		t.Skip("LT_API_TEST_DSN not set; requires a test database")
+	}
 }
 
 // seed inserts the base fixture (2 teams, 1 season, 1 round) and returns their IDs.
@@ -174,13 +146,15 @@ func errorsAs(err error, target **pgconn.PgError) bool {
 }
 
 func TestMatchConstraints(t *testing.T) {
+	requireDB(t)
+
 	ctx := context.Background()
 	seasonID, roundID, homeID, awayID := seed(ctx, t)
 	defer cleanup(ctx, t)
 
 	base := fmt.Sprintf(`
-		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status%s)
-		VALUES ($1, $2, $3, $4, $5, $6, $7%s)`, "%s", "%s")
+		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at%s)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '30 days'%s)`, "%s", "%s")
 
 	valid := fmt.Sprintf(base, "", "")
 	cases := []constraintCase{
@@ -249,6 +223,8 @@ func TestMatchConstraints(t *testing.T) {
 // TestStatusVocabularyIsInSync inserts every status value from the Go slices
 // and asserts the DB accepts all of them — the validator/DB drift detector.
 func TestStatusVocabularyIsInSync(t *testing.T) {
+	requireDB(t)
+
 	ctx := context.Background()
 	seasonID, roundID, homeID, awayID := seed(ctx, t)
 	defer cleanup(ctx, t)
@@ -275,10 +251,20 @@ func TestStatusVocabularyIsInSync(t *testing.T) {
 
 	t.Run("matches", func(t *testing.T) {
 		for _, status := range matchStatuses {
-			_, err := pool.Exec(ctx, `
-				INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status)
-				VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-				seasonID, roundID, homeID, awayID, 1.5, 2.5, status)
+			// in_progress/closed require a score per matches_status_score_check,
+			// so the vocabulary probe must supply one for those statuses.
+			scored := status == "in_progress" || status == "closed"
+			query := `
+				INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at, home_score, away_score)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '30 days', $8, $9)`
+			var home, away int
+			var homeArg, awayArg any
+			if scored {
+				home, away = 80, 75
+				homeArg, awayArg = &home, &away
+			}
+			_, err := pool.Exec(ctx, query,
+				seasonID, roundID, homeID, awayID, 1.5, 2.5, status, homeArg, awayArg)
 			// A round hosts one match in this fixture; reuse it — matches has
 			// no per-round uniqueness constraint, so this is fine.
 			if err != nil {
@@ -289,6 +275,8 @@ func TestStatusVocabularyIsInSync(t *testing.T) {
 }
 
 func TestTeamConstraints(t *testing.T) {
+	requireDB(t)
+
 	ctx := context.Background()
 	defer cleanup(ctx, t)
 
@@ -329,6 +317,8 @@ func TestTeamConstraints(t *testing.T) {
 }
 
 func TestRoundAndSeasonConstraints(t *testing.T) {
+	requireDB(t)
+
 	ctx := context.Background()
 	seasonID, _, _, _ := seed(ctx, t)
 	defer cleanup(ctx, t)
@@ -375,13 +365,15 @@ func TestRoundAndSeasonConstraints(t *testing.T) {
 }
 
 func TestTeamDeleteRestricted(t *testing.T) {
+	requireDB(t)
+
 	ctx := context.Background()
 	seasonID, roundID, homeID, awayID := seed(ctx, t)
 	defer cleanup(ctx, t)
 
 	_, err := pool.Exec(ctx, `
-		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status)
-		VALUES ($1, $2, $3, $4, 1.5, 2.5, 'open')`,
+		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at)
+		VALUES ($1, $2, $3, $4, 1.5, 2.5, 'open', now() + interval '30 days')`,
 		seasonID, roundID, homeID, awayID)
 	if err != nil {
 		t.Fatalf("insert match: %v", err)
@@ -392,7 +384,7 @@ func TestTeamDeleteRestricted(t *testing.T) {
 		t.Error("team with match history was deleted; expected RESTRICT to block it")
 	} else {
 		var pgErr *pgconn.PgError
-		if !errorsAs(err, &pgErr) || pgErr.Code != errForeignKey {
+		if !errorsAs(err, &pgErr) || pgErr.Code != errRestrictViolation {
 			t.Errorf("expected FK restriction error, got: %v", err)
 		}
 	}

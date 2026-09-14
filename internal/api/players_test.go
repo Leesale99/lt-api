@@ -6,33 +6,34 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"lt-api.aleksrdvn.com/internal/game"
 )
 
-// Template for all Phase 00 handler tests: fresh app per subtest (no shared
-// state), table of {request -> want code + body fragments}.
+// Template for all handler tests: fresh app + fresh fixture per subtest
+// (reset() re-seeds the canonical rows with fixed IDs), table of
+// {request -> want code + body fragments}.
 //
-// newTestApplication passes a nil pool: Teams is now Postgres-backed and
-// Phase 00 tests have no database. Subtests that would reach TeamStore must
-// set needsDB and are skipped until the integration-test task (Phase 01).
+// newTestApplication wires the real test-database pool set up by TestMain.
 
 func newTestApplication() *Application {
 	return &Application{
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Store:  game.NewStore(nil),
+		Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		Store:  game.NewStore(testPool),
 	}
 }
 
 func TestShowPlayerHandler(t *testing.T) {
+	requireDB(t)
+
 	tests := []struct {
 		name     string
 		url      string
 		wantCode int
 		wantBody []string
-		needsDB  bool
 	}{
 		{
 			name:     "existing player",
@@ -62,6 +63,7 @@ func TestShowPlayerHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
 			app := newTestApplication()
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
@@ -81,15 +83,14 @@ func TestShowPlayerHandler(t *testing.T) {
 }
 
 func TestCreatePlayerHandler(t *testing.T) {
+	requireDB(t)
+
 	tests := []struct {
 		name     string
 		url      string
 		body     string
 		wantCode int
 		wantBody []string
-		// needsDB marks cases that reach TeamStore (Postgres-backed).
-		// They are skipped until the Phase 01 integration-test task.
-		needsDB bool
 	}{
 		{
 			name:     "valid registration",
@@ -97,7 +98,6 @@ func TestCreatePlayerHandler(t *testing.T) {
 			body:     `{"name":"John Doe","favorite_team_id":1}`,
 			wantCode: http.StatusCreated,
 			wantBody: []string{`"season_id": 2`, `"name": "John Doe"`, `"favorite_team_id": 1`},
-			needsDB:  true,
 		},
 		{
 			name:     "season takes effect from URL, not body",
@@ -105,7 +105,6 @@ func TestCreatePlayerHandler(t *testing.T) {
 			body:     `{"name":"Jane Doe","favorite_team_id":2}`,
 			wantCode: http.StatusCreated,
 			wantBody: []string{`"season_id": 2`, `"name": "Jane Doe"`, `"favorite_team_id": 2`},
-			needsDB:  true,
 		},
 		{
 			name:     "unknown season",
@@ -183,16 +182,12 @@ func TestCreatePlayerHandler(t *testing.T) {
 			body:     `{"name":"John Doe","favorite_team_id":999}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"favorite_team_id", "existing team"},
-			needsDB:  true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.needsDB {
-				t.Skip("Teams is Postgres-backed; needs a real DB (Phase 01 integration-test task)")
-			}
-
+			reset(t)
 			app := newTestApplication()
 
 			var reader io.Reader

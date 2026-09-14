@@ -9,6 +9,8 @@ import (
 )
 
 func TestShowSeasonHandler(t *testing.T) {
+	requireDB(t)
+
 	tests := []struct {
 		name     string
 		url      string
@@ -43,6 +45,7 @@ func TestShowSeasonHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
 			app := newTestApplication()
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
@@ -62,6 +65,8 @@ func TestShowSeasonHandler(t *testing.T) {
 }
 
 func TestCreateSeasonHandler(t *testing.T) {
+	requireDB(t)
+
 	tests := []struct {
 		name     string
 		body     string
@@ -108,6 +113,7 @@ func TestCreateSeasonHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
 			app := newTestApplication()
 
 			var reader io.Reader

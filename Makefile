@@ -8,12 +8,27 @@ help:
 
 .PHONY: confirm
 confirm: 
-	@echo -n 'Are you sure? [y/N] ' && read ans && [ $${ans:-N} = y ]
+	@echo 'Are you sure? [y/N] ' && read ans && [ $${ans:-N} = y ]
 
 ## run/api: run the cmd/api application
 .PHONY: run/server
 run/server: 
 	go run ./cmd/server -db-dsn=${LT_API_DSN}
+
+## test: run the full suite; DB-backed tests skip when LT_API_TEST_DSN is unset
+.PHONY: test
+test:
+	go test ./...
+
+## test/unit: run the pure-logic tests (no database needed)
+.PHONY: test/unit
+test/unit:
+	go test ./internal/game -run 'TestValidateMatch|TestWinner' -v
+
+## test/db: run the full suite against the test database (LT_API_TEST_DSN from .envrc; fails loudly if unreachable)
+.PHONY: test/db
+test/db:
+	go test ./... -v
 
 ## db/psql: connect to the database using psql
 .PHONY: db/psql

@@ -8,10 +8,8 @@ import (
 	"testing"
 )
 
-// Every Show case reaches TeamStore (Postgres-backed); all skipped until the
-// Phase 01 integration-test task.
 func TestShowTeamHandler(t *testing.T) {
-	t.Skip("Teams is Postgres-backed; needs a real DB (Phase 01 integration-test task)")
+	requireDB(t)
 
 	tests := []struct {
 		name     string
@@ -47,6 +45,7 @@ func TestShowTeamHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
 			app := newTestApplication()
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
@@ -66,21 +65,19 @@ func TestShowTeamHandler(t *testing.T) {
 }
 
 func TestCreateTeamHandler(t *testing.T) {
+	requireDB(t)
+
 	tests := []struct {
 		name     string
 		body     string
 		wantCode int
 		wantBody []string
-		// needsDB marks cases that reach TeamStore (Postgres-backed).
-		// They are skipped until the Phase 01 integration-test task.
-		needsDB bool
 	}{
 		{
 			name:     "valid team",
 			body:     `{"name":"Panathinaikos","logo":"http://example.com/pao.png","description":"Athens club"}`,
 			wantCode: http.StatusCreated,
 			wantBody: []string{`"name": "Panathinaikos"`},
-			needsDB:  true,
 		},
 		{
 			name:     "empty body",
@@ -134,10 +131,7 @@ func TestCreateTeamHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.needsDB {
-				t.Skip("Teams is Postgres-backed; needs a real DB (Phase 01 integration-test task)")
-			}
-
+			reset(t)
 			app := newTestApplication()
 
 			var reader io.Reader
