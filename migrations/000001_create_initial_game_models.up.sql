@@ -1,9 +1,12 @@
 CREATE TABLE teams (
   id bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   created_at timestamp(0) with time zone NOT NULL DEFAULT now(),
-  name text NOT NULL CONSTRAINT teams_name_check CHECK (name <> '' AND octet_length(name) <= 500),
-  logo text NOT NULL CONSTRAINT teams_logo_check CHECK (logo <> ''),
-  description text NOT NULL CONSTRAINT teams_description_check CHECK (description <> '' AND octet_length(description) <= 5000),
+  name text NOT NULL
+    CONSTRAINT teams_name_check CHECK (name <> '' AND octet_length(name) <= 500),
+  logo text NOT NULL
+    CONSTRAINT teams_logo_check CHECK (logo <> ''),
+  description text NOT NULL
+    CONSTRAINT teams_description_check CHECK (description <> '' AND octet_length(description) <= 5000),
   version integer NOT NULL DEFAULT 1
 );
 
@@ -55,12 +58,13 @@ CREATE TABLE matches (
   version integer NOT NULL DEFAULT 1,
 
   -- multi-column constraints
-  CONSTRAINT matches_season_id_round_id_fkey FOREIGN KEY (season_id, round_id)
-    REFERENCES rounds (season_id, id) ON DELETE CASCADE,
+  CONSTRAINT matches_season_id_round_id_fkey FOREIGN KEY (season_id, round_id) REFERENCES rounds (season_id, id) ON DELETE CASCADE,
   CONSTRAINT matches_teams_differ_check CHECK (home_team_id <> away_team_id),
-  CONSTRAINT matches_status_score_check CHECK (
-    status = 'in_progress' OR status = 'closed' OR (home_score IS NULL AND away_score IS NULL)
-  )
+ CONSTRAINT matches_status_score_check CHECK (
+    (status IN ('in_progress', 'closed') AND home_score IS NOT NULL)
+    OR (status IN ('created', 'open', 'postponed') AND home_score IS NULL)
+  ),
+  CONSTRAINT matches_score_complete_check CHECK ((home_score IS NULL) = (away_score IS NULL))
 );
 
 CREATE TABLE players (
@@ -70,7 +74,8 @@ CREATE TABLE players (
     CONSTRAINT players_season_id_fkey REFERENCES seasons ON DELETE CASCADE,
   favorite_team_id bigint NOT NULL
     CONSTRAINT players_favorite_team_id_fkey REFERENCES teams ON DELETE RESTRICT,
-  name text NOT NULL CONSTRAINT players_name_check CHECK (name <> '' AND octet_length(name) <= 200),
+  name text NOT NULL 
+    CONSTRAINT players_name_check CHECK (name <> '' AND octet_length(name) <= 200),
   version integer NOT NULL DEFAULT 1
 );
 
