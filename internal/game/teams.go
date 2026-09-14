@@ -3,6 +3,7 @@ package game
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"path"
 	"strings"
@@ -45,6 +46,52 @@ func validImageURL(s string) bool {
 
 type TeamStore struct {
 	pool *pgxpool.Pool
+}
+
+func (s *TeamStore) GetAll(ctx context.Context, name string, filters Filters) ([]Team, Metadata, error) {
+	query := fmt.Sprintf(`
+		SELECT count(*) OVER(), id, created_at, name, logo, description, version
+		FROM teams
+		WHERE (name ILIKE $1 OR $1 = '')
+		ORDER BY %s %s, id ASC
+		LIMIT $2 OFFSET $3
+	`, filters.sortColumn(), filters.sortDirection())
+
+	rows, err := s.pool.Query(ctx, query, fmt.Sprintf("%%%s%%", name), filters.limit(), filters.offset())
+	if err != nil {
+		return nil, Metadata{}, err
+	}
+
+	defer rows.Close()
+
+	totalRecords := 0
+	teams := []Team{}
+
+	for rows.Next() {
+		var team Team
+		err := rows.Scan(
+			&totalRecords,
+			&team.ID,
+			&team.CreatedAt,
+			&team.Name,
+			&team.Logo,
+			&team.Description,
+			&team.Version,
+		)
+		if err != nil {
+			return nil, Metadata{}, err
+		}
+
+		teams = append(teams, team)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, Metadata{}, err
+	}
+
+	metadata := calculateMetadata(totalRecords, filters.Page, filters.PageSize)
+
+	return teams, metadata, nil
 }
 
 func (s *TeamStore) Get(ctx context.Context, id int) (Team, error) {
@@ -91,4 +138,53 @@ func (s *TeamStore) Insert(ctx context.Context, team Team) (Team, error) {
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&team.ID, &team.CreatedAt, &team.Version)
 
 	return team, err
+}
+
+func (s *TeamStore) Update(ctx context.Context, team Team) (Team, error) {
+	query := `
+		UPDATE teams
+		SET name = $1, logo = $2, description = $3, version = version + 1
+		WHERE id = $4 AND version = $5
+		RETURNING version
+	`
+	args := []any{
+		team.Name,
+		team.Logo,
+		team.Description,
+		team.ID,
+		team.Version,
+	}
+
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&team.Version)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Team{}, ErrEditConflict
+		default:
+			return Team{}, err
+		}
+	}
+
+	return team, err
+}
+
+func (s *TeamStore) Delete(ctx context.Context, id int) error {
+	if id < 1 {
+		return ErrRecordNotFound
+	}
+
+	query := `
+		DELETE FROM teams
+		WHERE id = $1
+	`
+	result, err := s.pool.Exec(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return ErrRecordNotFound
+	}
+
+	return nil
 }

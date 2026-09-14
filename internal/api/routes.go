@@ -28,12 +28,14 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/matches", app.createMatchHandler)
 
 	// Teams
+	router.HandlerFunc(http.MethodGet, "/v1/teams", app.listTeamsHandler)
 	router.HandlerFunc(http.MethodGet, "/v1/teams/:id", app.showTeamHandler)
 	router.HandlerFunc(http.MethodPost, "/v1/teams", app.createTeamHandler)
+	router.HandlerFunc(http.MethodPatch, "/v1/teams/:id", app.updateTeamHandler)
+	router.HandlerFunc(http.MethodDelete, "/v1/teams/:id", app.deleteTeamHandler)
 
-	// Players — hybrid per ADR-002: nested create, flat show
-	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/players", app.createPlayerHandler)
 	router.HandlerFunc(http.MethodGet, "/v1/players/:id", app.showPlayerHandler)
+	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/players", app.createPlayerHandler)
 
 	return app.recoverPanic(router)
 }

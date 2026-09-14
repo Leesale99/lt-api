@@ -6,9 +6,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ErrRecordNotFound is returned by store Get methods when no record with the
-// given ID exists.
-var ErrRecordNotFound = errors.New("record not found")
+var (
+	// ErrRecordNotFound is returned by store Get methods when no record with the
+	// given ID exists.
+	ErrRecordNotFound = errors.New("record not found")
+
+	// ErrEditConflict is returned by store update methods when the record's
+	// version has changed since it was read (optimistic concurrency check),
+	// meaning another request modified the row in the meantime.
+	ErrEditConflict = errors.New("edit conflict")
+)
 
 // Store composes the per-entity stores. It is the single dependency the API
 // layer holds; swapping to Postgres changes the guts of each store, not the

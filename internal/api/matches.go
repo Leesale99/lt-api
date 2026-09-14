@@ -128,7 +128,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 	headers := make(http.Header)
 	headers.Set("Location", fmt.Sprintf("/v1/matches/%d", match.ID))
 
-	err = app.writeJSON(w, http.StatusCreated, envelope{"match": match}, nil)
+	err = app.writeJSON(w, http.StatusCreated, envelope{"match": match}, headers)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}

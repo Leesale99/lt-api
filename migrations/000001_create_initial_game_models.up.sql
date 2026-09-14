@@ -80,6 +80,8 @@ CREATE TABLE players (
   version integer NOT NULL DEFAULT 1
 );
 
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX teams_name_trgm_idx ON teams USING GIN (name gin_trgm_ops);
 CREATE INDEX players_season_id_idx ON players (season_id);
 CREATE INDEX players_favorite_team_id_idx ON players (favorite_team_id);
 CREATE INDEX rounds_season_id_idx ON rounds (season_id);
