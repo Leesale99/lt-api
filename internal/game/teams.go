@@ -50,11 +50,10 @@ type TeamStore struct {
 }
 
 func (s *TeamStore) GetAll(ctx context.Context, name string, filters Filters) ([]Team, Metadata, error) {
-	// The name filter is included only when non-empty: a bare ILIKE keeps the
-	// trgm GIN index usable under generic (cached) plans, whereas the
-	// alternative `WHERE (name ILIKE $1 OR $1 = '')` degenerates to a seq scan
-	// once the statement is cached and $1 becomes opaque to the planner
-	// (verified via EXPLAIN ANALYZE under plan_cache_mode = force_generic_plan).
+	// The name filter is built only when non-empty. The catch-all alternative
+	// `WHERE (name ILIKE $1 OR $1 = '')` defeats the trgm GIN index: once the
+	// statement is cached, the planner can't prune the OR branch, so the query
+	// degrades to a seq scan (see ADR-006).
 	where := ""
 	args := []any{}
 	if name != "" {
