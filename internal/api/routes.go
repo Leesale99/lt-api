@@ -18,6 +18,7 @@ func (app *Application) routes() http.Handler {
 	// Seasons
 	router.HandlerFunc(http.MethodGet, "/v1/seasons/:id", app.showSeasonHandler)
 	router.HandlerFunc(http.MethodPost, "/v1/seasons", app.createSeasonHandler)
+	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id", app.updateSeasonHandler)
 
 	// Rounds
 	router.HandlerFunc(http.MethodGet, "/v1/rounds/:id", app.showRoundHandler)
