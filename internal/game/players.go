@@ -76,3 +76,26 @@ func (s *PlayerStore) Insert(ctx context.Context, player Player) (Player, error)
 
 	return player, err
 }
+
+func (s *PlayerStore) Update(ctx context.Context, player Player) (Player, error) {
+	query := `
+		UPDATE players
+		SET name = $1, season_id = $2, favorite_team_id = $3, version = version + 1
+		WHERE id = $4 AND version = $5 
+		RETURNING version
+	`
+
+	args := []any{player.Name, player.SeasonID, player.FavoriteTeamID, player.ID, player.Version}
+
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&player.Version)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Player{}, ErrEditConflict
+		default:
+			return Player{}, err
+		}
+	}
+
+	return player, err
+}

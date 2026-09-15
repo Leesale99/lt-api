@@ -117,9 +117,9 @@ func (s *TeamStore) Get(ctx context.Context, id int) (Team, error) {
 	}
 
 	query := `
-			SELECT id, created_at, name, logo, description, version
-			FROM teams
-			WHERE id = $1
+		SELECT id, created_at, name, logo, description, version
+		FROM teams
+		WHERE id = $1
 	`
 
 	var team Team

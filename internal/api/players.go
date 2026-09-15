@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	game "lt-api.aleksrdvn.com/internal/game"
@@ -107,6 +108,113 @@ func (app *Application) showPlayerHandler(w http.ResponseWriter, r *http.Request
 			return
 		case errors.Is(err, game.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+
+	err = app.writeJSON(w, http.StatusOK, envelope{"player": player}, nil)
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
+	}
+}
+
+func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Request) {
+	seasonId, err := app.readIDParam(r)
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	playerId, err := app.readIDParam(r, "playerId")
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	player, err := app.Store.Players.Get(ctx, playerId)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+
+	if r.Header.Get("X-Expected-Version") != "" {
+		if strconv.Itoa(player.Version) != r.Header.Get("X-Expected-Version") {
+			app.editConflictResponse(w, r)
+			return
+		}
+	}
+
+	var input struct {
+		Name           *string `json:"name"`
+		FavoriteTeamID *int    `json:"favorite_team_id"`
+	}
+
+	err = app.readJSON(w, r, &input)
+	if err != nil {
+		app.badRequestResponse(w, r, err)
+		return
+	}
+
+	player.SeasonID = seasonId
+	if input.Name != nil {
+		player.Name = *input.Name
+	}
+	if input.FavoriteTeamID != nil {
+		player.FavoriteTeamID = *input.FavoriteTeamID
+	}
+
+	v := validator.New()
+
+	if game.ValidatePlayer(v, player); !v.Valid() {
+		app.failedValidationResponse(w, r, v.Errors)
+		return
+	}
+
+	if _, err := app.Store.Seasons.Get(ctx, player.SeasonID); err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			v.AddError("season_id", "must reference an existing season")
+			app.failedValidationResponse(w, r, v.Errors)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+
+	if _, err := app.Store.Teams.Get(ctx, player.FavoriteTeamID); err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			v.AddError("favorite_team_id", "must reference an existing team")
+			app.failedValidationResponse(w, r, v.Errors)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+
+	player, err = app.Store.Players.Update(ctx, player)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrEditConflict):
+			app.editConflictResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
 		}

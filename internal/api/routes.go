@@ -36,6 +36,7 @@ func (app *Application) routes() http.Handler {
 
 	router.HandlerFunc(http.MethodGet, "/v1/players/:id", app.showPlayerHandler)
 	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/players", app.createPlayerHandler)
+	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/players/:playerId", app.updatePlayerHandler)
 
 	return app.recoverPanic(router)
 }
