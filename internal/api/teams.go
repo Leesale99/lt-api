@@ -113,11 +113,10 @@ func (app *Application) updateTeamHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if r.Header.Get("X-Expected-Version") != "" {
-		if strconv.Itoa(team.Version) != r.Header.Get("X-Expected-Version") {
-			app.editConflictResponse(w, r)
-			return
-		}
+	expectedVersion := r.Header.Get("X-Expected-Version")
+	if expectedVersion != "" && strconv.Itoa(team.Version) != expectedVersion {
+		app.editConflictResponse(w, r)
+		return
 	}
 
 	var input struct {

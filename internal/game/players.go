@@ -73,15 +73,25 @@ func (s *PlayerStore) Insert(ctx context.Context, player Player) (Player, error)
 	args := []any{player.Name, player.SeasonID, player.FavoriteTeamID}
 
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&player.ID, &player.CreatedAt, &player.Version)
+	if err != nil {
+		switch {
+		case fkViolation(err):
+			// The referenced team (or season) was deleted between the
+			// handler's existence check and this write.
+			return Player{}, ErrRecordNotFound
+		default:
+			return Player{}, err
+		}
+	}
 
-	return player, err
+	return player, nil
 }
 
 func (s *PlayerStore) Update(ctx context.Context, player Player) (Player, error) {
 	query := `
 		UPDATE players
 		SET name = $1, season_id = $2, favorite_team_id = $3, version = version + 1
-		WHERE id = $4 AND version = $5 
+		WHERE id = $4 AND version = $5
 		RETURNING version
 	`
 
@@ -92,10 +102,14 @@ func (s *PlayerStore) Update(ctx context.Context, player Player) (Player, error)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			return Player{}, ErrEditConflict
+		case fkViolation(err):
+			// Same race as in Insert: the referenced team vanished
+			// between validation and write.
+			return Player{}, ErrRecordNotFound
 		default:
 			return Player{}, err
 		}
 	}
 
-	return player, err
+	return player, nil
 }

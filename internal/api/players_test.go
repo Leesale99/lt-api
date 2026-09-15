@@ -209,3 +209,183 @@ func TestCreatePlayerHandler(t *testing.T) {
 		})
 	}
 }
+
+// Canonical player: ID 1, season 2, favorite team 1, version 1.
+// The season segment is scope-only: updating a player under a season it does
+// not belong to is a 404, not a season reassignment (ADR pending).
+func TestUpdatePlayerHandler(t *testing.T) {
+	requireDB(t)
+
+	tests := []struct {
+		name     string
+		url      string
+		headers  map[string]string
+		body     string
+		wantCode int
+		wantBody []string
+	}{
+		{
+			name:     "partial update, name only",
+			url:      "/v1/seasons/2/players/1",
+			body:     `{"name":"Ioannis Bourousis"}`,
+			wantCode: http.StatusOK,
+			wantBody: []string{
+				`"name": "Ioannis Bourousis"`,
+				`"favorite_team_id": 1`,
+				`"season_id": 2`,
+				`"version": 2`,
+			},
+		},
+		{
+			name:     "partial update, favorite team only",
+			url:      "/v1/seasons/2/players/1",
+			body:     `{"favorite_team_id":2}`,
+			wantCode: http.StatusOK,
+			wantBody: []string{
+				`"name": "Sasha Vezenkov"`,
+				`"favorite_team_id": 2`,
+				`"season_id": 2`,
+				`"version": 2`,
+			},
+		},
+		{
+			name:     "full update",
+			url:      "/v1/seasons/2/players/1",
+			body:     `{"name":"Ioannis Bourousis","favorite_team_id":2}`,
+			wantCode: http.StatusOK,
+			wantBody: []string{
+				`"name": "Ioannis Bourousis"`,
+				`"favorite_team_id": 2`,
+				`"season_id": 2`,
+				`"version": 2`,
+			},
+		},
+		{
+			name:     "empty body",
+			url:      "/v1/seasons/2/players/1",
+			body:     ``,
+			wantCode: http.StatusBadRequest,
+			wantBody: []string{"body must not be empty"},
+		},
+		{
+			name:     "badly-formed JSON",
+			url:      "/v1/seasons/2/players/1",
+			body:     `{"name":`,
+			wantCode: http.StatusBadRequest,
+			wantBody: []string{"badly-formed JSON"},
+		},
+		{
+			name:     "unknown field rejected",
+			url:      "/v1/seasons/2/players/1",
+			body:     `{"name":"X","nickname":"y"}`,
+			wantCode: http.StatusBadRequest,
+			wantBody: []string{"unknown key"},
+		},
+		{
+			name:     "empty name",
+			url:      "/v1/seasons/2/players/1",
+			body:     `{"name":""}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"name"},
+		},
+		{
+			name:     "name too long",
+			url:      "/v1/seasons/2/players/1",
+			body:     fmt.Sprintf(`{"name":"%s"}`, strings.Repeat("a", 201)),
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"name"},
+		},
+		{
+			name:     "zero favorite team",
+			url:      "/v1/seasons/2/players/1",
+			body:     `{"favorite_team_id":0}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"favorite_team_id"},
+		},
+		{
+			name:     "team must exist",
+			url:      "/v1/seasons/2/players/1",
+			body:     `{"favorite_team_id":999}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"favorite_team_id", "existing team"},
+		},
+		{
+			name:     "wrong season in URL",
+			url:      "/v1/seasons/1/players/1",
+			body:     `{"name":"X"}`,
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "unknown season in URL",
+			url:      "/v1/seasons/999/players/1",
+			body:     `{"name":"X"}`,
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "unknown player",
+			url:      "/v1/seasons/2/players/999",
+			body:     `{"name":"X"}`,
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "zero player id",
+			url:      "/v1/seasons/2/players/0",
+			body:     `{"name":"X"}`,
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "non-numeric player id",
+			url:      "/v1/seasons/2/players/abc",
+			body:     `{"name":"X"}`,
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "matching version header",
+			url:      "/v1/seasons/2/players/1",
+			headers:  map[string]string{"X-Expected-Version": "1"},
+			body:     `{"name":"Ioannis Bourousis"}`,
+			wantCode: http.StatusOK,
+			wantBody: []string{`"version": 2`},
+		},
+		{
+			name:     "stale version header",
+			url:      "/v1/seasons/2/players/1",
+			headers:  map[string]string{"X-Expected-Version": "9"},
+			body:     `{"name":"Ioannis Bourousis"}`,
+			wantCode: http.StatusConflict,
+			wantBody: []string{"edit conflict"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
+			app := newTestApplication()
+
+			var reader io.Reader
+			if tt.body != "" {
+				reader = strings.NewReader(tt.body)
+			}
+			req := httptest.NewRequest(http.MethodPatch, tt.url, reader)
+			for key, value := range tt.headers {
+				req.Header.Set(key, value)
+			}
+			rr := httptest.NewRecorder()
+			app.routes().ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantCode {
+				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
+			}
+			for _, fragment := range tt.wantBody {
+				if !strings.Contains(rr.Body.String(), fragment) {
+					t.Errorf("body missing %q (body: %s)", fragment, rr.Body.String())
+				}
+			}
+		})
+	}
+}

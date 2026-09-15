@@ -76,6 +76,10 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			// Race: the team was deleted between the check above and the insert.
+			v.AddError("favorite_team_id", "must reference an existing team")
+			app.failedValidationResponse(w, r, v.Errors)
 		default:
 			app.serverErrorResponse(w, r, err)
 			return
@@ -149,11 +153,15 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if r.Header.Get("X-Expected-Version") != "" {
-		if strconv.Itoa(player.Version) != r.Header.Get("X-Expected-Version") {
-			app.editConflictResponse(w, r)
-			return
-		}
+	if player.SeasonID != seasonId {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	expectedVersion := r.Header.Get("X-Expected-Version")
+	if expectedVersion != "" && strconv.Itoa(player.Version) != expectedVersion {
+		app.editConflictResponse(w, r)
+		return
 	}
 
 	var input struct {
@@ -167,7 +175,6 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	player.SeasonID = seasonId
 	if input.Name != nil {
 		player.Name = *input.Name
 	}
@@ -179,19 +186,6 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 
 	if game.ValidatePlayer(v, player); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
-		return
-	}
-
-	if _, err := app.Store.Seasons.Get(ctx, player.SeasonID); err != nil {
-		switch {
-		case errors.Is(err, context.Canceled):
-			return
-		case errors.Is(err, game.ErrRecordNotFound):
-			v.AddError("season_id", "must reference an existing season")
-			app.failedValidationResponse(w, r, v.Errors)
-		default:
-			app.serverErrorResponse(w, r, err)
-		}
 		return
 	}
 
@@ -215,6 +209,10 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 			return
 		case errors.Is(err, game.ErrEditConflict):
 			app.editConflictResponse(w, r)
+		case errors.Is(err, game.ErrRecordNotFound):
+			// Race: the team was deleted between the check above and the update.
+			v.AddError("favorite_team_id", "must reference an existing team")
+			app.failedValidationResponse(w, r, v.Errors)
 		default:
 			app.serverErrorResponse(w, r, err)
 		}

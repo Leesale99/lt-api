@@ -3,6 +3,7 @@ package game
 import (
 	"errors"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -20,6 +21,15 @@ var (
 	// meaning another request modified the row in the meantime.
 	ErrEditConflict = errors.New("edit conflict")
 )
+
+// fkViolation reports whether err is a PostgreSQL foreign-key violation
+// (23503; pgerrcode inlined to avoid a dependency, matching teams.go).
+// It lets the store collapse a violated reference into ErrRecordNotFound so
+// handlers can translate it into a validation error instead of a 500.
+func fkViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
+}
 
 // Store composes the per-entity stores. It is the single dependency the API
 // layer holds; swapping to Postgres changes the guts of each store, not the
