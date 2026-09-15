@@ -50,7 +50,7 @@ func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	headers := make(http.Header)
-	headers.Set("Location", fmt.Sprintf("/v1/season/%d", season.ID))
+	headers.Set("Location", fmt.Sprintf("/v1/seasons/%d", season.ID))
 
 	err = app.writeJSON(w, http.StatusCreated, envelope{"season": season}, headers)
 	if err != nil {
@@ -120,14 +120,14 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 		Status *string `json:"status"`
 	}
 
-	if input.Status != nil {
-		season.Status = *input.Status
-	}
-
 	err = app.readJSON(w, r, &input)
 	if err != nil {
 		app.badRequestResponse(w, r, err)
 		return
+	}
+
+	if input.Status != nil {
+		season.Status = strings.ToLower(*input.Status)
 	}
 
 	v := validator.New()
