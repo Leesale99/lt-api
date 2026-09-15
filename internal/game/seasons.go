@@ -72,3 +72,22 @@ func (s *SeasonStore) Insert(ctx context.Context, season Season) (Season, error)
 
 	return season, err
 }
+
+func (s *SeasonStore) Update(ctx context.Context, season Season) (Season, error) {
+	query := `
+		UPDATE seasons
+		SET status = $1, version = version + 1
+		WHERE id = $2 AND version = $3
+		RETURNING version
+	`
+	err := s.pool.QueryRow(ctx, query, season.Status, season.ID, season.Version).Scan(&season.Version)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Season{}, ErrEditConflict
+		}
+		return Season{}, err
+	}
+
+	return season, err
+}
