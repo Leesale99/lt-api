@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -34,21 +35,26 @@ type PlayerStore struct {
 }
 
 func (s *PlayerStore) GetAll(ctx context.Context, name string, favoriteTeamId int, filters Filters) ([]Player, Metadata, error) {
-	var where string
-	var args []any
-	switch {
-	case name != "" && favoriteTeamId != 0:
-		where = " WHERE name ILIKE $1 AND favorite_team_id = $2"
-		args = append(args, "%"+name+"%", favoriteTeamId)
-	case name != "" && favoriteTeamId == 0:
-		where = " WHERE name ILIKE $1"
+	// Each filter is appended as a separate predicate (AND-composed) so the
+	// planner can still use the per-column indexes — do not switch to a
+	// catch-all like `WHERE (name ILIKE $1 OR $1 = '')`, which defeats the
+	// trgm GIN index once the statement is cached (see ADR-006).
+	conds, args := []string{}, []any{}
+
+	if name != "" {
 		args = append(args, "%"+name+"%")
-	case name == "" && favoriteTeamId != 0:
-		where = " WHERE favorite_team_id = $1"
+		conds = append(conds, fmt.Sprintf("name ILIKE $%d", len(args)))
+	}
+	// favorite_team_id is never 0 in the schema (FK), so 0 doubles as the
+	// "no filter" sentinel from the query-string default.
+	if favoriteTeamId != 0 {
 		args = append(args, favoriteTeamId)
-	default:
-		where = ""
-		args = []any{}
+		conds = append(conds, fmt.Sprintf("favorite_team_id = $%d", len(args)))
+	}
+
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
 	}
 
 	query := fmt.Sprintf(`

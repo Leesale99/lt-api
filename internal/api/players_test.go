@@ -497,3 +497,147 @@ func TestDeletePlayerHandlerHappyPath(t *testing.T) {
 		t.Fatalf("player 1 still in the database after delete")
 	}
 }
+
+// secondPlayerSQL inserts a second fixture player for pagination cases
+// ('Nikola Milutinov' sorts after 'Sasha Vezenkov' either direction).
+const secondPlayerSQL = `
+	INSERT INTO players (season_id, favorite_team_id, name)
+	VALUES (2, 2, 'Nikola Milutinov');
+`
+
+// TestListPlayersHandler covers GET /v1/players: filter combinations
+// (name / favorite_team_id / both), sort + pagination, and the filter
+// validation errors. The fixture has a single player (id 1, 'Sasha
+// Vezenkov', season 2, favorite team 1); pagination cases insert a second
+// player inline since two rows are needed.
+func TestListPlayersHandler(t *testing.T) {
+	requireDB(t)
+
+	tests := []struct {
+		name     string
+		url      string
+		extraSQL string
+		wantCode int
+		wantBody []string
+	}{
+		{
+			name:     "unfiltered list",
+			url:      "/v1/players",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"name": "Sasha Vezenkov"`, `"total_records": 1`, `"last_page": 1`},
+		},
+		{
+			name:     "filter by name fragment (case-insensitive)",
+			url:      "/v1/players?name=sasha",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"name": "Sasha Vezenkov"`, `"total_records": 1`},
+		},
+		{
+			name:     "name filter matches nothing",
+			url:      "/v1/players?name=nowhere",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"players": []`, `"metadata": {}`},
+		},
+		{
+			name:     "filter by favorite team",
+			url:      "/v1/players?favorite_team_id=1",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"name": "Sasha Vezenkov"`, `"total_records": 1`},
+		},
+		{
+			name:     "favorite team filter matches nothing",
+			url:      "/v1/players?favorite_team_id=2",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"players": []`, `"metadata": {}`},
+		},
+		{
+			name:     "combined name and favorite team filters (both match)",
+			url:      "/v1/players?name=vezenkov&favorite_team_id=1",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"name": "Sasha Vezenkov"`, `"total_records": 1`},
+		},
+		{
+			name:     "combined filters (name matches, team does not)",
+			url:      "/v1/players?name=sasha&favorite_team_id=2",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"players": []`, `"metadata": {}`},
+		},
+		{
+			name:     "sorted by name descending, first page",
+			url:      "/v1/players?sort=-name&page_size=1",
+			extraSQL: secondPlayerSQL,
+			wantCode: http.StatusOK,
+			wantBody: []string{`"name": "Sasha Vezenkov"`, `"current_page": 1`, `"last_page": 2`},
+		},
+		{
+			name:     "second page",
+			url:      "/v1/players?sort=-name&page_size=1&page=2",
+			extraSQL: secondPlayerSQL,
+			wantCode: http.StatusOK,
+			wantBody: []string{`"name": "Nikola Milutinov"`, `"current_page": 2`},
+		},
+		{
+			// count(*) OVER() only materializes per returned row: an offset
+			// past all matching rows yields no rows, hence empty metadata.
+			name:     "page beyond the last",
+			url:      "/v1/players?page=99",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"players": []`, `"metadata": {}`},
+		},
+		{
+			name:     "page zero",
+			url:      "/v1/players?page=0",
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"page", "must be greater than zero"},
+		},
+		{
+			name:     "page_size zero",
+			url:      "/v1/players?page_size=0",
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"page_size", "must be greater than zero"},
+		},
+		{
+			name:     "page_size over the maximum",
+			url:      "/v1/players?page_size=101",
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"page_size", "must be a maximum of 100"},
+		},
+		{
+			name:     "page not a number",
+			url:      "/v1/players?page=abc",
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"page", "must be an integer value"},
+		},
+		{
+			name:     "sort not in the safelist",
+			url:      "/v1/players?sort=season_id",
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"sort", "invalid sort value"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
+			if tt.extraSQL != "" {
+				if _, err := testPool.Exec(context.Background(), tt.extraSQL); err != nil {
+					t.Fatalf("extra seed: %v", err)
+				}
+			}
+			app := newTestApplication()
+
+			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
+			rr := httptest.NewRecorder()
+			app.routes().ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantCode {
+				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
+			}
+			for _, fragment := range tt.wantBody {
+				if !strings.Contains(rr.Body.String(), fragment) {
+					t.Errorf("body missing %q (body: %s)", fragment, rr.Body.String())
+				}
+			}
+		})
+	}
+}
