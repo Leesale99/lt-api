@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -90,4 +91,30 @@ func (s *SeasonStore) Update(ctx context.Context, season Season) (Season, error)
 	}
 
 	return season, err
+}
+
+func (s *SeasonStore) Delete(ctx context.Context, id int) error {
+	if id < 1 {
+		return ErrRecordNotFound
+	}
+
+	query := `
+		DELETE FROM seasons
+		WHERE id = $1
+	`
+
+	result, err := s.pool.Exec(ctx, query, id)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
+			return ErrRecordInUse
+		}
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return ErrRecordNotFound
+	}
+
+	return nil
 }

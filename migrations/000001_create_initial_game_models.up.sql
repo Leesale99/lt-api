@@ -93,3 +93,16 @@ CREATE INDEX rounds_season_id_idx ON rounds (season_id);
 CREATE INDEX matches_round_id_idx ON matches (round_id);
 CREATE INDEX matches_home_team_id_idx ON matches (home_team_id);
 CREATE INDEX matches_away_team_id_idx ON matches (away_team_id);
+
+CREATE FUNCTION seasons_block_delete() RETURNS trigger AS $$
+BEGIN
+  IF OLD.status IN ('in_progress', 'closed') THEN
+    RAISE EXCEPTION 'season_status_blocks_delete'
+      USING ERRCODE = 'P0001'; 
+  END IF;
+  RETURN OLD;
+END $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER seasons_delete_gate
+  BEFORE DELETE ON seasons
+  FOR EACH ROW EXECUTE FUNCTION seasons_block_delete();

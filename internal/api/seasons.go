@@ -150,3 +150,34 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 
 	err = app.writeJSON(w, http.StatusOK, envelope{"season": season}, nil)
 }
+
+func (app *Application) deleteSeasonHandler(w http.ResponseWriter, r *http.Request) {
+	id, err := app.readIDParam(r)
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	err = app.Store.Seasons.Delete(ctx, id)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordInUse):
+			app.recordInUseResponse(w, r)
+		case errors.Is(err, game.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+
+	err = app.writeJSON(w, http.StatusOK, envelope{"message": "season successfully deleted"}, nil)
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
+	}
+}
