@@ -113,3 +113,20 @@ func (s *PlayerStore) Update(ctx context.Context, player Player) (Player, error)
 
 	return player, nil
 }
+
+func (s *PlayerStore) Delete(ctx context.Context, id int) error {
+	query := `
+		DELETE FROM players
+		WHERE id = $1
+	`
+	result, err := s.pool.Exec(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return ErrRecordNotFound
+	}
+
+	return nil
+}
