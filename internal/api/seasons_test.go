@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -278,5 +279,116 @@ func TestCreateSeasonHandlerLocation(t *testing.T) {
 	}
 	if got := rr.Header().Get("Location"); got != "/v1/seasons/3" {
 		t.Errorf("Location = %q, want %q", got, "/v1/seasons/3")
+	}
+}
+
+func TestDeleteSeasonHandler(t *testing.T) {
+	requireDB(t)
+
+	tests := []struct {
+		name     string
+		url      string
+		wantCode int
+		wantBody []string
+	}{
+		{
+			name:     "closed season is lifecycle-gated",
+			url:      "/v1/seasons/1",
+			wantCode: http.StatusConflict,
+			wantBody: []string{"referenced by other records"},
+		},
+		{
+			name:     "in_progress season is lifecycle-gated",
+			url:      "/v1/seasons/2",
+			wantCode: http.StatusConflict,
+			wantBody: []string{"referenced by other records"},
+		},
+		{
+			name:     "unknown season",
+			url:      "/v1/seasons/999",
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "zero id",
+			url:      "/v1/seasons/0",
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "non-numeric id",
+			url:      "/v1/seasons/abc",
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
+			app := newTestApplication()
+
+			req := httptest.NewRequest(http.MethodDelete, tt.url, nil)
+			rr := httptest.NewRecorder()
+			app.routes().ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantCode {
+				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
+			}
+			for _, fragment := range tt.wantBody {
+				if !strings.Contains(rr.Body.String(), fragment) {
+					t.Errorf("body missing %q (body: %s)", fragment, rr.Body.String())
+				}
+			}
+		})
+	}
+}
+
+// TestDeleteCreatedSeasonHandler covers the permitted path of ADR-007: a
+// 'created' season can be hard-deleted, the delete cascades to its rounds,
+// and the trigger does not interfere.
+func TestDeleteCreatedSeasonHandler(t *testing.T) {
+	requireDB(t)
+
+	reset(t)
+	app := newTestApplication()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/seasons",
+		strings.NewReader(`{"status":"created"}`))
+	rr := httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create: got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+	id := strings.TrimPrefix(rr.Header().Get("Location"), "/v1/seasons/")
+
+	// A round under the new season proves the cascade fires on delete.
+	if _, err := testPool.Exec(context.Background(),
+		`INSERT INTO rounds (season_id, number, status) VALUES ($1, 1, 'open')`, id); err != nil {
+		t.Fatalf("seed round: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/v1/seasons/"+id, nil)
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete: got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "successfully deleted") {
+		t.Errorf("body missing confirmation (body: %s)", rr.Body.String())
+	}
+
+	var seasons, rounds int
+	err := testPool.QueryRow(context.Background(),
+		`SELECT
+			(SELECT count(*) FROM seasons WHERE id = $1),
+			(SELECT count(*) FROM rounds WHERE season_id = $1)`, id).Scan(&seasons, &rounds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seasons != 0 || rounds != 0 {
+		t.Fatalf("season %s not fully deleted: %d season(s), %d round(s) remain", id, seasons, rounds)
 	}
 }
