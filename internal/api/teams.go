@@ -200,43 +200,19 @@ func (app *Application) deleteTeamHandler(w http.ResponseWriter, r *http.Request
 }
 
 func (app *Application) listTeamsHandler(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Name string
-		game.Filters
-	}
-
 	v := validator.New()
 
 	qs := r.URL.Query()
+	name := app.readString(qs, "name", "")
 
-	input.Name = app.readString(qs, "name", "")
-
-	input.Filters.Page = app.readInt(qs, "page", constants.DefaultPage, v)
-	input.Filters.PageSize = app.readInt(qs, "page_size", constants.DefaultPageSize, v)
-	input.Filters.Sort = app.readString(qs, "sort", "id")
-	input.Filters.SortSafelist = []string{"id", "name", "-id", "-name"}
-
-	if game.ValidateFilters(v, input.Filters); !v.Valid() {
-		app.failedValidationResponse(w, r, v.Errors)
+	filters, ok := app.readListFilters(w, r, qs, v, sortSafelistNameID)
+	if !ok {
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	teams, metadata, err := app.Store.Teams.GetAll(ctx, input.Name, input.Filters)
-	if err != nil {
-		switch {
-		case errors.Is(err, context.Canceled):
-			return
-		default:
-			app.serverErrorResponse(w, r, err)
-		}
-		return
-	}
-
-	err = app.writeJSON(w, http.StatusOK, envelope{"teams": teams, "metadata": metadata}, nil)
-	if err != nil {
-		app.serverErrorResponse(w, r, err)
-	}
+	teams, metadata, err := app.Store.Teams.GetAll(ctx, name, filters)
+	app.writeListResponse(w, r, "teams", teams, metadata, err)
 }
