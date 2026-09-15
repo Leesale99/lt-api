@@ -392,3 +392,108 @@ func TestDeleteCreatedSeasonHandler(t *testing.T) {
 		t.Fatalf("season %s not fully deleted: %d season(s), %d round(s) remain", id, seasons, rounds)
 	}
 }
+
+func TestListSeasonsHandler(t *testing.T) {
+	requireDB(t)
+
+	tests := []struct {
+		name     string
+		url      string
+		wantCode int
+		wantBody []string
+	}{
+		{
+			name:     "no filters",
+			url:      "/v1/seasons",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 2`, `"status": "closed"`, `"status": "in_progress"`},
+		},
+		{
+			name:     "filter by id",
+			url:      "/v1/seasons?id=2",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 1`, `"status": "in_progress"`, `"id": 2`},
+		},
+		{
+			name:     "filter by status",
+			url:      "/v1/seasons?status=closed",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 1`, `"status": "closed"`},
+		},
+		{
+			name:     "uppercase status filter is normalized",
+			url:      "/v1/seasons?status=IN_PROGRESS",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 1`, `"status": "in_progress"`},
+		},
+		{
+			name:     "combined id and status",
+			url:      "/v1/seasons?id=1&status=closed",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 1`, `"status": "closed"`},
+		},
+		{
+			name:     "combined id and status with no match",
+			url:      "/v1/seasons?id=1&status=open",
+			wantCode: http.StatusOK,
+			// zero Metadata is omitzero-dropped, so an empty page carries no total_records
+			wantBody: []string{`"seasons": []`},
+		},
+		{
+			name:     "id zero is no filter",
+			url:      "/v1/seasons?id=0",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 2`},
+		},
+		{
+			name:     "pagination honored",
+			url:      "/v1/seasons?page=2&page_size=1",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 2`, `"status": "in_progress"`, `"current_page": 2`},
+		},
+		{
+			name:     "descending sort",
+			url:      "/v1/seasons?sort=-id",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"status": "in_progress"`},
+		},
+		{
+			name:     "invalid status filter",
+			url:      "/v1/seasons?status=playoff",
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"status"},
+		},
+		{
+			name:     "name sort rejected by safelist",
+			url:      "/v1/seasons?sort=name",
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"sort", "invalid sort value"},
+		},
+		{
+			name:     "page zero",
+			url:      "/v1/seasons?page=0",
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"page", "must be greater than zero"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
+			app := newTestApplication()
+
+			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
+			rr := httptest.NewRecorder()
+			app.routes().ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantCode {
+				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
+			}
+			for _, fragment := range tt.wantBody {
+				if !strings.Contains(rr.Body.String(), fragment) {
+					t.Errorf("body missing %q (body: %s)", fragment, rr.Body.String())
+				}
+			}
+		})
+	}
+}

@@ -13,6 +13,29 @@ import (
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
+func (app *Application) listSeasonsHandler(w http.ResponseWriter, r *http.Request) {
+	v := validator.New()
+
+	qs := r.URL.Query()
+	id := app.readInt(qs, "id", 0, v)
+	status := strings.ToLower(app.readString(qs, "status", ""))
+
+	if status != "" {
+		game.ValidateSeasonStatus(v, status)
+	}
+
+	filters, ok := app.readListFilters(w, r, qs, v, sortSafelistID)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	seasons, metadata, err := app.Store.Seasons.GetAll(ctx, id, status, filters)
+	app.writeListResponse(w, r, "seasons", seasons, metadata, err)
+}
+
 func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Status string `json:"status"`

@@ -23,6 +23,10 @@ type envelope map[string]any
 // resources are sortable by id or name only.
 var sortSafelistNameID = []string{"id", "name", "-id", "-name"}
 
+// sortSafelistID is the sort safelist for list endpoints whose resources
+// have no name column (e.g. seasons).
+var sortSafelistID = []string{"id", "-id"}
+
 // readListFilters parses the standard list-endpoint query params (page,
 // page_size, sort) into game.Filters and validates them against the given
 // safelist. On validation failure it writes the 422 response itself and

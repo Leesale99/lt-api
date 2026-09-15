@@ -3,6 +3,7 @@ package game
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -25,6 +26,10 @@ func ValidateSeason(v *validator.Validator, season Season) {
 	status := strings.ToLower(season.Status)
 
 	v.Check(status != "", "status", "must be provided")
+	ValidateSeasonStatus(v, status)
+}
+
+func ValidateSeasonStatus(v *validator.Validator, status string) {
 	v.Check(validator.PermittedValue(status, seasonStatuses...), "status", "Must be one of: created, open, in_progress, closed")
 }
 
@@ -91,6 +96,67 @@ func (s *SeasonStore) Update(ctx context.Context, season Season) (Season, error)
 	}
 
 	return season, err
+}
+
+func (s *SeasonStore) GetAll(ctx context.Context, id int, status string, filters Filters) ([]Season, Metadata, error) {
+	conds, args := []string{}, []any{}
+
+	if id != 0 {
+		args = append(args, id)
+		conds = append(conds, fmt.Sprintf("id = $%d", len(args)))
+	}
+	if status != "" {
+		args = append(args, status)
+		conds = append(conds, fmt.Sprintf("status = $%d", len(args)))
+	}
+
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
+
+	query := fmt.Sprintf(`
+		SELECT count(*) OVER(), id, created_at, status, version
+		FROM seasons%s
+		ORDER BY %s %s, id ASC
+		LIMIT $%d OFFSET $%d
+	`, where, filters.sortColumn(), filters.sortDirection(), len(args)+1, len(args)+2)
+
+	args = append(args, filters.limit(), filters.offset())
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, Metadata{}, err
+	}
+
+	defer rows.Close()
+
+	totalRecords := 0
+	seasons := []Season{}
+
+	for rows.Next() {
+		var season Season
+		err := rows.Scan(
+			&totalRecords,
+			&season.ID,
+			&season.CreatedAt,
+			&season.Status,
+			&season.Version,
+		)
+		if err != nil {
+			return nil, Metadata{}, err
+		}
+
+		seasons = append(seasons, season)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, Metadata{}, err
+	}
+
+	metadata := calculateMetadata(totalRecords, filters.Page, filters.PageSize)
+
+	return seasons, metadata, nil
 }
 
 func (s *SeasonStore) Delete(ctx context.Context, id int) error {

@@ -16,6 +16,7 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodGet, "/v1/healthcheck", app.healthcheckHandler)
 
 	// Seasons
+	router.HandlerFunc(http.MethodGet, "/v1/seasons", app.listSeasonsHandler)
 	router.HandlerFunc(http.MethodGet, "/v1/seasons/:id", app.showSeasonHandler)
 	router.HandlerFunc(http.MethodPost, "/v1/seasons", app.createSeasonHandler)
 	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id", app.updateSeasonHandler)
