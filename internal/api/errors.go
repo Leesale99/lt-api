@@ -58,3 +58,8 @@ func (app *Application) recordInUseResponse(w http.ResponseWriter, r *http.Reque
 	message := "the record is referenced by other records and cannot be deleted"
 	app.writeError(w, r, http.StatusConflict, message)
 }
+
+func (app *Application) duplicateRecordResponse(w http.ResponseWriter, r *http.Request) {
+	message := "a record with these unique values already exists"
+	app.writeError(w, r, http.StatusConflict, message)
+}

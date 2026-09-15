@@ -23,8 +23,11 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id", app.deleteSeasonHandler)
 
 	// Rounds
+	router.HandlerFunc(http.MethodGet, "/v1/rounds", app.listRoundsHandler)
 	router.HandlerFunc(http.MethodGet, "/v1/rounds/:id", app.showRoundHandler)
 	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/rounds", app.createRoundHandler)
+	router.HandlerFunc(http.MethodPatch, "/v1/rounds/:id", app.updateRoundHandler)
+	router.HandlerFunc(http.MethodDelete, "/v1/rounds/:id", app.deleteRoundHandler)
 
 	// Matches
 	router.HandlerFunc(http.MethodGet, "/v1/matches/:id", app.showMatchHandler)

@@ -106,3 +106,16 @@ END $$ LANGUAGE plpgsql;
 CREATE TRIGGER seasons_delete_gate
   BEFORE DELETE ON seasons
   FOR EACH ROW EXECUTE FUNCTION seasons_block_delete();
+
+CREATE FUNCTION rounds_block_delete() RETURNS trigger AS $$
+BEGIN
+  IF OLD.status = 'closed' THEN
+    RAISE EXCEPTION 'round_status_blocks_delete'
+      USING ERRCODE = 'P0001';
+  END IF;
+  RETURN OLD;
+END $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER rounds_delete_gate
+  BEFORE DELETE ON rounds
+  FOR EACH ROW EXECUTE FUNCTION rounds_block_delete();

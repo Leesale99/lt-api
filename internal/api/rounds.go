@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"lt-api.aleksrdvn.com/internal/constants"
@@ -63,6 +64,9 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
+		case errors.Is(err, game.ErrDuplicateRecord):
+			app.duplicateRecordResponse(w, r)
+			return
 		default:
 			app.serverErrorResponse(w, r, err)
 			return
@@ -102,6 +106,136 @@ func (app *Application) showRoundHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	err = app.writeJSON(w, http.StatusOK, envelope{"round": round}, nil)
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
+	}
+}
+
+func (app *Application) listRoundsHandler(w http.ResponseWriter, r *http.Request) {
+	v := validator.New()
+
+	qs := r.URL.Query()
+	seasonID := app.readInt(qs, "season_id", 0, v)
+	status := strings.ToLower(app.readString(qs, "status", ""))
+
+	if status != "" {
+		game.ValidateRoundStatus(v, status)
+	}
+
+	sortSafelist := []string{"id", "number", "-id", "-number"}
+	filters, ok := app.readListFilters(w, r, qs, v, sortSafelist)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	rounds, metadata, err := app.Store.Rounds.GetAll(ctx, seasonID, status, filters)
+	app.writeListResponse(w, r, "rounds", rounds, metadata, err)
+}
+
+func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Request) {
+	id, err := app.readIDParam(r)
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	round, err := app.Store.Rounds.Get(ctx, id)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+
+	expectedVersion := r.Header.Get("X-Expected-Version")
+	if expectedVersion != "" && strconv.Itoa(round.Version) != expectedVersion {
+		app.editConflictResponse(w, r)
+		return
+	}
+
+	// season_id is not part of the input: it is immutable after creation
+	// (see RoundStore.Update for the composite-FK reason).
+	var input struct {
+		Number *int    `json:"number"`
+		Status *string `json:"status"`
+	}
+
+	err = app.readJSON(w, r, &input)
+	if err != nil {
+		app.badRequestResponse(w, r, err)
+		return
+	}
+
+	if input.Number != nil {
+		round.Number = *input.Number
+	}
+	if input.Status != nil {
+		round.Status = strings.ToLower(*input.Status)
+	}
+
+	v := validator.New()
+
+	if game.ValidateRound(v, round); !v.Valid() {
+		app.failedValidationResponse(w, r, v.Errors)
+		return
+	}
+
+	round, err = app.Store.Rounds.Update(ctx, round)
+	if err != nil {
+		switch {
+		case errors.Is(err, game.ErrEditConflict):
+			app.editConflictResponse(w, r)
+		case errors.Is(err, game.ErrDuplicateRecord):
+			app.duplicateRecordResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+
+	err = app.writeJSON(w, http.StatusOK, envelope{"round": round}, nil)
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
+	}
+}
+
+func (app *Application) deleteRoundHandler(w http.ResponseWriter, r *http.Request) {
+	id, err := app.readIDParam(r)
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	err = app.Store.Rounds.Delete(ctx, id)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordInUse):
+			app.recordInUseResponse(w, r)
+		case errors.Is(err, game.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+
+	err = app.writeJSON(w, http.StatusOK, envelope{"message": "round successfully deleted"}, nil)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}

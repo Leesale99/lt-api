@@ -20,6 +20,11 @@ var (
 	// version has changed since it was read (optimistic concurrency check),
 	// meaning another request modified the row in the meantime.
 	ErrEditConflict = errors.New("edit conflict")
+
+	// ErrDuplicateRecord is returned by store write methods when the insert or
+	// update violates a unique constraint (23505), e.g. a round number that
+	// already exists in the season.
+	ErrDuplicateRecord = errors.New("duplicate record")
 )
 
 // fkViolation reports whether err is a PostgreSQL foreign-key violation
@@ -29,6 +34,15 @@ var (
 func fkViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23503"
+}
+
+// uniqueViolation reports whether err is a PostgreSQL unique-constraint
+// violation (23505; pgerrcode inlined to avoid a dependency, matching
+// fkViolation). It lets stores collapse a uniqueness clash into
+// ErrDuplicateRecord so handlers can translate it into a 409.
+func uniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 // Store composes the per-entity stores. It is the single dependency the API
