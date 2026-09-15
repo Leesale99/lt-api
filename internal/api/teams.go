@@ -211,8 +211,8 @@ func (app *Application) listTeamsHandler(w http.ResponseWriter, r *http.Request)
 
 	input.Name = app.readString(qs, "name", "")
 
-	input.Filters.Page = app.readInt(qs, "page", 1, v)
-	input.Filters.PageSize = app.readInt(qs, "page_size", 20, v)
+	input.Filters.Page = app.readInt(qs, "page", constants.DefaultPage, v)
+	input.Filters.PageSize = app.readInt(qs, "page_size", constants.DefaultPageSize, v)
 	input.Filters.Sort = app.readString(qs, "sort", "id")
 	input.Filters.SortSafelist = []string{"id", "name", "-id", "-name"}
 

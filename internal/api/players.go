@@ -259,3 +259,47 @@ func (app *Application) deletePlayerHandler(w http.ResponseWriter, r *http.Reque
 		app.serverErrorResponse(w, r, err)
 	}
 }
+
+func (app *Application) listPlayersHandler(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Name           string
+		FavoriteTeamID int
+		game.Filters
+	}
+
+	v := validator.New()
+
+	qs := r.URL.Query()
+
+	input.Name = app.readString(qs, "name", "")
+	input.FavoriteTeamID = app.readInt(qs, "favorite_team_id", 0, v)
+
+	input.Filters.Page = app.readInt(qs, "page", constants.DefaultPage, v)
+	input.Filters.PageSize = app.readInt(qs, "page_size", constants.DefaultPageSize, v)
+	input.Sort = app.readString(qs, "sort", "id")
+	input.SortSafelist = []string{"id", "name", "-id", "-name"}
+
+	if game.ValidateFilters(v, input.Filters); !v.Valid() {
+		app.failedValidationResponse(w, r, v.Errors)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	players, metadata, err := app.Store.Players.GetAll(ctx, input.Name, input.FavoriteTeamID, input.Filters)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+
+	err = app.writeJSON(w, http.StatusOK, envelope{"players": players, "metadata": metadata}, nil)
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
+	}
+}

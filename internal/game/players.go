@@ -3,6 +3,7 @@ package game
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -30,6 +31,71 @@ func ValidatePlayer(v *validator.Validator, player Player) {
 
 type PlayerStore struct {
 	pool *pgxpool.Pool
+}
+
+func (s *PlayerStore) GetAll(ctx context.Context, name string, favoriteTeamId int, filters Filters) ([]Player, Metadata, error) {
+	var where string
+	var args []any
+	switch {
+	case name != "" && favoriteTeamId != 0:
+		where = " WHERE name ILIKE $1 AND favorite_team_id = $2"
+		args = append(args, "%"+name+"%", favoriteTeamId)
+	case name != "" && favoriteTeamId == 0:
+		where = " WHERE name ILIKE $1"
+		args = append(args, "%"+name+"%")
+	case name == "" && favoriteTeamId != 0:
+		where = " WHERE favorite_team_id = $1"
+		args = append(args, favoriteTeamId)
+	default:
+		where = ""
+		args = []any{}
+	}
+
+	query := fmt.Sprintf(`
+		SELECT count(*) OVER(), id, created_at, name, season_id, favorite_team_id, version
+		FROM players%s
+		ORDER BY %s %s, id ASC
+		LIMIT $%d OFFSET $%d
+	`, where, filters.sortColumn(), filters.sortDirection(), len(args)+1, len(args)+2)
+
+	args = append(args, filters.limit(), filters.offset())
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, Metadata{}, err
+	}
+
+	defer rows.Close()
+
+	totalRecords := 0
+	players := []Player{}
+
+	for rows.Next() {
+		player := Player{}
+
+		err := rows.Scan(
+			&totalRecords,
+			&player.ID,
+			&player.CreatedAt,
+			&player.Name,
+			&player.SeasonID,
+			&player.FavoriteTeamID,
+			&player.Version,
+		)
+		if err != nil {
+			return nil, Metadata{}, err
+		}
+
+		players = append(players, player)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, Metadata{}, err
+	}
+
+	metadata := calculateMetadata(totalRecords, filters.Page, filters.PageSize)
+
+	return players, metadata, nil
 }
 
 func (s *PlayerStore) Get(ctx context.Context, id int) (Player, error) {
