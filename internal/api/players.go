@@ -241,7 +241,7 @@ func (app *Application) deletePlayerHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	player, err := app.Store.Players.Get(ctx, playerId)
+	err = app.Store.Players.Delete(ctx, playerId, seasonId)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -254,25 +254,7 @@ func (app *Application) deletePlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if player.SeasonID != seasonId {
-		app.notFoundResponse(w, r)
-		return
-	}
-
-	err = app.Store.Players.Delete(ctx, playerId)
-	if err != nil {
-		switch {
-		case errors.Is(err, context.Canceled):
-			return
-		case errors.Is(err, game.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
-		default:
-			app.serverErrorResponse(w, r, err)
-		}
-		return
-	}
-
-	err = app.writeJSON(w, http.StatusOK, envelope{"message": "player sucessfully deleted"}, nil)
+	err = app.writeJSON(w, http.StatusOK, envelope{"message": "player successfully deleted"}, nil)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}

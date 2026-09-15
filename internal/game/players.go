@@ -114,12 +114,12 @@ func (s *PlayerStore) Update(ctx context.Context, player Player) (Player, error)
 	return player, nil
 }
 
-func (s *PlayerStore) Delete(ctx context.Context, id int) error {
+func (s *PlayerStore) Delete(ctx context.Context, id, seasonId int) error {
 	query := `
 		DELETE FROM players
-		WHERE id = $1
+		WHERE id = $1 AND season_id = $2
 	`
-	result, err := s.pool.Exec(ctx, query, id)
+	result, err := s.pool.Exec(ctx, query, id, seasonId)
 	if err != nil {
 		return err
 	}

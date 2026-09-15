@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -387,5 +388,112 @@ func TestUpdatePlayerHandler(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDeletePlayerHandler(t *testing.T) {
+	requireDB(t)
+
+	tests := []struct {
+		name     string
+		url      string
+		wantCode int
+		wantBody []string
+	}{
+		{
+			// player 1 lives in season 2 — deleting under season 1 must 404
+			// (season scoping is inside the DELETE's WHERE clause) and leave
+			// the row in place.
+			name:     "player in another season",
+			url:      "/v1/seasons/1/players/1",
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "unknown player",
+			url:      "/v1/seasons/2/players/999",
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "zero player id",
+			url:      "/v1/seasons/2/players/0",
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "non-numeric player id",
+			url:      "/v1/seasons/2/players/abc",
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "zero season id",
+			url:      "/v1/seasons/0/players/1",
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
+			app := newTestApplication()
+
+			req := httptest.NewRequest(http.MethodDelete, tt.url, nil)
+			rr := httptest.NewRecorder()
+			app.routes().ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantCode {
+				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
+			}
+			for _, fragment := range tt.wantBody {
+				if !strings.Contains(rr.Body.String(), fragment) {
+					t.Errorf("body missing %q (body: %s)", fragment, rr.Body.String())
+				}
+			}
+
+			// Nothing in the error matrix may ever delete the fixture player.
+			var n int
+			err := testPool.QueryRow(context.Background(),
+				`SELECT count(*) FROM players WHERE id = 1`).Scan(&n)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != 1 {
+				t.Fatalf("fixture player 1 missing after failed delete")
+			}
+		})
+	}
+}
+
+// TestDeletePlayerHandlerHappyPath covers the success case: the fixture
+// player is unreferenced, so the delete must 200 and the row must be gone
+// afterwards.
+func TestDeletePlayerHandlerHappyPath(t *testing.T) {
+	requireDB(t)
+
+	reset(t)
+	app := newTestApplication()
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/seasons/2/players/1", nil)
+	rr := httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "successfully deleted") {
+		t.Errorf("body missing confirmation (body: %s)", rr.Body.String())
+	}
+
+	var n int
+	err := testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM players WHERE id = 1`).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("player 1 still in the database after delete")
 	}
 }
