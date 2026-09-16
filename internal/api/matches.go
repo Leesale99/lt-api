@@ -164,6 +164,31 @@ func (app *Application) showMatchHandler(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+func (app *Application) listMatchHandler(w http.ResponseWriter, r *http.Request) {
+	v := validator.New()
+
+	qs := r.URL.Query()
+	seasonID := app.readInt(qs, "season_id", 0, v)
+	roundID := app.readInt(qs, "round_id", 0, v)
+	status := strings.ToLower(app.readString(qs, "status", ""))
+
+	if status != "" {
+		game.ValidateMatchStatus(v, status)
+	}
+
+	sortSafelist := []string{"id", "starts_at", "-id", "-starts_at"}
+	filters, ok := app.readListFilters(w, r, qs, v, sortSafelist)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	matches, metadata, err := app.Store.Matches.GetAll(ctx, seasonID, roundID, status, filters)
+	app.writeListResponse(w, r, "matches", matches, metadata, err)
+}
+
 func (app *Application) deleteMatchHandler(w http.ResponseWriter, r *http.Request) {
 	seasonID, err := app.readIDParam(r)
 	if err != nil {

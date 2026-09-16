@@ -337,3 +337,138 @@ func TestDeleteMatchRemovesRow(t *testing.T) {
 		t.Fatalf("match 1 still exists after delete")
 	}
 }
+
+func TestListMatchesHandler(t *testing.T) {
+	requireDB(t)
+
+	tests := []struct {
+		name     string
+		url      string
+		wantCode int
+		wantBody []string
+	}{
+		{
+			name:     "no filters",
+			url:      "/v1/matches",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 2`, `"round_id": 1`},
+		},
+		{
+			name:     "filter by season_id",
+			url:      "/v1/matches?season_id=1",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 2`, `"season_id": 1`},
+		},
+		{
+			name:     "filter by season_id no match",
+			url:      "/v1/matches?season_id=2",
+			wantCode: http.StatusOK,
+			// zero Metadata is omitzero-dropped, so an empty page carries no total_records
+			wantBody: []string{`"matches": []`},
+		},
+		{
+			name:     "season_id zero is no filter",
+			url:      "/v1/matches?season_id=0",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 2`},
+		},
+		{
+			name:     "filter by round_id",
+			url:      "/v1/matches?round_id=1",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 2`},
+		},
+		{
+			name:     "filter by round_id no match",
+			url:      "/v1/matches?round_id=2",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"matches": []`},
+		},
+		{
+			name:     "filter by status open",
+			url:      "/v1/matches?status=open",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 1`, `"status": "open"`},
+		},
+		{
+			name:     "filter by status closed",
+			url:      "/v1/matches?status=closed",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 1`, `"status": "closed"`, `"score"`},
+		},
+		{
+			name:     "filter by status no match",
+			url:      "/v1/matches?status=postponed",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"matches": []`},
+		},
+		{
+			name:     "uppercase status filter is normalized",
+			url:      "/v1/matches?status=CLOSED",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 1`},
+		},
+		{
+			name:     "combined season_id, round_id and status",
+			url:      "/v1/matches?season_id=1&round_id=1&status=open",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 1`, `"status": "open"`},
+		},
+		{
+			name:     "combined filters with no match",
+			url:      "/v1/matches?season_id=2&round_id=1",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"matches": []`},
+		},
+		{
+			name:     "invalid status filter",
+			url:      "/v1/matches?status=finishing",
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"status"},
+		},
+		{
+			name:     "sort by starts_at ascending returns the earlier match first",
+			url:      "/v1/matches?page_size=1&sort=starts_at",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 2`, `"status": "closed"`},
+		},
+		{
+			name:     "sort by starts_at descending returns the later match first",
+			url:      "/v1/matches?page_size=1&sort=-starts_at",
+			wantCode: http.StatusOK,
+			wantBody: []string{`"total_records": 2`, `"status": "open"`},
+		},
+		{
+			name:     "sort rejected by safelist",
+			url:      "/v1/matches?sort=round_id",
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"sort", "invalid sort value"},
+		},
+		{
+			name:     "page zero",
+			url:      "/v1/matches?page=0",
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"page", "must be greater than zero"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
+			app := newTestApplication()
+
+			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
+			rr := httptest.NewRecorder()
+			app.routes().ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantCode {
+				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
+			}
+			for _, fragment := range tt.wantBody {
+				if !strings.Contains(rr.Body.String(), fragment) {
+					t.Errorf("body missing %q (body: %s)", fragment, rr.Body.String())
+				}
+			}
+		})
+	}
+}

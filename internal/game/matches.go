@@ -3,6 +3,8 @@ package game
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -48,6 +50,10 @@ func (m Match) Winner() *int {
 }
 
 var matchStatuses = []string{"created", "open", "in_progress", "postponed", "closed"}
+
+func ValidateMatchStatus(v *validator.Validator, status string) {
+	v.Check(validator.PermittedValue(status, matchStatuses...), "status", "must be one of: created, open, in_progress, postponed, closed")
+}
 
 // validateMatchShape checks the time-independent invariants of a match:
 // required fields, allowed statuses, the status/score matrix and the odds
@@ -181,6 +187,82 @@ func (s *MatchStore) Insert(ctx context.Context, match Match) (Match, error) {
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&match.ID, &match.CreatedAt, &match.Version)
 
 	return match, err
+}
+
+func (s *MatchStore) GetAll(ctx context.Context, seasonID, roundID int, status string, filters Filters) ([]Match, Metadata, error) {
+	// Optional filters are composed in Go rather than OR-ed into a cached
+	// statement: [[ADR-006 - Conditional WHERE for optional filters (never OR $1 = '')]].
+	conds, args := []string{}, []any{}
+
+	if seasonID != 0 {
+		args = append(args, seasonID)
+		conds = append(conds, fmt.Sprintf("season_id = $%d", len(args)))
+	}
+	if roundID != 0 {
+		args = append(args, roundID)
+		conds = append(conds, fmt.Sprintf("round_id = $%d", len(args)))
+	}
+	if status != "" {
+		args = append(args, status)
+		conds = append(conds, fmt.Sprintf("status = $%d", len(args)))
+	}
+
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
+
+	query := fmt.Sprintf(`
+		SELECT count(*) OVER(), id, created_at, starts_at, season_id, round_id, home_team_id, away_team_id, status, home_odds, away_odds, home_score, away_score, version
+		FROM matches%s
+		ORDER BY %s %s, id ASC
+		LIMIT $%d OFFSET $%d
+	`, where, filters.sortColumn(), filters.sortDirection(), len(args)+1, len(args)+2)
+
+	args = append(args, filters.limit(), filters.offset())
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, Metadata{}, err
+	}
+
+	defer rows.Close()
+
+	totalRecords := 0
+	matches := []Match{}
+
+	for rows.Next() {
+		var match Match
+		err := rows.Scan(
+			&totalRecords,
+			&match.ID,
+			&match.CreatedAt,
+			&match.StartsAt,
+			&match.SeasonID,
+			&match.RoundID,
+			&match.HomeTeamID,
+			&match.AwayTeamID,
+			&match.Status,
+			&match.Odds.Home,
+			&match.Odds.Away,
+			&match.Score.Home,
+			&match.Score.Away,
+			&match.Version,
+		)
+		if err != nil {
+			return nil, Metadata{}, err
+		}
+
+		matches = append(matches, match)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, Metadata{}, err
+	}
+
+	metadata := calculateMetadata(totalRecords, filters.Page, filters.PageSize)
+
+	return matches, metadata, nil
 }
 
 func (s *MatchStore) Delete(ctx context.Context, id, seasonID int) error {
