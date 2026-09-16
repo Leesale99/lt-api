@@ -55,7 +55,7 @@ CREATE TABLE matches (
   away_score smallint
     CONSTRAINT matches_away_score_check CHECK (away_score IS NULL OR away_score >= 0),
   status text NOT NULL DEFAULT 'created'
-    CONSTRAINT matches_status_check CHECK (status IN ('created', 'open', 'in_progress', 'postponed', 'closed')),
+    CONSTRAINT matches_status_check CHECK (status IN ('created', 'in_progress', 'postponed', 'closed')),
   version integer NOT NULL DEFAULT 1,
 
   -- multi-column constraints
@@ -63,7 +63,7 @@ CREATE TABLE matches (
   CONSTRAINT matches_teams_differ_check CHECK (home_team_id <> away_team_id),
  CONSTRAINT matches_status_score_check CHECK (
     (status IN ('in_progress', 'closed') AND home_score IS NOT NULL)
-    OR (status IN ('created', 'open', 'postponed') AND home_score IS NULL)
+    OR (status IN ('created', 'postponed') AND home_score IS NULL)
   ),
   CONSTRAINT matches_score_complete_check CHECK ((home_score IS NULL) = (away_score IS NULL))
 );
@@ -100,10 +100,80 @@ CREATE INDEX matches_round_id_idx ON matches (round_id);
 CREATE INDEX matches_home_team_id_idx ON matches (home_team_id);
 CREATE INDEX matches_away_team_id_idx ON matches (away_team_id);
 
+-- Freeze rule (ADR-008): once any match has started, nothing in the
+-- hierarchy regresses. "Started" is the time fact already stored on the
+-- match (starts_at <= now()) — no new state, no writer, the DB is
+-- authoritative. Every gate raises P0001; stores map it to ErrRecordInUse,
+-- handlers to 409. App-side stage-order validation stays as advisory UX.
+
+-- Shared fact-checkers, so the per-table gates cannot drift apart.
+CREATE FUNCTION round_has_started_match(rid bigint) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM matches m
+    WHERE m.round_id = rid AND m.starts_at <= now()
+  )
+$$;
+
+CREATE FUNCTION season_has_started_match(sid bigint) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  -- matches carries a denormalized season_id (composite FK to rounds), so
+  -- the whole season is one indexed lookup — no round join needed.
+  SELECT EXISTS (
+    SELECT 1 FROM matches m
+    WHERE m.season_id = sid AND m.starts_at <= now()
+  )
+$$;
+
+CREATE FUNCTION matches_block_started_regression() RETURNS trigger AS $$
+BEGIN
+  -- A started match cannot return to created and cannot be postponed
+  -- (postponement is the only status that could move time backwards).
+  -- Keyed on OLD.starts_at: moving starts_at forward in the same statement
+  -- cannot un-start a match.
+  IF NEW.status IN ('created', 'postponed') AND OLD.starts_at <= now() THEN
+    RAISE EXCEPTION 'started_match_blocks_status_regression'
+      USING ERRCODE = 'P0001';
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER matches_freeze_gate
+  BEFORE UPDATE ON matches
+  FOR EACH ROW EXECUTE FUNCTION matches_block_started_regression();
+
+CREATE FUNCTION rounds_block_started_regression() RETURNS trigger AS $$
+BEGIN
+  IF NEW.status IN ('created', 'open') AND round_has_started_match(OLD.id) THEN
+    RAISE EXCEPTION 'started_match_blocks_round_regression'
+      USING ERRCODE = 'P0001';
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER rounds_freeze_gate
+  BEFORE UPDATE ON rounds
+  FOR EACH ROW EXECUTE FUNCTION rounds_block_started_regression();
+
+CREATE FUNCTION seasons_block_started_regression() RETURNS trigger AS $$
+BEGIN
+  IF NEW.status IN ('created', 'open') AND season_has_started_match(OLD.id) THEN
+    RAISE EXCEPTION 'started_match_blocks_season_regression'
+      USING ERRCODE = 'P0001';
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER seasons_freeze_gate
+  BEFORE UPDATE ON seasons
+  FOR EACH ROW EXECUTE FUNCTION seasons_block_started_regression();
+
 CREATE FUNCTION seasons_block_delete() RETURNS trigger AS $$
 BEGIN
-  IF OLD.status IN ('in_progress', 'closed') THEN
-    RAISE EXCEPTION 'season_status_blocks_delete'
+  -- ADR-008 extension of ADR-007: an open season with match history is
+  -- durable too — deleting it would cascade away started matches.
+  IF OLD.status IN ('in_progress', 'closed') OR season_has_started_match(OLD.id) THEN
+    RAISE EXCEPTION 'season_lifecycle_blocks_delete'
       USING ERRCODE = 'P0001'; 
   END IF;
   RETURN OLD;

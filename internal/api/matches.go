@@ -340,6 +340,10 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 			return
 		case errors.Is(err, game.ErrEditConflict):
 			app.editConflictResponse(w, r)
+		case errors.Is(err, game.ErrRecordInUse):
+			// matches_freeze_gate: the match has started and the update tried
+			// to regress it (ADR-008).
+			app.recordFrozenResponse(w, r)
 		case errors.Is(err, game.ErrRecordNotFound):
 			// Race: a referenced team was deleted between the checks above
 			// and the update.

@@ -49,10 +49,10 @@ func (m Match) Winner() *int {
 	}
 }
 
-var matchStatuses = []string{"created", "open", "in_progress", "postponed", "closed"}
+var matchStatuses = []string{"created", "in_progress", "postponed", "closed"}
 
 func ValidateMatchStatus(v *validator.Validator, status string) {
-	v.Check(validator.PermittedValue(status, matchStatuses...), "status", "must be one of: created, open, in_progress, postponed, closed")
+	v.Check(validator.PermittedValue(status, matchStatuses...), "status", "must be one of: created, in_progress, postponed, closed")
 }
 
 // validateMatchShape checks the time-independent invariants of a match:
@@ -66,7 +66,7 @@ func validateMatchShape(v *validator.Validator, match Match) {
 	v.Check(match.AwayTeamID > 0, "away_team_id", "must be provided")
 	v.Check(match.HomeTeamID != match.AwayTeamID, "home_team_id", "home and away team cannot be the same")
 	v.Check(match.Status != "", "status", "must be provided")
-	v.Check(validator.PermittedValue(match.Status, matchStatuses...), "status", "must be one of: created, open, in_progress, postponed, closed")
+	v.Check(validator.PermittedValue(match.Status, matchStatuses...), "status", "must be one of: created, in_progress, postponed, closed")
 	v.Check(!match.StartsAt.IsZero(), "starts_at", "must be provided")
 	bothNil := match.Score.Home == nil && match.Score.Away == nil
 	bothSet := match.Score.Home != nil && match.Score.Away != nil
@@ -75,7 +75,7 @@ func validateMatchShape(v *validator.Validator, match Match) {
 	switch {
 	case match.Status == "in_progress" || match.Status == "closed":
 		v.Check(match.Score.Home != nil, "score", "must be provided when the match is in progress or closed")
-	default: // created, open, postponed
+	default: // created, postponed
 		v.Check(match.Score.Home == nil, "score", "must not be set before the match is in progress or closed")
 	}
 	v.Check(match.Odds.Home > 1 && match.Odds.Away > 1, "odds", "must both be greater than one")
@@ -91,34 +91,32 @@ func ValidateNewMatch(v *validator.Validator, match Match, now time.Time) {
 }
 
 // matchStatusRank orders the statuses along their lifecycle so that backward
-// transitions can be rejected. open and postponed share a rank: a match may
-// move between them freely in either direction. closed sits at the top and is
-// terminal, which the >= rank rule already enforces.
+// transitions can be rejected. created and postponed share a rank: both are
+// pre-start states, and a match may move between them freely — but only
+// while it has not started. Whether the match has started is a time fact
+// the validators cannot see, so "postponed only before start" is enforced
+// by the matches_freeze_gate trigger (ADR-008); this rank rule merely keeps
+// the pre-start states above in_progress and closed.
 var matchStatusRank = map[string]int{
 	"created":     0,
-	"open":        1,
-	"postponed":   1,
-	"in_progress": 2,
-	"closed":      3,
+	"postponed":   0,
+	"in_progress": 1,
+	"closed":      2,
 }
 
 // ValidateMatchUpdate validates a match about to be updated (new) against the
 // currently stored version (old). Unlike creation, starts_at may be in the
 // past — an existing match keeps being editable after it has started — but
 // status must never move backwards along the lifecycle, and a closed match is
-// terminal.
+// terminal. The time-sensitive half of the freeze rule (no postponed after
+// start) lives in the DB gate, keyed on the stored starts_at.
 func ValidateMatchUpdate(v *validator.Validator, old, new Match) {
 	validateMatchShape(v, new)
 
 	// The old status comes from the database and is trusted; the new one has
 	// already been shape-checked above.
-	oldRank, oldOK := matchStatusRank[old.Status]
-	newRank, newOK := matchStatusRank[new.Status]
-	if !oldOK || !newOK {
-		return
-	}
 	v.Check(old.Status != "closed" || new.Status == "closed", "status", "cannot be changed after the match is closed")
-	v.Check(newRank >= oldRank, "status", "cannot move to an earlier stage of the match lifecycle")
+	checkStatusRegression(v, "match", old.Status, new.Status, matchStatusRank)
 }
 
 type MatchStore struct {
@@ -313,6 +311,10 @@ func (s *MatchStore) Update(ctx context.Context, match Match) (Match, error) {
 			// check and this write (season and round are not updatable, so
 			// they cannot trigger the FK here).
 			return Match{}, ErrRecordNotFound
+		case triggerViolation(err):
+			// matches_freeze_gate: the match has started and the update tried
+			// to regress it to created/postponed (ADR-008).
+			return Match{}, ErrRecordInUse
 		default:
 			return Match{}, err
 		}

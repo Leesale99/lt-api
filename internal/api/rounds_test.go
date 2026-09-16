@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -196,6 +197,15 @@ func TestUpdateRoundHandler(t *testing.T) {
 			body:     `{"status":"CLOSED"}`,
 			wantCode: http.StatusOK,
 			wantBody: []string{`"status": "closed"`},
+		},
+		{
+			name: "regressing the lifecycle is rejected",
+			// Advisory check (rounds_freeze_gate backs it up in the DB):
+			// round 1 hosts the canonical started match.
+			url:      "/v1/seasons/1/rounds/1",
+			body:     `{"status":"created"}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"status", "earlier stage of the round lifecycle"},
 		},
 		{
 			name:     "empty body",
@@ -613,5 +623,110 @@ func TestCreateRoundDuplicateNumber(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "unique values") {
 		t.Errorf("body missing duplicate message (body: %s)", rr.Body.String())
+	}
+}
+
+// TestOpenRoundStartsSeason covers ADR-008 point 3: flipping a round
+// created → open flips its season open → in_progress in the same
+// transaction. The fixture has no open season, so the test creates its own
+// (a fresh season's status flips do not run into the advisory checks).
+func TestOpenRoundStartsSeason(t *testing.T) {
+	requireDB(t)
+
+	reset(t)
+	app := newTestApplication()
+
+	// An open season.
+	req := httptest.NewRequest(http.MethodPost, "/v1/seasons", strings.NewReader(`{"status":"open"}`))
+	rr := httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create season: got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+	seasonID := strings.TrimPrefix(rr.Header().Get("Location"), "/v1/seasons/")
+
+	// A created round under it.
+	req = httptest.NewRequest(http.MethodPost, "/v1/seasons/"+seasonID+"/rounds",
+		strings.NewReader(`{"number":1,"status":"created"}`))
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create round: got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+	roundID := strings.TrimPrefix(rr.Header().Get("Location"), fmt.Sprintf("/v1/seasons/%s/rounds/", seasonID))
+
+	// Open the round: the season must flip in the same transaction.
+	req = httptest.NewRequest(http.MethodPatch, "/v1/seasons/"+seasonID+"/rounds/"+roundID,
+		strings.NewReader(`{"status":"open"}`))
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("open round: got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	var seasonStatus string
+	var seasonVersion int
+	err := testPool.QueryRow(context.Background(),
+		`SELECT status, version FROM seasons WHERE id = $1`, seasonID).Scan(&seasonStatus, &seasonVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seasonStatus != "in_progress" || seasonVersion != 2 {
+		t.Fatalf("season not flipped: status=%q version=%d, want in_progress/2", seasonStatus, seasonVersion)
+	}
+}
+
+// TestOpenRoundSeasonFlipIsIdempotent asserts the season flip is conditional:
+// an open round updated again (open → open no-op) does not touch the season
+// a second time.
+func TestOpenRoundSeasonFlipIsIdempotent(t *testing.T) {
+	requireDB(t)
+
+	reset(t)
+	app := newTestApplication()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/seasons", strings.NewReader(`{"status":"open"}`))
+	rr := httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create season: got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+	seasonID := strings.TrimPrefix(rr.Header().Get("Location"), "/v1/seasons/")
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/seasons/"+seasonID+"/rounds",
+		strings.NewReader(`{"number":1,"status":"created"}`))
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create round: got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+	roundID := strings.TrimPrefix(rr.Header().Get("Location"), fmt.Sprintf("/v1/seasons/%s/rounds/", seasonID))
+
+	// First PATCH: created → open, flips the season.
+	req = httptest.NewRequest(http.MethodPatch, "/v1/seasons/"+seasonID+"/rounds/"+roundID,
+		strings.NewReader(`{"status":"open"}`))
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("open round: got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	// Second PATCH: no-op on the round, must not touch the season.
+	req = httptest.NewRequest(http.MethodPatch, "/v1/seasons/"+seasonID+"/rounds/"+roundID,
+		strings.NewReader(`{}`))
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("no-op round update: got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	var seasonVersion int
+	err := testPool.QueryRow(context.Background(),
+		`SELECT version FROM seasons WHERE id = $1`, seasonID).Scan(&seasonVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seasonVersion != 2 {
+		t.Fatalf("season version bumped again: got %d, want 2", seasonVersion)
 	}
 }

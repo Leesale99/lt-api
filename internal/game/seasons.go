@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -31,6 +30,23 @@ func ValidateSeason(v *validator.Validator, season Season) {
 
 func ValidateSeasonStatus(v *validator.Validator, status string) {
 	v.Check(validator.PermittedValue(status, seasonStatuses...), "status", "Must be one of: created, open, in_progress, closed")
+}
+
+// seasonStatusRank orders the season lifecycle for transition checks.
+var seasonStatusRank = map[string]int{
+	"created":     0,
+	"open":        1,
+	"in_progress": 2,
+	"closed":      3,
+}
+
+// ValidateSeasonUpdate validates a season update (new) against the stored
+// version (old): vocabulary plus no-regression. The freeze half — no
+// created/open once a match has started — is the seasons_freeze_gate
+// trigger (ADR-008); this check is advisory UX.
+func ValidateSeasonUpdate(v *validator.Validator, old, new Season) {
+	ValidateSeason(v, new)
+	checkStatusRegression(v, "season", old.Status, new.Status, seasonStatusRank)
 }
 
 type SeasonStore struct {
@@ -91,6 +107,10 @@ func (s *SeasonStore) Update(ctx context.Context, season Season) (Season, error)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			return Season{}, ErrEditConflict
+		case triggerViolation(err):
+			// seasons_freeze_gate: a match has started and the update tried
+			// to move the season back to created/open (ADR-008).
+			return Season{}, ErrRecordInUse
 		}
 		return Season{}, err
 	}
@@ -171,8 +191,10 @@ func (s *SeasonStore) Delete(ctx context.Context, id int) error {
 
 	result, err := s.pool.Exec(ctx, query, id)
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
+		// P0001 comes from the seasons delete gate (ADR-007 + ADR-008):
+		// in_progress/closed seasons and open seasons with match history are
+		// durable, the DB is authoritative.
+		if triggerViolation(err) {
 			return ErrRecordInUse
 		}
 		return err

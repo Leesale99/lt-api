@@ -1,8 +1,10 @@
 package game
 
 import (
+	"context"
 	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -27,22 +29,36 @@ var (
 	ErrDuplicateRecord = errors.New("duplicate record")
 )
 
-// fkViolation reports whether err is a PostgreSQL foreign-key violation
-// (23503; pgerrcode inlined to avoid a dependency, matching teams.go).
-// It lets the store collapse a violated reference into ErrRecordNotFound so
-// handlers can translate it into a validation error instead of a 500.
-func fkViolation(err error) bool {
+// pgCode reports whether err is a PostgreSQL error with the given SQLSTATE
+// code (pgerrcode inlined to avoid the extra dependency).
+func pgCode(err error, code string) bool {
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23503"
+	return errors.As(err, &pgErr) && pgErr.Code == code
 }
 
+// fkViolation reports whether err is a PostgreSQL foreign-key violation
+// (23503). It lets the store collapse a violated reference into
+// ErrRecordNotFound so handlers can translate it into a validation error
+// instead of a 500.
+func fkViolation(err error) bool { return pgCode(err, "23503") }
+
 // uniqueViolation reports whether err is a PostgreSQL unique-constraint
-// violation (23505; pgerrcode inlined to avoid a dependency, matching
-// fkViolation). It lets stores collapse a uniqueness clash into
+// violation (23505). It lets stores collapse a uniqueness clash into
 // ErrDuplicateRecord so handlers can translate it into a 409.
-func uniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+func uniqueViolation(err error) bool { return pgCode(err, "23505") }
+
+// triggerViolation reports whether err is a PostgreSQL raised exception
+// (P0001) — the ADR-007/ADR-008 gate pattern: BEFORE triggers RAISE
+// EXCEPTION with ERRCODE P0001 to refuse lifecycle-illegal writes, and the
+// store maps it to ErrRecordInUse so handlers answer 409.
+func triggerViolation(err error) bool { return pgCode(err, "P0001") }
+
+// dbQuerier is the subset of *pgxpool.Pool and pgx.Tx that store helpers
+// use, so one write path can run either on the pool directly or inside a
+// transaction (RoundStore.Open's coupled season flip is the first consumer).
+type dbQuerier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // Store composes the per-entity stores. It is the single dependency the API

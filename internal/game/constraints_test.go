@@ -159,9 +159,9 @@ func TestMatchConstraints(t *testing.T) {
 	valid := fmt.Sprintf(base, "", "")
 	cases := []constraintCase{
 		{
-			name:  "valid open match without score",
+			name:  "valid created match without score",
 			query: valid,
-			args:  []any{seasonID, roundID, homeID, awayID, 1.5, 2.5, "open"},
+			args:  []any{seasonID, roundID, homeID, awayID, 1.5, 2.5, "created"},
 		},
 		{
 			name:  "closed match with score",
@@ -171,13 +171,13 @@ func TestMatchConstraints(t *testing.T) {
 		{
 			name:     "home team equals away team",
 			query:    valid,
-			args:     []any{seasonID, roundID, homeID, homeID, 1.5, 2.5, "open"},
+			args:     []any{seasonID, roundID, homeID, homeID, 1.5, 2.5, "created"},
 			wantCode: errCheckViolation,
 		},
 		{
 			name:     "odds equal to 1 rejected",
 			query:    valid,
-			args:     []any{seasonID, roundID, homeID, awayID, 1.0, 2.5, "open"},
+			args:     []any{seasonID, roundID, homeID, awayID, 1.0, 2.5, "created"},
 			wantCode: errCheckViolation,
 		},
 		{
@@ -187,9 +187,9 @@ func TestMatchConstraints(t *testing.T) {
 			wantCode: errCheckViolation,
 		},
 		{
-			name:     "score set on open match rejected",
+			name:     "score set on pre-start match rejected",
 			query:    fmt.Sprintf(base, ", home_score, away_score", ", $8, $9"),
-			args:     []any{seasonID, roundID, homeID, awayID, 1.5, 2.5, "open", 10, 5},
+			args:     []any{seasonID, roundID, homeID, awayID, 1.5, 2.5, "created", 10, 5},
 			wantCode: errCheckViolation,
 		},
 		{
@@ -201,13 +201,13 @@ func TestMatchConstraints(t *testing.T) {
 		{
 			name:     "round from another season rejected (composite FK)",
 			query:    valid,
-			args:     []any{seasonID, roundID + 999999, homeID, awayID, 1.5, 2.5, "open"},
+			args:     []any{seasonID, roundID + 999999, homeID, awayID, 1.5, 2.5, "created"},
 			wantCode: errForeignKey,
 		},
 		{
 			name:     "nonexistent season rejected",
 			query:    valid,
-			args:     []any{seasonID + 999999, roundID, homeID, awayID, 1.5, 2.5, "open"},
+			args:     []any{seasonID + 999999, roundID, homeID, awayID, 1.5, 2.5, "created"},
 			wantCode: errForeignKey,
 		},
 	}
@@ -373,7 +373,7 @@ func TestTeamDeleteRestricted(t *testing.T) {
 
 	_, err := pool.Exec(ctx, `
 		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at)
-		VALUES ($1, $2, $3, $4, 1.5, 2.5, 'open', now() + interval '30 days')`,
+		VALUES ($1, $2, $3, $4, 1.5, 2.5, 'created', now() + interval '30 days')`,
 		seasonID, roundID, homeID, awayID)
 	if err != nil {
 		t.Fatalf("insert match: %v", err)

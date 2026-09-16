@@ -35,7 +35,7 @@ const resetSQL = `
 		home_odds, away_odds, home_score, away_score, status, starts_at
 	) VALUES
 		(1, 1, 1, 2, 1.5, 2.5, 88, 79, 'closed', now() - interval '7 days'),
-		(1, 1, 2, 1, 2.0, 1.8, NULL, NULL, 'open', now() + interval '7 days');
+		(1, 1, 2, 1, 2.0, 1.8, NULL, NULL, 'created', now() + interval '7 days');
 `
 
 // reset wipes all tables and re-seeds the canonical fixture. Call it at the

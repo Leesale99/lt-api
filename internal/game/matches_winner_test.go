@@ -42,12 +42,11 @@ func TestWinner(t *testing.T) {
 			want:  nil,
 		},
 		{
-			name: "open match with a score returns nil",
+			name: "created match without a score returns nil",
 			match: Match{
-				Status:     "open",
+				Status:     "created",
 				HomeTeamID: 1,
 				AwayTeamID: 2,
-				Score:      Score{Home: i(88), Away: i(79)},
 			},
 			want: nil,
 		},

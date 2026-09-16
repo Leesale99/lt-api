@@ -169,6 +169,8 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	current := round
+
 	expectedVersion := r.Header.Get("X-Expected-Version")
 	if expectedVersion != "" && strconv.Itoa(round.Version) != expectedVersion {
 		app.editConflictResponse(w, r)
@@ -197,18 +199,29 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 
 	v := validator.New()
 
-	if game.ValidateRound(v, round); !v.Valid() {
+	if game.ValidateRoundUpdate(v, current, round); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
 
-	round, err = app.Store.Rounds.Update(ctx, round)
+	// ADR-008 point 3: the created → open transition also starts the season
+	// (open → in_progress), and the two writes must succeed together — so it
+	// goes through RoundStore.Open's transaction rather than Update.
+	if current.Status == "created" && round.Status == "open" {
+		round, err = app.Store.Rounds.Open(ctx, round)
+	} else {
+		round, err = app.Store.Rounds.Update(ctx, round)
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, game.ErrEditConflict):
 			app.editConflictResponse(w, r)
 		case errors.Is(err, game.ErrDuplicateRecord):
 			app.duplicateRecordResponse(w, r)
+		case errors.Is(err, game.ErrRecordInUse):
+			// rounds_freeze_gate: a match of this round has started and the
+			// update tried to regress it (ADR-008).
+			app.recordFrozenResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
 		}

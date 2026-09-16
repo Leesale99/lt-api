@@ -22,7 +22,7 @@ func TestValidateNewMatch(t *testing.T) {
 			RoundID:    1,
 			HomeTeamID: 1,
 			AwayTeamID: 2,
-			Status:     "open",
+			Status:     "created",
 			StartsAt:   now.Add(24 * time.Hour),
 			Odds:       Odds{Home: 1.5, Away: 2.5},
 		}
@@ -34,7 +34,7 @@ func TestValidateNewMatch(t *testing.T) {
 		wantErrs map[string]string // field -> first error message; empty = valid
 	}{
 		{
-			name:     "valid open match",
+			name:     "valid created match",
 			mutate:   func(m *Match) {},
 			wantErrs: map[string]string{},
 		},
@@ -107,7 +107,7 @@ func TestValidateNewMatch(t *testing.T) {
 			wantErrs: map[string]string{"score": "must be provided when the match is in progress or closed"},
 		},
 
-		// Status/score matrix: created, open and postponed forbid a score.
+		// Status/score matrix: created and postponed forbid a score.
 		{
 			name: "created with score",
 			mutate: func(m *Match) {
@@ -117,11 +117,11 @@ func TestValidateNewMatch(t *testing.T) {
 			wantErrs: map[string]string{"score": "must not be set before the match is in progress or closed"},
 		},
 		{
-			name: "open with score",
+			name: "valid postponed match without score",
 			mutate: func(m *Match) {
-				m.Score = Score{Home: i(1), Away: i(0)}
+				m.Status = "postponed"
 			},
-			wantErrs: map[string]string{"score": "must not be set before the match is in progress or closed"},
+			wantErrs: map[string]string{},
 		},
 		{
 			name: "postponed with score",
@@ -171,16 +171,7 @@ func TestValidateNewMatch(t *testing.T) {
 			v := validator.New()
 			ValidateNewMatch(v, match, now)
 
-			if len(v.Errors) != len(tt.wantErrs) {
-				t.Fatalf("got errors %v, want %v", v.Errors, tt.wantErrs)
-			}
-			for field, wantMsg := range tt.wantErrs {
-				if gotMsg, ok := v.Errors[field]; !ok {
-					t.Errorf("expected error on field %q, got errors %v", field, v.Errors)
-				} else if gotMsg != wantMsg {
-					t.Errorf("field %q: got message %q, want %q", field, gotMsg, wantMsg)
-				}
-			}
+			assertValidatorErrors(t, v, tt.wantErrs)
 		})
 	}
 }
@@ -195,6 +186,7 @@ func TestValidateMatchUpdate(t *testing.T) {
 	// Each case controls both the stored match (old) and the proposed update
 	// (new). A started match with starts_at in the past is the realistic
 	// baseline for updates — that is exactly what creation forbids.
+	// Statuses used: created/postponed (pre-start pair), in_progress, closed.
 	tests := []struct {
 		name     string
 		old      func(m *Match)
@@ -210,7 +202,7 @@ func TestValidateMatchUpdate(t *testing.T) {
 			wantErrs: map[string]string{},
 		},
 		{
-			name: "open to in_progress with a score",
+			name: "created to in_progress with a score",
 			old:  func(m *Match) {},
 			mutate: func(m *Match) {
 				m.Status = "in_progress"
@@ -219,7 +211,7 @@ func TestValidateMatchUpdate(t *testing.T) {
 			wantErrs: map[string]string{},
 		},
 		{
-			name: "open to postponed",
+			name: "created to postponed",
 			old:  func(m *Match) {},
 			mutate: func(m *Match) {
 				m.Status = "postponed"
@@ -227,43 +219,47 @@ func TestValidateMatchUpdate(t *testing.T) {
 			wantErrs: map[string]string{},
 		},
 		{
-			name: "postponed back to open",
+			name: "postponed back to created",
 			old: func(m *Match) {
 				m.Status = "postponed"
 			},
-			mutate: func(m *Match) {
-				m.Status = "open"
-			},
-			wantErrs: map[string]string{},
-		},
-		{
-			name: "open to created",
-			old:  func(m *Match) {},
 			mutate: func(m *Match) {
 				m.Status = "created"
 			},
-			wantErrs: map[string]string{"status": "cannot move to an earlier stage of the match lifecycle"},
+			wantErrs: map[string]string{},
 		},
 		{
-			name: "in_progress back to open",
+			name: "in_progress back to created",
 			old: func(m *Match) {
 				m.Status = "in_progress"
 				m.Score = scored(1, 0)
 			},
 			mutate: func(m *Match) {
-				m.Status = "open"
+				m.Status = "created"
 				m.Score = Score{}
 			},
 			wantErrs: map[string]string{"status": "cannot move to an earlier stage of the match lifecycle"},
 		},
 		{
-			name: "closed to open",
+			name: "in_progress to postponed",
+			old: func(m *Match) {
+				m.Status = "in_progress"
+				m.Score = scored(1, 0)
+			},
+			mutate: func(m *Match) {
+				m.Status = "postponed"
+				m.Score = Score{}
+			},
+			wantErrs: map[string]string{"status": "cannot move to an earlier stage of the match lifecycle"},
+		},
+		{
+			name: "closed to created",
 			old: func(m *Match) {
 				m.Status = "closed"
 				m.Score = scored(3, 2)
 			},
 			mutate: func(m *Match) {
-				m.Status = "open"
+				m.Status = "created"
 				m.Score = Score{}
 			},
 			wantErrs: map[string]string{"status": "cannot be changed after the match is closed"},
@@ -289,7 +285,7 @@ func TestValidateMatchUpdate(t *testing.T) {
 					RoundID:    1,
 					HomeTeamID: 1,
 					AwayTeamID: 2,
-					Status:     "open",
+					Status:     "created",
 					StartsAt:   now.Add(-2 * time.Hour),
 					Odds:       Odds{Home: 1.5, Away: 2.5},
 				}
@@ -304,16 +300,7 @@ func TestValidateMatchUpdate(t *testing.T) {
 			v := validator.New()
 			ValidateMatchUpdate(v, old, match)
 
-			if len(v.Errors) != len(tt.wantErrs) {
-				t.Fatalf("got errors %v, want %v", v.Errors, tt.wantErrs)
-			}
-			for field, wantMsg := range tt.wantErrs {
-				if gotMsg, ok := v.Errors[field]; !ok {
-					t.Errorf("expected error on field %q, got errors %v", field, v.Errors)
-				} else if gotMsg != wantMsg {
-					t.Errorf("field %q: got message %q, want %q", field, gotMsg, wantMsg)
-				}
-			}
+			assertValidatorErrors(t, v, tt.wantErrs)
 		})
 	}
 }

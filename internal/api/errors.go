@@ -59,6 +59,15 @@ func (app *Application) recordInUseResponse(w http.ResponseWriter, r *http.Reque
 	app.writeError(w, r, http.StatusConflict, message)
 }
 
+// recordFrozenResponse answers the ADR-008 freeze gates: the write tried to
+// move something back to an earlier stage while a match has already started.
+// A separate message from recordInUseResponse — the conflict is temporal,
+// not referential, and "try again later" would be wrong advice.
+func (app *Application) recordFrozenResponse(w http.ResponseWriter, r *http.Request) {
+	message := "a match has already started, so the hierarchy cannot move to an earlier stage"
+	app.writeError(w, r, http.StatusConflict, message)
+}
+
 func (app *Application) duplicateRecordResponse(w http.ResponseWriter, r *http.Request) {
 	message := "a record with these unique values already exists"
 	app.writeError(w, r, http.StatusConflict, message)

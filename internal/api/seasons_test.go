@@ -158,9 +158,18 @@ func TestUpdateSeasonHandler(t *testing.T) {
 		{
 			name:     "uppercase status is normalized",
 			url:      "/v1/seasons/2",
-			body:     `{"status":"OPEN"}`,
+			body:     `{"status":"CLOSED"}`,
 			wantCode: http.StatusOK,
-			wantBody: []string{`"status": "open"`},
+			wantBody: []string{`"status": "closed"`},
+		},
+		{
+			name: "regressing the lifecycle is rejected",
+			// Advisory check (seasons_freeze_gate backs it up in the DB):
+			// in_progress cannot go back to open.
+			url:      "/v1/seasons/2",
+			body:     `{"status":"open"}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"status", "earlier stage of the season lifecycle"},
 		},
 		{
 			name:     "empty body",

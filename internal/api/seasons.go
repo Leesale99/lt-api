@@ -133,6 +133,8 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	current := season
+
 	expectedVersion := r.Header.Get("X-Expected-Version")
 	if expectedVersion != "" && strconv.Itoa(season.Version) != expectedVersion {
 		app.editConflictResponse(w, r)
@@ -155,7 +157,7 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 
 	v := validator.New()
 
-	if game.ValidateSeason(v, season); !v.Valid() {
+	if game.ValidateSeasonUpdate(v, current, season); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
@@ -165,6 +167,10 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, game.ErrEditConflict):
 			app.editConflictResponse(w, r)
+		case errors.Is(err, game.ErrRecordInUse):
+			// seasons_freeze_gate: a match has started and the update tried
+			// to move the season back to created/open (ADR-008).
+			app.recordFrozenResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
 		}

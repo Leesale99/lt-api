@@ -33,7 +33,7 @@ func TestShowMatchHandler(t *testing.T) {
 			name:     "unplayed match",
 			url:      "/v1/matches/2",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"status": "open"`},
+			wantBody: []string{`"status": "created"`},
 		},
 		{
 			name:     "unknown match",
@@ -89,7 +89,7 @@ func TestCreateMatchHandler(t *testing.T) {
 		{
 			name:     "valid unplayed match",
 			url:      "/v1/seasons/1/matches",
-			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":2,"away":3},` + futureStartsAt + `}`,
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"created","odds":{"home":2,"away":3},` + futureStartsAt + `}`,
 			wantCode: http.StatusCreated,
 			wantBody: []string{`"season_id": 1`, `"round_id": 1`, `"home_team_id": 1`},
 		},
@@ -103,21 +103,21 @@ func TestCreateMatchHandler(t *testing.T) {
 		{
 			name:     "happy path with starts_at",
 			url:      "/v1/seasons/1/matches",
-			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":2,"away":3},` + futureStartsAt + `}`,
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"created","odds":{"home":2,"away":3},` + futureStartsAt + `}`,
 			wantCode: http.StatusCreated,
 			wantBody: []string{`"starts_at": "2030-01-01T12:00:00Z"`},
 		},
 		{
 			name:     "unknown season",
 			url:      "/v1/seasons/999/matches",
-			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":2,"away":3}}`,
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"created","odds":{"home":2,"away":3}}`,
 			wantCode: http.StatusNotFound,
 			wantBody: []string{"could not be found"},
 		},
 		{
 			name:     "non-numeric season id",
 			url:      "/v1/seasons/abc/matches",
-			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":2,"away":3}}`,
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"created","odds":{"home":2,"away":3}}`,
 			wantCode: http.StatusNotFound,
 			wantBody: []string{"could not be found"},
 		},
@@ -138,21 +138,21 @@ func TestCreateMatchHandler(t *testing.T) {
 		{
 			name:     "unknown field rejected",
 			url:      "/v1/seasons/1/matches",
-			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":2,"away":3},"venue":"Athens"}`,
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"created","odds":{"home":2,"away":3},"venue":"Athens"}`,
 			wantCode: http.StatusBadRequest,
 			wantBody: []string{"unknown key"},
 		},
 		{
 			name:     "missing round",
 			url:      "/v1/seasons/1/matches",
-			body:     `{"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":2,"away":3}}`,
+			body:     `{"home_team_id":1,"away_team_id":2,"status":"created","odds":{"home":2,"away":3}}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"round_id"},
 		},
 		{
 			name:     "zero odds",
 			url:      "/v1/seasons/1/matches",
-			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":0,"away":3}}`,
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"created","odds":{"home":0,"away":3}}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"odds"},
 		},
@@ -173,7 +173,7 @@ func TestCreateMatchHandler(t *testing.T) {
 		{
 			name:     "round in wrong season",
 			url:      "/v1/seasons/1/matches",
-			body:     `{"round_id":3,"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":2,"away":3},` + futureStartsAt + `}`,
+			body:     `{"round_id":3,"home_team_id":1,"away_team_id":2,"status":"created","odds":{"home":2,"away":3},` + futureStartsAt + `}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"round_id", "must belong to a season id 1"},
 		},
@@ -201,14 +201,14 @@ func TestCreateMatchHandler(t *testing.T) {
 		{
 			name:     "starts_at missing",
 			url:      "/v1/seasons/1/matches",
-			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":2,"away":3}}`,
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"created","odds":{"home":2,"away":3}}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"starts_at", "must be provided"},
 		},
 		{
 			name:     "starts_at in the past",
 			url:      "/v1/seasons/1/matches",
-			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"open","odds":{"home":2,"away":3},"starts_at":"2020-01-01T12:00:00Z"}`,
+			body:     `{"round_id":1,"home_team_id":1,"away_team_id":2,"status":"created","odds":{"home":2,"away":3},"starts_at":"2020-01-01T12:00:00Z"}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"starts_at", "must be in the future"},
 		},
@@ -258,7 +258,7 @@ func TestDeleteMatchHandler(t *testing.T) {
 			wantBody: []string{"successfully deleted"},
 		},
 		{
-			name:     "open match can be deleted",
+			name:     "created match can be deleted",
 			url:      "/v1/seasons/1/matches/2",
 			wantCode: http.StatusOK,
 			wantBody: []string{"successfully deleted"},
@@ -385,10 +385,10 @@ func TestListMatchesHandler(t *testing.T) {
 			wantBody: []string{`"matches": []`},
 		},
 		{
-			name:     "filter by status open",
-			url:      "/v1/matches?status=open",
+			name:     "filter by status created",
+			url:      "/v1/matches?status=created",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 1`, `"status": "open"`},
+			wantBody: []string{`"total_records": 1`, `"status": "created"`},
 		},
 		{
 			name:     "filter by status closed",
@@ -410,9 +410,9 @@ func TestListMatchesHandler(t *testing.T) {
 		},
 		{
 			name:     "combined season_id, round_id and status",
-			url:      "/v1/matches?season_id=1&round_id=1&status=open",
+			url:      "/v1/matches?season_id=1&round_id=1&status=created",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 1`, `"status": "open"`},
+			wantBody: []string{`"total_records": 1`, `"status": "created"`},
 		},
 		{
 			name:     "combined filters with no match",
@@ -436,7 +436,7 @@ func TestListMatchesHandler(t *testing.T) {
 			name:     "sort by starts_at descending returns the later match first",
 			url:      "/v1/matches?page_size=1&sort=-starts_at",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 2`, `"status": "open"`},
+			wantBody: []string{`"total_records": 2`, `"status": "created"`},
 		},
 		{
 			name:     "sort rejected by safelist",
@@ -470,5 +470,124 @@ func TestListMatchesHandler(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestUpdateMatchHandler covers the ADR-008 freeze rule on the match update
+// path: postpone and regression are allowed only before the match starts.
+// The time fact is data (starts_at), so cases seed started matches via SQL
+// instead of controlling the clock.
+func TestUpdateMatchHandler(t *testing.T) {
+	requireDB(t)
+
+	tests := []struct {
+		name     string
+		url      string
+		seed     string
+		body     string
+		wantCode int
+		wantBody []string
+	}{
+		{
+			name:     "odds update on a created match",
+			url:      "/v1/seasons/1/matches/2",
+			body:     `{"odds":{"home":3.0,"away":1.7}}`,
+			wantCode: http.StatusOK,
+			wantBody: []string{`"odds": {`, `"version": 2`},
+		},
+		{
+			name:     "created match can be postponed before it starts",
+			url:      "/v1/seasons/1/matches/2",
+			body:     `{"status":"postponed"}`,
+			wantCode: http.StatusOK,
+			wantBody: []string{`"status": "postponed"`},
+		},
+		{
+			name: "started match cannot be postponed",
+			// Match 3: created but already past its starts_at (the advisory
+			// rank check cannot see time, so this reaches the DB gate).
+			url:      "/v1/seasons/1/matches/3",
+			seed:     `INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at) VALUES (1, 2, 1, 2, 1.5, 2.5, 'created', now() - interval '1 hour')`,
+			body:     `{"status":"postponed"}`,
+			wantCode: http.StatusConflict,
+			wantBody: []string{"a match has already started"},
+		},
+		{
+			name:     "started match cannot return to created",
+			url:      "/v1/seasons/1/matches/3",
+			seed:     `INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at) VALUES (1, 2, 1, 2, 1.5, 2.5, 50, 49, 'in_progress', now() - interval '1 hour')`,
+			body:     `{"status":"created","score":{}}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"status", "earlier stage of the match lifecycle"},
+		},
+		{
+			name:     "closed match is terminal",
+			url:      "/v1/seasons/1/matches/1",
+			body:     `{"status":"in_progress"}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"status", "cannot be changed after the match is closed"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
+			app := newTestApplication()
+
+			if tt.seed != "" {
+				if _, err := testPool.Exec(context.Background(), tt.seed); err != nil {
+					t.Fatalf("seed: %v", err)
+				}
+			}
+
+			req := httptest.NewRequest(http.MethodPatch, tt.url, strings.NewReader(tt.body))
+			rr := httptest.NewRecorder()
+			app.routes().ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantCode {
+				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
+			}
+			for _, fragment := range tt.wantBody {
+				if !strings.Contains(rr.Body.String(), fragment) {
+					t.Errorf("body missing %q (body: %s)", fragment, rr.Body.String())
+				}
+			}
+		})
+	}
+}
+
+// TestPostponeStartedMatchFrozen asserts the DB gate actually left the row
+// untouched: the frozen write must be a full no-op, not a partial one.
+func TestPostponeStartedMatchFrozen(t *testing.T) {
+	requireDB(t)
+
+	reset(t)
+	app := newTestApplication()
+
+	if _, err := testPool.Exec(context.Background(),
+		`INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at)
+		 VALUES (1, 2, 1, 2, 1.5, 2.5, 'created', now() - interval '1 hour')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/v1/seasons/1/matches/3",
+		strings.NewReader(`{"status":"postponed","odds":{"home":9.9,"away":9.9}}`))
+	rr := httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("got status %d, want %d (body: %s)", rr.Code, http.StatusConflict, rr.Body.String())
+	}
+
+	var status string
+	var homeOdds float64
+	var version int
+	err := testPool.QueryRow(context.Background(),
+		`SELECT status, home_odds, version FROM matches WHERE id = 3`).Scan(&status, &homeOdds, &version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "created" || homeOdds != 1.5 || version != 1 {
+		t.Fatalf("frozen update partially applied: status=%q home_odds=%v version=%d", status, homeOdds, version)
 	}
 }
