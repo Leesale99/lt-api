@@ -49,7 +49,11 @@ func (m Match) Winner() *int {
 
 var matchStatuses = []string{"created", "open", "in_progress", "postponed", "closed"}
 
-func ValidateMatch(v *validator.Validator, match Match, now time.Time) {
+// validateMatchShape checks the time-independent invariants of a match:
+// required fields, allowed statuses, the status/score matrix and the odds
+// bounds. It is the shared core of ValidateNewMatch and ValidateMatchUpdate;
+// each of those adds the rules that differ between creating and editing.
+func validateMatchShape(v *validator.Validator, match Match) {
 	v.Check(match.RoundID > 0, "round_id", "must be provided")
 	v.Check(match.SeasonID > 0, "season_id", "must be provided")
 	v.Check(match.HomeTeamID > 0, "home_team_id", "must be provided")
@@ -58,9 +62,6 @@ func ValidateMatch(v *validator.Validator, match Match, now time.Time) {
 	v.Check(match.Status != "", "status", "must be provided")
 	v.Check(validator.PermittedValue(match.Status, matchStatuses...), "status", "must be one of: created, open, in_progress, postponed, closed")
 	v.Check(!match.StartsAt.IsZero(), "starts_at", "must be provided")
-	if !match.StartsAt.IsZero() {
-		v.Check(match.StartsAt.After(now), "starts_at", "must be in the future")
-	}
 	bothNil := match.Score.Home == nil && match.Score.Away == nil
 	bothSet := match.Score.Home != nil && match.Score.Away != nil
 	v.Check(bothNil || bothSet, "score", "must contain both home and away values or neither")
@@ -72,6 +73,46 @@ func ValidateMatch(v *validator.Validator, match Match, now time.Time) {
 		v.Check(match.Score.Home == nil, "score", "must not be set before the match is in progress or closed")
 	}
 	v.Check(match.Odds.Home > 1 && match.Odds.Away > 1, "odds", "must both be greater than one")
+}
+
+// ValidateNewMatch validates a match about to be created. The `now` argument
+// is injected so tests control the clock instead of racing time.Now().
+func ValidateNewMatch(v *validator.Validator, match Match, now time.Time) {
+	validateMatchShape(v, match)
+	if !match.StartsAt.IsZero() {
+		v.Check(match.StartsAt.After(now), "starts_at", "must be in the future")
+	}
+}
+
+// matchStatusRank orders the statuses along their lifecycle so that backward
+// transitions can be rejected. open and postponed share a rank: a match may
+// move between them freely in either direction. closed sits at the top and is
+// terminal, which the >= rank rule already enforces.
+var matchStatusRank = map[string]int{
+	"created":     0,
+	"open":        1,
+	"postponed":   1,
+	"in_progress": 2,
+	"closed":      3,
+}
+
+// ValidateMatchUpdate validates a match about to be updated (new) against the
+// currently stored version (old). Unlike creation, starts_at may be in the
+// past — an existing match keeps being editable after it has started — but
+// status must never move backwards along the lifecycle, and a closed match is
+// terminal.
+func ValidateMatchUpdate(v *validator.Validator, old, new Match) {
+	validateMatchShape(v, new)
+
+	// The old status comes from the database and is trusted; the new one has
+	// already been shape-checked above.
+	oldRank, oldOK := matchStatusRank[old.Status]
+	newRank, newOK := matchStatusRank[new.Status]
+	if !oldOK || !newOK {
+		return
+	}
+	v.Check(old.Status != "closed" || new.Status == "closed", "status", "cannot be changed after the match is closed")
+	v.Check(newRank >= oldRank, "status", "cannot move to an earlier stage of the match lifecycle")
 }
 
 type MatchStore struct {
@@ -168,8 +209,9 @@ func (s *MatchStore) Update(ctx context.Context, match Match) (Match, error) {
 		case errors.Is(err, pgx.ErrNoRows):
 			return Match{}, ErrEditConflict
 		case fkViolation(err):
-			// The referenced team, round or season was deleted between the
-			// handler's existence check and this write.
+			// The referenced team was deleted between the handler's existence
+			// check and this write (season and round are not updatable, so
+			// they cannot trigger the FK here).
 			return Match{}, ErrRecordNotFound
 		default:
 			return Match{}, err

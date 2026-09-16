@@ -1,6 +1,6 @@
 package game
 
-// Unit tests for ValidateMatch: pure logic, no database, microseconds.
+// Unit tests for the match validators: pure logic, no database, microseconds.
 // The `now` argument is injected, so every case controls the clock instead of
 // racing against time.Now() — that is the whole point of the signature.
 
@@ -11,7 +11,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
-func TestValidateMatch(t *testing.T) {
+func TestValidateNewMatch(t *testing.T) {
 	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
 
 	i := func(n int) *int { return &n }
@@ -169,7 +169,140 @@ func TestValidateMatch(t *testing.T) {
 			tt.mutate(&match)
 
 			v := validator.New()
-			ValidateMatch(v, match, now)
+			ValidateNewMatch(v, match, now)
+
+			if len(v.Errors) != len(tt.wantErrs) {
+				t.Fatalf("got errors %v, want %v", v.Errors, tt.wantErrs)
+			}
+			for field, wantMsg := range tt.wantErrs {
+				if gotMsg, ok := v.Errors[field]; !ok {
+					t.Errorf("expected error on field %q, got errors %v", field, v.Errors)
+				} else if gotMsg != wantMsg {
+					t.Errorf("field %q: got message %q, want %q", field, gotMsg, wantMsg)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateMatchUpdate(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+
+	i := func(n int) *int { return &n }
+
+	scored := func(h, a int) Score { return Score{Home: i(h), Away: i(a)} }
+
+	// Each case controls both the stored match (old) and the proposed update
+	// (new). A started match with starts_at in the past is the realistic
+	// baseline for updates — that is exactly what creation forbids.
+	tests := []struct {
+		name     string
+		old      func(m *Match)
+		mutate   func(m *Match)
+		wantErrs map[string]string
+	}{
+		{
+			name: "starts_at in the past is accepted",
+			old:  func(m *Match) {},
+			mutate: func(m *Match) {
+				m.Odds = Odds{Home: 2.0, Away: 3.0}
+			},
+			wantErrs: map[string]string{},
+		},
+		{
+			name: "open to in_progress with a score",
+			old:  func(m *Match) {},
+			mutate: func(m *Match) {
+				m.Status = "in_progress"
+				m.Score = scored(1, 0)
+			},
+			wantErrs: map[string]string{},
+		},
+		{
+			name: "open to postponed",
+			old:  func(m *Match) {},
+			mutate: func(m *Match) {
+				m.Status = "postponed"
+			},
+			wantErrs: map[string]string{},
+		},
+		{
+			name: "postponed back to open",
+			old: func(m *Match) {
+				m.Status = "postponed"
+			},
+			mutate: func(m *Match) {
+				m.Status = "open"
+			},
+			wantErrs: map[string]string{},
+		},
+		{
+			name: "open to created",
+			old:  func(m *Match) {},
+			mutate: func(m *Match) {
+				m.Status = "created"
+			},
+			wantErrs: map[string]string{"status": "cannot move to an earlier stage of the match lifecycle"},
+		},
+		{
+			name: "in_progress back to open",
+			old: func(m *Match) {
+				m.Status = "in_progress"
+				m.Score = scored(1, 0)
+			},
+			mutate: func(m *Match) {
+				m.Status = "open"
+				m.Score = Score{}
+			},
+			wantErrs: map[string]string{"status": "cannot move to an earlier stage of the match lifecycle"},
+		},
+		{
+			name: "closed to open",
+			old: func(m *Match) {
+				m.Status = "closed"
+				m.Score = scored(3, 2)
+			},
+			mutate: func(m *Match) {
+				m.Status = "open"
+				m.Score = Score{}
+			},
+			wantErrs: map[string]string{"status": "cannot be changed after the match is closed"},
+		},
+		{
+			name: "closed stays closed",
+			old: func(m *Match) {
+				m.Status = "closed"
+				m.Score = scored(3, 2)
+			},
+			mutate: func(m *Match) {
+				m.Score = scored(4, 2)
+			},
+			wantErrs: map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := func() Match {
+				return Match{
+					SeasonID:   1,
+					RoundID:    1,
+					HomeTeamID: 1,
+					AwayTeamID: 2,
+					Status:     "open",
+					StartsAt:   now.Add(-2 * time.Hour),
+					Odds:       Odds{Home: 1.5, Away: 2.5},
+				}
+			}
+
+			old := base()
+			tt.old(&old)
+
+			match := old
+			tt.mutate(&match)
+
+			v := validator.New()
+			ValidateMatchUpdate(v, old, match)
 
 			if len(v.Errors) != len(tt.wantErrs) {
 				t.Fatalf("got errors %v, want %v", v.Errors, tt.wantErrs)

@@ -65,7 +65,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 
 	v := validator.New()
 
-	if game.ValidateMatch(v, match, time.Now()); !v.Valid() {
+	if game.ValidateNewMatch(v, match, time.Now()); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
@@ -165,13 +165,13 @@ func (app *Application) showMatchHandler(w http.ResponseWriter, r *http.Request)
 }
 
 func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Request) {
-	seasonId, err := app.readIDParam(r)
+	seasonID, err := app.readIDParam(r)
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return
 	}
 
-	matchId, err := app.readIDParam(r, "matchId")
+	matchID, err := app.readIDParam(r, "matchId")
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return
@@ -180,7 +180,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	match, err := app.Store.Matches.Get(ctx, matchId)
+	match, err := app.Store.Matches.Get(ctx, matchID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -193,7 +193,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if match.SeasonID != seasonId {
+	if match.SeasonID != seasonID {
 		app.notFoundResponse(w, r)
 		return
 	}
@@ -203,6 +203,8 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		app.editConflictResponse(w, r)
 		return
 	}
+
+	current := match
 
 	var input struct {
 		StartsAt   *time.Time  `json:"starts_at"`
@@ -229,7 +231,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		match.AwayTeamID = *input.AwayTeamID
 	}
 	if input.Status != nil {
-		match.Status = *input.Status
+		match.Status = strings.ToLower(*input.Status)
 	}
 	if input.Odds != nil {
 		match.Odds = *input.Odds
@@ -240,18 +242,49 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 
 	v := validator.New()
 
-	if game.ValidateMatch(v, match, time.Now()); !v.Valid() {
+	if game.ValidateMatchUpdate(v, current, match); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
+		return
+	}
+
+	if _, err := app.Store.Teams.Get(ctx, match.HomeTeamID); err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			v.AddError("home_team_id", "must reference an existing team")
+			app.failedValidationResponse(w, r, v.Errors)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+
+	if _, err := app.Store.Teams.Get(ctx, match.AwayTeamID); err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			v.AddError("away_team_id", "must reference an existing team")
+			app.failedValidationResponse(w, r, v.Errors)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
 		return
 	}
 
 	match, err = app.Store.Matches.Update(ctx, match)
 	if err != nil {
 		switch {
+		case errors.Is(err, context.Canceled):
+			return
 		case errors.Is(err, game.ErrEditConflict):
 			app.editConflictResponse(w, r)
 		case errors.Is(err, game.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
+			// Race: a referenced team was deleted between the checks above
+			// and the update.
+			v.AddError("home_team_id", "must reference an existing team")
+			app.failedValidationResponse(w, r, v.Errors)
 		default:
 			app.serverErrorResponse(w, r, err)
 		}
