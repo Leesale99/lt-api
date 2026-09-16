@@ -141,3 +141,40 @@ func (s *MatchStore) Insert(ctx context.Context, match Match) (Match, error) {
 
 	return match, err
 }
+
+func (s *MatchStore) Update(ctx context.Context, match Match) (Match, error) {
+	query := `
+		UPDATE matches
+		SET home_team_id = $1, away_team_id = $2, home_odds = $3, away_odds = $4, home_score = $5, away_score = $6, starts_at = $7, status = $8, version = version + 1
+		WHERE id = $9 AND version = $10
+		RETURNING version
+	`
+	args := []any{
+		match.HomeTeamID,
+		match.AwayTeamID,
+		match.Odds.Home,
+		match.Odds.Away,
+		match.Score.Home,
+		match.Score.Away,
+		match.StartsAt,
+		match.Status,
+		match.ID,
+		match.Version,
+	}
+
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&match.Version)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Match{}, ErrEditConflict
+		case fkViolation(err):
+			// The referenced team, round or season was deleted between the
+			// handler's existence check and this write.
+			return Match{}, ErrRecordNotFound
+		default:
+			return Match{}, err
+		}
+	}
+
+	return match, nil
+}

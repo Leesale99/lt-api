@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -149,6 +150,106 @@ func (app *Application) showMatchHandler(w http.ResponseWriter, r *http.Request)
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+
+	err = app.writeJSON(w, http.StatusOK, envelope{"match": match}, nil)
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
+	}
+}
+
+func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Request) {
+	seasonId, err := app.readIDParam(r)
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	matchId, err := app.readIDParam(r, "matchId")
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	match, err := app.Store.Matches.Get(ctx, matchId)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+
+	if match.SeasonID != seasonId {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	expectedVersion := r.Header.Get("X-Expected-Version")
+	if expectedVersion != "" && strconv.Itoa(match.Version) != expectedVersion {
+		app.editConflictResponse(w, r)
+		return
+	}
+
+	var input struct {
+		StartsAt   *time.Time  `json:"starts_at"`
+		HomeTeamID *int        `json:"home_team_id"`
+		AwayTeamID *int        `json:"away_team_id"`
+		Status     *string     `json:"status"`
+		Odds       *game.Odds  `json:"odds"`
+		Score      *game.Score `json:"score"`
+	}
+
+	err = app.readJSON(w, r, &input)
+	if err != nil {
+		app.badRequestResponse(w, r, err)
+		return
+	}
+
+	if input.StartsAt != nil {
+		match.StartsAt = *input.StartsAt
+	}
+	if input.HomeTeamID != nil {
+		match.HomeTeamID = *input.HomeTeamID
+	}
+	if input.AwayTeamID != nil {
+		match.AwayTeamID = *input.AwayTeamID
+	}
+	if input.Status != nil {
+		match.Status = *input.Status
+	}
+	if input.Odds != nil {
+		match.Odds = *input.Odds
+	}
+	if input.Score != nil {
+		match.Score = *input.Score
+	}
+
+	v := validator.New()
+
+	if game.ValidateMatch(v, match, time.Now()); !v.Valid() {
+		app.failedValidationResponse(w, r, v.Errors)
+		return
+	}
+
+	match, err = app.Store.Matches.Update(ctx, match)
+	if err != nil {
+		switch {
+		case errors.Is(err, game.ErrEditConflict):
+			app.editConflictResponse(w, r)
 		case errors.Is(err, game.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
