@@ -171,7 +171,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	matchID, err := app.readIDParam(r, "matchId")
+	matchID, err := app.readIDParam(r, "match_id")
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return

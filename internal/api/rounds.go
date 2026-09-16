@@ -136,13 +136,13 @@ func (app *Application) listRoundsHandler(w http.ResponseWriter, r *http.Request
 }
 
 func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Request) {
-	seasonId, err := app.readIDParam(r)
+	seasonID, err := app.readIDParam(r)
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return
 	}
 
-	roundId, err := app.readIDParam(r, "roundId")
+	roundID, err := app.readIDParam(r, "round_id")
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return
@@ -151,7 +151,7 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	round, err := app.Store.Rounds.Get(ctx, roundId)
+	round, err := app.Store.Rounds.Get(ctx, roundID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -164,7 +164,7 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if round.SeasonID != seasonId {
+	if round.SeasonID != seasonID {
 		app.notFoundResponse(w, r)
 		return
 	}
@@ -222,13 +222,13 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (app *Application) deleteRoundHandler(w http.ResponseWriter, r *http.Request) {
-	seasonId, err := app.readIDParam(r)
+	seasonID, err := app.readIDParam(r)
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return
 	}
 
-	roundId, err := app.readIDParam(r, "roundId")
+	roundID, err := app.readIDParam(r, "round_id")
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return
@@ -237,7 +237,7 @@ func (app *Application) deleteRoundHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	err = app.Store.Rounds.Delete(ctx, roundId, seasonId)
+	err = app.Store.Rounds.Delete(ctx, roundID, seasonID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):

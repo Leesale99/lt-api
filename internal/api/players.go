@@ -125,13 +125,13 @@ func (app *Application) showPlayerHandler(w http.ResponseWriter, r *http.Request
 }
 
 func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Request) {
-	seasonId, err := app.readIDParam(r)
+	seasonID, err := app.readIDParam(r)
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return
 	}
 
-	playerId, err := app.readIDParam(r, "playerId")
+	playerID, err := app.readIDParam(r, "player_id")
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return
@@ -140,7 +140,7 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	player, err := app.Store.Players.Get(ctx, playerId)
+	player, err := app.Store.Players.Get(ctx, playerID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -153,7 +153,7 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if player.SeasonID != seasonId {
+	if player.SeasonID != seasonID {
 		app.notFoundResponse(w, r)
 		return
 	}
@@ -226,13 +226,13 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 }
 
 func (app *Application) deletePlayerHandler(w http.ResponseWriter, r *http.Request) {
-	seasonId, err := app.readIDParam(r)
+	seasonID, err := app.readIDParam(r)
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return
 	}
 
-	playerId, err := app.readIDParam(r, "playerId")
+	playerID, err := app.readIDParam(r, "player_id")
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return
@@ -241,7 +241,7 @@ func (app *Application) deletePlayerHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	err = app.Store.Players.Delete(ctx, playerId, seasonId)
+	err = app.Store.Players.Delete(ctx, playerID, seasonID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):

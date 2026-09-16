@@ -34,7 +34,7 @@ type PlayerStore struct {
 	pool *pgxpool.Pool
 }
 
-func (s *PlayerStore) GetAll(ctx context.Context, name string, favoriteTeamId int, filters Filters) ([]Player, Metadata, error) {
+func (s *PlayerStore) GetAll(ctx context.Context, name string, favoriteTeamID int, filters Filters) ([]Player, Metadata, error) {
 	// Each filter is appended as a separate predicate (AND-composed) so the
 	// planner can still use the per-column indexes — do not switch to a
 	// catch-all like `WHERE (name ILIKE $1 OR $1 = '')`, which defeats the
@@ -47,8 +47,8 @@ func (s *PlayerStore) GetAll(ctx context.Context, name string, favoriteTeamId in
 	}
 	// favorite_team_id is never 0 in the schema (FK), so 0 doubles as the
 	// "no filter" sentinel from the query-string default.
-	if favoriteTeamId != 0 {
-		args = append(args, favoriteTeamId)
+	if favoriteTeamID != 0 {
+		args = append(args, favoriteTeamID)
 		conds = append(conds, fmt.Sprintf("favorite_team_id = $%d", len(args)))
 	}
 
@@ -186,12 +186,12 @@ func (s *PlayerStore) Update(ctx context.Context, player Player) (Player, error)
 	return player, nil
 }
 
-func (s *PlayerStore) Delete(ctx context.Context, id, seasonId int) error {
+func (s *PlayerStore) Delete(ctx context.Context, id, seasonID int) error {
 	query := `
 		DELETE FROM players
 		WHERE id = $1 AND season_id = $2
 	`
-	result, err := s.pool.Exec(ctx, query, id, seasonId)
+	result, err := s.pool.Exec(ctx, query, id, seasonID)
 	if err != nil {
 		return err
 	}

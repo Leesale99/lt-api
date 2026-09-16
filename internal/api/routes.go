@@ -26,13 +26,13 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodGet, "/v1/rounds", app.listRoundsHandler)
 	router.HandlerFunc(http.MethodGet, "/v1/rounds/:id", app.showRoundHandler)
 	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/rounds", app.createRoundHandler)
-	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/rounds/:roundId", app.updateRoundHandler)
-	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/rounds/:roundId", app.deleteRoundHandler)
+	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/rounds/:round_id", app.updateRoundHandler)
+	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/rounds/:round_id", app.deleteRoundHandler)
 
 	// Matches
 	router.HandlerFunc(http.MethodGet, "/v1/matches/:id", app.showMatchHandler)
 	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/matches", app.createMatchHandler)
-	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/matches/:matchId", app.updateMatchHandler)
+	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/matches/:match_id", app.updateMatchHandler)
 
 	// Teams
 	router.HandlerFunc(http.MethodGet, "/v1/teams", app.listTeamsHandler)
@@ -44,8 +44,8 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodGet, "/v1/players", app.listPlayersHandler)
 	router.HandlerFunc(http.MethodGet, "/v1/players/:id", app.showPlayerHandler)
 	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/players", app.createPlayerHandler)
-	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/players/:playerId", app.updatePlayerHandler)
-	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/players/:playerId", app.deletePlayerHandler)
+	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/players/:player_id", app.updatePlayerHandler)
+	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/players/:player_id", app.deletePlayerHandler)
 
 	return app.recoverPanic(router)
 }
