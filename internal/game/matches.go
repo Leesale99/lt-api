@@ -183,6 +183,24 @@ func (s *MatchStore) Insert(ctx context.Context, match Match) (Match, error) {
 	return match, err
 }
 
+func (s *MatchStore) Delete(ctx context.Context, id, seasonID int) error {
+	query := `
+		DELETE FROM matches
+		WHERE id = $1 AND season_id = $2
+	`
+
+	result, err := s.pool.Exec(ctx, query, id, seasonID)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return ErrRecordNotFound
+	}
+
+	return nil
+}
+
 func (s *MatchStore) Update(ctx context.Context, match Match) (Match, error) {
 	query := `
 		UPDATE matches

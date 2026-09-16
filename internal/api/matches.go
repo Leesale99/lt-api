@@ -164,6 +164,41 @@ func (app *Application) showMatchHandler(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+func (app *Application) deleteMatchHandler(w http.ResponseWriter, r *http.Request) {
+	seasonID, err := app.readIDParam(r)
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	matchID, err := app.readIDParam(r, "match_id")
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	err = app.Store.Matches.Delete(ctx, matchID, seasonID)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, game.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+
+	err = app.writeJSON(w, http.StatusOK, envelope{"message": "match successfully deleted"}, nil)
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
+	}
+}
+
 func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Request) {
 	seasonID, err := app.readIDParam(r)
 	if err != nil {

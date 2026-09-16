@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -235,5 +236,104 @@ func TestCreateMatchHandler(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDeleteMatchHandler(t *testing.T) {
+	requireDB(t)
+
+	tests := []struct {
+		name     string
+		url      string
+		wantCode int
+		wantBody []string
+	}{
+		{
+			name: "closed match in an open round can be deleted",
+			// Deliberate exposure (mirrors ADR-007 one level down): the gate
+			// lives on rounds, so a closed match inside a still-open round is
+			// deletable. Match 1 is the canonical closed match.
+			url:      "/v1/seasons/1/matches/1",
+			wantCode: http.StatusOK,
+			wantBody: []string{"successfully deleted"},
+		},
+		{
+			name:     "open match can be deleted",
+			url:      "/v1/seasons/1/matches/2",
+			wantCode: http.StatusOK,
+			wantBody: []string{"successfully deleted"},
+		},
+		{
+			name:     "unknown match",
+			url:      "/v1/seasons/1/matches/999",
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "zero id",
+			url:      "/v1/seasons/1/matches/0",
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "non-numeric id",
+			url:      "/v1/seasons/1/matches/abc",
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name: "match in another season",
+			// Both canonical matches belong to season 1.
+			url:      "/v1/seasons/2/matches/1",
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
+			app := newTestApplication()
+
+			req := httptest.NewRequest(http.MethodDelete, tt.url, nil)
+			rr := httptest.NewRecorder()
+			app.routes().ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantCode {
+				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
+			}
+			for _, fragment := range tt.wantBody {
+				if !strings.Contains(rr.Body.String(), fragment) {
+					t.Errorf("body missing %q (body: %s)", fragment, rr.Body.String())
+				}
+			}
+		})
+	}
+}
+
+// TestDeleteMatchRemovesRow asserts the happy path is a real hard delete, not
+// just a 200.
+func TestDeleteMatchRemovesRow(t *testing.T) {
+	requireDB(t)
+
+	reset(t)
+	app := newTestApplication()
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/seasons/1/matches/1", nil)
+	rr := httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	var count int
+	err := testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM matches WHERE id = 1`).Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("match 1 still exists after delete")
 	}
 }
