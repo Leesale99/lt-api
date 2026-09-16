@@ -394,6 +394,15 @@ func TestDeleteRoundHandler(t *testing.T) {
 			wantBody: []string{"referenced by other records"},
 		},
 		{
+			name: "open round with a started match is lifecycle-gated",
+			url:  "/v1/seasons/1/rounds/1",
+			// Round 1 hosts the canonical started match; the gate refuses the
+			// delete because it would cascade the match away (ADR-008, same
+			// rule as the seasons delete gate).
+			wantCode: http.StatusConflict,
+			wantBody: []string{"referenced by other records"},
+		},
+		{
 			name:     "open round can be deleted",
 			url:      "/v1/seasons/1/rounds/2",
 			wantCode: http.StatusOK,
@@ -453,15 +462,24 @@ func TestDeleteRoundHandler(t *testing.T) {
 }
 
 // TestDeleteOpenRoundCascadesMatches covers the permitted path of the rounds
-// delete gate: an open round is hard-deleted and the cascade removes its
-// matches (round 1 hosts the canonical matches).
+// delete gate: an open round whose matches have not started is hard-deleted
+// and the cascade removes them (a started match would make the round durable
+// — round 1 hosts the canonical one and is gated, see TestDeleteRoundHandler).
 func TestDeleteOpenRoundCascadesMatches(t *testing.T) {
 	requireDB(t)
 
 	reset(t)
 	app := newTestApplication()
 
-	req := httptest.NewRequest(http.MethodDelete, "/v1/seasons/1/rounds/1", nil)
+	// A match that has not started yet does not make the round durable.
+	_, err := testPool.Exec(context.Background(),
+		`INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at)
+		VALUES (1, 2, 1, 2, 1.5, 2.5, 'created', now() + interval '7 days')`)
+	if err != nil {
+		t.Fatalf("insert future match: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/seasons/1/rounds/2", nil)
 	rr := httptest.NewRecorder()
 	app.routes().ServeHTTP(rr, req)
 
@@ -470,15 +488,15 @@ func TestDeleteOpenRoundCascadesMatches(t *testing.T) {
 	}
 
 	var rounds, matches int
-	err := testPool.QueryRow(context.Background(),
+	err = testPool.QueryRow(context.Background(),
 		`SELECT
-			(SELECT count(*) FROM rounds WHERE id = 1),
-			(SELECT count(*) FROM matches WHERE round_id = 1)`).Scan(&rounds, &matches)
+			(SELECT count(*) FROM rounds WHERE id = 2),
+			(SELECT count(*) FROM matches WHERE round_id = 2)`).Scan(&rounds, &matches)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rounds != 0 || matches != 0 {
-		t.Fatalf("round 1 not fully deleted: %d round(s), %d match(es) remain", rounds, matches)
+		t.Fatalf("round 2 not fully deleted: %d round(s), %d match(es) remain", rounds, matches)
 	}
 }
 

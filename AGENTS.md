@@ -29,7 +29,7 @@ Obsidian vault: `~/Projects/vaults/lt-api` — progress, decisions, lessons. Sta
 - `Home.md` must never be stale: update `Now` at session end or task transition.
 
 ## Sandbox environment
-- The tool sandbox runs in a Docker container, so `localhost`/`127.0.0.1` inside the sandbox is NOT the host machine. To reach services running on the host (e.g. PostgreSQL on 5432), use `host.docker.internal` instead: override DSNs per-command, e.g. `LT_API_TEST_DSN=postgres://lt_test:test@host.docker.internal:5432/postgres?sslmode=disable go test ./...` (do not edit `.envrc` — it is the host-side source of truth).
+- The tool sandbox runs in a Docker container, so `localhost`/`127.0.0.1` inside the sandbox is NOT the host machine. To reach services running on the host (e.g. PostgreSQL on 5432), use `host.docker.internal` instead: override DSNs per-command, e.g. `LT_API_TEST_DSN=postgres://lt_test:test@host.docker.internal:5432/lt_api_test??sslmode=disable go test ./...` (do not edit `.envrc` — it is the host-side source of truth).
 - `go test` caches results; after changing environment/DSN, run `go clean -testcache` first or you may see a stale green run.
 
 ## Docs

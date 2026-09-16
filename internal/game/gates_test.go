@@ -39,7 +39,7 @@ const futureMatchSQL = `
 func mustExec(ctx context.Context, t *testing.T, query string, args ...any) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, query, args...); err != nil {
-		t.Fatalf("prepare: %v", err)
+		t.Fatalf("exec: %v", err)
 	}
 }
 
@@ -243,6 +243,43 @@ func TestSeasonDeleteGateRejectsMatchHistory(t *testing.T) {
 			},
 			query:    `DELETE FROM seasons WHERE id = $1`,
 			args:     func(f fixture) []any { return []any{f.season} },
+			wantCode: "",
+		},
+	})
+}
+
+func TestRoundDeleteGateRejectsMatchHistory(t *testing.T) {
+	requireDB(t)
+
+	ctx := context.Background()
+	defer cleanup(ctx, t)
+
+	runGateCases(ctx, t, []gateCase{
+		{
+			name: "open round with a started match cannot be deleted",
+			prepare: func(ctx context.Context, t *testing.T, f fixture) {
+				// The seeded round is already open with no matches, so only the
+				// started match makes it durable (ADR-008 consistency with the
+				// seasons delete gate).
+				insertMatchRow(ctx, t, startedMatchSQL, f)
+			},
+			query:    `DELETE FROM rounds WHERE id = $1`,
+			args:     func(f fixture) []any { return []any{f.round} },
+			wantCode: errP0001,
+		},
+		{
+			name: "open round with a not-started match can still be deleted",
+			prepare: func(ctx context.Context, t *testing.T, f fixture) {
+				insertMatchRow(ctx, t, futureMatchSQL, f)
+			},
+			query:    `DELETE FROM rounds WHERE id = $1`,
+			args:     func(f fixture) []any { return []any{f.round} },
+			wantCode: "",
+		},
+		{
+			name:     "open round without matches can still be deleted",
+			query:    `DELETE FROM rounds WHERE id = $1`,
+			args:     func(f fixture) []any { return []any{f.round} },
 			wantCode: "",
 		},
 	})

@@ -185,8 +185,11 @@ CREATE TRIGGER seasons_delete_gate
 
 CREATE FUNCTION rounds_block_delete() RETURNS trigger AS $$
 BEGIN
-  IF OLD.status = 'closed' THEN
-    RAISE EXCEPTION 'round_status_blocks_delete'
+  -- ADR-008 extension of ADR-007: an open round with a started match is
+  -- durable too — deleting it would cascade away started matches (same rule
+  -- as the seasons delete gate).
+  IF OLD.status = 'closed' OR round_has_started_match(OLD.id) THEN
+    RAISE EXCEPTION 'round_lifecycle_blocks_delete'
       USING ERRCODE = 'P0001';
   END IF;
   RETURN OLD;
