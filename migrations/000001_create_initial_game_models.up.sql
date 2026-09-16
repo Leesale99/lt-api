@@ -90,6 +90,12 @@ CREATE INDEX players_name_trgm_idx ON players USING GIN (name gin_trgm_ops);
 
 CREATE INDEX rounds_season_id_idx ON rounds (season_id);
 
+-- Indexes the referencing side of matches_season_id_fkey (Postgres does not
+-- auto-index FK referencing columns). Primary justification is the ON DELETE
+-- CASCADE path: deleting a season runs DELETE FROM matches WHERE season_id
+-- internally, which seq-scans the table without this index (verified with
+-- EXPLAIN ANALYZE). Secondary: matches GetAll season_id filter.
+CREATE INDEX matches_season_id_idx ON matches (season_id);
 CREATE INDEX matches_round_id_idx ON matches (round_id);
 CREATE INDEX matches_home_team_id_idx ON matches (home_team_id);
 CREATE INDEX matches_away_team_id_idx ON matches (away_team_id);
