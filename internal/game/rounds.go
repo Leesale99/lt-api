@@ -183,17 +183,13 @@ func (s *RoundStore) GetAll(ctx context.Context, seasonID int, status string, fi
 	return rounds, metadata, nil
 }
 
-func (s *RoundStore) Delete(ctx context.Context, id int) error {
-	if id < 1 {
-		return ErrRecordNotFound
-	}
-
+func (s *RoundStore) Delete(ctx context.Context, id, seasonId int) error {
 	query := `
 		DELETE FROM rounds
-		WHERE id = $1
+		WHERE id = $1 AND season_id = $2
 	`
 
-	result, err := s.pool.Exec(ctx, query, id)
+	result, err := s.pool.Exec(ctx, query, id, seasonId)
 	if err != nil {
 		// P0001 comes from the rounds_delete_gate trigger (ADR-007 one level
 		// down): closed rounds are durable history, the DB is authoritative.

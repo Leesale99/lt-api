@@ -178,112 +178,119 @@ func TestUpdateRoundHandler(t *testing.T) {
 	}{
 		{
 			name:     "valid number update",
-			url:      "/v1/rounds/2",
+			url:      "/v1/seasons/1/rounds/2",
 			body:     `{"number":5}`,
 			wantCode: http.StatusOK,
 			wantBody: []string{`"number": 5`, `"version": 2`},
 		},
 		{
 			name:     "valid status update",
-			url:      "/v1/rounds/2",
+			url:      "/v1/seasons/1/rounds/2",
 			body:     `{"status":"closed"}`,
 			wantCode: http.StatusOK,
 			wantBody: []string{`"status": "closed"`, `"version": 2`},
 		},
 		{
 			name:     "uppercase status is normalized",
-			url:      "/v1/rounds/2",
+			url:      "/v1/seasons/1/rounds/2",
 			body:     `{"status":"CLOSED"}`,
 			wantCode: http.StatusOK,
 			wantBody: []string{`"status": "closed"`},
 		},
 		{
 			name:     "empty body",
-			url:      "/v1/rounds/2",
+			url:      "/v1/seasons/1/rounds/2",
 			body:     ``,
 			wantCode: http.StatusBadRequest,
 			wantBody: []string{"body must not be empty"},
 		},
 		{
 			name:     "badly-formed JSON",
-			url:      "/v1/rounds/2",
+			url:      "/v1/seasons/1/rounds/2",
 			body:     `{"number":`,
 			wantCode: http.StatusBadRequest,
 			wantBody: []string{"badly-formed JSON"},
 		},
 		{
 			name:     "unknown field rejected",
-			url:      "/v1/rounds/2",
+			url:      "/v1/seasons/1/rounds/2",
 			body:     `{"number":5,"season_id":2}`,
 			wantCode: http.StatusBadRequest,
 			wantBody: []string{"unknown key"},
 		},
 		{
 			name:     "empty object is a no-op",
-			url:      "/v1/rounds/2",
+			url:      "/v1/seasons/1/rounds/2",
 			body:     `{}`,
 			wantCode: http.StatusOK,
 			wantBody: []string{`"number": 2`, `"version": 2`},
 		},
 		{
 			name:     "number zero",
-			url:      "/v1/rounds/2",
+			url:      "/v1/seasons/1/rounds/2",
 			body:     `{"number":0}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"number"},
 		},
 		{
 			name:     "number above league maximum",
-			url:      "/v1/rounds/2",
+			url:      "/v1/seasons/1/rounds/2",
 			body:     `{"number":39}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"number"},
 		},
 		{
 			name:     "unknown status",
-			url:      "/v1/rounds/2",
+			url:      "/v1/seasons/1/rounds/2",
 			body:     `{"status":"pending"}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"status"},
 		},
 		{
 			name:     "duplicate number within season",
-			url:      "/v1/rounds/2",
+			url:      "/v1/seasons/1/rounds/2",
 			body:     `{"number":1}`,
 			wantCode: http.StatusConflict,
 			wantBody: []string{"unique values"},
 		},
 		{
 			name:     "same number in another season is fine",
-			url:      "/v1/rounds/3",
+			url:      "/v1/seasons/2/rounds/3",
 			body:     `{"number":2}`,
 			wantCode: http.StatusOK,
 			wantBody: []string{`"number": 2`},
 		},
 		{
 			name:     "unknown round",
-			url:      "/v1/rounds/999",
+			url:      "/v1/seasons/1/rounds/999",
 			body:     `{"number":5}`,
 			wantCode: http.StatusNotFound,
 			wantBody: []string{"could not be found"},
 		},
 		{
 			name:     "zero id",
-			url:      "/v1/rounds/0",
+			url:      "/v1/seasons/1/rounds/0",
 			body:     `{"number":5}`,
 			wantCode: http.StatusNotFound,
 			wantBody: []string{"could not be found"},
 		},
 		{
 			name:     "non-numeric id",
-			url:      "/v1/rounds/abc",
+			url:      "/v1/seasons/1/rounds/abc",
+			body:     `{"number":5}`,
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "round in another season",
+			url:      "/v1/seasons/1/rounds/3",
 			body:     `{"number":5}`,
 			wantCode: http.StatusNotFound,
 			wantBody: []string{"could not be found"},
 		},
 		{
 			name:     "matching version header",
-			url:      "/v1/rounds/2",
+			url:      "/v1/seasons/1/rounds/2",
 			headers:  map[string]string{"X-Expected-Version": "1"},
 			body:     `{"status":"closed"}`,
 			wantCode: http.StatusOK,
@@ -291,7 +298,7 @@ func TestUpdateRoundHandler(t *testing.T) {
 		},
 		{
 			name:     "stale version header",
-			url:      "/v1/rounds/2",
+			url:      "/v1/seasons/1/rounds/2",
 			headers:  map[string]string{"X-Expected-Version": "9"},
 			body:     `{"status":"closed"}`,
 			wantCode: http.StatusConflict,
@@ -335,7 +342,7 @@ func TestUpdateRoundPersists(t *testing.T) {
 	reset(t)
 	app := newTestApplication()
 
-	req := httptest.NewRequest(http.MethodPatch, "/v1/rounds/2",
+	req := httptest.NewRequest(http.MethodPatch, "/v1/seasons/1/rounds/2",
 		strings.NewReader(`{"number":7,"status":"closed"}`))
 	rr := httptest.NewRecorder()
 	app.routes().ServeHTTP(rr, req)
@@ -368,33 +375,41 @@ func TestDeleteRoundHandler(t *testing.T) {
 		wantBody []string
 	}{
 		{
-			name:     "closed round is lifecycle-gated",
-			url:      "/v1/rounds/4",
+			name: "closed round is lifecycle-gated",
+			url:  "/v1/seasons/1/rounds/4",
+			// number 3 is free in season 1 (canonical round 3 lives in season 2),
+			// so the (season_id, number) unique constraint does not fire
 			seed:     `INSERT INTO rounds (season_id, number, status) VALUES (1, 3, 'closed')`,
 			wantCode: http.StatusConflict,
 			wantBody: []string{"referenced by other records"},
 		},
 		{
 			name:     "open round can be deleted",
-			url:      "/v1/rounds/2",
+			url:      "/v1/seasons/1/rounds/2",
 			wantCode: http.StatusOK,
 			wantBody: []string{"successfully deleted"},
 		},
 		{
 			name:     "unknown round",
-			url:      "/v1/rounds/999",
+			url:      "/v1/seasons/1/rounds/999",
 			wantCode: http.StatusNotFound,
 			wantBody: []string{"could not be found"},
 		},
 		{
 			name:     "zero id",
-			url:      "/v1/rounds/0",
+			url:      "/v1/seasons/1/rounds/0",
 			wantCode: http.StatusNotFound,
 			wantBody: []string{"could not be found"},
 		},
 		{
 			name:     "non-numeric id",
-			url:      "/v1/rounds/abc",
+			url:      "/v1/seasons/1/rounds/abc",
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "round in another season",
+			url:      "/v1/seasons/1/rounds/3",
 			wantCode: http.StatusNotFound,
 			wantBody: []string{"could not be found"},
 		},
@@ -436,7 +451,7 @@ func TestDeleteOpenRoundCascadesMatches(t *testing.T) {
 	reset(t)
 	app := newTestApplication()
 
-	req := httptest.NewRequest(http.MethodDelete, "/v1/rounds/1", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/v1/seasons/1/rounds/1", nil)
 	rr := httptest.NewRecorder()
 	app.routes().ServeHTTP(rr, req)
 

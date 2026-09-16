@@ -74,7 +74,7 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	headers := make(http.Header)
-	headers.Set("Location", fmt.Sprintf("/v1/rounds/%d", round.ID))
+	headers.Set("Location", fmt.Sprintf("/v1/seasons/%d/rounds/%d", round.SeasonID, round.ID))
 
 	err = app.writeJSON(w, http.StatusCreated, envelope{"round": round}, headers)
 	if err != nil {
@@ -136,7 +136,13 @@ func (app *Application) listRoundsHandler(w http.ResponseWriter, r *http.Request
 }
 
 func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := app.readIDParam(r)
+	seasonId, err := app.readIDParam(r)
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	roundId, err := app.readIDParam(r, "roundId")
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return
@@ -145,7 +151,7 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	round, err := app.Store.Rounds.Get(ctx, id)
+	round, err := app.Store.Rounds.Get(ctx, roundId)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -155,6 +161,11 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 		default:
 			app.serverErrorResponse(w, r, err)
 		}
+		return
+	}
+
+	if round.SeasonID != seasonId {
+		app.notFoundResponse(w, r)
 		return
 	}
 
@@ -211,7 +222,13 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (app *Application) deleteRoundHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := app.readIDParam(r)
+	seasonId, err := app.readIDParam(r)
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	roundId, err := app.readIDParam(r, "roundId")
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return
@@ -220,7 +237,7 @@ func (app *Application) deleteRoundHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	err = app.Store.Rounds.Delete(ctx, id)
+	err = app.Store.Rounds.Delete(ctx, roundId, seasonId)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
