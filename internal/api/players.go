@@ -27,7 +27,7 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	if _, err := app.Store.Seasons.Get(ctx, seasonID); err != nil {
+	if _, err := app.Game.Seasons.Get(ctx, seasonID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -58,7 +58,7 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if _, err := app.Store.Teams.Get(ctx, player.FavoriteTeamID); err != nil {
+	if _, err := app.Game.Teams.Get(ctx, player.FavoriteTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -71,7 +71,7 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	player, err = app.Store.Players.Insert(ctx, player)
+	player, err = app.Game.Players.Insert(ctx, player)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -105,7 +105,7 @@ func (app *Application) showPlayerHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	player, err := app.Store.Players.Get(ctx, id)
+	player, err := app.Game.Players.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -140,7 +140,7 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	player, err := app.Store.Players.Get(ctx, playerID)
+	player, err := app.Game.Players.Get(ctx, playerID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -189,7 +189,7 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if _, err := app.Store.Teams.Get(ctx, player.FavoriteTeamID); err != nil {
+	if _, err := app.Game.Teams.Get(ctx, player.FavoriteTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -202,7 +202,7 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	player, err = app.Store.Players.Update(ctx, player)
+	player, err = app.Game.Players.Update(ctx, player)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -241,7 +241,7 @@ func (app *Application) deletePlayerHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	err = app.Store.Players.Delete(ctx, playerID, seasonID)
+	err = app.Game.Players.Delete(ctx, playerID, seasonID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -275,6 +275,6 @@ func (app *Application) listPlayersHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	players, metadata, err := app.Store.Players.GetAll(ctx, name, favoriteTeamID, filters)
+	players, metadata, err := app.Game.Players.GetAll(ctx, name, favoriteTeamID, filters)
 	app.writeListResponse(w, r, "players", players, metadata, err)
 }

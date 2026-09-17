@@ -41,7 +41,7 @@ func (app *Application) createTeamHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	team, err = app.Store.Teams.Insert(ctx, team)
+	team, err = app.Game.Teams.Insert(ctx, team)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -71,7 +71,7 @@ func (app *Application) showTeamHandler(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	team, err := app.Store.Teams.Get(ctx, id)
+	team, err := app.Game.Teams.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -100,7 +100,7 @@ func (app *Application) updateTeamHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	team, err := app.Store.Teams.Get(ctx, id)
+	team, err := app.Game.Teams.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -149,7 +149,7 @@ func (app *Application) updateTeamHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	team, err = app.Store.Teams.Update(ctx, team)
+	team, err = app.Game.Teams.Update(ctx, team)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -178,7 +178,7 @@ func (app *Application) deleteTeamHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	err = app.Store.Teams.Delete(ctx, id)
+	err = app.Game.Teams.Delete(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -213,6 +213,6 @@ func (app *Application) listTeamsHandler(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	teams, metadata, err := app.Store.Teams.GetAll(ctx, name, filters)
+	teams, metadata, err := app.Game.Teams.GetAll(ctx, name, filters)
 	app.writeListResponse(w, r, "teams", teams, metadata, err)
 }

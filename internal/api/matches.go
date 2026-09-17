@@ -34,7 +34,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	if _, err := app.Store.Seasons.Get(ctx, seasonID); err != nil {
+	if _, err := app.Game.Seasons.Get(ctx, seasonID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -70,7 +70,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	round, err := app.Store.Rounds.Get(ctx, input.RoundID)
+	round, err := app.Game.Rounds.Get(ctx, input.RoundID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -89,7 +89,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, err := app.Store.Teams.Get(ctx, input.HomeTeamID); err != nil {
+	if _, err := app.Game.Teams.Get(ctx, input.HomeTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -102,7 +102,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, err := app.Store.Teams.Get(ctx, input.AwayTeamID); err != nil {
+	if _, err := app.Game.Teams.Get(ctx, input.AwayTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -115,7 +115,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	match, err = app.Store.Matches.Insert(ctx, match)
+	match, err = app.Game.Matches.Insert(ctx, match)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -145,7 +145,7 @@ func (app *Application) showMatchHandler(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	match, err := app.Store.Matches.Get(ctx, id)
+	match, err := app.Game.Matches.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -185,7 +185,7 @@ func (app *Application) listMatchHandler(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	matches, metadata, err := app.Store.Matches.GetAll(ctx, seasonID, roundID, status, filters)
+	matches, metadata, err := app.Game.Matches.GetAll(ctx, seasonID, roundID, status, filters)
 	app.writeListResponse(w, r, "matches", matches, metadata, err)
 }
 
@@ -205,7 +205,7 @@ func (app *Application) deleteMatchHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	err = app.Store.Matches.Delete(ctx, matchID, seasonID)
+	err = app.Game.Matches.Delete(ctx, matchID, seasonID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -240,7 +240,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	match, err := app.Store.Matches.Get(ctx, matchID)
+	match, err := app.Game.Matches.Get(ctx, matchID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -307,7 +307,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, err := app.Store.Teams.Get(ctx, match.HomeTeamID); err != nil {
+	if _, err := app.Game.Teams.Get(ctx, match.HomeTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -320,7 +320,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, err := app.Store.Teams.Get(ctx, match.AwayTeamID); err != nil {
+	if _, err := app.Game.Teams.Get(ctx, match.AwayTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -333,7 +333,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	match, err = app.Store.Matches.Update(ctx, match)
+	match, err = app.Game.Matches.Update(ctx, match)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):

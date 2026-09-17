@@ -32,7 +32,7 @@ func (app *Application) listSeasonsHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	seasons, metadata, err := app.Store.Seasons.GetAll(ctx, id, status, filters)
+	seasons, metadata, err := app.Game.Seasons.GetAll(ctx, id, status, filters)
 	app.writeListResponse(w, r, "seasons", seasons, metadata, err)
 }
 
@@ -61,7 +61,7 @@ func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	season, err = app.Store.Seasons.Insert(ctx, season)
+	season, err = app.Game.Seasons.Insert(ctx, season)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -91,7 +91,7 @@ func (app *Application) showSeasonHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	season, err := app.Store.Seasons.Get(ctx, id)
+	season, err := app.Game.Seasons.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -120,7 +120,7 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	season, err := app.Store.Seasons.Get(ctx, id)
+	season, err := app.Game.Seasons.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -162,7 +162,7 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	season, err = app.Store.Seasons.Update(ctx, season)
+	season, err = app.Game.Seasons.Update(ctx, season)
 	if err != nil {
 		switch {
 		case errors.Is(err, game.ErrEditConflict):
@@ -190,7 +190,7 @@ func (app *Application) deleteSeasonHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	err = app.Store.Seasons.Delete(ctx, id)
+	err = app.Game.Seasons.Delete(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):

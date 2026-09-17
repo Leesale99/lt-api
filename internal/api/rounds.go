@@ -28,7 +28,7 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	if _, err := app.Store.Seasons.Get(ctx, seasonID); err != nil {
+	if _, err := app.Game.Seasons.Get(ctx, seasonID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -59,7 +59,7 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	round, err = app.Store.Rounds.Insert(ctx, round)
+	round, err = app.Game.Rounds.Insert(ctx, round)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -92,7 +92,7 @@ func (app *Application) showRoundHandler(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	round, err := app.Store.Rounds.Get(ctx, id)
+	round, err := app.Game.Rounds.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -131,7 +131,7 @@ func (app *Application) listRoundsHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	rounds, metadata, err := app.Store.Rounds.GetAll(ctx, seasonID, status, filters)
+	rounds, metadata, err := app.Game.Rounds.GetAll(ctx, seasonID, status, filters)
 	app.writeListResponse(w, r, "rounds", rounds, metadata, err)
 }
 
@@ -151,7 +151,7 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	round, err := app.Store.Rounds.Get(ctx, roundID)
+	round, err := app.Game.Rounds.Get(ctx, roundID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -208,9 +208,9 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 	// (open → in_progress), and the two writes must succeed together — so it
 	// goes through RoundStore.Open's transaction rather than Update.
 	if current.Status == "created" && round.Status == "open" {
-		round, err = app.Store.Rounds.Open(ctx, round)
+		round, err = app.Game.Rounds.Open(ctx, round)
 	} else {
-		round, err = app.Store.Rounds.Update(ctx, round)
+		round, err = app.Game.Rounds.Update(ctx, round)
 	}
 	if err != nil {
 		switch {
@@ -250,7 +250,7 @@ func (app *Application) deleteRoundHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	err = app.Store.Rounds.Delete(ctx, roundID, seasonID)
+	err = app.Game.Rounds.Delete(ctx, roundID, seasonID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):

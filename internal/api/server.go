@@ -11,15 +11,17 @@ import (
 	"syscall"
 	"time"
 
-	game "lt-api.aleksrdvn.com/internal/game"
+	"lt-api.aleksrdvn.com/internal/game"
+	"lt-api.aleksrdvn.com/internal/identity"
 )
 
 type Application struct {
-	Version string
-	Port    int
-	Env     string
-	Logger  *slog.Logger
-	Store   *game.Store
+	Version  string
+	Port     int
+	Env      string
+	Logger   *slog.Logger
+	Game     *game.Store
+	Identity *identity.Store
 }
 
 func (app *Application) Serve() error {

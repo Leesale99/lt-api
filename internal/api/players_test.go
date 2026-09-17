@@ -23,7 +23,7 @@ import (
 func newTestApplication() *Application {
 	return &Application{
 		Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
-		Store:  game.NewStore(testPool),
+		Game:   game.NewStore(testPool),
 	}
 }
 

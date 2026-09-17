@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"lt-api.aleksrdvn.com/internal/api"
 	"lt-api.aleksrdvn.com/internal/game"
+	"lt-api.aleksrdvn.com/internal/identity"
 )
 
 const version = "1.0.0"
@@ -49,11 +50,12 @@ func main() {
 	logger.Info("database connection pool established")
 
 	app := &api.Application{
-		Version: version,
-		Env:     cfg.env,
-		Port:    cfg.port,
-		Logger:  logger,
-		Store:   game.NewStore(pool),
+		Version:  version,
+		Env:      cfg.env,
+		Port:     cfg.port,
+		Logger:   logger,
+		Game:     game.NewStore(pool),
+		Identity: identity.NewStore(pool),
 	}
 
 	err = app.Serve()
