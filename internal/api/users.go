@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"lt-api.aleksrdvn.com/internal/constants"
@@ -13,7 +14,7 @@ import (
 func (app *Application) registerUser(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Name     string `json:"name"`
-		Email    string `json:"Email"`
+		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
 
@@ -29,16 +30,18 @@ func (app *Application) registerUser(w http.ResponseWriter, r *http.Request) {
 		Activated: false,
 	}
 
-	err = user.Password.Set(input.Password)
-	if err != nil {
-		app.serverErrorResponse(w, r, err)
+	v := validator.New()
+
+	// Validate BEFORE hashing: bcrypt errors on input over 72 bytes, and a
+	// hashing error would surface as a 500 instead of a validation error.
+	if identity.ValidateRegistration(v, input.Name, input.Email, input.Password); !v.Valid() {
+		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
 
-	v := validator.New()
-
-	if identity.ValidateUser(v, user); !v.Valid() {
-		app.failedValidationResponse(w, r, v.Errors)
+	err = user.Password.Set(input.Password)
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
 		return
 	}
 
@@ -58,7 +61,10 @@ func (app *Application) registerUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = app.writeJSON(w, http.StatusOK, envelope{"user": user}, nil)
+	headers := make(http.Header)
+	headers.Set("Location", fmt.Sprintf("/v1/users/%d", user.ID))
+
+	err = app.writeJSON(w, http.StatusCreated, envelope{"user": user}, headers)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}

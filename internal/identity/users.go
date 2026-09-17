@@ -66,18 +66,19 @@ func ValidatePasswordPlaintext(v *validator.Validator, password string) {
 	v.Check(len(password) <= 72, "password", "must not be more then 72 bytes long")
 }
 
-func ValidateUser(v *validator.Validator, user User) {
-	v.Check(user.Name != "", "name", "must be provided")
-	v.Check(len(user.Name) <= 500, "name", "must not be more then 500 bytes long")
-	ValidateEmail(v, user.Email)
-
-	if user.Password.plaintext != nil {
-		ValidatePasswordPlaintext(v, *user.Password.plaintext)
-	}
-
-	if user.Password.hash == nil {
-		panic("missing password hash for the user")
-	}
+// ValidateRegistration validates the client-supplied fields of a
+// registration request BEFORE the password is hashed. bcrypt refuses input
+// over 72 bytes with an error, so hashing first would surface that as a
+// 500; validating the plaintext first turns it into a 422, and skips the
+// bcrypt cost entirely for input that is about to be rejected. This is the
+// only user validator: the hash-nil invariant lives in the store
+// (Insert/Update), not here — validators collect field errors, they never
+// panic.
+func ValidateRegistration(v *validator.Validator, name, email, plaintextPassword string) {
+	v.Check(name != "", "name", "must be provided")
+	v.Check(len(name) <= 500, "name", "must not be more then 500 bytes long")
+	ValidateEmail(v, email)
+	ValidatePasswordPlaintext(v, plaintextPassword)
 }
 
 type UsersStore struct {
@@ -85,6 +86,13 @@ type UsersStore struct {
 }
 
 func (s *UsersStore) Insert(ctx context.Context, user User) (User, error) {
+	// Invariant, not validation: a user can never be persisted without a
+	// hash. The DB's NOT NULL is the last line of defense; this panic is the
+	// fast, loud one at the call site.
+	if user.Password.hash == nil {
+		panic("missing password hash for the user")
+	}
+
 	query := `
 		INSERT INTO users (name, email, password_hash, activated)
 		VALUES ($1, $2, $3, $4)
@@ -134,6 +142,10 @@ func (s *UsersStore) GetByEmail(ctx context.Context, email string) (User, error)
 }
 
 func (s *UsersStore) Update(ctx context.Context, user User) (User, error) {
+	if user.Password.hash == nil {
+		panic("missing password hash for the user")
+	}
+
 	query := `
 		UPDATE users
 		SET name = $1, email = $2, password_hash = $3, activated = $4, version = version + 1

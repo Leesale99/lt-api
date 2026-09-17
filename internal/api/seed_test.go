@@ -12,7 +12,7 @@ import (
 )
 
 const resetSQL = `
-	TRUNCATE matches, players, rounds, seasons, teams RESTART IDENTITY CASCADE;
+	TRUNCATE matches, players, rounds, seasons, teams, users RESTART IDENTITY CASCADE;
 
 	INSERT INTO teams (name, logo, description) VALUES
 		('Olympiacos', 'https://x.example/oly.png', 'Piraeus'),
