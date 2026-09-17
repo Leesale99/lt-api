@@ -10,6 +10,7 @@ description: Write mechanics and rules routing for the lt-api Obsidian knowledge
 - Use the pi-obsidian tool's commands (`read`, `write`, `create`, `append`, `move`, `delete`, `search`, …) — never bash or sandbox file tools on vault paths.
 - Writes must be sequential, never parallel — parallel writes can silently produce empty files. Re-read every note after writing and verify the TAIL of the file, not just the head — writes have been observed to truncate silently.
 - `write`/`create` do not add the `.md` extension — use `path=` with the explicit `.md` (same for `move`).
+- `content=` (and `search query=`/`replace=`) must be one double-quoted value; raw newlines silently truncate the write — emit `\n` escapes instead. Inside, only `\"` `\n` `\t` `\r` are escapes; other backslashes pass through literally (so backticks stay plain, `\"` for `"`, single-quoted YAML scalars in frontmatter).
 - `delete` moves to trash (recoverable).
 - `search query=x replace=y` replaces only the exact matched substring — query the full text you want gone, not a prefix.
 - `eval code=` quoting: inside double-quoted values, `\n`/`\t`/`\r` escapes are decoded into real characters, breaking JS string/regex literals. Single-quote the code value, or avoid escapes entirely.
