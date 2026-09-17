@@ -10,6 +10,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	game "lt-api.aleksrdvn.com/internal/game"
+	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -32,7 +33,7 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -64,7 +65,7 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrDuplicateRecord):
+		case errors.Is(err, store.ErrDuplicateRecord):
 			app.duplicateRecordResponse(w, r)
 			return
 		default:
@@ -97,7 +98,7 @@ func (app *Application) showRoundHandler(w http.ResponseWriter, r *http.Request)
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -156,7 +157,7 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -214,11 +215,11 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 	}
 	if err != nil {
 		switch {
-		case errors.Is(err, game.ErrEditConflict):
+		case errors.Is(err, store.ErrEditConflict):
 			app.editConflictResponse(w, r)
-		case errors.Is(err, game.ErrDuplicateRecord):
+		case errors.Is(err, store.ErrDuplicateRecord):
 			app.duplicateRecordResponse(w, r)
-		case errors.Is(err, game.ErrRecordInUse):
+		case errors.Is(err, store.ErrRecordInUse):
 			// rounds_freeze_gate: a match of this round has started and the
 			// update tried to regress it (ADR-008).
 			app.recordFrozenResponse(w, r)
@@ -255,9 +256,9 @@ func (app *Application) deleteRoundHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordInUse):
+		case errors.Is(err, store.ErrRecordInUse):
 			app.recordInUseResponse(w, r)
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)

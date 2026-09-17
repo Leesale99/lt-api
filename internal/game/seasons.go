@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -55,7 +57,7 @@ type SeasonStore struct {
 
 func (s *SeasonStore) Get(ctx context.Context, id int) (Season, error) {
 	if id < 1 {
-		return Season{}, ErrRecordNotFound
+		return Season{}, store.ErrRecordNotFound
 	}
 
 	query := `
@@ -75,7 +77,7 @@ func (s *SeasonStore) Get(ctx context.Context, id int) (Season, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Season{}, ErrRecordNotFound
+			return Season{}, store.ErrRecordNotFound
 		default:
 			return Season{}, err
 		}
@@ -106,11 +108,11 @@ func (s *SeasonStore) Update(ctx context.Context, season Season) (Season, error)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Season{}, ErrEditConflict
-		case triggerViolation(err):
+			return Season{}, store.ErrEditConflict
+		case store.IsTriggerViolation(err):
 			// seasons_freeze_gate: a match has started and the update tried
 			// to move the season back to created/open (ADR-008).
-			return Season{}, ErrRecordInUse
+			return Season{}, store.ErrRecordInUse
 		}
 		return Season{}, err
 	}
@@ -118,7 +120,7 @@ func (s *SeasonStore) Update(ctx context.Context, season Season) (Season, error)
 	return season, err
 }
 
-func (s *SeasonStore) GetAll(ctx context.Context, id int, status string, filters Filters) ([]Season, Metadata, error) {
+func (s *SeasonStore) GetAll(ctx context.Context, id int, status string, filters store.Filters) ([]Season, store.Metadata, error) {
 	conds, args := []string{}, []any{}
 
 	if id != 0 {
@@ -140,13 +142,13 @@ func (s *SeasonStore) GetAll(ctx context.Context, id int, status string, filters
 		FROM seasons%s
 		ORDER BY %s %s, id ASC
 		LIMIT $%d OFFSET $%d
-	`, where, filters.sortColumn(), filters.sortDirection(), len(args)+1, len(args)+2)
+	`, where, filters.SortColumn(), filters.SortDirection(), len(args)+1, len(args)+2)
 
-	args = append(args, filters.limit(), filters.offset())
+	args = append(args, filters.Limit(), filters.Offset())
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, Metadata{}, err
+		return nil, store.Metadata{}, err
 	}
 
 	defer rows.Close()
@@ -164,24 +166,24 @@ func (s *SeasonStore) GetAll(ctx context.Context, id int, status string, filters
 			&season.Version,
 		)
 		if err != nil {
-			return nil, Metadata{}, err
+			return nil, store.Metadata{}, err
 		}
 
 		seasons = append(seasons, season)
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, Metadata{}, err
+		return nil, store.Metadata{}, err
 	}
 
-	metadata := calculateMetadata(totalRecords, filters.Page, filters.PageSize)
+	metadata := store.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
 
 	return seasons, metadata, nil
 }
 
 func (s *SeasonStore) Delete(ctx context.Context, id int) error {
 	if id < 1 {
-		return ErrRecordNotFound
+		return store.ErrRecordNotFound
 	}
 
 	query := `
@@ -194,14 +196,14 @@ func (s *SeasonStore) Delete(ctx context.Context, id int) error {
 		// P0001 comes from the seasons delete gate (ADR-007 + ADR-008):
 		// in_progress/closed seasons and open seasons with match history are
 		// durable, the DB is authoritative.
-		if triggerViolation(err) {
-			return ErrRecordInUse
+		if store.IsTriggerViolation(err) {
+			return store.ErrRecordInUse
 		}
 		return err
 	}
 
 	if result.RowsAffected() == 0 {
-		return ErrRecordNotFound
+		return store.ErrRecordNotFound
 	}
 
 	return nil

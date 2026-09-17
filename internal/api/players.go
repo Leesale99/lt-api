@@ -9,6 +9,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	game "lt-api.aleksrdvn.com/internal/game"
+	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -31,7 +32,7 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -62,7 +63,7 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			v.AddError("favorite_team_id", "must reference an existing team")
 			app.failedValidationResponse(w, r, v.Errors)
 		default:
@@ -76,7 +77,7 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			// Race: the team was deleted between the check above and the insert.
 			v.AddError("favorite_team_id", "must reference an existing team")
 			app.failedValidationResponse(w, r, v.Errors)
@@ -110,7 +111,7 @@ func (app *Application) showPlayerHandler(w http.ResponseWriter, r *http.Request
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -145,7 +146,7 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -193,7 +194,7 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			v.AddError("favorite_team_id", "must reference an existing team")
 			app.failedValidationResponse(w, r, v.Errors)
 		default:
@@ -207,9 +208,9 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrEditConflict):
+		case errors.Is(err, store.ErrEditConflict):
 			app.editConflictResponse(w, r)
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			// Race: the team was deleted between the check above and the update.
 			v.AddError("favorite_team_id", "must reference an existing team")
 			app.failedValidationResponse(w, r, v.Errors)
@@ -246,7 +247,7 @@ func (app *Application) deletePlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)

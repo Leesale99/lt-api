@@ -1,4 +1,4 @@
-package game
+package store
 
 import (
 	"slices"
@@ -7,6 +7,11 @@ import (
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
+// Filters carries the standard list-query pagination parameters shared by
+// every list endpoint and every List store method: page/page_size bounds the
+// result window, sort names the column (safelist-validated, "-prefix means
+// descending), and SortSafelist is the per-resource whitelist that makes
+// SortColumn safe to interpolate into SQL.
 type Filters struct {
 	Page         int
 	PageSize     int
@@ -14,7 +19,10 @@ type Filters struct {
 	SortSafelist []string
 }
 
-func (f Filters) sortColumn() string {
+// SortColumn returns the SQL column name for the sort parameter. It panics
+// on an unsafelisted value: only ValidateFilters-checked filters may reach
+// it, and the panic is the guard that keeps fmt.Sprintf-built queries safe.
+func (f Filters) SortColumn() string {
 	if slices.Contains(f.SortSafelist, f.Sort) {
 		return strings.TrimPrefix(f.Sort, "-")
 	}
@@ -22,18 +30,18 @@ func (f Filters) sortColumn() string {
 	panic("unsafe sort parameter: " + f.Sort)
 }
 
-func (f Filters) sortDirection() string {
+func (f Filters) SortDirection() string {
 	if strings.HasPrefix(f.Sort, "-") {
 		return "DESC"
 	}
 	return "ASC"
 }
 
-func (f Filters) limit() int {
+func (f Filters) Limit() int {
 	return f.PageSize
 }
 
-func (f Filters) offset() int {
+func (f Filters) Offset() int {
 	return (f.Page - 1) * f.PageSize
 }
 
@@ -45,6 +53,8 @@ func ValidateFilters(v *validator.Validator, f Filters) {
 	v.Check(validator.PermittedValue(f.Sort, f.SortSafelist...), "sort", "invalid sort value")
 }
 
+// Metadata is the standard pagination block returned alongside every list
+// envelope. All fields omit when there are no records.
 type Metadata struct {
 	CurrentPage  int `json:"current_page,omitzero"`
 	PageSize     int `json:"page_size,omitzero"`
@@ -53,7 +63,7 @@ type Metadata struct {
 	TotalRecords int `json:"total_records,omitzero"`
 }
 
-func calculateMetadata(totalRecords, page, pageSize int) Metadata {
+func CalculateMetadata(totalRecords, page, pageSize int) Metadata {
 	if totalRecords == 0 {
 		return Metadata{}
 	}

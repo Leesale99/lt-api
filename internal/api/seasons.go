@@ -10,6 +10,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	game "lt-api.aleksrdvn.com/internal/game"
+	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -96,7 +97,7 @@ func (app *Application) showSeasonHandler(w http.ResponseWriter, r *http.Request
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -125,7 +126,7 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -165,9 +166,9 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 	season, err = app.Game.Seasons.Update(ctx, season)
 	if err != nil {
 		switch {
-		case errors.Is(err, game.ErrEditConflict):
+		case errors.Is(err, store.ErrEditConflict):
 			app.editConflictResponse(w, r)
-		case errors.Is(err, game.ErrRecordInUse):
+		case errors.Is(err, store.ErrRecordInUse):
 			// seasons_freeze_gate: a match has started and the update tried
 			// to move the season back to created/open (ADR-008).
 			app.recordFrozenResponse(w, r)
@@ -195,9 +196,9 @@ func (app *Application) deleteSeasonHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordInUse):
+		case errors.Is(err, store.ErrRecordInUse):
 			app.recordInUseResponse(w, r)
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)

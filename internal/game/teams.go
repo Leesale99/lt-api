@@ -10,8 +10,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -49,7 +50,7 @@ type TeamStore struct {
 	pool *pgxpool.Pool
 }
 
-func (s *TeamStore) GetAll(ctx context.Context, name string, filters Filters) ([]Team, Metadata, error) {
+func (s *TeamStore) GetAll(ctx context.Context, name string, filters store.Filters) ([]Team, store.Metadata, error) {
 	// The name filter is built only when non-empty. The catch-all alternative
 	// `WHERE (name ILIKE $1 OR $1 = '')` defeats the trgm GIN index: once the
 	// statement is cached, the planner can't prune the OR branch, so the query
@@ -61,7 +62,7 @@ func (s *TeamStore) GetAll(ctx context.Context, name string, filters Filters) ([
 		args = append(args, "%"+name+"%")
 	}
 
-	// fmt.Sprintf is safe here only because sortColumn()/sortDirection() are
+	// fmt.Sprintf is safe here only because SortColumn()/SortDirection() are
 	// validated against the caller's SortSafelist — do not interpolate any
 	// other user input into this query. LIMIT/OFFSET positions trail the
 	// optional name filter, hence the len(args) arithmetic.
@@ -70,13 +71,13 @@ func (s *TeamStore) GetAll(ctx context.Context, name string, filters Filters) ([
 		FROM teams%s
 		ORDER BY %s %s, id ASC
 		LIMIT $%d OFFSET $%d
-	`, where, filters.sortColumn(), filters.sortDirection(), len(args)+1, len(args)+2)
+	`, where, filters.SortColumn(), filters.SortDirection(), len(args)+1, len(args)+2)
 
-	args = append(args, filters.limit(), filters.offset())
+	args = append(args, filters.Limit(), filters.Offset())
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, Metadata{}, err
+		return nil, store.Metadata{}, err
 	}
 
 	defer rows.Close()
@@ -96,24 +97,24 @@ func (s *TeamStore) GetAll(ctx context.Context, name string, filters Filters) ([
 			&team.Version,
 		)
 		if err != nil {
-			return nil, Metadata{}, err
+			return nil, store.Metadata{}, err
 		}
 
 		teams = append(teams, team)
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, Metadata{}, err
+		return nil, store.Metadata{}, err
 	}
 
-	metadata := calculateMetadata(totalRecords, filters.Page, filters.PageSize)
+	metadata := store.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
 
 	return teams, metadata, nil
 }
 
 func (s *TeamStore) Get(ctx context.Context, id int) (Team, error) {
 	if id < 1 {
-		return Team{}, ErrRecordNotFound
+		return Team{}, store.ErrRecordNotFound
 	}
 
 	query := `
@@ -135,7 +136,7 @@ func (s *TeamStore) Get(ctx context.Context, id int) (Team, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Team{}, ErrRecordNotFound
+			return Team{}, store.ErrRecordNotFound
 		default:
 			return Team{}, err
 		}
@@ -176,7 +177,7 @@ func (s *TeamStore) Update(ctx context.Context, team Team) (Team, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Team{}, ErrEditConflict
+			return Team{}, store.ErrEditConflict
 		default:
 			return Team{}, err
 		}
@@ -187,7 +188,7 @@ func (s *TeamStore) Update(ctx context.Context, team Team) (Team, error) {
 
 func (s *TeamStore) Delete(ctx context.Context, id int) error {
 	if id < 1 {
-		return ErrRecordNotFound
+		return store.ErrRecordNotFound
 	}
 
 	query := `
@@ -200,17 +201,15 @@ func (s *TeamStore) Delete(ctx context.Context, id int) error {
 		// a referenced team must not be deleted (domain decision), so map the
 		// FK violation to a sentinel instead of leaking it. Postgres raises
 		// 23001 (restrict_violation) for RESTRICT FKs and 23503
-		// (foreign_key_violation) for NO ACTION; pgerrcode inlined to avoid a
-		// dependency.
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && (pgErr.Code == "23001" || pgErr.Code == "23503") {
-			return ErrRecordInUse
+		// (foreign_key_violation) for NO ACTION.
+		if store.Code(err, "23001", "23503") {
+			return store.ErrRecordInUse
 		}
 		return err
 	}
 
 	if result.RowsAffected() == 0 {
-		return ErrRecordNotFound
+		return store.ErrRecordNotFound
 	}
 
 	return nil

@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -34,7 +36,7 @@ type PlayerStore struct {
 	pool *pgxpool.Pool
 }
 
-func (s *PlayerStore) GetAll(ctx context.Context, name string, favoriteTeamID int, filters Filters) ([]Player, Metadata, error) {
+func (s *PlayerStore) GetAll(ctx context.Context, name string, favoriteTeamID int, filters store.Filters) ([]Player, store.Metadata, error) {
 	// Each filter is appended as a separate predicate (AND-composed) so the
 	// planner can still use the per-column indexes — do not switch to a
 	// catch-all like `WHERE (name ILIKE $1 OR $1 = '')`, which defeats the
@@ -62,13 +64,13 @@ func (s *PlayerStore) GetAll(ctx context.Context, name string, favoriteTeamID in
 		FROM players%s
 		ORDER BY %s %s, id ASC
 		LIMIT $%d OFFSET $%d
-	`, where, filters.sortColumn(), filters.sortDirection(), len(args)+1, len(args)+2)
+	`, where, filters.SortColumn(), filters.SortDirection(), len(args)+1, len(args)+2)
 
-	args = append(args, filters.limit(), filters.offset())
+	args = append(args, filters.Limit(), filters.Offset())
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, Metadata{}, err
+		return nil, store.Metadata{}, err
 	}
 
 	defer rows.Close()
@@ -89,24 +91,24 @@ func (s *PlayerStore) GetAll(ctx context.Context, name string, favoriteTeamID in
 			&player.Version,
 		)
 		if err != nil {
-			return nil, Metadata{}, err
+			return nil, store.Metadata{}, err
 		}
 
 		players = append(players, player)
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, Metadata{}, err
+		return nil, store.Metadata{}, err
 	}
 
-	metadata := calculateMetadata(totalRecords, filters.Page, filters.PageSize)
+	metadata := store.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
 
 	return players, metadata, nil
 }
 
 func (s *PlayerStore) Get(ctx context.Context, id int) (Player, error) {
 	if id < 1 {
-		return Player{}, ErrRecordNotFound
+		return Player{}, store.ErrRecordNotFound
 	}
 
 	query := `
@@ -127,7 +129,7 @@ func (s *PlayerStore) Get(ctx context.Context, id int) (Player, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Player{}, ErrRecordNotFound
+			return Player{}, store.ErrRecordNotFound
 		default:
 			return Player{}, err
 		}
@@ -147,10 +149,10 @@ func (s *PlayerStore) Insert(ctx context.Context, player Player) (Player, error)
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&player.ID, &player.CreatedAt, &player.Version)
 	if err != nil {
 		switch {
-		case fkViolation(err):
+		case store.IsFKViolation(err):
 			// The referenced team (or season) was deleted between the
 			// handler's existence check and this write.
-			return Player{}, ErrRecordNotFound
+			return Player{}, store.ErrRecordNotFound
 		default:
 			return Player{}, err
 		}
@@ -173,11 +175,11 @@ func (s *PlayerStore) Update(ctx context.Context, player Player) (Player, error)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Player{}, ErrEditConflict
-		case fkViolation(err):
+			return Player{}, store.ErrEditConflict
+		case store.IsFKViolation(err):
 			// Same race as in Insert: the referenced team vanished
 			// between validation and write.
-			return Player{}, ErrRecordNotFound
+			return Player{}, store.ErrRecordNotFound
 		default:
 			return Player{}, err
 		}
@@ -197,7 +199,7 @@ func (s *PlayerStore) Delete(ctx context.Context, id, seasonID int) error {
 	}
 
 	if result.RowsAffected() == 0 {
-		return ErrRecordNotFound
+		return store.ErrRecordNotFound
 	}
 
 	return nil

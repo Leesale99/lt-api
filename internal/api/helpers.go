@@ -13,7 +13,7 @@ import (
 
 	"github.com/julienschmidt/httprouter"
 	"lt-api.aleksrdvn.com/internal/constants"
-	"lt-api.aleksrdvn.com/internal/game"
+	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -28,20 +28,20 @@ var sortSafelistNameID = []string{"id", "name", "-id", "-name"}
 var sortSafelistID = []string{"id", "-id"}
 
 // readListFilters parses the standard list-endpoint query params (page,
-// page_size, sort) into game.Filters and validates them against the given
+// page_size, sort) into store.Filters and validates them against the given
 // safelist. On validation failure it writes the 422 response itself and
 // returns ok=false — the handler must return immediately. Resource-specific
 // filters (name, favorite_team_id, ...) are read by the handler beforehand,
 // using the same v so their errors land in the same 422 response.
-func (app *Application) readListFilters(w http.ResponseWriter, r *http.Request, qs url.Values, v *validator.Validator, sortSafelist []string) (game.Filters, bool) {
-	filters := game.Filters{
+func (app *Application) readListFilters(w http.ResponseWriter, r *http.Request, qs url.Values, v *validator.Validator, sortSafelist []string) (store.Filters, bool) {
+	filters := store.Filters{
 		Page:         app.readInt(qs, "page", constants.DefaultPage, v),
 		PageSize:     app.readInt(qs, "page_size", constants.DefaultPageSize, v),
 		Sort:         app.readString(qs, "sort", "id"),
 		SortSafelist: sortSafelist,
 	}
 
-	if game.ValidateFilters(v, filters); !v.Valid() {
+	if store.ValidateFilters(v, filters); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return filters, false
 	}
@@ -54,7 +54,7 @@ func (app *Application) readListFilters(w http.ResponseWriter, r *http.Request, 
 // error becomes a 500, and success is a 200 envelope of {key: items,
 // metadata}. Generic methods are a Go 1.27 language feature (interface
 // methods still cannot have type parameters).
-func (app *Application) writeListResponse[T any](w http.ResponseWriter, r *http.Request, key string, items []T, metadata game.Metadata, err error) {
+func (app *Application) writeListResponse[T any](w http.ResponseWriter, r *http.Request, key string, items []T, metadata store.Metadata, err error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):

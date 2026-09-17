@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
+	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -94,9 +94,8 @@ func (s *UsersStore) Insert(ctx context.Context, user User) (User, error) {
 
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&user.ID, &user.CreatedAt, &user.Version)
 	if err != nil {
-		var pqErr *pgconn.PgError
 		switch {
-		case store.uniqueViolation(err) && pqErr.ConstraintName == "users_email_key":
+		case store.IsUniqueViolation(err, "users_email_key"):
 			return User{}, ErrDuplicateEmail
 		default:
 			return User{}, err
@@ -106,7 +105,7 @@ func (s *UsersStore) Insert(ctx context.Context, user User) (User, error) {
 	return user, nil
 }
 
-func (s *UserStore) GetByEmail(ctx context.Context, email string) (User, error) {
+func (s *UsersStore) GetByEmail(ctx context.Context, email string) (User, error) {
 	query := `
 		SELECT id, created_at, name, password_hash, activated, version
 		FROM users
@@ -125,7 +124,7 @@ func (s *UserStore) GetByEmail(ctx context.Context, email string) (User, error) 
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return User{}, store.ErrorRecordNotFound
+			return User{}, store.ErrRecordNotFound
 		default:
 			return User{}, err
 		}
@@ -134,7 +133,7 @@ func (s *UserStore) GetByEmail(ctx context.Context, email string) (User, error) 
 	return user, nil
 }
 
-func (s *UserStore) Update(ctx context.Context, user User) (User, error) {
+func (s *UsersStore) Update(ctx context.Context, user User) (User, error) {
 	query := `
 		UPDATE users
 		SET name = $1, email = $2, password_hash = $3, activated = $4, version = version + 1
@@ -145,13 +144,11 @@ func (s *UserStore) Update(ctx context.Context, user User) (User, error) {
 
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&user.Version)
 	if err != nil {
-		var pqErr *pgconn.PgError
-
 		switch {
-		case errors.As(err, &pqErr) && pqErr.Code == "23505" && pqErr.ConstraintName == "users_email_key":
+		case store.IsUniqueViolation(err, "users_email_key"):
 			return User{}, ErrDuplicateEmail
 		case errors.Is(err, pgx.ErrNoRows):
-			return User{}, store.ErrorEditConflict
+			return User{}, store.ErrEditConflict
 		default:
 			return User{}, err
 		}

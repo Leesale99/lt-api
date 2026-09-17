@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -61,7 +63,7 @@ type RoundStore struct {
 
 func (s *RoundStore) Get(ctx context.Context, id int) (Round, error) {
 	if id < 1 {
-		return Round{}, ErrRecordNotFound
+		return Round{}, store.ErrRecordNotFound
 	}
 
 	query := `
@@ -82,7 +84,7 @@ func (s *RoundStore) Get(ctx context.Context, id int) (Round, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Round{}, ErrRecordNotFound
+			return Round{}, store.ErrRecordNotFound
 		default:
 			return Round{}, err
 		}
@@ -101,8 +103,8 @@ func (s *RoundStore) Insert(ctx context.Context, round Round) (Round, error) {
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&round.ID, &round.CreatedAt, &round.Version)
 	if err != nil {
 		switch {
-		case uniqueViolation(err):
-			return Round{}, ErrDuplicateRecord
+		case store.IsUniqueViolation(err):
+			return Round{}, store.ErrDuplicateRecord
 		}
 		return Round{}, err
 	}
@@ -122,18 +124,18 @@ const roundUpdateSQL = `
 
 // updateRound executes the shared round-update statement on q and maps
 // store-level errors to sentinels.
-func (s *RoundStore) updateRound(ctx context.Context, q dbQuerier, round Round) (Round, error) {
+func (s *RoundStore) updateRound(ctx context.Context, q store.Querier, round Round) (Round, error) {
 	err := q.QueryRow(ctx, roundUpdateSQL, round.Number, round.Status, round.ID, round.Version).Scan(&round.Version)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Round{}, ErrEditConflict
-		case uniqueViolation(err):
-			return Round{}, ErrDuplicateRecord
-		case triggerViolation(err):
+			return Round{}, store.ErrEditConflict
+		case store.IsUniqueViolation(err):
+			return Round{}, store.ErrDuplicateRecord
+		case store.IsTriggerViolation(err):
 			// rounds_freeze_gate: a match of this round has started and the
 			// update tried to move it back to created/open (ADR-008).
-			return Round{}, ErrRecordInUse
+			return Round{}, store.ErrRecordInUse
 		}
 		return Round{}, err
 	}
@@ -189,7 +191,7 @@ func (s *RoundStore) Open(ctx context.Context, round Round) (Round, error) {
 	return round, nil
 }
 
-func (s *RoundStore) GetAll(ctx context.Context, seasonID int, status string, filters Filters) ([]Round, Metadata, error) {
+func (s *RoundStore) GetAll(ctx context.Context, seasonID int, status string, filters store.Filters) ([]Round, store.Metadata, error) {
 	conds, args := []string{}, []any{}
 
 	if seasonID != 0 {
@@ -211,13 +213,13 @@ func (s *RoundStore) GetAll(ctx context.Context, seasonID int, status string, fi
 		FROM rounds%s
 		ORDER BY %s %s, id ASC
 		LIMIT $%d OFFSET $%d
-	`, where, filters.sortColumn(), filters.sortDirection(), len(args)+1, len(args)+2)
+	`, where, filters.SortColumn(), filters.SortDirection(), len(args)+1, len(args)+2)
 
-	args = append(args, filters.limit(), filters.offset())
+	args = append(args, filters.Limit(), filters.Offset())
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, Metadata{}, err
+		return nil, store.Metadata{}, err
 	}
 
 	defer rows.Close()
@@ -237,17 +239,17 @@ func (s *RoundStore) GetAll(ctx context.Context, seasonID int, status string, fi
 			&round.Version,
 		)
 		if err != nil {
-			return nil, Metadata{}, err
+			return nil, store.Metadata{}, err
 		}
 
 		rounds = append(rounds, round)
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, Metadata{}, err
+		return nil, store.Metadata{}, err
 	}
 
-	metadata := calculateMetadata(totalRecords, filters.Page, filters.PageSize)
+	metadata := store.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
 
 	return rounds, metadata, nil
 }
@@ -262,14 +264,14 @@ func (s *RoundStore) Delete(ctx context.Context, id, seasonID int) error {
 	if err != nil {
 		// P0001 comes from the rounds delete gate (ADR-007 one level down):
 		// closed rounds are durable history, the DB is authoritative.
-		if triggerViolation(err) {
-			return ErrRecordInUse
+		if store.IsTriggerViolation(err) {
+			return store.ErrRecordInUse
 		}
 		return err
 	}
 
 	if result.RowsAffected() == 0 {
-		return ErrRecordNotFound
+		return store.ErrRecordNotFound
 	}
 
 	return nil

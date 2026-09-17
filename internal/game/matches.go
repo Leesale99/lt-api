@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -125,7 +127,7 @@ type MatchStore struct {
 
 func (s *MatchStore) Get(ctx context.Context, id int) (Match, error) {
 	if id < 1 {
-		return Match{}, ErrRecordNotFound
+		return Match{}, store.ErrRecordNotFound
 	}
 
 	query := `
@@ -154,7 +156,7 @@ func (s *MatchStore) Get(ctx context.Context, id int) (Match, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Match{}, ErrRecordNotFound
+			return Match{}, store.ErrRecordNotFound
 		default:
 			return Match{}, err
 		}
@@ -187,7 +189,7 @@ func (s *MatchStore) Insert(ctx context.Context, match Match) (Match, error) {
 	return match, err
 }
 
-func (s *MatchStore) GetAll(ctx context.Context, seasonID, roundID int, status string, filters Filters) ([]Match, Metadata, error) {
+func (s *MatchStore) GetAll(ctx context.Context, seasonID, roundID int, status string, filters store.Filters) ([]Match, store.Metadata, error) {
 	// Optional filters are composed in Go rather than OR-ed into a cached
 	// statement: [[ADR-006 - Conditional WHERE for optional filters (never OR $1 = '')]].
 	conds, args := []string{}, []any{}
@@ -215,13 +217,13 @@ func (s *MatchStore) GetAll(ctx context.Context, seasonID, roundID int, status s
 		FROM matches%s
 		ORDER BY %s %s, id ASC
 		LIMIT $%d OFFSET $%d
-	`, where, filters.sortColumn(), filters.sortDirection(), len(args)+1, len(args)+2)
+	`, where, filters.SortColumn(), filters.SortDirection(), len(args)+1, len(args)+2)
 
-	args = append(args, filters.limit(), filters.offset())
+	args = append(args, filters.Limit(), filters.Offset())
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, Metadata{}, err
+		return nil, store.Metadata{}, err
 	}
 
 	defer rows.Close()
@@ -248,17 +250,17 @@ func (s *MatchStore) GetAll(ctx context.Context, seasonID, roundID int, status s
 			&match.Version,
 		)
 		if err != nil {
-			return nil, Metadata{}, err
+			return nil, store.Metadata{}, err
 		}
 
 		matches = append(matches, match)
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, Metadata{}, err
+		return nil, store.Metadata{}, err
 	}
 
-	metadata := calculateMetadata(totalRecords, filters.Page, filters.PageSize)
+	metadata := store.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
 
 	return matches, metadata, nil
 }
@@ -275,7 +277,7 @@ func (s *MatchStore) Delete(ctx context.Context, id, seasonID int) error {
 	}
 
 	if result.RowsAffected() == 0 {
-		return ErrRecordNotFound
+		return store.ErrRecordNotFound
 	}
 
 	return nil
@@ -305,16 +307,16 @@ func (s *MatchStore) Update(ctx context.Context, match Match) (Match, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Match{}, ErrEditConflict
-		case fkViolation(err):
+			return Match{}, store.ErrEditConflict
+		case store.IsFKViolation(err):
 			// The referenced team was deleted between the handler's existence
 			// check and this write (season and round are not updatable, so
 			// they cannot trigger the FK here).
-			return Match{}, ErrRecordNotFound
-		case triggerViolation(err):
+			return Match{}, store.ErrRecordNotFound
+		case store.IsTriggerViolation(err):
 			// matches_freeze_gate: the match has started and the update tried
 			// to regress it to created/postponed (ADR-008).
-			return Match{}, ErrRecordInUse
+			return Match{}, store.ErrRecordInUse
 		default:
 			return Match{}, err
 		}

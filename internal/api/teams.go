@@ -9,6 +9,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	game "lt-api.aleksrdvn.com/internal/game"
+	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -76,7 +77,7 @@ func (app *Application) showTeamHandler(w http.ResponseWriter, r *http.Request) 
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -105,7 +106,7 @@ func (app *Application) updateTeamHandler(w http.ResponseWriter, r *http.Request
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -154,7 +155,7 @@ func (app *Application) updateTeamHandler(w http.ResponseWriter, r *http.Request
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrEditConflict):
+		case errors.Is(err, store.ErrEditConflict):
 			app.editConflictResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -183,9 +184,9 @@ func (app *Application) deleteTeamHandler(w http.ResponseWriter, r *http.Request
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, game.ErrRecordInUse):
+		case errors.Is(err, store.ErrRecordInUse):
 			app.recordInUseResponse(w, r)
-		case errors.Is(err, game.ErrRecordNotFound):
+		case errors.Is(err, store.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
