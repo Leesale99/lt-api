@@ -62,7 +62,7 @@ func (app *Application) registerUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	app.background(func() {
-		err = app.Mailer.Send(user.Email, "user_welcome.tmpl", user)
+		err := app.Mailer.Send(user.Email, "user_welcome.tmpl", user)
 		if err != nil {
 			app.Logger.Error(err.Error())
 		}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,6 +25,7 @@ type Application struct {
 	Game     *game.Store
 	Identity *identity.Store
 	Mailer   *mailer.Mailer
+	wg       sync.WaitGroup
 }
 
 func (app *Application) Serve() error {
@@ -61,6 +63,10 @@ func (app *Application) Serve() error {
 	if err != nil {
 		return err
 	}
+
+	app.Logger.Info("waiting for background tasks")
+
+	app.wg.Wait()
 
 	app.Logger.Info("shutdown complete")
 	return nil
