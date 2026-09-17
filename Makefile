@@ -45,15 +45,18 @@ db/psql:
 db/migrations/new:
 	migrate create -seq -ext=.sql -dir=./migrations/ ${name}
 
-## db/migrations/up: apply all up database migrations
+## db/migrations/up n=$1: apply N up migrations (or all if n is omitted)
 .PHONY: db/migrations/up
 db/migrations/up: confirm
-	migrate -path ./migrations/ -database ${LT_API_DSN} up
+	migrate -path ./migrations/ -database ${LT_API_DSN} up $(n)
 
-## db/migrations/down: apply all down database migrations
+## db/migrations/down n=$1: apply N down database migrations (explicit count required; n=all drops the whole schema)
 .PHONY: db/migrations/down
 db/migrations/down: confirm
-	migrate -path ./migrations/ -database ${LT_API_DSN} down
+ifeq ($(n),)
+	$(error usage: make db/migrations/down n=1  (or n=all to drop the whole schema))
+endif
+	migrate -path ./migrations/ -database ${LT_API_DSN} down $(n)
 
 ## db/migrations/version: get database migrations version
 .PHONY: db/migrations/version

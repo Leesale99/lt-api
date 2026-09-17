@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS users (
   id bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-  create_at timestamp(0) with time zone NOT NULL DEFAULT now(),
+  created_at timestamp(0) with time zone NOT NULL DEFAULT now(),
   name text NOT NULL, 
   email citext UNIQUE NOT NULL, 
   password_hash bytea NOT NULL,

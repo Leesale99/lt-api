@@ -43,11 +43,15 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodPatch, "/v1/teams/:id", app.updateTeamHandler)
 	router.HandlerFunc(http.MethodDelete, "/v1/teams/:id", app.deleteTeamHandler)
 
+	// Players
 	router.HandlerFunc(http.MethodGet, "/v1/players", app.listPlayersHandler)
 	router.HandlerFunc(http.MethodGet, "/v1/players/:id", app.showPlayerHandler)
 	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/players", app.createPlayerHandler)
 	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/players/:player_id", app.updatePlayerHandler)
 	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/players/:player_id", app.deletePlayerHandler)
+
+	// Users
+	router.HandlerFunc(http.MethodPost, "/v1/users", app.registerUser)
 
 	return app.recoverPanic(router)
 }
