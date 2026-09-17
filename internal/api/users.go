@@ -61,10 +61,17 @@ func (app *Application) registerUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	app.background(func() {
+		err = app.Mailer.Send(user.Email, "user_welcome.tmpl", user)
+		if err != nil {
+			app.Logger.Error(err.Error())
+		}
+	})
+
 	headers := make(http.Header)
 	headers.Set("Location", fmt.Sprintf("/v1/users/%d", user.ID))
 
-	err = app.writeJSON(w, http.StatusCreated, envelope{"user": user}, headers)
+	err = app.writeJSON(w, http.StatusAccepted, envelope{"user": user}, headers)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}

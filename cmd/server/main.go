@@ -11,6 +11,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/api"
 	"lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/identity"
+	"lt-api.aleksrdvn.com/internal/mailer"
 )
 
 const version = "1.0.0"
@@ -23,6 +24,13 @@ type config struct {
 		maxConns    int
 		maxIdleTime time.Duration
 	}
+	smtp struct {
+		host     string
+		port     int
+		username string
+		password string
+		sender   string
+	}
 }
 
 func main() {
@@ -34,6 +42,12 @@ func main() {
 	flag.StringVar(&cfg.db.dsn, "db-dsn", "", "PostgreSQL DSN")
 	flag.IntVar(&cfg.db.maxConns, "db-max-conns", 25, "PostgreSQL max open and idle connections")
 	flag.DurationVar(&cfg.db.maxIdleTime, "db-max-idle-time", 15*time.Minute, "PostgreSQL max connection idle time")
+
+	flag.StringVar(&cfg.smtp.host, "smtp-host", "sandbox.smtp.mailtrap.io", "SMTP host")
+	flag.IntVar(&cfg.smtp.port, "smtp-port", 2525, "SMTP port")
+	flag.StringVar(&cfg.smtp.username, "smtp-username", "cea95c62807d67", "SMTP username")
+	flag.StringVar(&cfg.smtp.password, "smtp-password", "b806e8e18743c5", "SMTP password")
+	flag.StringVar(&cfg.smtp.sender, "smtp-sender", "League Tokens <no-reply@lt.aleksrdvn.com>", "SMTP sender")
 
 	flag.Parse()
 
@@ -49,6 +63,12 @@ func main() {
 
 	logger.Info("database connection pool established")
 
+	mailer, err := mailer.New(cfg.smtp.host, cfg.smtp.port, cfg.smtp.username, cfg.smtp.password, cfg.smtp.sender)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+
 	app := &api.Application{
 		Version:  version,
 		Env:      cfg.env,
@@ -56,6 +76,7 @@ func main() {
 		Logger:   logger,
 		Game:     game.NewStore(pool),
 		Identity: identity.NewStore(pool),
+		Mailer:   mailer,
 	}
 
 	err = app.Serve()

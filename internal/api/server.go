@@ -13,6 +13,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/identity"
+	"lt-api.aleksrdvn.com/internal/mailer"
 )
 
 type Application struct {
@@ -22,6 +23,7 @@ type Application struct {
 	Logger   *slog.Logger
 	Game     *game.Store
 	Identity *identity.Store
+	Mailer   *mailer.Mailer
 }
 
 func (app *Application) Serve() error {

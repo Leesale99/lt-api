@@ -1,0 +1,30 @@
+{{define "subject"}}Welcome to League Tokens!{{end}}
+
+{{define "plainBody"}}
+Hi {{.Name}}, 
+
+Thanks for signing up for a League Tokens account. We're excited to have you on board!
+
+Enjoy the game,
+
+The LT Team
+{{end}}
+
+{{define "htmlBody"}}
+<!doctype html>
+<html>
+
+<head>
+    <meta name="viewport" content="width=device-width" />
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+</head>
+
+<body>
+    <p>Hi, {{.Name}}</p>
+    <p>Thanks for signing up for a League Tokens account. We're excited to have you on board!</p>
+    <p>Enjoy the game,</p>
+    <p>The LT Team</p>
+</body>
+
+</html>
+{{end}}
