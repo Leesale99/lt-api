@@ -113,6 +113,10 @@ func (app *Application) createAuthenticationTokenHandler(w http.ResponseWriter, 
 	}
 
 	match, err := user.Password.Matches(input.Password)
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
+		return
+	}
 	if !match {
 		app.invalidCredentialsResponse(w, r)
 		return
