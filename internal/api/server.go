@@ -14,7 +14,6 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/identity"
-	"lt-api.aleksrdvn.com/internal/mailer"
 )
 
 type Application struct {
@@ -24,8 +23,16 @@ type Application struct {
 	Logger   *slog.Logger
 	Game     *game.Store
 	Identity *identity.Store
-	Mailer   *mailer.Mailer
+	Mailer   MailSender
 	wg       sync.WaitGroup
+}
+
+// MailSender is everything Application needs from the mailer: one method.
+// Declaring the interface here (at the consumer, not next to the concrete
+// type) keeps Application decoupled from SMTP entirely — tests inject a
+// no-op instead of a live client.
+type MailSender interface {
+	Send(recipient string, templateFile string, data any) error
 }
 
 func (app *Application) Serve() error {

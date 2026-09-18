@@ -26,7 +26,16 @@ func newTestApplication() *Application {
 		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
 		Game:     game.NewStore(testPool),
 		Identity: identity.NewStore(testPool),
+		Mailer:   nopMailer{},
 	}
+}
+
+// nopMailer stands in for the real SMTP client: handlers call Send, nothing
+// leaves the process, and the background goroutine has nothing to panic on.
+type nopMailer struct{}
+
+func (nopMailer) Send(recipient string, templateFile string, data any) error {
+	return nil
 }
 
 func TestShowPlayerHandler(t *testing.T) {

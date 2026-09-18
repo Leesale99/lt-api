@@ -14,6 +14,11 @@ const (
 	ScopeActivation = "activation"
 )
 
+// plaintextTokenLength is the fixed length of crypto/rand.Text() output —
+// a 128-bit value, base32-encoded. Named (not inlined) so the generator and
+// the validator can't silently drift apart.
+const plaintextTokenLength = 26
+
 type UserToken struct {
 	Plaintext string
 	Hash      []byte
@@ -38,7 +43,7 @@ func generateUserToken(userID int, ttl time.Duration, scope string) UserToken {
 
 func ValidateUserTokenPlaintext(v *validator.Validator, userTokenPlaintext string) {
 	v.Check(userTokenPlaintext != "", "user_token", "must be provided")
-	v.Check(len(userTokenPlaintext) == 26, "user_token", "must be 26 bytes long")
+	v.Check(len(userTokenPlaintext) == plaintextTokenLength, "user_token", "must be 26 bytes long")
 }
 
 type UserTokenStore struct {

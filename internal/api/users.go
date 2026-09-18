@@ -83,7 +83,7 @@ func (app *Application) registerUserHandler(w http.ResponseWriter, r *http.Reque
 	headers := make(http.Header)
 	headers.Set("Location", fmt.Sprintf("/v1/users/%d", user.ID))
 
-	err = app.writeJSON(w, http.StatusAccepted, envelope{"user": user}, headers)
+	err = app.writeJSON(w, http.StatusCreated, envelope{"user": user}, headers)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}
@@ -107,7 +107,7 @@ func (app *Application) activateUserHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), constants.UserTokenTTL)
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
 	user, err := app.Identity.Users.GetForToken(ctx, identity.ScopeActivation, input.TokenPlaintext)
@@ -116,7 +116,7 @@ func (app *Application) activateUserHandler(w http.ResponseWriter, r *http.Reque
 		case errors.Is(err, context.Canceled):
 			return
 		case errors.Is(err, store.ErrRecordNotFound):
-			v.AddError("token", "invalid or expired activation token")
+			v.AddError("user_token", "invalid or expired activation token")
 			app.failedValidationResponse(w, r, v.Errors)
 		default:
 			app.serverErrorResponse(w, r, err)

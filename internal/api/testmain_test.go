@@ -34,6 +34,7 @@ func TestMain(m *testing.M) {
 		"api",
 		"../../migrations/000001_create_initial_game_models.up.sql",
 		"../../migrations/000002_create_users_table.up.sql",
+		"../../migrations/000003_create_user_tokens_table.up.sql",
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "test database setup: %v\n", err)
