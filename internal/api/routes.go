@@ -51,7 +51,11 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/players/:player_id", app.deletePlayerHandler)
 
 	// Users
-	router.HandlerFunc(http.MethodPost, "/v1/users", app.registerUser)
+	router.HandlerFunc(http.MethodPost, "/v1/users", app.registerUserHandler)
+	router.HandlerFunc(http.MethodPut, "/v1/users/activated", app.activateUserHandler)
+
+	// User Tokens
+	router.HandlerFunc(http.MethodPost, "/v1/user-tokens/activation", app.createActivationTokenHandler)
 
 	return app.recoverPanic(router)
 }

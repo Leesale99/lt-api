@@ -1,9 +1,16 @@
 {{define "subject"}}Welcome to League Tokens!{{end}}
 
 {{define "plainBody"}}
-Hi {{.Name}}, 
+Hi {{.name}}, 
 
 Thanks for signing up for a League Tokens account. We're excited to have you on board!
+
+Please send a request to the `PUT /v1/users/activated` endpoint with the following JSON
+body to activate your account:
+
+{"token": "{{.activationToken}}"}
+
+Please note that this is a one-time use token and it will expire in 3 days.
 
 Enjoy the game,
 
@@ -20,8 +27,14 @@ The LT Team
 </head>
 
 <body>
-    <p>Hi, {{.Name}}</p>
+    <p>Hi, {{.name}}</p>
     <p>Thanks for signing up for a League Tokens account. We're excited to have you on board!</p>
+ <p>Please send a request to the <code>PUT /v1/users/activated</code> endpoint with the 
+    following JSON body to activate your account:</p>
+    <pre><code>
+    {"token": "{{.activationToken}}"}
+    </code></pre>
+    <p>Please note that this is a one-time use token and it will expire in 3 days.</p>
     <p>Enjoy the game,</p>
     <p>The LT Team</p>
 </body>

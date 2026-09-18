@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"time"
 
@@ -81,11 +82,11 @@ func ValidateRegistration(v *validator.Validator, name, email, plaintextPassword
 	ValidatePasswordPlaintext(v, plaintextPassword)
 }
 
-type UsersStore struct {
+type UserStore struct {
 	pool *pgxpool.Pool
 }
 
-func (s *UsersStore) Insert(ctx context.Context, user User) (User, error) {
+func (s *UserStore) Insert(ctx context.Context, user User) (User, error) {
 	// Invariant, not validation: a user can never be persisted without a
 	// hash. The DB's NOT NULL is the last line of defense; this panic is the
 	// fast, loud one at the call site.
@@ -113,9 +114,9 @@ func (s *UsersStore) Insert(ctx context.Context, user User) (User, error) {
 	return user, nil
 }
 
-func (s *UsersStore) GetByEmail(ctx context.Context, email string) (User, error) {
+func (s *UserStore) GetByEmail(ctx context.Context, email string) (User, error) {
 	query := `
-		SELECT id, created_at, name, password_hash, activated, version
+		SELECT id, created_at, name, email, password_hash, activated, version
 		FROM users
 		WHERE email = $1
 	`
@@ -125,6 +126,7 @@ func (s *UsersStore) GetByEmail(ctx context.Context, email string) (User, error)
 		&user.ID,
 		&user.CreatedAt,
 		&user.Name,
+		&user.Email,
 		&user.Password.hash,
 		&user.Activated,
 		&user.Version,
@@ -141,7 +143,7 @@ func (s *UsersStore) GetByEmail(ctx context.Context, email string) (User, error)
 	return user, nil
 }
 
-func (s *UsersStore) Update(ctx context.Context, user User) (User, error) {
+func (s *UserStore) Update(ctx context.Context, user User) (User, error) {
 	if user.Password.hash == nil {
 		panic("missing password hash for the user")
 	}
@@ -161,6 +163,42 @@ func (s *UsersStore) Update(ctx context.Context, user User) (User, error) {
 			return User{}, ErrDuplicateEmail
 		case errors.Is(err, pgx.ErrNoRows):
 			return User{}, store.ErrEditConflict
+		default:
+			return User{}, err
+		}
+	}
+
+	return user, nil
+}
+
+func (s *UserStore) GetForToken(ctx context.Context, tokenScope, tokenPlanetext string) (User, error) {
+	tokenHash := sha256.Sum256([]byte(tokenPlanetext))
+
+	query := `
+		SELECT users.id, users.created_at, users.name, users.email, users.password_hash, users.activated, users.version
+		FROM users
+		INNER JOIN user_tokens
+		ON users.id = user_tokens.user_id
+		WHERE user_tokens.hash = $1 AND user_tokens.scope = $2 AND user_tokens.expiry > $3
+	`
+
+	args := []any{tokenHash[:], tokenScope, time.Now()}
+
+	var user User
+
+	err := s.pool.QueryRow(ctx, query, args...).Scan(
+		&user.ID,
+		&user.CreatedAt,
+		&user.Name,
+		&user.Email,
+		&user.Password.hash,
+		&user.Activated,
+		&user.Version,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return User{}, store.ErrRecordNotFound
 		default:
 			return User{}, err
 		}
