@@ -12,6 +12,7 @@ description: Write mechanics and rules routing for the lt-api Obsidian knowledge
 - `write`/`create` do not add the `.md` extension — use `path=` with the explicit `.md` (same for `move`).
 - `content=` (and `search query=`/`replace=`) must be one double-quoted value; raw newlines silently truncate the write — emit `\n` escapes instead. Inside, only `\"` `\n` `\t` `\r` are escapes; other backslashes pass through literally (so backticks stay plain, `\"` for `"`, single-quoted YAML scalars in frontmatter).
 - `delete` moves to trash (recoverable).
+- `append` always writes at end-of-file — it cannot target a section. For sectioned notes (e.g. `Lessons/_Index.md` is grouped by tag), do a full `write` instead of an append-and-fix (verified 2026-09-18: appended index line landed under `## transactions` instead of `## http`).
 - `eval code=` quoting: inside double-quoted values, `\n`/`\t`/`\r` escapes are decoded into real characters, breaking JS string/regex literals. Single-quote the code value, or avoid escapes entirely.
 
 ## search/replace — vault-wide blast radius (verified 2026-09-17)
