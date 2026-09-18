@@ -11,7 +11,8 @@ import (
 )
 
 const (
-	ScopeActivation = "activation"
+	ScopeActivation     = "activation"
+	ScopeAuthentication = "authentication"
 )
 
 // plaintextTokenLength is the fixed length of crypto/rand.Text() output —
@@ -20,11 +21,11 @@ const (
 const plaintextTokenLength = 26
 
 type UserToken struct {
-	Plaintext string
-	Hash      []byte
-	UserID    int
-	Expiry    time.Time
-	Scope     string
+	Plaintext string    `json:"user_token"`
+	Hash      []byte    `json:"-"`
+	UserID    int       `json:"-"`
+	Expiry    time.Time `json:"expiry"`
+	Scope     string    `json:"-"`
 }
 
 func generateUserToken(userID int, ttl time.Duration, scope string) UserToken {

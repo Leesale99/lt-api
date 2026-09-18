@@ -62,7 +62,7 @@ func (app *Application) registerUserHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	userToken, err := app.Identity.UserTokens.New(ctx, user.ID, constants.UserTokenTTL, identity.ScopeActivation)
+	userToken, err := app.Identity.UserTokens.New(ctx, user.ID, constants.ActivationTokenTTL, identity.ScopeActivation)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 		return

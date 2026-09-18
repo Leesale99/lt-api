@@ -72,3 +72,8 @@ func (app *Application) duplicateRecordResponse(w http.ResponseWriter, r *http.R
 	message := "a record with these unique values already exists"
 	app.writeError(w, r, http.StatusConflict, message)
 }
+
+func (app *Application) invalidCredentialsResponse(w http.ResponseWriter, r *http.Request) {
+	message := "invalid authentication credentials"
+	app.writeError(w, r, http.StatusUnauthorized, message)
+}

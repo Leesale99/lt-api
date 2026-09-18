@@ -56,6 +56,7 @@ func (app *Application) routes() http.Handler {
 
 	// User Tokens
 	router.HandlerFunc(http.MethodPost, "/v1/user-tokens/activation", app.createActivationTokenHandler)
+	router.HandlerFunc(http.MethodPost, "/v1/user-tokens/authentication", app.createAuthenticationTokenHandler)
 
 	return app.recoverPanic(router)
 }

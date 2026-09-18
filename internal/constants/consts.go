@@ -9,4 +9,7 @@ const (
 	DefaultPageSize = 20
 )
 
-const UserTokenTTL = 3 * 24 * time.Hour
+const (
+	ActivationTokenTTL     = 3 * 24 * time.Hour
+	AuthenticationTokenTTL = 24 * time.Hour
+)
