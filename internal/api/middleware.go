@@ -90,7 +90,7 @@ func (app *Application) requirePermission(code string, next http.HandlerFunc) ht
 		ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 		defer cancel()
 
-		permissions, err := app.Identity.Permissions.GetAllForUser(ctx, authenticatedUser.ID)
+		permissions, err := app.Identity.Permissions.GetAllForRole(ctx, authenticatedUser.RoleID)
 		if err != nil {
 			app.serverErrorResponse(w, r, err)
 			return

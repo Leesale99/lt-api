@@ -17,15 +17,15 @@ type PermissionStore struct {
 	pool *pgxpool.Pool
 }
 
-func (s PermissionStore) GetAllForUser(ctx context.Context, userID int) (Permissions, error) {
+func (s PermissionStore) GetAllForRole(ctx context.Context, roleID int) (Permissions, error) {
 	query := `
 		SELECT permissions.code
 		FROM permissions
-		INNER JOIN users_permissions ON users_permissions.permission_id = permissions.id
-		INNER JOIN users ON users_permissions.user_id = users.id
-		WHERE users.id = $1
+		INNER JOIN roles_permissions ON roles_permissions.permission_id = permissions.id
+		INNER JOIN roles ON roles_permissions.role_id = roles.id
+		WHERE roles.id = $1
 	`
-	rows, err := s.pool.Query(ctx, query, userID)
+	rows, err := s.pool.Query(ctx, query, roleID)
 	if err != nil {
 		return nil, err
 	}
@@ -46,14 +46,4 @@ func (s PermissionStore) GetAllForUser(ctx context.Context, userID int) (Permiss
 	}
 
 	return permissions, nil
-}
-
-func (s PermissionStore) AddForUser(ctx context.Context, userID int, codes ...string) error {
-	query := `
-		INSERT INTO users_permissions
-		SELECT $1, permissions.id FROM permissions WHERE permissions.code = ANY($2)
-	`
-	_, err := s.pool.Exec(ctx, query, userID, codes)
-
-	return err
 }

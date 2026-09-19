@@ -22,6 +22,7 @@ type User struct {
 	Email     string    `json:"email"`
 	Password  password  `json:"-"`
 	Activated bool      `json:"activated"`
+	RoleID    int       `json:"role_id"`
 	Version   int       `json:"-"`
 }
 
@@ -95,13 +96,13 @@ func (s *UserStore) Insert(ctx context.Context, user User) (User, error) {
 	}
 
 	query := `
-		INSERT INTO users (name, email, password_hash, activated)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, created_at, version
+		INSERT INTO users (name, email, password_hash, activated, role_id)
+		VALUES ($1, $2, $3, $4, (SELECT id FROM roles WHERE name = 'user'))
+		RETURNING id, created_at, role_id, version
 	`
 	args := []any{user.Name, user.Email, user.Password.hash, user.Activated}
 
-	err := s.pool.QueryRow(ctx, query, args...).Scan(&user.ID, &user.CreatedAt, &user.Version)
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&user.ID, &user.CreatedAt, &user.RoleID, &user.Version)
 	if err != nil {
 		switch {
 		case store.IsUniqueViolation(err, "users_email_key"):
@@ -116,7 +117,7 @@ func (s *UserStore) Insert(ctx context.Context, user User) (User, error) {
 
 func (s *UserStore) GetByEmail(ctx context.Context, email string) (User, error) {
 	query := `
-		SELECT id, created_at, name, email, password_hash, activated, version
+		SELECT id, created_at, name, email, password_hash, activated, role_id, version
 		FROM users
 		WHERE email = $1
 	`
@@ -129,6 +130,7 @@ func (s *UserStore) GetByEmail(ctx context.Context, email string) (User, error) 
 		&user.Email,
 		&user.Password.hash,
 		&user.Activated,
+		&user.RoleID,
 		&user.Version,
 	)
 	if err != nil {
@@ -152,11 +154,11 @@ func (s *UserStore) Update(ctx context.Context, user User) (User, error) {
 		UPDATE users
 		SET name = $1, email = $2, password_hash = $3, activated = $4, version = version + 1
 		WHERE id = $5 AND version = $6
-		RETURNING version
+		RETURNING role_id, version
 	`
 	args := []any{user.Name, user.Email, user.Password.hash, user.Activated, user.ID, user.Version}
 
-	err := s.pool.QueryRow(ctx, query, args...).Scan(&user.Version)
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&user.RoleID, &user.Version)
 	if err != nil {
 		switch {
 		case store.IsUniqueViolation(err, "users_email_key"):
@@ -175,7 +177,7 @@ func (s *UserStore) GetForToken(ctx context.Context, tokenScope, tokenPlanetext 
 	tokenHash := sha256.Sum256([]byte(tokenPlanetext))
 
 	query := `
-		SELECT users.id, users.created_at, users.name, users.email, users.password_hash, users.activated, users.version
+		SELECT users.id, users.created_at, users.name, users.email, users.password_hash, users.activated, users.role_id, users.version
 		FROM users
 		INNER JOIN user_tokens
 		ON users.id = user_tokens.user_id
@@ -193,6 +195,7 @@ func (s *UserStore) GetForToken(ctx context.Context, tokenScope, tokenPlanetext 
 		&user.Email,
 		&user.Password.hash,
 		&user.Activated,
+		&user.RoleID,
 		&user.Version,
 	)
 	if err != nil {
