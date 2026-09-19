@@ -74,16 +74,30 @@ func (app *Application) authenticate(next http.Handler) http.Handler {
 	})
 }
 
-func (app *Application) requireActivatedUser(next http.HandlerFunc) http.HandlerFunc {
+func (app *Application) requirePermission(code string, next http.HandlerFunc) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authentcatedUser, found := app.contextGetAuthenticatedUser(r)
+		authenticatedUser, found := app.contextGetAuthenticatedUser(r)
 		if !found {
 			app.authenticationRequiredResponse(w, r)
 			return
 		}
 
-		if !authentcatedUser.Activated {
+		if !authenticatedUser.Activated {
 			app.inactiveAcountResponse(w, r)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+		defer cancel()
+
+		permissions, err := app.Identity.Permissions.GetAllForUser(ctx, authenticatedUser.ID)
+		if err != nil {
+			app.serverErrorResponse(w, r, err)
+			return
+		}
+
+		if !permissions.Include(code) {
+			app.missingPermissionResponse(w, r)
 			return
 		}
 

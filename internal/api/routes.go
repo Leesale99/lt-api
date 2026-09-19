@@ -16,39 +16,39 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodGet, "/v1/healthcheck", app.healthcheckHandler)
 
 	// Seasons
-	router.HandlerFunc(http.MethodGet, "/v1/seasons", app.requireActivatedUser(app.listSeasonsHandler))
-	router.HandlerFunc(http.MethodGet, "/v1/seasons/:id", app.requireActivatedUser(app.showSeasonHandler))
-	router.HandlerFunc(http.MethodPost, "/v1/seasons", app.requireActivatedUser(app.createSeasonHandler))
-	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id", app.requireActivatedUser(app.updateSeasonHandler))
-	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id", app.requireActivatedUser(app.deleteSeasonHandler))
+	router.HandlerFunc(http.MethodGet, "/v1/seasons", app.requirePermission("seasons:read", app.listSeasonsHandler))
+	router.HandlerFunc(http.MethodGet, "/v1/seasons/:id", app.requirePermission("seasons:read", app.showSeasonHandler))
+	router.HandlerFunc(http.MethodPost, "/v1/seasons", app.requirePermission("seasons:write", app.createSeasonHandler))
+	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id", app.requirePermission("seasons:write", app.updateSeasonHandler))
+	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id", app.requirePermission("seasons:write", app.deleteSeasonHandler))
 
 	// Rounds
-	router.HandlerFunc(http.MethodGet, "/v1/rounds", app.requireActivatedUser(app.listRoundsHandler))
-	router.HandlerFunc(http.MethodGet, "/v1/rounds/:id", app.requireActivatedUser(app.showRoundHandler))
-	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/rounds", app.requireActivatedUser(app.createRoundHandler))
-	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/rounds/:round_id", app.requireActivatedUser(app.updateRoundHandler))
-	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/rounds/:round_id", app.requireActivatedUser(app.deleteRoundHandler))
+	router.HandlerFunc(http.MethodGet, "/v1/rounds", app.requirePermission("rounds:read", app.listRoundsHandler))
+	router.HandlerFunc(http.MethodGet, "/v1/rounds/:id", app.requirePermission("rounds:read", app.showRoundHandler))
+	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/rounds", app.requirePermission("rounds:write", app.createRoundHandler))
+	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/rounds/:round_id", app.requirePermission("rounds:write", app.updateRoundHandler))
+	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/rounds/:round_id", app.requirePermission("rounds:write", app.deleteRoundHandler))
 
 	// Matches
-	router.HandlerFunc(http.MethodGet, "/v1/matches", app.requireActivatedUser(app.listMatchHandler))
-	router.HandlerFunc(http.MethodGet, "/v1/matches/:id", app.requireActivatedUser(app.showMatchHandler))
-	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/matches", app.requireActivatedUser(app.createMatchHandler))
-	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/matches/:match_id", app.requireActivatedUser(app.updateMatchHandler))
-	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/matches/:match_id", app.requireActivatedUser(app.deleteMatchHandler))
+	router.HandlerFunc(http.MethodGet, "/v1/matches", app.requirePermission("matches:read", app.listMatchHandler))
+	router.HandlerFunc(http.MethodGet, "/v1/matches/:id", app.requirePermission("matches:read", app.showMatchHandler))
+	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/matches", app.requirePermission("matches:write", app.createMatchHandler))
+	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/matches/:match_id", app.requirePermission("matches:write", app.updateMatchHandler))
+	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/matches/:match_id", app.requirePermission("matches:write", app.deleteMatchHandler))
 
 	// Teams
-	router.HandlerFunc(http.MethodGet, "/v1/teams", app.requireActivatedUser(app.listTeamsHandler))
-	router.HandlerFunc(http.MethodGet, "/v1/teams/:id", app.requireActivatedUser(app.showTeamHandler))
-	router.HandlerFunc(http.MethodPost, "/v1/teams", app.requireActivatedUser(app.createTeamHandler))
-	router.HandlerFunc(http.MethodPatch, "/v1/teams/:id", app.requireActivatedUser(app.updateTeamHandler))
-	router.HandlerFunc(http.MethodDelete, "/v1/teams/:id", app.requireActivatedUser(app.deleteTeamHandler))
+	router.HandlerFunc(http.MethodGet, "/v1/teams", app.requirePermission("teams:read", app.listTeamsHandler))
+	router.HandlerFunc(http.MethodGet, "/v1/teams/:id", app.requirePermission("teams:read", app.showTeamHandler))
+	router.HandlerFunc(http.MethodPost, "/v1/teams", app.requirePermission("teams:write", app.createTeamHandler))
+	router.HandlerFunc(http.MethodPatch, "/v1/teams/:id", app.requirePermission("teams:write", app.updateTeamHandler))
+	router.HandlerFunc(http.MethodDelete, "/v1/teams/:id", app.requirePermission("teams:write", app.deleteTeamHandler))
 
 	// Players
-	router.HandlerFunc(http.MethodGet, "/v1/players", app.requireActivatedUser(app.listPlayersHandler))
-	router.HandlerFunc(http.MethodGet, "/v1/players/:id", app.requireActivatedUser(app.showPlayerHandler))
-	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/players", app.requireActivatedUser(app.createPlayerHandler))
-	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/players/:player_id", app.requireActivatedUser(app.updatePlayerHandler))
-	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/players/:player_id", app.requireActivatedUser(app.deletePlayerHandler))
+	router.HandlerFunc(http.MethodGet, "/v1/players", app.requirePermission("players:read", app.listPlayersHandler))
+	router.HandlerFunc(http.MethodGet, "/v1/players/:id", app.requirePermission("players:read", app.showPlayerHandler))
+	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/players", app.requirePermission("players:write", app.createPlayerHandler))
+	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/players/:player_id", app.requirePermission("players:write", app.updatePlayerHandler))
+	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/players/:player_id", app.requirePermission("players:write", app.deletePlayerHandler))
 
 	// Users
 	router.HandlerFunc(http.MethodPost, "/v1/users", app.registerUserHandler)
