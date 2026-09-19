@@ -47,3 +47,13 @@ func (s PermissionStore) GetAllForUser(ctx context.Context, userID int) (Permiss
 
 	return permissions, nil
 }
+
+func (s PermissionStore) AddForUser(ctx context.Context, userID int, codes ...string) error {
+	query := `
+		INSERT INTO users_permissions
+		SELECT $1, permissions.id FROM permissions WHERE permissions.code = ANY($2)
+	`
+	_, err := s.pool.Exec(ctx, query, userID, codes)
+
+	return err
+}

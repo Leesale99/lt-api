@@ -62,6 +62,9 @@ func (app *Application) registerUserHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	codes := []string{"teams:read", "seasons:read", "rounds:read", "matches:read", "players:read"}
+	err = app.Identity.Permissions.AddForUser(ctx, user.ID, codes...)
+
 	userToken, err := app.Identity.UserTokens.New(ctx, user.ID, constants.ActivationTokenTTL, identity.ScopeActivation)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
