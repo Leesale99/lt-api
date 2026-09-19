@@ -6,7 +6,6 @@ type Store struct {
 	Users       UserStore
 	UserTokens  UserTokenStore
 	Permissions PermissionStore
-	Roles       RoleStore
 }
 
 func NewStore(pool *pgxpool.Pool) *Store {
@@ -14,6 +13,5 @@ func NewStore(pool *pgxpool.Pool) *Store {
 		Users:       UserStore{pool},
 		UserTokens:  UserTokenStore{pool},
 		Permissions: PermissionStore{pool},
-		Roles:       RoleStore{pool},
 	}
 }
