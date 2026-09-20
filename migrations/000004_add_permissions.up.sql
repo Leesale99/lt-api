@@ -33,8 +33,8 @@ ALTER TABLE users
 
 ALTER TABLE players
   ADD COLUMN user_id bigint
-    CONSTRAINT players_user_id_fkey REFERENCES users(id) ON DELETE SET NULL
-    CONSTRAINT players_one_player_per_user UNIQUE;
+    CONSTRAINT players_user_id_fkey REFERENCES users(id) ON DELETE SET NULL,
+  ADD CONSTRAINT players_season_id_user_id_key UNIQUE (season_id, user_id);
 
 INSERT INTO permissions (code)
 VALUES 
