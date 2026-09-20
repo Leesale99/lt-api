@@ -222,6 +222,37 @@ func TestCreatePlayerHandler(t *testing.T) {
 	}
 }
 
+// TestCreatePlayerDuplicateRegistration covers the ErrDuplicateRecord mapping
+// on the create path: one player per user per season (players_season_id_user_id_key),
+// so a second POST with the same authenticated user is a 409.
+func TestCreatePlayerDuplicateRegistration(t *testing.T) {
+	requireDB(t)
+
+	reset(t)
+	app := newTestApplication()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/seasons/2/players",
+		strings.NewReader(`{"name":"Sasha Vezenkov","favorite_team_id":1}`))
+	rr := httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("first registration: got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/seasons/2/players",
+		strings.NewReader(`{"name":"Other Name","favorite_team_id":2}`))
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("duplicate registration: got status %d, want %d (body: %s)", rr.Code, http.StatusConflict, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "unique values") {
+		t.Errorf("body missing duplicate message (body: %s)", rr.Body.String())
+	}
+}
+
 // Canonical player: ID 1, season 2, favorite team 1, version 1.
 // The season segment is scope-only: updating a player under a season it does
 // not belong to is a 404, not a season reassignment (ADR pending).

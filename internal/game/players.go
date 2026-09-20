@@ -17,13 +17,15 @@ import (
 // Player is a game entrant scoped to a season — who plays, not who logs in
 // (identity) and not a real-world basketball athlete (future Athlete entity).
 type Player struct {
-	ID             int       `json:"id"`
-	CreatedAt      time.Time `json:"-"`
-	Name           string    `json:"name"`
-	UserID         int       `json:"-"`
-	SeasonID       int       `json:"season_id"`
-	FavoriteTeamID int       `json:"favorite_team_id"`
-	Version        int       `json:"version"`
+	ID        int       `json:"id"`
+	CreatedAt time.Time `json:"-"`
+	Name      string    `json:"name"`
+	// Nullable: ON DELETE SET NULL on players_user_id_fkey keeps the player
+	// row (historical seasons) when its user is deleted.
+	UserID         *int `json:"-"`
+	SeasonID       int  `json:"season_id"`
+	FavoriteTeamID int  `json:"favorite_team_id"`
+	Version        int  `json:"version"`
 }
 
 func ValidatePlayer(v *validator.Validator, player Player) {
@@ -144,7 +146,7 @@ func (s *PlayerStore) Get(ctx context.Context, id int) (Player, error) {
 func (s *PlayerStore) Insert(ctx context.Context, player Player) (Player, error) {
 	query := `
 		INSERT INTO players (name, user_id, season_id, favorite_team_id)
-		VALUES ($1, $2, $3)
+		VALUES ($1, $2, $3, $4)
 		RETURNING id, created_at, version
 	`
 	args := []any{player.Name, player.UserID, player.SeasonID, player.FavoriteTeamID}
@@ -152,6 +154,9 @@ func (s *PlayerStore) Insert(ctx context.Context, player Player) (Player, error)
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&player.ID, &player.CreatedAt, &player.Version)
 	if err != nil {
 		switch {
+		case store.IsUniqueViolation(err, "players_season_id_user_id_key"):
+			// A second registration of the same user in the same season.
+			return Player{}, store.ErrDuplicateRecord
 		case store.IsFKViolation(err):
 			// The referenced team (or season) was deleted between the
 			// handler's existence check and this write.

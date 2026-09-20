@@ -46,6 +46,7 @@ func TestMain(m *testing.M) {
 		context.Background(),
 		dsn,
 		"identity",
+		"../../migrations/000001_create_initial_game_models.up.sql",
 		"../../migrations/000002_create_users_table.up.sql",
 		"../../migrations/000003_create_user_tokens_table.up.sql",
 		"../../migrations/000004_add_permissions.up.sql",
@@ -72,10 +73,12 @@ func requireDB(t *testing.T) {
 // resetUsers wipes the identity tables with identity restart, so ID-based
 // assertions (first insert → id 1) hold in every test. roles/permissions are
 // reference data from migration 000004 and stay untouched. The token store
-// references users (FK), so user_tokens goes in the same TRUNCATE.
+// references users (FK), so user_tokens goes in the same TRUNCATE; players
+// references users too (user_id, since 000004), so it must be included or
+// cascaded as well.
 func resetUsers(t *testing.T) {
 	t.Helper()
-	if _, err := testPool.Exec(context.Background(), `TRUNCATE users, user_tokens RESTART IDENTITY`); err != nil {
+	if _, err := testPool.Exec(context.Background(), `TRUNCATE users, user_tokens, players RESTART IDENTITY`); err != nil {
 		t.Fatalf("truncate users: %v", err)
 	}
 }

@@ -56,7 +56,7 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		SeasonID:       seasonID,
 		FavoriteTeamID: input.FavoriteTeamID,
 		Name:           input.Name,
-		UserID:         authenticatedUser.ID,
+		UserID:         &authenticatedUser.ID,
 	}
 
 	v := validator.New()
@@ -83,6 +83,9 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, store.ErrDuplicateRecord):
+			app.duplicateRecordResponse(w, r)
 			return
 		case errors.Is(err, store.ErrRecordNotFound):
 			// Race: the team was deleted between the check above and the insert.
