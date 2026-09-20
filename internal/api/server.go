@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"lt-api.aleksrdvn.com/internal/constants"
@@ -35,7 +38,7 @@ type Application struct {
 // type) keeps Application decoupled from SMTP entirely — tests inject a
 // no-op instead of a live client.
 type MailSender interface {
-	Send(recipient string, templateFile string, data any) error
+	Send(ctx context.Context, recipient string, templateFile string, data any) error
 }
 
 func (app *Application) Serve() error {
@@ -55,7 +58,27 @@ func (app *Application) Serve() error {
 
 		app.Logger.Info("stopping server", "addr", srv.Addr)
 
+		// Second-signal escalation: a further SIGTERM/SIGINT during the drain
+		// force-closes the server instead of being swallowed by the (already
+		// canceled) signal context. signal.Notify stacks with NotifyContext's
+		// registration, so arming this now catches the next signal.
+		secondSignal := make(chan os.Signal, 1)
+		signal.Notify(secondSignal, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(secondSignal)
+
+		drainDone := make(chan struct{})
+		go func() {
+			select {
+			case s := <-secondSignal:
+				app.Logger.Warn("second signal during drain, force-closing", "signal", s.String())
+				srv.Close()
+			case <-drainDone:
+			}
+		}()
+
 		shutdownError <- app.shutdown(srv)
+
+		close(drainDone) // drain over: the watcher goroutine can exit
 	}()
 
 	app.Logger.Info("starting server", "addr", srv.Addr, "env", app.Env)
@@ -74,7 +97,21 @@ func (app *Application) Serve() error {
 
 	app.Logger.Info("waiting for background tasks")
 
-	app.wg.Wait()
+	// Bounded wait: background tasks were handed the (already canceled)
+	// cancel root, so well-behaved ones finish fast — this budget only
+	// bounds misbehaving ones. Timeout is not an error: the shutdown did
+	// complete, tasks were abandoned (and said so in the log).
+	done := make(chan struct{})
+	go func() {
+		app.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(constants.BackgroundTaskBudget):
+		app.Logger.Warn("background tasks exceeded budget, exiting", "budget", constants.BackgroundTaskBudget)
+	}
 
 	app.Logger.Info("shutdown complete")
 	return nil

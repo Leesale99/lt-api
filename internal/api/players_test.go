@@ -35,7 +35,7 @@ func newTestApplication() *Application {
 // leaves the process, and the background goroutine has nothing to panic on.
 type nopMailer struct{}
 
-func (nopMailer) Send(recipient string, templateFile string, data any) error {
+func (nopMailer) Send(_ context.Context, recipient string, templateFile string, data any) error {
 	return nil
 }
 

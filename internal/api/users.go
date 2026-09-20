@@ -74,7 +74,7 @@ func (app *Application) registerUserHandler(w http.ResponseWriter, r *http.Reque
 			"activationToken": userToken.Plaintext,
 		}
 
-		err := app.Mailer.Send(user.Email, "user_welcome.tmpl", data)
+		err := app.Mailer.Send(ctx, user.Email, "user_welcome.tmpl", data)
 		if err != nil {
 			app.Logger.Error(err.Error())
 		}

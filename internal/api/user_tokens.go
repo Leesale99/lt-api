@@ -62,7 +62,7 @@ func (app *Application) createActivationTokenHandler(w http.ResponseWriter, r *h
 			"activationToken": userToken.Plaintext,
 		}
 
-		err := app.Mailer.Send(user.Email, "user_token_activation.tmpl", data)
+		err := app.Mailer.Send(ctx, user.Email, "user_token_activation.tmpl", data)
 		if err != nil {
 			app.Logger.Error(err.Error())
 		}

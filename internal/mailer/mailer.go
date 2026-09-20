@@ -2,6 +2,7 @@ package mailer
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"errors"
 	"math/rand/v2"
@@ -62,7 +63,11 @@ func New(host string, port int, username, password, sender string) (*Mailer, err
 	return mailer, nil
 }
 
-func (m *Mailer) Send(recipient string, templateFile string, data any) error {
+// Send renders and delivers one email, retrying with exponential backoff
+// and full jitter. ctx cancels the whole send: checked before every redial
+// and during every backoff sleep, so a shutdown cuts the retry ladder short
+// instead of letting it run to completion after the server has stopped.
+func (m *Mailer) Send(ctx context.Context, recipient string, templateFile string, data any) error {
 	textTempl, err := tt.New("").ParseFS(templateFS, "templates/"+templateFile)
 	if err != nil {
 		return err
@@ -108,7 +113,7 @@ func (m *Mailer) Send(recipient string, templateFile string, data any) error {
 	msg.AddAlternativeString(mail.TypeTextHTML, htmlBody.String())
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		err = m.client.DialAndSend(msg)
+		err = m.client.DialAndSendWithContext(ctx, msg)
 		if err == nil {
 			return nil
 		}
@@ -122,7 +127,11 @@ func (m *Mailer) Send(recipient string, templateFile string, data any) error {
 		// duration in [0, backoff) instead of the exact backoff.
 		backoff := baseDelay << attempt
 		backoff += time.Duration(rand.Int64N(int64(backoff)))
-		time.Sleep(backoff)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
 	}
 
 	return err
