@@ -51,7 +51,7 @@ func TestShowSeasonHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -123,7 +123,7 @@ func TestCreateSeasonHandler(t *testing.T) {
 			}
 			req := httptest.NewRequest(http.MethodPost, "/v1/seasons", reader)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -259,7 +259,7 @@ func TestUpdateSeasonHandler(t *testing.T) {
 				req.Header.Set(key, value)
 			}
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -281,7 +281,7 @@ func TestCreateSeasonHandlerLocation(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/seasons", strings.NewReader(`{"status":"created"}`))
 	rr := httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
@@ -339,7 +339,7 @@ func TestDeleteSeasonHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodDelete, tt.url, nil)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -365,7 +365,7 @@ func TestDeleteCreatedSeasonHandler(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/seasons",
 		strings.NewReader(`{"status":"created"}`))
 	rr := httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create: got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
@@ -380,7 +380,7 @@ func TestDeleteCreatedSeasonHandler(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodDelete, "/v1/seasons/"+id, nil)
 	rr = httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("delete: got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
@@ -493,7 +493,7 @@ func TestListSeasonsHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())

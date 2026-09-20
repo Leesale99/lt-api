@@ -80,7 +80,7 @@ func TestShowPlayerHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -208,7 +208,7 @@ func TestCreatePlayerHandler(t *testing.T) {
 			}
 			req := httptest.NewRequest(http.MethodPost, tt.url, reader)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -388,7 +388,7 @@ func TestUpdatePlayerHandler(t *testing.T) {
 				req.Header.Set(key, value)
 			}
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -453,7 +453,7 @@ func TestDeletePlayerHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodDelete, tt.url, nil)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -489,7 +489,7 @@ func TestDeletePlayerHandlerHappyPath(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/seasons/2/players/1", nil)
 	rr := httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
@@ -639,7 +639,7 @@ func TestListPlayersHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())

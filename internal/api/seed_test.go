@@ -11,8 +11,27 @@ import (
 	"testing"
 )
 
+// roles, permissions and roles_permissions are reference data seeded by
+// migration 000004 and never mutated by any handler, so reset() deliberately
+// leaves them in place. Everything else is truncated and re-seeded with fixed
+// IDs.
 const resetSQL = `
-	TRUNCATE matches, players, rounds, seasons, teams, users RESTART IDENTITY CASCADE;
+	TRUNCATE user_tokens, users, matches, players, rounds, seasons, teams
+	RESTART IDENTITY;
+
+	INSERT INTO users (name, email, password_hash, activated, role_id) VALUES
+		('Admin',   'admin@example.com',   '$2a$12$wKTvXl0oSi7VojP83AVHGeYIdbBV.kay9a.I5U3hIfJ.jWdrVBBv6', true,  (SELECT id FROM roles WHERE name = 'admin')),   -- id 1
+		('Regular', 'user@example.com',    '$2a$12$wKTvXl0oSi7VojP83AVHGeYIdbBV.kay9a.I5U3hIfJ.jWdrVBBv6', true,  (SELECT id FROM roles WHERE name = 'user')),    -- id 2
+		('Pending', 'pending@example.com', '$2a$12$wKTvXl0oSi7VojP83AVHGeYIdbBV.kay9a.I5U3hIfJ.jWdrVBBv6', false, (SELECT id FROM roles WHERE name = 'user'));    -- id 3
+
+	-- All four password hashes above are bcrypt("pa55word123"). The token
+	-- plaintexts these rows pair with live in auth_test.go; expiry is an hour,
+	-- far beyond any single test run, except the deliberately expired one.
+	INSERT INTO user_tokens (hash, user_id, expiry, scope) VALUES
+		(decode('9976d549a25115dab4e36d0c1fb8f31cb07da87dd83275977360eb7dc09e88de', 'hex'), 1, now() + interval '1 hour', 'authentication'),  -- admin user
+		(decode('c9ca6164dd79234f6dd18075205c763bb5930efdc0026b46157f8a75ab44fbdc', 'hex'), 2, now() + interval '1 hour', 'authentication'),  -- activated 'user'
+		(decode('72e7fd18f3ce18987d9c95e4454e466148ab18d000cc23d7ae11afc0815edc21', 'hex'), 3, now() + interval '1 hour', 'authentication'),  -- unactivated 'user'
+		(decode('5c637d48cd349889246bc9f73fcdaddafeca49ba9df0ec4551b02cf705a493e6', 'hex'), 1, now() - interval '1 minute', 'authentication'); -- expired
 
 	INSERT INTO teams (name, logo, description) VALUES
 		('Olympiacos', 'https://x.example/oly.png', 'Piraeus'),
@@ -36,6 +55,7 @@ const resetSQL = `
 	) VALUES
 		(1, 1, 1, 2, 1.5, 2.5, 88, 79, 'closed', now() - interval '7 days'),
 		(1, 1, 2, 1, 2.0, 1.8, NULL, NULL, 'created', now() + interval '7 days');
+
 `
 
 // reset wipes all tables and re-seeds the canonical fixture. Call it at the

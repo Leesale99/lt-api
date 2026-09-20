@@ -62,7 +62,7 @@ func TestShowMatchHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -225,7 +225,7 @@ func TestCreateMatchHandler(t *testing.T) {
 			}
 			req := httptest.NewRequest(http.MethodPost, tt.url, reader)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -297,7 +297,7 @@ func TestDeleteMatchHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodDelete, tt.url, nil)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -321,7 +321,7 @@ func TestDeleteMatchRemovesRow(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/seasons/1/matches/1", nil)
 	rr := httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
@@ -459,7 +459,7 @@ func TestListMatchesHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -542,7 +542,7 @@ func TestUpdateMatchHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodPatch, tt.url, strings.NewReader(tt.body))
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -573,7 +573,7 @@ func TestPostponeStartedMatchFrozen(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPatch, "/v1/seasons/1/matches/3",
 		strings.NewReader(`{"status":"postponed","odds":{"home":9.9,"away":9.9}}`))
 	rr := httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("got status %d, want %d (body: %s)", rr.Code, http.StatusConflict, rr.Body.String())

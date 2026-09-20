@@ -52,7 +52,7 @@ func TestShowRoundHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -152,7 +152,7 @@ func TestCreateRoundHandler(t *testing.T) {
 			}
 			req := httptest.NewRequest(http.MethodPost, tt.url, reader)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -330,7 +330,7 @@ func TestUpdateRoundHandler(t *testing.T) {
 				req.Header.Set(key, value)
 			}
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -355,7 +355,7 @@ func TestUpdateRoundPersists(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPatch, "/v1/seasons/1/rounds/2",
 		strings.NewReader(`{"number":7,"status":"closed"}`))
 	rr := httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
@@ -447,7 +447,7 @@ func TestDeleteRoundHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodDelete, tt.url, nil)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -481,7 +481,7 @@ func TestDeleteOpenRoundCascadesMatches(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/seasons/1/rounds/2", nil)
 	rr := httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
@@ -609,7 +609,7 @@ func TestListRoundsHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -634,7 +634,7 @@ func TestCreateRoundDuplicateNumber(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/seasons/1/rounds",
 		strings.NewReader(`{"number":1,"status":"open"}`))
 	rr := httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("got status %d, want %d (body: %s)", rr.Code, http.StatusConflict, rr.Body.String())
@@ -657,7 +657,7 @@ func TestOpenRoundStartsSeason(t *testing.T) {
 	// An open season.
 	req := httptest.NewRequest(http.MethodPost, "/v1/seasons", strings.NewReader(`{"status":"open"}`))
 	rr := httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create season: got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
 	}
@@ -667,7 +667,7 @@ func TestOpenRoundStartsSeason(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/v1/seasons/"+seasonID+"/rounds",
 		strings.NewReader(`{"number":1,"status":"created"}`))
 	rr = httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create round: got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
 	}
@@ -677,7 +677,7 @@ func TestOpenRoundStartsSeason(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPatch, "/v1/seasons/"+seasonID+"/rounds/"+roundID,
 		strings.NewReader(`{"status":"open"}`))
 	rr = httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("open round: got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
 	}
@@ -705,7 +705,7 @@ func TestOpenRoundSeasonFlipIsIdempotent(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/seasons", strings.NewReader(`{"status":"open"}`))
 	rr := httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create season: got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
 	}
@@ -714,7 +714,7 @@ func TestOpenRoundSeasonFlipIsIdempotent(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/v1/seasons/"+seasonID+"/rounds",
 		strings.NewReader(`{"number":1,"status":"created"}`))
 	rr = httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create round: got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
 	}
@@ -724,7 +724,7 @@ func TestOpenRoundSeasonFlipIsIdempotent(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPatch, "/v1/seasons/"+seasonID+"/rounds/"+roundID,
 		strings.NewReader(`{"status":"open"}`))
 	rr = httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("open round: got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
 	}
@@ -733,7 +733,7 @@ func TestOpenRoundSeasonFlipIsIdempotent(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPatch, "/v1/seasons/"+seasonID+"/rounds/"+roundID,
 		strings.NewReader(`{}`))
 	rr = httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("no-op round update: got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
 	}

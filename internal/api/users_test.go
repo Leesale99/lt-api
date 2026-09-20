@@ -163,8 +163,10 @@ func TestRegisterUserHandlerSuccessState(t *testing.T) {
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("got status %d, want 201 (body: %s)", rr.Code, rr.Body.String())
 	}
-	if loc := rr.Header().Get("Location"); loc != "/v1/users/1" {
-		t.Errorf("Location header = %q, want %q", loc, "/v1/users/1")
+	// The fixture seeds users 1–3, so the freshly registered user is id 4.
+	// If the fixture user count ever changes, this must change with it.
+	if loc := rr.Header().Get("Location"); loc != "/v1/users/4" {
+		t.Errorf("Location header = %q, want %q", loc, "/v1/users/4")
 	}
 	// Password must never appear in the response or the database.
 	for _, leak := range []string{"pa55word123", "password_hash"} {

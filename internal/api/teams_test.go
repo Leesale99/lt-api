@@ -51,7 +51,7 @@ func TestShowTeamHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -141,7 +141,7 @@ func TestCreateTeamHandler(t *testing.T) {
 			}
 			req := httptest.NewRequest(http.MethodPost, "/v1/teams", reader)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -241,7 +241,7 @@ func TestListTeamsHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -361,7 +361,7 @@ func TestUpdateTeamHandler(t *testing.T) {
 				req.Header.Set(key, value)
 			}
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -386,7 +386,7 @@ func TestUpdateTeamHandlerPersists(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPatch, "/v1/teams/1",
 		strings.NewReader(`{"name":"Thrylos","description":"Rebuilt"}`))
 	rr := httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
@@ -454,7 +454,7 @@ func TestDeleteTeamHandler(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodDelete, tt.url, nil)
 			rr := httptest.NewRecorder()
-			app.routes().ServeHTTP(rr, req)
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
@@ -479,7 +479,7 @@ func TestDeleteUnreferencedTeamHandler(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/teams",
 		strings.NewReader(`{"name":"Free FC","logo":"http://example.com/free.png","description":"no references"}`))
 	rr := httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create: got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
@@ -488,7 +488,7 @@ func TestDeleteUnreferencedTeamHandler(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodDelete, "/v1/teams/"+id, nil)
 	rr = httptest.NewRecorder()
-	app.routes().ServeHTTP(rr, req)
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("delete: got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())

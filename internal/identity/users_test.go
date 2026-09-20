@@ -47,6 +47,8 @@ func TestMain(m *testing.M) {
 		dsn,
 		"identity",
 		"../../migrations/000002_create_users_table.up.sql",
+		"../../migrations/000003_create_user_tokens_table.up.sql",
+		"../../migrations/000004_add_permissions.up.sql",
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "test database setup: %v\n", err)
@@ -67,12 +69,13 @@ func requireDB(t *testing.T) {
 	}
 }
 
-// resetUsers wipes just the users table with identity restart, so ID-based
-// assertions (first insert → id 1) hold in every test. The identity package
-// touches no other tables, so no fixture seeding is needed.
+// resetUsers wipes the identity tables with identity restart, so ID-based
+// assertions (first insert → id 1) hold in every test. roles/permissions are
+// reference data from migration 000004 and stay untouched. The token store
+// references users (FK), so user_tokens goes in the same TRUNCATE.
 func resetUsers(t *testing.T) {
 	t.Helper()
-	if _, err := testPool.Exec(context.Background(), `TRUNCATE users RESTART IDENTITY`); err != nil {
+	if _, err := testPool.Exec(context.Background(), `TRUNCATE users, user_tokens RESTART IDENTITY`); err != nil {
 		t.Fatalf("truncate users: %v", err)
 	}
 }
