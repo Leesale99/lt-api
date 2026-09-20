@@ -99,3 +99,8 @@ func (app *Application) missingPermissionResponse(w http.ResponseWriter, r *http
 	message := "your user account doesn't have the necessary permissions to access this resource"
 	app.writeError(w, r, http.StatusForbidden, message)
 }
+
+func (app *Application) forbiddenResponse(w http.ResponseWriter, r *http.Request) {
+	message := "you do not have permission to modify this resource"
+	app.writeError(w, r, http.StatusForbidden, message)
+}

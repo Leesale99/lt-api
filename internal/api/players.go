@@ -13,6 +13,18 @@ import (
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
+// userCanManagePlayer reports whether the authenticated user may modify the
+// given player: the owner may always manage their own registration; any
+// other user only if their role carries players:write:any (admin). A player
+// with a NULL user_id has no owner — admin-only by design.
+func (app *Application) userCanManagePlayer(r *http.Request, player game.Player) bool {
+	authenticatedUser, found := app.contextGetAuthenticatedUser(r)
+	if found && player.UserID != nil && *player.UserID == authenticatedUser.ID {
+		return true
+	}
+	return app.contextGetPermissions(r).Include("players:write:any")
+}
+
 func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Name           string `json:"name"`
@@ -169,6 +181,11 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if !app.userCanManagePlayer(r, player) {
+		app.forbiddenResponse(w, r)
+		return
+	}
+
 	expectedVersion := r.Header.Get("X-Expected-Version")
 	if expectedVersion != "" && strconv.Itoa(player.Version) != expectedVersion {
 		app.editConflictResponse(w, r)
@@ -251,6 +268,30 @@ func (app *Application) deletePlayerHandler(w http.ResponseWriter, r *http.Reque
 
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
+
+	player, err := app.Game.Players.Get(ctx, playerID)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, store.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+			return
+		default:
+			app.serverErrorResponse(w, r, err)
+			return
+		}
+	}
+
+	if player.SeasonID != seasonID {
+		app.notFoundResponse(w, r)
+		return
+	}
+
+	if !app.userCanManagePlayer(r, player) {
+		app.forbiddenResponse(w, r)
+		return
+	}
 
 	err = app.Game.Players.Delete(ctx, playerID, seasonID)
 	if err != nil {

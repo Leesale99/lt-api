@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -250,6 +251,118 @@ func TestCreatePlayerDuplicateRegistration(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "unique values") {
 		t.Errorf("body missing duplicate message (body: %s)", rr.Body.String())
+	}
+}
+
+// TestUpdatePlayerOwnership covers the players:write:any split (ADR-006):
+// the canonical player has a NULL user_id (no owner — admin-only), so a
+// regular user gets 403 while the admin keeps access. The user's own
+// registration is created live and PATCHed/DELETEd as owner.
+func TestUpdatePlayerOwnership(t *testing.T) {
+	requireDB(t)
+
+	// NULL-owner player: regular user forbidden, admin allowed.
+	reset(t)
+	app := newTestApplication()
+
+	req := httptest.NewRequest(http.MethodPatch, "/v1/seasons/2/players/1",
+		strings.NewReader(`{"name":"Sneaky Edit"}`))
+	rr := httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, withAuth(req, userAuthToken))
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("regular user, NULL owner: got status %d, want %d (body: %s)", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPatch, "/v1/seasons/2/players/1",
+		strings.NewReader(`{"name":"Admin Edit"}`))
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin, NULL owner: got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	// Own registration: the user creates their player, then edits it.
+	reset(t)
+	req = httptest.NewRequest(http.MethodPost, "/v1/seasons/2/players",
+		strings.NewReader(`{"name":"Regular Joe","favorite_team_id":1}`))
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, withAuth(req, userAuthToken))
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("user registration: got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+	var created struct {
+		Player struct {
+			ID int `json:"id"`
+		} `json:"player"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created player: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/v1/seasons/2/players/%d", created.Player.ID),
+		strings.NewReader(`{"name":"Renamed Joe"}`))
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, withAuth(req, userAuthToken))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("owner update: got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"name": "Renamed Joe"`) {
+		t.Errorf("owner update body missing new name (body: %s)", rr.Body.String())
+	}
+
+	// Owner delete, and a second user is refused.
+	req = httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/v1/seasons/2/players/%d", created.Player.ID), nil)
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, withAuth(req, userAuthToken))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("owner delete: got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	reset(t)
+	req = httptest.NewRequest(http.MethodPost, "/v1/seasons/2/players",
+		strings.NewReader(`{"name":"Regular Joe","favorite_team_id":1}`))
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, withAuth(req, userAuthToken))
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("user registration (2nd): got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created player (2nd): %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/v1/seasons/2/players/%d", created.Player.ID), nil)
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin delete other's player: got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	reset(t)
+	req = httptest.NewRequest(http.MethodPost, "/v1/seasons/2/players",
+		strings.NewReader(`{"name":"Regular Joe","favorite_team_id":1}`))
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, withAuth(req, userAuthToken))
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("user registration (3rd): got status %d, want %d (body: %s)", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created player (3rd): %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/v1/seasons/2/players/%d", created.Player.ID), nil)
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, withAuth(req, userAuthToken))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("owner delete (2nd): got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
 	}
 }
 

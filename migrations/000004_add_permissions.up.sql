@@ -46,6 +46,7 @@ VALUES
   ( 'matches:write' ),
   ( 'players:read' ),
   ( 'players:write' ),
+  ( 'players:write:any' ),
   ( 'teams:read' ),
   ( 'teams:write' );
 
@@ -62,6 +63,7 @@ INNER JOIN permissions ON permissions.code = ANY(ARRAY[
   'matches:write',
   'players:read',
   'players:write',
+  'players:write:any',
   'teams:read',
   'teams:write'
 ])

@@ -101,6 +101,8 @@ func (app *Application) requirePermission(code string, next http.HandlerFunc) ht
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		// Resolved set travels with the request so handlers can ask about
+		// other codes (e.g. players:write:any) without re-querying the DB.
+		next.ServeHTTP(w, app.contextSetPermissions(r, permissions))
 	})
 }
