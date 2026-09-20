@@ -53,6 +53,14 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
+	// Construct the mailer before dialing anything: it validates SMTP config,
+	// so config errors fail before connection errors.
+	mailer, err := mailer.New(cfg.smtp.host, cfg.smtp.port, cfg.smtp.username, cfg.smtp.password, cfg.smtp.sender)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+
 	pool, err := openPool(cfg)
 	if err != nil {
 		logger.Error(err.Error())
@@ -62,12 +70,6 @@ func main() {
 	defer pool.Close()
 
 	logger.Info("database connection pool established")
-
-	mailer, err := mailer.New(cfg.smtp.host, cfg.smtp.port, cfg.smtp.username, cfg.smtp.password, cfg.smtp.sender)
-	if err != nil {
-		logger.Error(err.Error())
-		os.Exit(1)
-	}
 
 	app := &api.Application{
 		Version:  version,

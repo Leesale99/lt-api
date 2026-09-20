@@ -3,6 +3,7 @@ package mailer
 import (
 	"bytes"
 	"embed"
+	"errors"
 	"time"
 
 	ht "html/template"
@@ -10,6 +11,11 @@ import (
 
 	"github.com/wneessen/go-mail"
 )
+
+// ErrMissingCredentials is returned by New when required SMTP configuration
+// is empty. It exists so callers can distinguish a config error (crash at
+// startup) from a transport error (retry at send time).
+var ErrMissingCredentials = errors.New("mailer: missing required SMTP configuration")
 
 //go:embed "templates"
 var templateFS embed.FS
@@ -20,6 +26,12 @@ type Mailer struct {
 }
 
 func New(host string, port int, username, password, sender string) (*Mailer, error) {
+	// Fail fast: an unauthenticated or senderless SMTP client is unusable, so
+	// refuse to construct rather than deferring the failure to the first send.
+	if host == "" || username == "" || password == "" || sender == "" {
+		return nil, ErrMissingCredentials
+	}
+
 	client, err := mail.NewClient(
 		host,
 		mail.WithSMTPAuth(mail.SMTPAuthLogin),

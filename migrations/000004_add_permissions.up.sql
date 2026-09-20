@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS roles (
 
 CREATE TABLE IF NOT EXISTS permissions (
   id bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-  code text NOT NULL
+  code text NOT NULL UNIQUE
 );
 
 CREATE TABLE IF NOT EXISTS roles_permissions (
