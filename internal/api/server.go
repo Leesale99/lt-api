@@ -26,11 +26,33 @@ type Application struct {
 	// (main wires it to the signal context) and handed to every background
 	// task started via background(). It is set once at construction and
 	// never mutated — a dependency like Logger, not ambient mutable state.
-	RootCtx  context.Context
+	RootCtx context.Context
+	// Shutdown budgets. Zero means "use the constants default" — main relies
+	// on that; tests set short values so shutdown scenarios run in ms.
+	ShutdownGracePeriod  time.Duration
+	BackgroundTaskBudget time.Duration
+
 	Game     *game.Store
 	Identity *identity.Store
 	Mailer   MailSender
 	wg       sync.WaitGroup
+}
+
+// gracePeriod is the HTTP-drain budget: field override if set, else the
+// constants default.
+func (app *Application) gracePeriod() time.Duration {
+	if app.ShutdownGracePeriod > 0 {
+		return app.ShutdownGracePeriod
+	}
+	return constants.ShutdownGracePeriod
+}
+
+// taskBudget is the background-goroutine wait budget, same override rule.
+func (app *Application) taskBudget() time.Duration {
+	if app.BackgroundTaskBudget > 0 {
+		return app.BackgroundTaskBudget
+	}
+	return constants.BackgroundTaskBudget
 }
 
 // MailSender is everything Application needs from the mailer: one method.
@@ -51,6 +73,14 @@ func (app *Application) Serve() error {
 		ErrorLog:     slog.NewLogLogger(app.Logger.Handler(), slog.LevelError),
 	}
 
+	return app.runServer(srv)
+}
+
+// runServer is Serve's testable core: the full shutdown lifecycle (signal
+// reaction, escalation, drain, bounded background wait) decoupled from how
+// the http.Server and its handler are built. Tests inject a server with a
+// hanging handler; production passes the one built in Serve.
+func (app *Application) runServer(srv *http.Server) error {
 	shutdownError := make(chan error)
 
 	go func() {
@@ -109,8 +139,8 @@ func (app *Application) Serve() error {
 
 	select {
 	case <-done:
-	case <-time.After(constants.BackgroundTaskBudget):
-		app.Logger.Warn("background tasks exceeded budget, exiting", "budget", constants.BackgroundTaskBudget)
+	case <-time.After(app.taskBudget()):
+		app.Logger.Warn("background tasks exceeded budget, exiting", "budget", app.taskBudget())
 	}
 
 	app.Logger.Info("shutdown complete")
@@ -122,7 +152,7 @@ func (app *Application) Serve() error {
 // error — the server did stop, just ungracefully — so only a failing force
 // close (or a non-timeout drain failure) is surfaced as an error.
 func (app *Application) shutdown(srv *http.Server) error {
-	ctx, cancel := context.WithTimeout(context.Background(), constants.ShutdownGracePeriod)
+	ctx, cancel := context.WithTimeout(context.Background(), app.gracePeriod())
 	defer cancel()
 
 	err := srv.Shutdown(ctx)
@@ -134,7 +164,7 @@ func (app *Application) shutdown(srv *http.Server) error {
 		return err
 	}
 
-	app.Logger.Warn("drain exceeded budget, force-closing connections", "budget", constants.ShutdownGracePeriod)
+	app.Logger.Warn("drain exceeded budget, force-closing connections", "budget", app.gracePeriod())
 
 	if closeErr := srv.Close(); closeErr != nil {
 		app.Logger.Error("force close failed", "error", closeErr)
