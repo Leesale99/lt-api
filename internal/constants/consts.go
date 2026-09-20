@@ -13,3 +13,5 @@ const (
 	ActivationTokenTTL     = 3 * 24 * time.Hour
 	AuthenticationTokenTTL = 24 * time.Hour
 )
+
+const ShutdownGracePeriod = 10 * time.Second

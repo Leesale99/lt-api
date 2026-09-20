@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/identity"
 )
@@ -56,10 +57,7 @@ func (app *Application) Serve() error {
 
 		app.Logger.Info("stopping server", "addr", srv.Addr, "signal", s.String())
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		shutdownError <- srv.Shutdown(ctx)
+		shutdownError <- app.shutdown(srv)
 	}()
 
 	app.Logger.Info("starting server", "addr", srv.Addr, "env", app.Env)
@@ -69,11 +67,10 @@ func (app *Application) Serve() error {
 		return err
 	}
 
+	// The signal goroutine owns draining; its result (drained, force-closed,
+	// or a real failure) is the server's shutdown result.
 	err = <-shutdownError
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			app.Logger.Warn("shutdown timeout")
-		}
 		return err
 	}
 
@@ -82,5 +79,32 @@ func (app *Application) Serve() error {
 	app.wg.Wait()
 
 	app.Logger.Info("shutdown complete")
+	return nil
+}
+
+// shutdown drains active connections within a fixed budget, then force-closes
+// whatever is left. A completed force-close after a drain timeout is not an
+// error — the server did stop, just ungracefully — so only a failing force
+// close (or a non-timeout drain failure) is surfaced as an error.
+func (app *Application) shutdown(srv *http.Server) error {
+	ctx, cancel := context.WithTimeout(context.Background(), constants.ShutdownGracePeriod)
+	defer cancel()
+
+	err := srv.Shutdown(ctx)
+	if err == nil {
+		return nil
+	}
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+
+	app.Logger.Warn("drain exceeded budget, force-closing connections", "budget", constants.ShutdownGracePeriod)
+
+	if closeErr := srv.Close(); closeErr != nil {
+		app.Logger.Error("force close failed", "error", closeErr)
+		return closeErr
+	}
+
 	return nil
 }
