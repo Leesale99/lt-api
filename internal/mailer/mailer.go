@@ -4,12 +4,22 @@ import (
 	"bytes"
 	"embed"
 	"errors"
+	"math/rand/v2"
 	"time"
 
 	ht "html/template"
 	tt "text/template"
 
 	"github.com/wneessen/go-mail"
+)
+
+// Retry behaviour for Send: maxRetries total attempts, base delay doubling
+// per attempt, with full jitter (sleep = random(0, base·2^attempt)) so that
+// concurrent senders failing together desynchronize instead of retrying in
+// synchronized waves. See the phase note / AWS "Exponential Backoff and Jitter".
+const (
+	maxRetries = 3
+	baseDelay  = 500 * time.Millisecond
 )
 
 // ErrMissingCredentials is returned by New when required SMTP configuration
@@ -97,15 +107,22 @@ func (m *Mailer) Send(recipient string, templateFile string, data any) error {
 	msg.SetBodyString(mail.TypeTextPlain, plainBody.String())
 	msg.AddAlternativeString(mail.TypeTextHTML, htmlBody.String())
 
-	for i := 1; i <= 3; i++ {
+	for attempt := 0; attempt < maxRetries; attempt++ {
 		err = m.client.DialAndSend(msg)
 		if err == nil {
 			return nil
 		}
 
-		if i != 3 {
-			time.Sleep(500 * time.Millisecond)
+		// No sleep after the final attempt.
+		if attempt == maxRetries-1 {
+			break
 		}
+
+		// Exponential: 500ms -> 1s -> 2s. Full jitter: wait a random
+		// duration in [0, backoff) instead of the exact backoff.
+		backoff := baseDelay << attempt
+		backoff += time.Duration(rand.Int64N(int64(backoff)))
+		time.Sleep(backoff)
 	}
 
 	return err
