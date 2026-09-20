@@ -5,6 +5,8 @@ import (
 	"flag"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -71,11 +73,22 @@ func main() {
 
 	logger.Info("database connection pool established")
 
+	// Process-level cancel tree: the first SIGTERM/SIGINT cancels the signal
+	// context, which cascades to root, which cascades to all background work
+	// derived from Application.RootCtx. root exists so Serve's early-exit
+	// paths and tests can also cancel everything without a signal.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	root, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	app := &api.Application{
 		Version:  version,
 		Env:      cfg.env,
 		Port:     cfg.port,
 		Logger:   logger,
+		RootCtx:  root,
 		Game:     game.NewStore(pool),
 		Identity: identity.NewStore(pool),
 		Mailer:   mailer,

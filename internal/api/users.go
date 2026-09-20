@@ -68,7 +68,7 @@ func (app *Application) registerUserHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	app.background(func() {
+	app.background(func(ctx context.Context) {
 		data := map[string]any{
 			"name":            user.Name,
 			"activationToken": userToken.Plaintext,

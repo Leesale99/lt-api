@@ -193,7 +193,10 @@ func (app *Application) readInt(qs url.Values, key string, defaultValue int, v *
 	return i
 }
 
-func (app *Application) background(fn func()) {
+// background runs fn on a tracked goroutine and hands it the process-wide
+// cancel root: fn must honor ctx cancellation (it does not extend the
+// request's lifetime — by the time fn runs, the request may already be done).
+func (app *Application) background(fn func(ctx context.Context)) {
 	app.wg.Go(func() {
 		defer func() {
 			pv := recover()
@@ -202,6 +205,6 @@ func (app *Application) background(fn func()) {
 			}
 		}()
 
-		fn()
+		fn(app.RootCtx)
 	})
 }

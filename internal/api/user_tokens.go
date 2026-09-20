@@ -57,7 +57,7 @@ func (app *Application) createActivationTokenHandler(w http.ResponseWriter, r *h
 		return
 	}
 
-	app.background(func() {
+	app.background(func(ctx context.Context) {
 		data := map[string]any{
 			"activationToken": userToken.Plaintext,
 		}

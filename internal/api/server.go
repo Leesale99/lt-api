@@ -6,10 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 	"time"
 
 	"lt-api.aleksrdvn.com/internal/constants"
@@ -18,10 +15,15 @@ import (
 )
 
 type Application struct {
-	Version  string
-	Port     int
-	Env      string
-	Logger   *slog.Logger
+	Version string
+	Port    int
+	Env     string
+	Logger  *slog.Logger
+	// RootCtx is the process-wide cancel root: canceled on SIGTERM/SIGINT
+	// (main wires it to the signal context) and handed to every background
+	// task started via background(). It is set once at construction and
+	// never mutated — a dependency like Logger, not ambient mutable state.
+	RootCtx  context.Context
 	Game     *game.Store
 	Identity *identity.Store
 	Mailer   MailSender
@@ -49,13 +51,9 @@ func (app *Application) Serve() error {
 	shutdownError := make(chan error)
 
 	go func() {
-		quit := make(chan os.Signal, 1)
+		<-app.RootCtx.Done()
 
-		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
-		s := <-quit
-
-		app.Logger.Info("stopping server", "addr", srv.Addr, "signal", s.String())
+		app.Logger.Info("stopping server", "addr", srv.Addr)
 
 		shutdownError <- app.shutdown(srv)
 	}()
