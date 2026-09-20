@@ -1,3 +1,5 @@
+ALTER TABLE players DROP COLUMN IF EXISTS user_id;
+
 ALTER TABLE users DROP COLUMN IF EXISTS role_id;
 
 DROP TABLE IF EXISTS roles_permissions;

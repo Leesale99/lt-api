@@ -20,6 +20,7 @@ type Player struct {
 	ID             int       `json:"id"`
 	CreatedAt      time.Time `json:"-"`
 	Name           string    `json:"name"`
+	UserID         int       `json:"-"`
 	SeasonID       int       `json:"season_id"`
 	FavoriteTeamID int       `json:"favorite_team_id"`
 	Version        int       `json:"version"`
@@ -60,7 +61,7 @@ func (s *PlayerStore) GetAll(ctx context.Context, name string, favoriteTeamID in
 	}
 
 	query := fmt.Sprintf(`
-		SELECT count(*) OVER(), id, created_at, name, season_id, favorite_team_id, version
+		SELECT count(*) OVER(), id, created_at, name, user_id, season_id, favorite_team_id, version
 		FROM players%s
 		ORDER BY %s %s, id ASC
 		LIMIT $%d OFFSET $%d
@@ -86,6 +87,7 @@ func (s *PlayerStore) GetAll(ctx context.Context, name string, favoriteTeamID in
 			&player.ID,
 			&player.CreatedAt,
 			&player.Name,
+			&player.UserID,
 			&player.SeasonID,
 			&player.FavoriteTeamID,
 			&player.Version,
@@ -112,7 +114,7 @@ func (s *PlayerStore) Get(ctx context.Context, id int) (Player, error) {
 	}
 
 	query := `
-		SELECT id, created_at, name, season_id, favorite_team_id, version
+		SELECT id, created_at, name, user_id, season_id, favorite_team_id, version
 		FROM players
 		WHERE id = $1
 	`
@@ -122,6 +124,7 @@ func (s *PlayerStore) Get(ctx context.Context, id int) (Player, error) {
 		&player.ID,
 		&player.CreatedAt,
 		&player.Name,
+		&player.UserID,
 		&player.SeasonID,
 		&player.FavoriteTeamID,
 		&player.Version,
@@ -140,11 +143,11 @@ func (s *PlayerStore) Get(ctx context.Context, id int) (Player, error) {
 
 func (s *PlayerStore) Insert(ctx context.Context, player Player) (Player, error) {
 	query := `
-		INSERT INTO players (name, season_id, favorite_team_id)
+		INSERT INTO players (name, user_id, season_id, favorite_team_id)
 		VALUES ($1, $2, $3)
 		RETURNING id, created_at, version
 	`
-	args := []any{player.Name, player.SeasonID, player.FavoriteTeamID}
+	args := []any{player.Name, player.UserID, player.SeasonID, player.FavoriteTeamID}
 
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&player.ID, &player.CreatedAt, &player.Version)
 	if err != nil {
@@ -166,12 +169,12 @@ func (s *PlayerStore) Update(ctx context.Context, player Player) (Player, error)
 		UPDATE players
 		SET name = $1, season_id = $2, favorite_team_id = $3, version = version + 1
 		WHERE id = $4 AND version = $5
-		RETURNING version
+		RETURNING user_id, version
 	`
 
 	args := []any{player.Name, player.SeasonID, player.FavoriteTeamID, player.ID, player.Version}
 
-	err := s.pool.QueryRow(ctx, query, args...).Scan(&player.Version)
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&player.UserID, &player.Version)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):

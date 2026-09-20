@@ -31,6 +31,11 @@ SET role_id = (SELECT id FROM roles WHERE name = 'user');
 ALTER TABLE users
   ALTER COLUMN role_id SET NOT NULL;
 
+ALTER TABLE players
+  ADD COLUMN user_id bigint
+    CONSTRAINT players_user_id_fkey REFERENCES users(id) ON DELETE SET NULL
+    CONSTRAINT players_one_player_per_user UNIQUE;
+
 INSERT INTO permissions (code)
 VALUES 
   ( 'seasons:read' ),
@@ -62,7 +67,7 @@ INNER JOIN permissions ON permissions.code = ANY(ARRAY[
 ])
 WHERE roles.name = 'admin';
 
--- user: read-only
+-- user: read-only + manage own player
 INSERT INTO roles_permissions (role_id, permission_id)
 SELECT roles.id, permissions.id
 FROM roles
@@ -71,6 +76,7 @@ INNER JOIN permissions ON permissions.code = ANY(ARRAY[
   'rounds:read',
   'matches:read',
   'players:read',
+  'players:write',
   'teams:read'
 ])
 WHERE roles.name = 'user';

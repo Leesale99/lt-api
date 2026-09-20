@@ -46,10 +46,17 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	authenticatedUser, found := app.contextGetAuthenticatedUser(r)
+	if !found {
+		app.authenticationRequiredResponse(w, r)
+		return
+	}
+
 	player := game.Player{
 		SeasonID:       seasonID,
 		FavoriteTeamID: input.FavoriteTeamID,
 		Name:           input.Name,
+		UserID:         authenticatedUser.ID,
 	}
 
 	v := validator.New()
