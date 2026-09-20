@@ -45,8 +45,8 @@ func main() {
 
 	flag.StringVar(&cfg.smtp.host, "smtp-host", "sandbox.smtp.mailtrap.io", "SMTP host")
 	flag.IntVar(&cfg.smtp.port, "smtp-port", 2525, "SMTP port")
-	flag.StringVar(&cfg.smtp.username, "smtp-username", "cea95c62807d67", "SMTP username")
-	flag.StringVar(&cfg.smtp.password, "smtp-password", "b806e8e18743c5", "SMTP password")
+	flag.StringVar(&cfg.smtp.username, "smtp-username", "", "SMTP username")
+	flag.StringVar(&cfg.smtp.password, "smtp-password", "", "SMTP password")
 	flag.StringVar(&cfg.smtp.sender, "smtp-sender", "League Tokens <no-reply@lt.aleksrdvn.com>", "SMTP sender")
 
 	flag.Parse()

@@ -13,7 +13,7 @@ confirm:
 ## run/api: run the cmd/api application
 .PHONY: run/server
 run/server: 
-	go run ./cmd/server -db-dsn=${LT_API_DSN}
+	go run ./cmd/server -db-dsn=${LT_API_DSN} -smtp-username=${SMTP_USERNAME} -smtp-password=${SMTP_PASSWORD}
 
 ## test: run the full suite; DB-backed tests skip when LT_API_TEST_DSN is unset
 .PHONY: test
