@@ -23,6 +23,7 @@ description: Write mechanics and rules routing for the lt-api Obsidian knowledge
   - Only replace on queries that are unique vault-wide: long, content-anchored strings (a trigger wikilink line, a full sentence). Never short generic keys (`status: open`, `type: phase`), even when you pass `file=`.
   - If the edit touches more than one file, or the query cannot be made unique — do a full `write` per file instead. Full-file `write` with `\n` escapes is the reliable path; use `search/replace` only for tiny surgical edits you have proven unique.
 - There is no dry-run mode: `preview=true` switches `search` to operator-query parsing (`query=status: active` errors with "Operator not recognized"). Do not treat it as a preview.
+- (observed once, 2026-09-20, cause undetermined) a multiline `search query=... replace=...` reported `0 file(s)` yet the first line of the target block (a `- [ ]` checkbox) was found flipped to `- [x]` on the subsequent read. Could also have been a concurrent manual edit by the user. Lesson regardless: after every search/replace, re-read the affected file and diff the full replaced block against expectations — a `0 file(s)` report does not prove nothing changed, and a partial application cannot be ruled out.
 - Multiline `\n`-escaped queries work and match exactly — this is how you make a query unique (e.g. span from `status: open` through the trigger line).
 
 ## Write discipline
