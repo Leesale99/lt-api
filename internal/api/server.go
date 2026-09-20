@@ -56,7 +56,10 @@ func (app *Application) Serve() error {
 
 		app.Logger.Info("stopping server", "addr", srv.Addr, "signal", s.String())
 
-		shutdownError <- srv.Shutdown(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		shutdownError <- srv.Shutdown(ctx)
 	}()
 
 	app.Logger.Info("starting server", "addr", srv.Addr, "env", app.Env)
@@ -68,6 +71,9 @@ func (app *Application) Serve() error {
 
 	err = <-shutdownError
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			app.Logger.Warn("shutdown timeout")
+		}
 		return err
 	}
 
