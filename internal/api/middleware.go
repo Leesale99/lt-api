@@ -9,10 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
-	"golang.org/x/time/rate"
 	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/store"
@@ -113,60 +110,17 @@ func (app *Application) requirePermission(code string, next http.HandlerFunc) ht
 	})
 }
 
+// rateLimit is the HTTP shell around RateLimiter: it keys on the
+// kernel-controlled RemoteAddr (never client-supplied headers —
+// X-Forwarded-For is attacker-controlled unless a trusted proxy guarantees
+// it), and turns a denial into 429 + Retry-After. All state and decisions
+// live in RateLimiter (ratelimiter.go); this function only translates
+// between HTTP and Allow's verdict.
 func (app *Application) rateLimit(next http.Handler) http.Handler {
-	if !app.Limiter.Enabled {
+	l := app.RateLimiter
+	if l == nil || !l.Enabled {
 		return next
 	}
-
-	type client struct {
-		limiter  *rate.Limiter
-		lastSeen time.Time
-	}
-
-	var (
-		mu      sync.Mutex
-		clients = make(map[string]*client)
-	)
-
-	// testEnv is set by rateLimitTestEnv to substitute a fake clock and a
-	// short cleanup tick; production keeps the zero value (real clock,
-	// 1-minute tick).
-	type testEnv struct {
-		now    func() time.Time
-		period time.Duration
-	}
-	env := testEnv{
-		now:    time.Now,
-		period: time.Minute,
-	}
-	if app.RateLimitTestEnv != nil {
-		env = testEnv{
-			now:    app.RateLimitTestEnv.Now,
-			period: app.RateLimitTestEnv.TickPeriod,
-		}
-	}
-
-	app.background(func(ctx context.Context) {
-		ticker := time.NewTicker(env.period)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				mu.Lock()
-
-				for ip, client := range clients {
-					if env.now().Sub(client.lastSeen) > constants.RateLimitCleanupInterval {
-						delete(clients, ip)
-					}
-				}
-
-				mu.Unlock()
-			}
-		}
-	})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -175,30 +129,14 @@ func (app *Application) rateLimit(next http.Handler) http.Handler {
 			return
 		}
 
-		mu.Lock()
-
-		if _, found := clients[ip]; !found {
-			clients[ip] = &client{
-				limiter: rate.NewLimiter(rate.Limit(app.Limiter.Rps), app.Limiter.Burst),
-				lastSeen: env.now(),
-			}
-		}
-		clients[ip].lastSeen = env.now()
-
-		res := clients[ip].limiter.Reserve()
-		if res.Delay() > 0 {
-			retryAfter := strconv.Itoa(int(math.Ceil(res.Delay().Seconds())))
-			res.Cancel()
-
-			mu.Unlock()
-
-			w.Header().Set("Retry-After", retryAfter)
-
+		ok, retryAfter := l.Allow(ip)
+		if !ok {
+			// RFC 7231 delay-seconds: an integer count of seconds, ceil'd —
+			// rounding down would promise a retry before the token exists.
+			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(retryAfter.Seconds()))))
 			app.rateLimitExceededResponse(w, r)
 			return
 		}
-
-		mu.Unlock()
 
 		next.ServeHTTP(w, r)
 	})

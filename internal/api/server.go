@@ -17,24 +17,14 @@ import (
 	"lt-api.aleksrdvn.com/internal/identity"
 )
 
-type Limiter struct {
-	Rps     float64
-	Burst   int
-	Enabled bool
-}
-
-// RateLimitTestEnv is the seam the rate-limit tests inject through: a fake
-// clock for lastSeen/eviction and the cleanup-tick period.
-type RateLimitTestEnv struct {
-	Now        func() time.Time
-	TickPeriod time.Duration
-}
 type Application struct {
 	Version string
 	Port    int
 	Env     string
-	Limiter Limiter
-	Logger  *slog.Logger
+	// RateLimiter is nil when rate limiting is not wired (handler tests);
+	// constructed with Enabled=false it passes everything through.
+	RateLimiter *RateLimiter
+	Logger      *slog.Logger
 	// RootCtx is the process-wide cancel root: canceled on SIGTERM/SIGINT
 	// (main wires it to the signal context) and handed to every background
 	// task started via background(). It is set once at construction and
@@ -44,9 +34,6 @@ type Application struct {
 	// on that; tests set short values so shutdown scenarios run in ms.
 	ShutdownGracePeriod  time.Duration
 	BackgroundTaskBudget time.Duration
-	// RateLimitTestEnv, when non-nil, overrides the rate limiter's clock and
-	// cleanup tick for tests; see rateLimit in middleware.go.
-	RateLimitTestEnv *RateLimitTestEnv
 
 	Game     *game.Store
 	Identity *identity.Store
@@ -97,6 +84,14 @@ func (app *Application) Serve() error {
 // the http.Server and its handler are built. Tests inject a server with a
 // hanging handler; production passes the one built in Serve.
 func (app *Application) runServer(srv *http.Server) error {
+	// The rate-limiter sweep lives exactly as long as serving: started here
+	// (once per process — runServer is the lifecycle owner), canceled with
+	// RootCtx, waited on by the bounded wg.Wait during shutdown. routes()
+	// stays a pure builder; never start goroutines there.
+	if app.RateLimiter != nil && app.RateLimiter.Enabled {
+		app.background(app.RateLimiter.Sweep)
+	}
+
 	shutdownError := make(chan error)
 
 	go func() {

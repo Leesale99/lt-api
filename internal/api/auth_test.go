@@ -171,7 +171,7 @@ func TestRequirePermissionMiddleware(t *testing.T) {
 			url:      "/v1/teams",
 			token:    adminAuthToken,
 			wantCode: http.StatusUnprocessableEntity, // route reached: validation error on empty body
-			wantBody: []string{"must be provided"},  // anything but the 403s above proves the gate opened
+			wantBody: []string{"must be provided"},   // anything but the 403s above proves the gate opened
 		},
 	}
 

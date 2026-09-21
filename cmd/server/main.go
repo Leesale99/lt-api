@@ -26,8 +26,12 @@ type config struct {
 		maxConns    int
 		maxIdleTime time.Duration
 	}
-	limiter api.Limiter
-	smtp    struct {
+	limiter struct {
+		rps     float64
+		burst   int
+		enabled bool
+	}
+	smtp struct {
 		host     string
 		port     int
 		username string
@@ -46,9 +50,9 @@ func main() {
 	flag.IntVar(&cfg.db.maxConns, "db-max-conns", 25, "PostgreSQL max open and idle connections")
 	flag.DurationVar(&cfg.db.maxIdleTime, "db-max-idle-time", 15*time.Minute, "PostgreSQL max connection idle time")
 
-	flag.Float64Var(&cfg.limiter.Rps, "limiter-rps", 2, "Rate limiter maximum requests per second")
-	flag.IntVar(&cfg.limiter.Burst, "limiter-burst", 4, "Rate limiter maximum burst")
-	flag.BoolVar(&cfg.limiter.Enabled, "limiter-enabled", true, "Enable rate limiter")
+	flag.Float64Var(&cfg.limiter.rps, "limiter-rps", 2, "Rate limiter maximum requests per second")
+	flag.IntVar(&cfg.limiter.burst, "limiter-burst", 4, "Rate limiter maximum burst")
+	flag.BoolVar(&cfg.limiter.enabled, "limiter-enabled", true, "Enable rate limiter")
 
 	flag.StringVar(&cfg.smtp.host, "smtp-host", "sandbox.smtp.mailtrap.io", "SMTP host")
 	flag.IntVar(&cfg.smtp.port, "smtp-port", 2525, "SMTP port")
@@ -88,16 +92,22 @@ func main() {
 	root, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	rateLimiter := api.NewRateLimiter(
+		cfg.limiter.rps,
+		cfg.limiter.burst,
+		cfg.limiter.enabled,
+	)
+
 	app := &api.Application{
-		Version:  version,
-		Env:      cfg.env,
-		Port:     cfg.port,
-		Limiter:  cfg.limiter,
-		Logger:   logger,
-		RootCtx:  root,
-		Game:     game.NewStore(pool),
-		Identity: identity.NewStore(pool),
-		Mailer:   mailer,
+		Version:     version,
+		Env:         cfg.env,
+		Port:        cfg.port,
+		RateLimiter: rateLimiter,
+		Logger:      logger,
+		RootCtx:     root,
+		Game:        game.NewStore(pool),
+		Identity:    identity.NewStore(pool),
+		Mailer:      mailer,
 	}
 
 	err = app.Serve()
