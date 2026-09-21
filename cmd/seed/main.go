@@ -29,7 +29,8 @@ func main() {
 	var dsn string
 	var reset bool
 
-	flag.StringVar(&dsn, "db-dsn", "", "PostgreSQL DSN")
+	// Same precedence as the server (ADR-014): env first, flag overrides.
+	flag.StringVar(&dsn, "db-dsn", os.Getenv("LT_API_DSN"), "PostgreSQL DSN (env: LT_API_DSN)")
 	flag.BoolVar(&reset, "reset", false, "truncate all tables (RESTART IDENTITY CASCADE) before seeding")
 	flag.Parse()
 
