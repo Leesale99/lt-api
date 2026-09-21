@@ -128,8 +128,26 @@ func (app *Application) rateLimit(next http.Handler) http.Handler {
 		clients = make(map[string]*client)
 	)
 
+	// testEnv is set by rateLimitTestEnv to substitute a fake clock and a
+	// short cleanup tick; production keeps the zero value (real clock,
+	// 1-minute tick).
+	type testEnv struct {
+		now    func() time.Time
+		period time.Duration
+	}
+	env := testEnv{
+		now:    time.Now,
+		period: time.Minute,
+	}
+	if app.RateLimitTestEnv != nil {
+		env = testEnv{
+			now:    app.RateLimitTestEnv.Now,
+			period: app.RateLimitTestEnv.TickPeriod,
+		}
+	}
+
 	app.background(func(ctx context.Context) {
-		ticker := time.NewTicker(time.Minute)
+		ticker := time.NewTicker(env.period)
 		defer ticker.Stop()
 
 		for {
@@ -140,7 +158,7 @@ func (app *Application) rateLimit(next http.Handler) http.Handler {
 				mu.Lock()
 
 				for ip, client := range clients {
-					if time.Since(client.lastSeen) > constants.RateLimitCleanupInterval {
+					if env.now().Sub(client.lastSeen) > constants.RateLimitCleanupInterval {
 						delete(clients, ip)
 					}
 				}
@@ -162,8 +180,10 @@ func (app *Application) rateLimit(next http.Handler) http.Handler {
 		if _, found := clients[ip]; !found {
 			clients[ip] = &client{
 				limiter: rate.NewLimiter(rate.Limit(app.Limiter.Rps), app.Limiter.Burst),
+				lastSeen: env.now(),
 			}
 		}
+		clients[ip].lastSeen = env.now()
 
 		res := clients[ip].limiter.Reserve()
 		if res.Delay() > 0 {

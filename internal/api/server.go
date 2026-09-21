@@ -23,6 +23,12 @@ type Limiter struct {
 	Enabled bool
 }
 
+// RateLimitTestEnv is the seam the rate-limit tests inject through: a fake
+// clock for lastSeen/eviction and the cleanup-tick period.
+type RateLimitTestEnv struct {
+	Now        func() time.Time
+	TickPeriod time.Duration
+}
 type Application struct {
 	Version string
 	Port    int
@@ -38,6 +44,9 @@ type Application struct {
 	// on that; tests set short values so shutdown scenarios run in ms.
 	ShutdownGracePeriod  time.Duration
 	BackgroundTaskBudget time.Duration
+	// RateLimitTestEnv, when non-nil, overrides the rate limiter's clock and
+	// cleanup tick for tests; see rateLimit in middleware.go.
+	RateLimitTestEnv *RateLimitTestEnv
 
 	Game     *game.Store
 	Identity *identity.Store
