@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tomasen/realip"
 	"golang.org/x/time/rate"
 	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/identity"
@@ -149,7 +148,7 @@ func (app *Application) rateLimit(next http.Handler) http.Handler {
 	})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := realip.FromRequest(r)
+		ip := strings.Split(r.RemoteAddr, ":")[0]
 
 		mu.Lock()
 
@@ -161,6 +160,11 @@ func (app *Application) rateLimit(next http.Handler) http.Handler {
 
 		if !clients[ip].limiter.Allow() {
 			mu.Unlock()
+
+			reserved := clients[ip].limiter.Reserve().Delay().Seconds()
+
+			w.Header().Add("Retry-After", fmt.Sprintf("%v seconds", reserved))
+
 			app.rateLimitExceededResponse(w, r)
 			return
 		}
