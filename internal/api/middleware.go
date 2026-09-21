@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -164,13 +166,13 @@ func (app *Application) rateLimit(next http.Handler) http.Handler {
 		}
 
 		res := clients[ip].limiter.Reserve()
-		if !res.OK() {
-			retryAfter := res.Delay().Milliseconds()
+		if res.Delay() > 0 {
+			retryAfter := strconv.Itoa(int(math.Ceil(res.Delay().Seconds())))
 			res.Cancel()
 
 			mu.Unlock()
 
-			w.Header().Set("Retry-After", fmt.Sprintf("%v", retryAfter))
+			w.Header().Set("Retry-After", retryAfter)
 
 			app.rateLimitExceededResponse(w, r)
 			return
