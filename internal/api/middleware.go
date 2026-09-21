@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/tomasen/realip"
+	"golang.org/x/time/rate"
 	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/store"
@@ -104,5 +108,65 @@ func (app *Application) requirePermission(code string, next http.HandlerFunc) ht
 		// Resolved set travels with the request so handlers can ask about
 		// other codes (e.g. players:write:any) without re-querying the DB.
 		next.ServeHTTP(w, app.contextSetPermissions(r, permissions))
+	})
+}
+
+func (app *Application) rateLimit(next http.Handler) http.Handler {
+	if !app.Limiter.Enabled {
+		return next
+	}
+
+	type client struct {
+		limiter  *rate.Limiter
+		lastSeen time.Time
+	}
+
+	var (
+		mu      sync.Mutex
+		clients = make(map[string]*client)
+	)
+
+	app.background(func(ctx context.Context) {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				mu.Lock()
+
+				for ip, client := range clients {
+					if time.Since(client.lastSeen) > constants.RateLimitCleanupInterval {
+						delete(clients, ip)
+					}
+				}
+
+				mu.Unlock()
+			}
+		}
+	})
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := realip.FromRequest(r)
+
+		mu.Lock()
+
+		if _, found := clients[ip]; !found {
+			clients[ip] = &client{
+				limiter: rate.NewLimiter(rate.Limit(app.Limiter.Rps), app.Limiter.Burst),
+			}
+		}
+
+		if !clients[ip].limiter.Allow() {
+			mu.Unlock()
+			app.rateLimitExceededResponse(w, r)
+			return
+		}
+
+		mu.Unlock()
+
+		next.ServeHTTP(w, r)
 	})
 }

@@ -21,3 +21,5 @@ const ShutdownGracePeriod = 10 * time.Second
 // worst-case shutdown (drain + workers) stays inside a typical orchestrator
 // kill window (Kubernetes default: 30s) with margin to spare.
 const BackgroundTaskBudget = 5 * time.Second
+
+const RateLimitCleanupInterval = 3 * time.Minute

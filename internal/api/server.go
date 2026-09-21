@@ -17,10 +17,17 @@ import (
 	"lt-api.aleksrdvn.com/internal/identity"
 )
 
+type Limiter struct {
+	Rps     float64
+	Burst   int
+	Enabled bool
+}
+
 type Application struct {
 	Version string
 	Port    int
 	Env     string
+	Limiter Limiter
 	Logger  *slog.Logger
 	// RootCtx is the process-wide cancel root: canceled on SIGTERM/SIGINT
 	// (main wires it to the signal context) and handed to every background

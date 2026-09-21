@@ -104,3 +104,8 @@ func (app *Application) forbiddenResponse(w http.ResponseWriter, r *http.Request
 	message := "you do not have permission to modify this resource"
 	app.writeError(w, r, http.StatusForbidden, message)
 }
+
+func (app *Application) rateLimitExceededResponse(w http.ResponseWriter, r *http.Request) {
+	message := "rate limit exceeded"
+	app.writeError(w, r, http.StatusTooManyRequests, message)
+}

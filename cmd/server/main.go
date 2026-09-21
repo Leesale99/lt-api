@@ -26,7 +26,8 @@ type config struct {
 		maxConns    int
 		maxIdleTime time.Duration
 	}
-	smtp struct {
+	limiter api.Limiter
+	smtp    struct {
 		host     string
 		port     int
 		username string
@@ -44,6 +45,10 @@ func main() {
 	flag.StringVar(&cfg.db.dsn, "db-dsn", "", "PostgreSQL DSN")
 	flag.IntVar(&cfg.db.maxConns, "db-max-conns", 25, "PostgreSQL max open and idle connections")
 	flag.DurationVar(&cfg.db.maxIdleTime, "db-max-idle-time", 15*time.Minute, "PostgreSQL max connection idle time")
+
+	flag.Float64Var(&cfg.limiter.Rps, "limiter-rps", 2, "Rate limiter maximum requests per second")
+	flag.IntVar(&cfg.limiter.Burst, "limiter-burst", 4, "Rate limiter maximum burst")
+	flag.BoolVar(&cfg.limiter.Enabled, "limiter-enabled", true, "Enable rate limiter")
 
 	flag.StringVar(&cfg.smtp.host, "smtp-host", "sandbox.smtp.mailtrap.io", "SMTP host")
 	flag.IntVar(&cfg.smtp.port, "smtp-port", 2525, "SMTP port")
@@ -87,6 +92,7 @@ func main() {
 		Version:  version,
 		Env:      cfg.env,
 		Port:     cfg.port,
+		Limiter:  cfg.limiter,
 		Logger:   logger,
 		RootCtx:  root,
 		Game:     game.NewStore(pool),
