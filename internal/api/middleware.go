@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -148,7 +149,11 @@ func (app *Application) rateLimit(next http.Handler) http.Handler {
 	})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := strings.Split(r.RemoteAddr, ":")[0]
+		ip, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			app.serverErrorResponse(w, r, err)
+			return
+		}
 
 		mu.Lock()
 
@@ -158,12 +163,14 @@ func (app *Application) rateLimit(next http.Handler) http.Handler {
 			}
 		}
 
-		if !clients[ip].limiter.Allow() {
+		res := clients[ip].limiter.Reserve()
+		if !res.OK() {
+			retryAfter := res.Delay().Milliseconds()
+			res.Cancel()
+
 			mu.Unlock()
 
-			reserved := clients[ip].limiter.Reserve().Delay().Seconds()
-
-			w.Header().Add("Retry-After", fmt.Sprintf("%v seconds", reserved))
+			w.Header().Set("Retry-After", fmt.Sprintf("%v", retryAfter))
 
 			app.rateLimitExceededResponse(w, r)
 			return
