@@ -17,6 +17,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -112,8 +113,12 @@ func TestAuthenticateMiddleware(t *testing.T) {
 			if rr.Code != tt.wantCode {
 				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
 			}
-			if vary := rr.Header().Get("Vary"); vary != "Authorization" {
-				t.Errorf("Vary header = %q, want %q", vary, "Authorization")
+			// Vary must contain Authorization (authenticate) and Origin (CORS
+			// middleware) — responses vary by both.
+			vary := rr.Header().Values("Vary")
+			slices.Sort(vary)
+			if want := []string{"Authorization", "Origin"}; !slices.Equal(vary, want) {
+				t.Errorf("Vary header = %q, want %q", vary, want)
 			}
 			for _, fragment := range tt.wantBody {
 				if !strings.Contains(rr.Body.String(), fragment) {

@@ -142,10 +142,27 @@ func (app *Application) rateLimit(next http.Handler) http.Handler {
 	})
 }
 
+// enableCORS implements the origin policy: exact-match allowlist from
+// config (TrustedOrigins), never reflection and never "*". CORS is
+// browser-enforced, not server security — curl and server-to-server calls
+// send no Origin and are unaffected; a disallowed origin simply gets no
+// CORS headers, so the browser blocks the response while the request
+// itself completes (silent rejection, chosen over an explicit 403).
+//
+// Chain position — recoverPanic(enableCORS(rateLimit(authenticate(...)))):
+// an allowed preflight short-circuits here, before rateLimit (a preflight
+// must not burn a token) and before authenticate (it carries no
+// Authorization header); recoverPanic stays outermost.
+//
+// Allowed methods/headers: GET/HEAD/POST and the safelisted request
+// headers are always permitted by the CORS-safelist and need no
+// declaration; the lists below add everything else this API serves
+// cross-origin (PUT/PATCH/DELETE) and the non-safelisted headers its
+// clients send (Authorization; Content-Type beyond the safelisted form
+// values, e.g. application/json).
 func (app *Application) enableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Vary", "Origin")
-		w.Header().Add("Vary", "Access-Control-Request-Method")
 
 		origin := r.Header.Get("Origin")
 
@@ -155,9 +172,12 @@ func (app *Application) enableCORS(next http.Handler) http.Handler {
 					w.Header().Set("Access-Control-Allow-Origin", origin)
 
 					if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
-						w.Header().Set("Access-Control-Allow-Methods", "OPTIONS, PUT, PATCH, DELETE")
+						w.Header().Set("Access-Control-Allow-Methods", "PUT, PATCH, DELETE")
 						w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-						w.Header().Set("Access-Control-Max-Age", "60")
+						// Preflight caching: one day without re-preflighting. The
+						// staleness risk is a redeployed allowlist lagging behind on
+						// clients — acceptable at this deploy cadence.
+						w.Header().Set("Access-Control-Max-Age", "86400")
 
 						w.WriteHeader(http.StatusOK)
 						return

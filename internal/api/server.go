@@ -18,9 +18,12 @@ import (
 )
 
 type Application struct {
-	Version        string
-	Port           int
-	Env            string
+	Version string
+	Port    int
+	Env     string
+	// TrustedOrigins is the CORS origin allowlist (from cfg.CORS.Origins).
+	// Nil means CORS is disabled: the middleware matches nothing and no
+	// CORS headers are ever emitted — "not allowed", never "allow all".
 	TrustedOrigins []string
 	// RateLimiter is nil when rate limiting is not wired (handler tests);
 	// constructed with Enabled=false it passes everything through.

@@ -7,7 +7,6 @@
 //
 // 12-factor: an identical binary is configured by its environment. Flags
 // remain for dev convenience; production injects env vars only.
-
 package config
 
 import (
