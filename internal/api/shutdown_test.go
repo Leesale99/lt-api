@@ -91,9 +91,9 @@ func busyConn(t *testing.T, addr string) net.Conn {
 }
 
 // startServe runs runServer in the background and returns its result.
-func startServe(app *Application, srv *http.Server) <-chan error {
+func startServe(app *Application, srv *http.Server, opts RunOptions) <-chan error {
 	errc := make(chan error, 1)
-	go func() { errc <- app.runServer(srv) }()
+	go func() { errc <- app.runServer(srv, opts) }()
 	return errc
 }
 
@@ -129,17 +129,19 @@ func TestDrainTimeoutForceCloses(t *testing.T) {
 
 	const grace = 300 * time.Millisecond
 	app := &Application{
-		Logger:               quietLogger(),
-		RootCtx:              ctx,
-		ShutdownGracePeriod:  grace,
-		BackgroundTaskBudget: 300 * time.Millisecond,
+		Logger:  quietLogger(),
+		RootCtx: ctx,
+	}
+	opts := RunOptions{
+		GracePeriod: grace,
+		TaskBudget:  300 * time.Millisecond,
 	}
 
 	block := make(chan struct{})
 	defer close(block) // release the hung handler so nothing leaks at teardown
 
 	srv, started := hangServer(freeAddr(t), block)
-	errc := startServe(app, srv)
+	errc := startServe(app, srv, opts)
 
 	conn := busyConn(t, srv.Addr)
 	defer conn.Close()
@@ -166,17 +168,19 @@ func TestSecondSignalForceClosesDuringDrain(t *testing.T) {
 
 	const grace = 10 * time.Second // long enough that a pass would be obvious
 	app := &Application{
-		Logger:               quietLogger(),
-		RootCtx:              ctx,
-		ShutdownGracePeriod:  grace,
-		BackgroundTaskBudget: 300 * time.Millisecond,
+		Logger:  quietLogger(),
+		RootCtx: ctx,
+	}
+	opts := RunOptions{
+		GracePeriod: grace,
+		TaskBudget:  300 * time.Millisecond,
 	}
 
 	block := make(chan struct{})
 	defer close(block)
 
 	srv, started := hangServer(freeAddr(t), block)
-	errc := startServe(app, srv)
+	errc := startServe(app, srv, opts)
 
 	conn := busyConn(t, srv.Addr)
 	defer conn.Close()
@@ -208,10 +212,12 @@ func TestBackgroundTaskBudgetBoundsWait(t *testing.T) {
 
 	const budget = 200 * time.Millisecond
 	app := &Application{
-		Logger:               quietLogger(),
-		RootCtx:              root,
-		ShutdownGracePeriod:  time.Second,
-		BackgroundTaskBudget: budget,
+		Logger:  quietLogger(),
+		RootCtx: root,
+	}
+	opts := RunOptions{
+		GracePeriod: time.Second,
+		TaskBudget:  budget,
 	}
 
 	block := make(chan struct{})
@@ -224,7 +230,7 @@ func TestBackgroundTaskBudgetBoundsWait(t *testing.T) {
 	})
 
 	srv, _ := hangServer(freeAddr(t), make(chan struct{})) // never hangs: no requests, started never fires
-	errc := startServe(app, srv)
+	errc := startServe(app, srv, opts)
 
 	// Wait until listening, then cancel the root the way a signal would.
 	conn := busyConn(t, srv.Addr)

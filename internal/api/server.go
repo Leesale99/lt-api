@@ -30,10 +30,6 @@ type Application struct {
 	// task started via background(). It is set once at construction and
 	// never mutated — a dependency like Logger, not ambient mutable state.
 	RootCtx context.Context
-	// Shutdown budgets. Zero means "use the constants default" — main relies
-	// on that; tests set short values so shutdown scenarios run in ms.
-	ShutdownGracePeriod  time.Duration
-	BackgroundTaskBudget time.Duration
 
 	Game     *game.Store
 	Identity *identity.Store
@@ -41,19 +37,30 @@ type Application struct {
 	wg       sync.WaitGroup
 }
 
-// gracePeriod is the HTTP-drain budget: field override if set, else the
+// RunOptions carries the shutdown budgets consumed only by runServer.
+// They are runServer's options, not Application state: they cannot drift
+// mid-flight and main needs no knowledge of them (zero value = constants
+// defaults). Tests pass short values so shutdown scenarios run in ms.
+type RunOptions struct {
+	// GracePeriod bounds the HTTP drain before force-close.
+	GracePeriod time.Duration
+	// TaskBudget bounds the wait for background goroutines after the drain.
+	TaskBudget time.Duration
+}
+
+// gracePeriod is the HTTP-drain budget: explicit override if set, else the
 // constants default.
-func (app *Application) gracePeriod() time.Duration {
-	if app.ShutdownGracePeriod > 0 {
-		return app.ShutdownGracePeriod
+func (o RunOptions) gracePeriod() time.Duration {
+	if o.GracePeriod > 0 {
+		return o.GracePeriod
 	}
 	return constants.ShutdownGracePeriod
 }
 
 // taskBudget is the background-goroutine wait budget, same override rule.
-func (app *Application) taskBudget() time.Duration {
-	if app.BackgroundTaskBudget > 0 {
-		return app.BackgroundTaskBudget
+func (o RunOptions) taskBudget() time.Duration {
+	if o.TaskBudget > 0 {
+		return o.TaskBudget
 	}
 	return constants.BackgroundTaskBudget
 }
@@ -76,14 +83,14 @@ func (app *Application) Serve() error {
 		ErrorLog:     slog.NewLogLogger(app.Logger.Handler(), slog.LevelError),
 	}
 
-	return app.runServer(srv)
+	return app.runServer(srv, RunOptions{})
 }
 
 // runServer is Serve's testable core: the full shutdown lifecycle (signal
 // reaction, escalation, drain, bounded background wait) decoupled from how
 // the http.Server and its handler are built. Tests inject a server with a
 // hanging handler; production passes the one built in Serve.
-func (app *Application) runServer(srv *http.Server) error {
+func (app *Application) runServer(srv *http.Server, opts RunOptions) error {
 	// The rate-limiter sweep lives exactly as long as serving: started here
 	// (once per process — runServer is the lifecycle owner), canceled with
 	// RootCtx, waited on by the bounded wg.Wait during shutdown. routes()
@@ -117,7 +124,7 @@ func (app *Application) runServer(srv *http.Server) error {
 			}
 		}()
 
-		shutdownError <- app.shutdown(srv)
+		shutdownError <- app.shutdown(srv, opts)
 
 		close(drainDone) // drain over: the watcher goroutine can exit
 	}()
@@ -150,8 +157,8 @@ func (app *Application) runServer(srv *http.Server) error {
 
 	select {
 	case <-done:
-	case <-time.After(app.taskBudget()):
-		app.Logger.Warn("background tasks exceeded budget, exiting", "budget", app.taskBudget())
+	case <-time.After(opts.taskBudget()):
+		app.Logger.Warn("background tasks exceeded budget, exiting", "budget", opts.taskBudget())
 	}
 
 	app.Logger.Info("shutdown complete")
@@ -162,8 +169,8 @@ func (app *Application) runServer(srv *http.Server) error {
 // whatever is left. A completed force-close after a drain timeout is not an
 // error — the server did stop, just ungracefully — so only a failing force
 // close (or a non-timeout drain failure) is surfaced as an error.
-func (app *Application) shutdown(srv *http.Server) error {
-	ctx, cancel := context.WithTimeout(context.Background(), app.gracePeriod())
+func (app *Application) shutdown(srv *http.Server, opts RunOptions) error {
+	ctx, cancel := context.WithTimeout(context.Background(), opts.gracePeriod())
 	defer cancel()
 
 	err := srv.Shutdown(ctx)
@@ -175,7 +182,7 @@ func (app *Application) shutdown(srv *http.Server) error {
 		return err
 	}
 
-	app.Logger.Warn("drain exceeded budget, force-closing connections", "budget", app.gracePeriod())
+	app.Logger.Warn("drain exceeded budget, force-closing connections", "budget", opts.gracePeriod())
 
 	if closeErr := srv.Close(); closeErr != nil {
 		app.Logger.Error("force close failed", "error", closeErr)
