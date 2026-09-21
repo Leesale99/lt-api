@@ -40,16 +40,26 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
-// hangServer returns a server whose handler blocks forever on release.
-// A request sent to it keeps the connection busy, so srv.Shutdown waits.
-func hangServer(addr string, block <-chan struct{}) *http.Server {
+// hangServer returns a server whose handler blocks forever on release,
+// plus a channel closed when the handler has actually entered. A request
+// sent to it keeps the connection busy, so srv.Shutdown waits.
+//
+// The started channel exists because dialing is not proof of in-flight:
+// a successful Dial only completes the TCP handshake — the connection can
+// still sit unread in the accept backlog, and Shutdown would classify it
+// as idle and close it instantly. Callers must wait on the channel before
+// triggering shutdown, or the drain races the handler start (observed as a
+// -race-only failure of TestDrainTimeoutForceCloses).
+func hangServer(addr string, block <-chan struct{}) (*http.Server, <-chan struct{}) {
+	started := make(chan struct{})
 	return &http.Server{
 		Addr: addr,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(started) // the request is in-flight from this point
 			<-block
 		}),
 		ErrorLog: log.New(io.Discard, "", 0),
-	}
+	}, started
 }
 
 // busyConn opens a connection and puts it in-flight, so the drain sees a
@@ -128,11 +138,12 @@ func TestDrainTimeoutForceCloses(t *testing.T) {
 	block := make(chan struct{})
 	defer close(block) // release the hung handler so nothing leaks at teardown
 
-	srv := hangServer(freeAddr(t), block)
+	srv, started := hangServer(freeAddr(t), block)
 	errc := startServe(app, srv)
 
 	conn := busyConn(t, srv.Addr)
 	defer conn.Close()
+	<-started // guaranteed in-flight: the drain will see a busy connection
 
 	start := time.Now()
 	sigterm(t)
@@ -164,11 +175,12 @@ func TestSecondSignalForceClosesDuringDrain(t *testing.T) {
 	block := make(chan struct{})
 	defer close(block)
 
-	srv := hangServer(freeAddr(t), block)
+	srv, started := hangServer(freeAddr(t), block)
 	errc := startServe(app, srv)
 
 	conn := busyConn(t, srv.Addr)
 	defer conn.Close()
+	<-started // guaranteed in-flight before the first signal arms the tripwire
 
 	sigterm(t)                         // first signal: begins the (stuck) drain
 	time.Sleep(100 * time.Millisecond) // let the escalation tripwire arm
@@ -211,7 +223,7 @@ func TestBackgroundTaskBudgetBoundsWait(t *testing.T) {
 		<-block // ignores ctx on purpose — the misbehaving-task worst case
 	})
 
-	srv := hangServer(freeAddr(t), make(chan struct{})) // never hangs: no requests
+	srv, _ := hangServer(freeAddr(t), make(chan struct{})) // never hangs: no requests, started never fires
 	errc := startServe(app, srv)
 
 	// Wait until listening, then cancel the root the way a signal would.
