@@ -7,6 +7,7 @@
 //
 // 12-factor: an identical binary is configured by its environment. Flags
 // remain for dev convenience; production injects env vars only.
+
 package config
 
 import (
@@ -224,6 +225,7 @@ func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 func parseCORSOrigins(raw string) ([]string, error) {
 	seen := make(map[string]struct{})
 	var origins []string
+
 	for _, part := range strings.Split(raw, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -232,6 +234,7 @@ func parseCORSOrigins(raw string) ([]string, error) {
 		if part == "*" {
 			return nil, fmt.Errorf("wildcard %q is not allowed; list exact origins", part)
 		}
+
 		part = strings.TrimSuffix(part, "/")
 		u, err := url.Parse(part)
 		if err != nil {
@@ -240,13 +243,17 @@ func parseCORSOrigins(raw string) ([]string, error) {
 		if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 			return nil, fmt.Errorf("must be a bare origin (scheme://host[:port]), got %q", part)
 		}
+
 		part = strings.ToLower(part)
 		if _, dup := seen[part]; dup {
 			continue
 		}
+
 		seen[part] = struct{}{}
+
 		origins = append(origins, part)
 	}
+
 	return origins, nil
 }
 

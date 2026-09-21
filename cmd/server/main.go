@@ -65,15 +65,16 @@ func main() {
 	)
 
 	app := &api.Application{
-		Version:     version,
-		Env:         cfg.Env,
-		Port:        cfg.Port,
-		RateLimiter: rateLimiter,
-		Logger:      logger,
-		RootCtx:     root,
-		Game:        game.NewStore(pool),
-		Identity:    identity.NewStore(pool),
-		Mailer:      mailer,
+		Version:        version,
+		Env:            cfg.Env,
+		Port:           cfg.Port,
+		TrustedOrigins: cfg.CORS.Origins,
+		RateLimiter:    rateLimiter,
+		Logger:         logger,
+		RootCtx:        root,
+		Game:           game.NewStore(pool),
+		Identity:       identity.NewStore(pool),
+		Mailer:         mailer,
 	}
 
 	err = app.Serve()

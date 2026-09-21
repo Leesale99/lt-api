@@ -18,9 +18,10 @@ import (
 )
 
 type Application struct {
-	Version string
-	Port    int
-	Env     string
+	Version        string
+	Port           int
+	Env            string
+	TrustedOrigins []string
 	// RateLimiter is nil when rate limiting is not wired (handler tests);
 	// constructed with Enabled=false it passes everything through.
 	RateLimiter *RateLimiter
