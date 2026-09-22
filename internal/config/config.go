@@ -13,6 +13,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"strconv"
@@ -24,10 +25,11 @@ import (
 )
 
 type Config struct {
-	Version string
-	Port    int
-	Env     string
-	DB      struct {
+	Version  string
+	Port     int
+	Env      string
+	LogLevel slog.Level
+	DB       struct {
 		DSN         string
 		MaxConns    int
 		MaxIdleTime time.Duration
@@ -72,6 +74,12 @@ func Parse(args []string) (Config, error) {
 	fs.IntVar(&cfg.Port, "port", env.port, "API server port (env: PORT)")
 	fs.StringVar(&cfg.Env, "env", env.env, "Environment (development|staging|production) (env: ENV)")
 
+	// Level parsing happens after fs.Parse, not in a typed flag var: the
+	// error message must name the variable the bad value came from (flag or
+	// env), and slog.Level has no flag.Value implementation to attach it to.
+	logLevelRaw := env.logLevel
+	fs.StringVar(&logLevelRaw, "log-level", env.logLevel, "Log level (debug|info|warn|error) (env: LOG_LEVEL)")
+
 	fs.StringVar(&cfg.DB.DSN, "db-dsn", env.dbDSN, "PostgreSQL DSN (env: LT_API_DSN)")
 	fs.IntVar(&cfg.DB.MaxConns, "db-max-conns", env.dbMaxConns, "PostgreSQL max open and idle connections (env: LT_API_DB_MAX_CONNS)")
 	fs.DurationVar(&cfg.DB.MaxIdleTime, "db-max-idle-time", env.dbMaxIdleTime, "PostgreSQL max connection idle time (env: LT_API_DB_MAX_IDLE_TIME)")
@@ -107,6 +115,11 @@ func Parse(args []string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid CORS_ORIGINS: %w", err)
 	}
 
+	cfg.LogLevel, err = parseLogLevel(logLevelRaw, "-log-level")
+	if err != nil {
+		return Config{}, err
+	}
+
 	if err := validate(cfg); err != nil {
 		return Config{}, err
 	}
@@ -119,6 +132,7 @@ func Parse(args []string) (Config, error) {
 type envDefaults struct {
 	port           int
 	env            string
+	logLevel       string
 	dbDSN          string
 	dbMaxConns     int
 	dbMaxIdleTime  time.Duration
@@ -137,6 +151,7 @@ func readEnv() (envDefaults, error) {
 	var e envDefaults
 
 	e.env = envString("ENV", "development")
+	e.logLevel = envString("LOG_LEVEL", "info")
 	e.dbDSN = envString("LT_API_DSN", "")
 	e.smtpHost = envString("SMTP_HOST", "sandbox.smtp.mailtrap.io")
 	e.smtpUsername = envString("SMTP_USERNAME", "")
@@ -167,10 +182,31 @@ func readEnv() (envDefaults, error) {
 	if e.smtpPort, err = envInt("SMTP_PORT", 2525); err != nil {
 		errs = append(errs, err)
 	}
+	if _, err = parseLogLevel(e.logLevel, "LOG_LEVEL"); err != nil {
+		errs = append(errs, err)
+	}
 	if len(errs) > 0 {
 		return e, errors.Join(errs...)
 	}
 	return e, nil
+}
+
+// parseLogLevel converts a LOG_LEVEL / -log-level value into a slog level.
+// slog.Level.UnmarshalText is the authority: case-insensitive debug|info|
+// warn|error (plus numeric offsets, e.g. "INFO+2"), and an unknown name is
+// an error — the zero value is INFO, so a silent fallback would quietly
+// flood or silence a deployment whose level was mistyped.
+//
+// source names the variable the value came from ("LOG_LEVEL" from the env,
+// "-log-level" from args): env values are validated in readEnv before flags
+// ever parse, so a failure here can only originate from the flag, and the
+// name is still reported — the contract is a message naming the variable.
+func parseLogLevel(raw, source string) (slog.Level, error) {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(raw)); err != nil {
+		return 0, fmt.Errorf("invalid %s %q: must be debug, info, warn or error", source, raw)
+	}
+	return level, nil
 }
 
 func envString(key, fallback string) string {
