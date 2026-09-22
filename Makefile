@@ -103,3 +103,12 @@ audit:
 	go vet ./...
 	go tool staticcheck ./...
 	go test -race -vet=off ./...
+
+# ============================================================================================================================ #
+# BUILD
+# ============================================================================================================================ #
+
+.PHONY: build/api
+build/api:
+	go build -ldflags='-s' -o=./bin/api ./cmd/server
+	GOOS=linux GOARCH=amd64 go build -ldflags='-s' -o=./bin/linux_amd64/api ./cmd/server/
