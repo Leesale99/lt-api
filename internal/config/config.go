@@ -20,12 +20,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"lt-api.aleksrdvn.com/internal/vcs"
 )
 
 type Config struct {
-	Port int
-	Env  string
-	DB   struct {
+	Version string
+	Port    int
+	Env     string
+	DB      struct {
 		DSN         string
 		MaxConns    int
 		MaxIdleTime time.Duration
@@ -49,6 +51,8 @@ type Config struct {
 		Origins []string
 	}
 }
+
+var version = vcs.Version()
 
 // Parse assembles the configuration from env and args and validates it.
 // It is the only entry point: callers never touch flag or env for server
@@ -83,8 +87,15 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&cfg.SMTP.Password, "smtp-password", env.smtpPassword, "SMTP password (env: SMTP_PASSWORD)")
 	fs.StringVar(&cfg.SMTP.Sender, "smtp-sender", env.smtpSender, "SMTP sender (env: SMTP_SENDER)")
 
+	displayVersion := fs.Bool("version", false, "Display version and exit")
+
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
+	}
+
+	if *displayVersion {
+		fmt.Printf("Version: \t%s\n", version)
+		os.Exit(0)
 	}
 
 	// No flag for CORS_ORIGINS: an origin allowlist is deployment data, not

@@ -16,8 +16,6 @@ import (
 	"lt-api.aleksrdvn.com/internal/mailer"
 )
 
-const version = "1.0.0"
-
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
@@ -65,7 +63,7 @@ func main() {
 	)
 
 	app := &api.Application{
-		Version:        version,
+		Version:        cfg.Version,
 		Env:            cfg.Env,
 		Port:           cfg.Port,
 		TrustedOrigins: cfg.CORS.Origins,
