@@ -98,6 +98,9 @@ func Parse(args []string) (Config, error) {
 		os.Exit(0)
 	}
 
+	// No flag for Version
+	cfg.Version = version
+
 	// No flag for CORS_ORIGINS: an origin allowlist is deployment data, not
 	// an operator override — there is no legitimate reason to inject it per-run.
 	cfg.CORS.Origins, err = parseCORSOrigins(env.corsRaw)
