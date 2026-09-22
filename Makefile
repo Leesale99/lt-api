@@ -1,5 +1,9 @@
 include .envrc
 
+# ============================================================================================================================ #
+# HELPERS
+# ============================================================================================================================ #
+
 ## help: print this help message
 .PHONY: help
 help:
@@ -9,6 +13,11 @@ help:
 .PHONY: confirm
 confirm: 
 	@echo 'Are you sure? [y/N] ' && read ans && [ $${ans:-N} = y ]
+
+
+# ============================================================================================================================ #
+# DEVELOPMENT
+# ============================================================================================================================ #
 
 ## run/api: run the cmd/api application
 .PHONY: run/server
@@ -73,3 +82,24 @@ db/migrations/goto: confirm
 db/migrations/force: confirm
 	migrate -path ./migrations/ -database ${LT_API_DSN} force ${version}
 
+# ============================================================================================================================ #
+# QUALITY CONTROL
+# ============================================================================================================================ #
+
+## tidy: tidy module dependencies, and format and modernize all .go files
+.PHONY: tidy
+tidy:
+	go mod tidy
+	go mod verify
+	go mod vendor
+	go fix ./...
+	go fmt ./...
+
+## audit: run quality control checks
+.PHONY: audit
+audit:
+	go mod tidy -diff
+	go mod verify
+	go vet ./...
+	go tool staticcheck ./...
+	go test -race -vet=off ./...

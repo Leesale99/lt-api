@@ -109,8 +109,7 @@ func Setup(ctx context.Context, dsn, suite string, migrationFiles ...string) (*p
 // role, unreachable server) is the most common setup mistake, and a raw pgx
 // dial dump does not say what to do about it.
 func describeConnectError(err error) error {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
+	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
 		switch pgErr.Code {
 		case "28P01": // invalid_password
 			return fmt.Errorf("authentication failed for the role in LT_API_TEST_DSN: %w", err)
@@ -122,8 +121,7 @@ func describeConnectError(err error) error {
 			return fmt.Errorf("the role in LT_API_TEST_DSN lacks privileges (it needs LOGIN + CREATEDB): %w", err)
 		}
 	}
-	var connErr *pgconn.ConnectError
-	if errors.As(err, &connErr) {
+	if _, ok := errors.AsType[*pgconn.ConnectError](err); ok {
 		return fmt.Errorf("cannot reach the PostgreSQL server in LT_API_TEST_DSN (is it running, and is host:port reachable from here?): %w", err)
 	}
 	return err

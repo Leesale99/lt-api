@@ -66,7 +66,6 @@ func runGateCases(ctx context.Context, t *testing.T, cases []gateCase) {
 	t.Helper()
 
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			cleanup(ctx, t)
 			seasonID, roundID, homeID, awayID := seed(ctx, t)

@@ -112,7 +112,7 @@ func (m *Mailer) Send(ctx context.Context, recipient string, templateFile string
 	msg.SetBodyString(mail.TypeTextPlain, plainBody.String())
 	msg.AddAlternativeString(mail.TypeTextHTML, htmlBody.String())
 
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for attempt := range maxRetries {
 		err = m.client.DialAndSendWithContext(ctx, msg)
 		if err == nil {
 			return nil

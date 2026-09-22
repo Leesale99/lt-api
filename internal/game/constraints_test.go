@@ -213,7 +213,6 @@ func TestMatchConstraints(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			insertMatch(ctx, t, c)
 		})
@@ -308,7 +307,6 @@ func TestTeamConstraints(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			_, err := pool.Exec(ctx, c.query)
 			assertCode(t, c, err)
@@ -356,7 +354,6 @@ func TestRoundAndSeasonConstraints(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			_, err := pool.Exec(ctx, c.query, c.args...)
 			assertCode(t, c, err)

@@ -179,6 +179,9 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	err = app.writeJSON(w, http.StatusOK, envelope{"season": season}, nil)
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
+	}
 }
 
 func (app *Application) deleteSeasonHandler(w http.ResponseWriter, r *http.Request) {

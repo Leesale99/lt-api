@@ -11,7 +11,6 @@ package api
 // These need no database, so they run even without LT_API_TEST_DSN.
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -59,7 +58,7 @@ func TestRateLimiterBurstAllowed(t *testing.T) {
 	const burst = 4
 	l := newTestLimiter(2, burst, newFakeClock(time.Now()))
 
-	for i := 0; i < burst; i++ {
+	for i := range burst {
 		ok, _ := l.Allow("10.0.0.1")
 		if !ok {
 			t.Fatalf("request %d within burst: denied, want allowed", i+1)
@@ -78,7 +77,7 @@ func TestRateLimiterSustainedCapped(t *testing.T) {
 	l := newTestLimiter(rps, burst, newFakeClock(time.Now()))
 	ip := "10.0.0.1"
 
-	for i := 0; i < burst; i++ {
+	for i := range burst {
 		if ok, _ := l.Allow(ip); !ok {
 			t.Fatalf("warm-up request %d: denied, want allowed", i+1)
 		}
@@ -87,7 +86,7 @@ func TestRateLimiterSustainedCapped(t *testing.T) {
 	// Requests arrive immediately after the burst: bucket empty, real time
 	// elapsed is microseconds, so every denial's retryAfter must sit in
 	// (0, 1/rps + slack] — a missing token refills within 1/rps.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		ok, retryAfter := l.Allow(ip)
 		if ok {
 			t.Fatalf("capped request %d: allowed, want denied", i+1)
@@ -120,7 +119,7 @@ func TestRateLimiterIPsIsolated(t *testing.T) {
 		ipB = "10.0.0.2"
 	)
 
-	for i := 0; i < burst; i++ {
+	for i := range burst {
 		if ok, _ := l.Allow(ipA); !ok {
 			t.Fatalf("client A request %d: denied, want allowed", i+1)
 		}
@@ -130,7 +129,7 @@ func TestRateLimiterIPsIsolated(t *testing.T) {
 	}
 
 	// B is a fresh bucket, unaffected by A's drain.
-	for i := 0; i < burst; i++ {
+	for i := range burst {
 		if ok, _ := l.Allow(ipB); !ok {
 			t.Fatalf("client B request %d (A already capped): denied, want allowed", i+1)
 		}
@@ -150,8 +149,7 @@ func TestRateLimiterStaleBucketsEvicted(t *testing.T) {
 	clock := newFakeClock(time.Now())
 	l := newTestLimiter(2, burst, clock)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go l.Sweep(ctx)
 
 	// Consume the only token; the immediate second call is denied.
@@ -234,7 +232,7 @@ func TestRateLimitMiddlewarePassThrough(t *testing.T) {
 	}
 	h := app.rateLimit(okHandler)
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if rec := do(h, "10.0.0.1:1111"); rec.Code != http.StatusOK {
 			t.Fatalf("disabled limiter request %d: got %d, want 200", i+1, rec.Code)
 		}

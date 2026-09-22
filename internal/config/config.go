@@ -225,7 +225,7 @@ func parseCORSOrigins(raw string) ([]string, error) {
 	seen := make(map[string]struct{})
 	var origins []string
 
-	for _, part := range strings.Split(raw, ",") {
+	for part := range strings.SplitSeq(raw, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
