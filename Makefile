@@ -1,4 +1,6 @@
-include .envrc
+# `-` = optional: .envrc is host-side only (not committed); CI sets the
+# variables it needs at job level instead.
+-include .envrc
 
 # ============================================================================================================================ #
 # HELPERS
