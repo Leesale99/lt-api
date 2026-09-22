@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -215,6 +216,45 @@ func TestParse(t *testing.T) {
 					t.Errorf("got Port=%d Env=%q, want 9100/staging", cfg.Port, cfg.Env)
 				}
 			},
+		},
+		{
+			name: "LOG_LEVEL parses case-insensitively",
+			env: map[string]string{
+				"LT_API_DSN": validDSN,
+				"LOG_LEVEL":  "DEBUG",
+			},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.LogLevel != slog.LevelDebug {
+					t.Errorf("got LogLevel=%v, want DEBUG", cfg.LogLevel)
+				}
+			},
+		},
+		{
+			name: "bad env LOG_LEVEL fails at boot, naming the variable",
+			env: map[string]string{
+				"LT_API_DSN": validDSN,
+				"LOG_LEVEL":  "vervose",
+			},
+			wantErr: "LOG_LEVEL",
+		},
+		{
+			name: "flag overrides env log level and a bad flag value names the flag",
+			env: map[string]string{
+				"LT_API_DSN": validDSN,
+				"LOG_LEVEL":  "warn",
+			},
+			args: []string{"-log-level=error"},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.LogLevel != slog.LevelError {
+					t.Errorf("got LogLevel=%v, want ERROR", cfg.LogLevel)
+				}
+			},
+		},
+		{
+			name:    "bad flag log level names the flag, not the env var",
+			env:     map[string]string{"LT_API_DSN": validDSN, "LOG_LEVEL": "warn"},
+			args:    []string{"-log-level=vervose"},
+			wantErr: "-log-level",
 		},
 		{
 			name: "flag overrides env (precedence flag > env > default)",
