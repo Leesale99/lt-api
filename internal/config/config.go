@@ -52,12 +52,11 @@ type Config struct {
 	}
 }
 
-var version = vcs.Version()
-
 // Parse assembles the configuration from env and args and validates it.
 // It is the only entry point: callers never touch flag or env for server
 // config, and a returned error is always safe to log verbatim.
 func Parse(args []string) (Config, error) {
+	version := vcs.Version()
 	env, err := readEnv()
 	if err != nil {
 		return Config{}, err
