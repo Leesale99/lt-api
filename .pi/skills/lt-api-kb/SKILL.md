@@ -33,6 +33,8 @@ description: Write mechanics and rules routing for the lt-api Obsidian knowledge
 - Mechanical updates need no approval: task checkboxes, the `Now` section of `Home.md`, `Lessons/_Index.md` lines, phase `Knowledge` sections.
 - Keep the `Now` section of `Home.md` current at session end or task transition — the next session's briefing is that section and nothing more.
 
+(observed 2026-09-22, cause undetermined) a `write path="...md" content=...` (long filename with an em-dash, ~2KB content) reported `Successfully wrote` but the file did not exist afterwards — `files` listed nothing new and a subsequent read said "not found". Retrying the identical content with a shorter filename succeeded. After any vault write, verify existence via `files` AND read the content back — a success report does not prove the write landed.
+
 ## A message to future agents
 
 This skill file is the cross-session memory for vault write mechanics — whatever you learn about tool misbehavior here dies with your session unless it lands in this file. If a command behaves differently from what this file promises, do not silently work around it: (1) verify the actual behavior (scope the failure, don't guess from one sample), (2) correct or delete the false rule, (3) add the finding with the date it was verified. This file must describe the tool as it behaves, not as we wish it did — stale rules here cause the same corruption again in a session that cannot see yours.

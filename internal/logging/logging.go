@@ -8,9 +8,10 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 
 	"github.com/jackc/pgx/v5/tracelog"
 )
@@ -74,20 +75,18 @@ func (p pgxLogger) Log(ctx context.Context, level tracelog.LogLevel, msg string,
 		return
 	}
 
+	// Enabled first: building the sorted attrs is wasted work when the
+	// handler would discard the record anyway (tracelog gates on its own
+	// threshold, so the adapter still sees levels the handler drops).
+	if !p.logger.Enabled(ctx, lvl) {
+		return
+	}
+
 	// Sorted keys: JSONHandler would otherwise print map iteration order,
 	// which makes two records of the same event non-comparable.
 	attrs := make([]slog.Attr, 0, len(data))
-	for _, key := range sortedKeys(data) {
+	for _, key := range slices.Sorted(maps.Keys(data)) {
 		attrs = append(attrs, slog.Any(key, data[key]))
 	}
 	p.logger.LogAttrs(ctx, lvl, msg, attrs...)
-}
-
-func sortedKeys(data map[string]any) []string {
-	keys := make([]string, 0, len(data))
-	for key := range data {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }
