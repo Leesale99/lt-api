@@ -74,10 +74,14 @@ var matches = []Match{
 	{
 		ID:       1,
 		StartsAt: time.Now().Add(24 * time.Hour),
+		RoundID:  1,
+		Odds:     Odds{Home: 1.75, Away: 2.50},
 	},
 	{
 		ID:       2,
 		StartsAt: time.Now().Add(72 * time.Hour),
+		RoundID:  2,
+		Odds:     Odds{Home: 1.75, Away: 2.50},
 	},
 }
 
@@ -92,7 +96,10 @@ func (r *Ride) WonPending(ride Ride) (Ride, error) {
 		return Ride{}, ErrorInvalidRoundPhase
 	}
 
+	matchOdds := decimal.NewFromFloat(matches[0].Odds.Home)
+
 	ride.State = RideWonPending
+	ride.Acc = calculateBonus(matchOdds, r.TokensLocked, r.Acc, r.Streak)
 
 	return ride, nil
 }
@@ -126,10 +133,11 @@ func (r *Ride) Lock(ride Ride) (Ride, error) {
 	}
 
 	// match, err := matches.NextMatch(ride.TeamID)
-	match := matches[0]
+	nextMatch := matches[0]
 
 	ride.State = RideLocked
-	ride.MatchID = match.ID
+	ride.MatchID = nextMatch.ID
+	ride.RoundID = nextMatch.RoundID
 	ride.Streak = ride.Streak + 1
 
 	return ride, nil
@@ -166,4 +174,14 @@ func (r *Ride) Unlock(ride Ride) (Ride, error) {
 	ride.Acc = decimal.Zero
 
 	return ride, nil
+}
+
+func calculateBonus(matchOdds, tokensLocked, acc decimal.Decimal, streakInt int) decimal.Decimal {
+	s := decimal.NewFromFloat(0.20)
+	streak := decimal.NewFromInt(int64(streakInt))
+	one := decimal.NewFromInt(1)
+
+	accDelta := tokensLocked.Mul(matchOdds.Sub(one).Mul(streak.Mul(s).Add(one)))
+
+	return acc.Add(accDelta)
 }
