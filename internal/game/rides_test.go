@@ -26,7 +26,7 @@ func lockedRide() *Ride {
 		ID:           1,
 		PlayerID:     10,
 		TeamID:       20,
-		MatchID:      1, // within the matches stub range: odds lookup must not panic
+		MatchID:      1, // arbitrary: odds come from the matches stub, not this ID
 		RoundID:      1,
 		SeasonID:     1,
 		State:        RideLocked,
