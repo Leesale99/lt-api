@@ -31,6 +31,7 @@ type Ride struct {
 	BaseAtLock   decimal.Decimal `json:"base_at_lock"`
 	Acc          decimal.Decimal `json:"-"`
 	Streak       int             `json:"-"`
+	Version      int             `json:"Version"`
 }
 
 var rides []Ride
@@ -44,11 +45,12 @@ func (r *Ride) Insert(playerID, teamID, matchID, roundID, seasonID int, tokensLo
 		MatchID:      matchID,
 		RoundID:      roundID,
 		SeasonID:     seasonID,
-		State:        "locked",
+		State:        RideLocked,
 		TokensLocked: tokensLocked,
 		BaseAtLock:   baseAtLock,
 		Acc:          decimal.Zero,
 		Streak:       0,
+		Version:      1,
 	}
 
 	rides = append(rides, ride)
@@ -85,103 +87,105 @@ var matches = []Match{
 	},
 }
 
-// MatchPhase: Match won, ride transition to won_pending
-func (r *Ride) WonPending(ride Ride) (Ride, error) {
+// The service layer owns the clock: it fetches the round's first/last match
+// start times and passes the derived phase into each command, e.g.
+//
+//	phase := Phase(time.Now(), firstMatchAt, lastMatchAt)
+//	ride.Burn(phase)
+
+// Phase: MatchPhase; Call when: Match won; Ride transitions to won_pending
+func (r *Ride) WonPending(roundPhase RoundPhase) error {
 	if !r.canTransition(RideWonPending) {
-		return Ride{}, ErrInvalidTransition
+		return ErrInvalidTransition
 	}
 
-	roundPhase := getRoundPhase(time.Now(), matches[0].StartsAt, matches[len(matches)-1].StartsAt)
 	if roundPhase != MatchPhase {
-		return Ride{}, ErrorInvalidRoundPhase
+		return ErrInvalidRoundPhase
 	}
 
-	matchOdds := decimal.NewFromFloat(matches[0].Odds.Home)
+	matchOdds := decimal.NewFromFloat(matches[r.MatchID].Odds.Home)
 
-	ride.State = RideWonPending
-	ride.Acc = calculateBonus(matchOdds, r.TokensLocked, r.Acc, r.Streak)
+	r.State = RideWonPending
+	r.Acc = calculateBonus(matchOdds, r.TokensLocked, r.Acc, r.Streak)
 
-	return ride, nil
+	return nil
 }
 
-// MatchPhase: Match lost, ride transition to lost
-func (r *Ride) Lost(ride Ride) (Ride, error) {
+// Phase: MatchPhase; Call when: Match lost; Ride transitions to lost
+func (r *Ride) Lost(roundPhase RoundPhase) error {
 	if !r.canTransition(RideLost) {
-		return Ride{}, ErrInvalidTransition
+		return ErrInvalidTransition
 	}
 
-	roundPhase := getRoundPhase(time.Now(), matches[0].StartsAt, matches[len(matches)-1].StartsAt)
 	if roundPhase != MatchPhase {
-		return Ride{}, ErrorInvalidRoundPhase
+		return ErrInvalidRoundPhase
 	}
 
-	ride.State = RideLost
-	ride.Acc = decimal.Zero
+	r.State = RideLost
+	r.Acc = decimal.Zero
 
-	return ride, nil
+	return nil
 }
 
-// DecisionPhase: Player decides to contiue the ride after the win
-func (r *Ride) Lock(ride Ride) (Ride, error) {
+// Phase: DecisionPhase; Call when: Player decides to contiue the ride after the win
+func (r *Ride) Lock(roundPhase RoundPhase) error {
 	if !r.canTransition(RideLocked) {
-		return Ride{}, ErrInvalidTransition
+		return ErrInvalidTransition
 	}
 
-	roundPhase := getRoundPhase(time.Now(), matches[0].StartsAt, matches[len(matches)-1].StartsAt)
 	if roundPhase != DecisionPhase {
-		return Ride{}, ErrorInvalidRoundPhase
+		return ErrInvalidRoundPhase
 	}
 
 	// match, err := matches.NextMatch(ride.TeamID)
 	nextMatch := matches[0]
 
-	ride.State = RideLocked
-	ride.MatchID = nextMatch.ID
-	ride.RoundID = nextMatch.RoundID
-	ride.Streak = ride.Streak + 1
+	r.State = RideLocked
+	r.MatchID = nextMatch.ID
+	r.RoundID = nextMatch.RoundID
+	r.Streak = r.Streak + 1
 
-	return ride, nil
+	return nil
 }
 
-// DecisionPhase: Player decides to burn after the win
-func (r *Ride) Burn(ride Ride) (Ride, error) {
+// Phase: DecisionPhase; Call when: Player decides to burn after the win
+func (r *Ride) Burn(roundPhase RoundPhase) error {
 	if !r.canTransition(RideBurned) {
-		return Ride{}, ErrInvalidTransition
+		return ErrInvalidTransition
 	}
 
-	roundPhase := getRoundPhase(time.Now(), matches[0].StartsAt, matches[len(matches)-1].StartsAt)
 	if roundPhase != DecisionPhase {
-		return Ride{}, ErrorInvalidRoundPhase
+		return ErrInvalidRoundPhase
 	}
 
-	ride.State = RideBurned
+	r.State = RideBurned
 
-	return ride, nil
+	return nil
 }
 
-// DecisionPhase: Player decides to Unlock tokens after the win
-func (r *Ride) Unlock(ride Ride) (Ride, error) {
+// Phase: DecisionPhase; Call when: Player decides to Unlock tokens after the win
+func (r *Ride) Unlock(roundPhase RoundPhase) error {
 	if !r.canTransition(RideUnlocked) {
-		return Ride{}, ErrInvalidTransition
+		return ErrInvalidTransition
 	}
 
-	roundPhase := getRoundPhase(time.Now(), matches[0].StartsAt, matches[len(matches)-1].StartsAt)
 	if roundPhase != DecisionPhase {
-		return Ride{}, ErrorInvalidRoundPhase
+		return ErrInvalidRoundPhase
 	}
 
-	ride.State = RideUnlocked
-	ride.Acc = decimal.Zero
+	r.State = RideUnlocked
+	r.Acc = decimal.Zero
 
-	return ride, nil
+	return nil
 }
 
-func calculateBonus(matchOdds, tokensLocked, acc decimal.Decimal, streakInt int) decimal.Decimal {
-	s := decimal.NewFromFloat(0.20)
-	streak := decimal.NewFromInt(int64(streakInt))
+var streakRate = decimal.NewFromFloat(0.20)
+
+func calculateBonus(matchOdds, tokensLocked, acc decimal.Decimal, streak int) decimal.Decimal {
+	s := decimal.NewFromInt(int64(streak))
 	one := decimal.NewFromInt(1)
 
-	accDelta := tokensLocked.Mul(matchOdds.Sub(one).Mul(streak.Mul(s).Add(one)))
+	accDelta := tokensLocked.Mul(matchOdds.Sub(one).Mul(s.Mul(streakRate).Add(one)))
 
 	return acc.Add(accDelta)
 }
