@@ -8,8 +8,6 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type Decimal = decimal.Decimal
-
 type RideState string
 
 const (
@@ -21,27 +19,31 @@ const (
 )
 
 type Ride struct {
-	ID           int       `json:"id"`
-	CreatedAt    time.Time `json:"-"`
-	PlayerID     int       `json:"player_id"`
-	TeamID       int       `json:"team_id"`
-	MatchID      int       `json:"match_id"`
-	State        RideState `json:"state"`
-	TokensLocked Decimal   `json:"token_locked"`
-	BaseAtLock   Decimal   `json:"base_at_lock"`
-	Acc          Decimal   `json:"-"`
-	Streak       int       `json:"-"`
+	ID           int             `json:"id"`
+	CreatedAt    time.Time       `json:"-"`
+	PlayerID     int             `json:"player_id"`
+	TeamID       int             `json:"team_id"`
+	MatchID      int             `json:"match_id"`
+	RoundID      int             `json:"round_id"`
+	SeasonID     int             `json:"season_id"`
+	State        RideState       `json:"state"`
+	TokensLocked decimal.Decimal `json:"token_locked"`
+	BaseAtLock   decimal.Decimal `json:"base_at_lock"`
+	Acc          decimal.Decimal `json:"-"`
+	Streak       int             `json:"-"`
 }
 
 var rides []Ride
 
-func (r *Ride) Insert(playerID, teamID, matchID int, tokensLocked, baseAtLock Decimal) (Ride, error) {
+func (r *Ride) Insert(playerID, teamID, matchID, roundID, seasonID int, tokensLocked, baseAtLock decimal.Decimal) (Ride, error) {
 	ride := Ride{
 		ID:           len(rides),
 		CreatedAt:    time.Now(),
 		PlayerID:     playerID,
 		TeamID:       teamID,
 		MatchID:      matchID,
+		RoundID:      roundID,
+		SeasonID:     seasonID,
 		State:        "locked",
 		TokensLocked: tokensLocked,
 		BaseAtLock:   baseAtLock,
@@ -59,24 +61,72 @@ var transitions = map[RideState][]RideState{
 	RideWonPending: {RideLocked, RideBurned, RideUnlocked},
 }
 
-func (r *Ride) canTransition(rideState RideState) bool {
+func (r *Ride) canTransition(nextRideState RideState) bool {
 	allowedStates := transitions[r.State]
 
-	return slices.Contains(allowedStates, rideState)
+	return slices.Contains(allowedStates, nextRideState)
 }
 
 var ErrInvalidTransition = errors.New("invalid state transition")
 
-// Player decides to contiue the ride after the win
+// matches, err := matches.GetAll(ride.RoundID)
+var matches = []Match{
+	{
+		ID:       1,
+		StartsAt: time.Now().Add(24 * time.Hour),
+	},
+	{
+		ID:       2,
+		StartsAt: time.Now().Add(72 * time.Hour),
+	},
+}
+
+// MatchPhase: Match won, ride transition to won_pending
+func (r *Ride) WonPending(ride Ride) (Ride, error) {
+	if !r.canTransition(RideWonPending) {
+		return Ride{}, ErrInvalidTransition
+	}
+
+	roundPhase := getRoundPhase(time.Now(), matches[0].StartsAt, matches[len(matches)-1].StartsAt)
+	if roundPhase != MatchPhase {
+		return Ride{}, ErrorInvalidRoundPhase
+	}
+
+	ride.State = RideWonPending
+
+	return ride, nil
+}
+
+// MatchPhase: Match lost, ride transition to lost
+func (r *Ride) Lost(ride Ride) (Ride, error) {
+	if !r.canTransition(RideLost) {
+		return Ride{}, ErrInvalidTransition
+	}
+
+	roundPhase := getRoundPhase(time.Now(), matches[0].StartsAt, matches[len(matches)-1].StartsAt)
+	if roundPhase != MatchPhase {
+		return Ride{}, ErrorInvalidRoundPhase
+	}
+
+	ride.State = RideLost
+	ride.Acc = decimal.Zero
+
+	return ride, nil
+}
+
+// DecisionPhase: Player decides to contiue the ride after the win
 func (r *Ride) Lock(ride Ride) (Ride, error) {
 	if !r.canTransition(RideLocked) {
 		return Ride{}, ErrInvalidTransition
 	}
 
-	// match, err := matches.NextMatch(ride.TeamID)
-	match := Match{
-		ID: 1,
+	roundPhase := getRoundPhase(time.Now(), matches[0].StartsAt, matches[len(matches)-1].StartsAt)
+	if roundPhase != DecisionPhase {
+		return Ride{}, ErrorInvalidRoundPhase
 	}
+
+	// match, err := matches.NextMatch(ride.TeamID)
+	match := matches[0]
 
 	ride.State = RideLocked
 	ride.MatchID = match.ID
@@ -85,10 +135,15 @@ func (r *Ride) Lock(ride Ride) (Ride, error) {
 	return ride, nil
 }
 
-// Player decides to burn after the win
+// DecisionPhase: Player decides to burn after the win
 func (r *Ride) Burn(ride Ride) (Ride, error) {
 	if !r.canTransition(RideBurned) {
 		return Ride{}, ErrInvalidTransition
+	}
+
+	roundPhase := getRoundPhase(time.Now(), matches[0].StartsAt, matches[len(matches)-1].StartsAt)
+	if roundPhase != DecisionPhase {
+		return Ride{}, ErrorInvalidRoundPhase
 	}
 
 	ride.State = RideBurned
@@ -96,25 +151,18 @@ func (r *Ride) Burn(ride Ride) (Ride, error) {
 	return ride, nil
 }
 
-// Player decides to Unlock tokens after the win
+// DecisionPhase: Player decides to Unlock tokens after the win
 func (r *Ride) Unlock(ride Ride) (Ride, error) {
 	if !r.canTransition(RideUnlocked) {
 		return Ride{}, ErrInvalidTransition
 	}
 
-	ride.State = RideUnlocked
-	ride.Acc = decimal.Zero
-
-	return ride, nil
-}
-
-// Player lost the match
-func (r *Ride) Lost(ride Ride) (Ride, error) {
-	if !r.canTransition(RideLost) {
-		return Ride{}, ErrInvalidTransition
+	roundPhase := getRoundPhase(time.Now(), matches[0].StartsAt, matches[len(matches)-1].StartsAt)
+	if roundPhase != DecisionPhase {
+		return Ride{}, ErrorInvalidRoundPhase
 	}
 
-	ride.State = RideLost
+	ride.State = RideUnlocked
 	ride.Acc = decimal.Zero
 
 	return ride, nil
