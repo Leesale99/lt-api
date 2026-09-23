@@ -103,7 +103,7 @@ func (r *Ride) WonPending(roundPhase RoundPhase) error {
 		return ErrInvalidRoundPhase
 	}
 
-	matchOdds := decimal.NewFromFloat(matches[r.MatchID].Odds.Home)
+	matchOdds := decimal.NewFromFloat(matches[0].Odds.Home)
 
 	r.State = RideWonPending
 	r.Acc = calculateBonus(matchOdds, r.TokensLocked, r.Acc, r.Streak)
