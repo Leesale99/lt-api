@@ -1,16 +1,11 @@
 package game
 
 import (
-	"errors"
 	"time"
 )
 
 // RoundPhase is the gameplay phase of a round within its lifecycle.
 type RoundPhase string
-
-// ErrInvalidRoundPhase is returned by ride commands attempted outside the
-// phase that permits them (e.g. a decision during MatchPhase).
-var ErrInvalidRoundPhase = errors.New("invalid round phase")
 
 const (
 	ActionPhase   RoundPhase = "action"

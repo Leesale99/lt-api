@@ -24,8 +24,6 @@ type Ride struct {
 	PlayerID     int             `json:"player_id"`
 	TeamID       int             `json:"team_id"`
 	MatchID      int             `json:"match_id"`
-	RoundID      int             `json:"round_id"`
-	SeasonID     int             `json:"season_id"`
 	State        RideState       `json:"state"`
 	TokensLocked decimal.Decimal `json:"token_locked"`
 	BaseAtLock   decimal.Decimal `json:"base_at_lock"`
@@ -43,8 +41,6 @@ func (r *Ride) Insert(playerID, teamID, matchID, roundID, seasonID int, tokensLo
 		PlayerID:     playerID,
 		TeamID:       teamID,
 		MatchID:      matchID,
-		RoundID:      roundID,
-		SeasonID:     seasonID,
 		State:        RideLocked,
 		TokensLocked: tokensLocked,
 		BaseAtLock:   baseAtLock,
@@ -58,15 +54,19 @@ func (r *Ride) Insert(playerID, teamID, matchID, roundID, seasonID int, tokensLo
 	return ride, nil
 }
 
-var transitions = map[RideState][]RideState{
-	RideLocked:     {RideWonPending, RideLost},
-	RideWonPending: {RideLocked, RideBurned, RideUnlocked},
+var transitions = map[RideState]map[RoundPhase][]RideState{
+	RideLocked: {
+		MatchPhase: {RideWonPending, RideLost},
+	},
+	RideWonPending: {
+		DecisionPhase: {RideLocked, RideBurned, RideUnlocked},
+	},
 }
 
-func (r *Ride) canTransition(nextRideState RideState) bool {
-	allowedStates := transitions[r.State]
+func canTransition(state RideState, phase RoundPhase, next RideState) bool {
+	allowedStates := transitions[state][phase]
 
-	return slices.Contains(allowedStates, nextRideState)
+	return slices.Contains(allowedStates, next)
 }
 
 var ErrInvalidTransition = errors.New("invalid state transition")
@@ -94,13 +94,9 @@ var matches = []Match{
 //	ride.Burn(phase)
 
 // Phase: MatchPhase; Call when: Match won; Ride transitions to won_pending
-func (r *Ride) WonPending(roundPhase RoundPhase) error {
-	if !r.canTransition(RideWonPending) {
+func (r *Ride) WonPending(phase RoundPhase) error {
+	if !canTransition(r.State, phase, RideWonPending) {
 		return ErrInvalidTransition
-	}
-
-	if roundPhase != MatchPhase {
-		return ErrInvalidRoundPhase
 	}
 
 	matchOdds := decimal.NewFromFloat(matches[0].Odds.Home)
@@ -112,13 +108,9 @@ func (r *Ride) WonPending(roundPhase RoundPhase) error {
 }
 
 // Phase: MatchPhase; Call when: Match lost; Ride transitions to lost
-func (r *Ride) Lost(roundPhase RoundPhase) error {
-	if !r.canTransition(RideLost) {
+func (r *Ride) Lost(phase RoundPhase) error {
+	if !canTransition(r.State, phase, RideLost) {
 		return ErrInvalidTransition
-	}
-
-	if roundPhase != MatchPhase {
-		return ErrInvalidRoundPhase
 	}
 
 	r.State = RideLost
@@ -128,13 +120,9 @@ func (r *Ride) Lost(roundPhase RoundPhase) error {
 }
 
 // Phase: DecisionPhase; Call when: Player decides to contiue the ride after the win
-func (r *Ride) Lock(roundPhase RoundPhase) error {
-	if !r.canTransition(RideLocked) {
+func (r *Ride) Lock(phase RoundPhase) error {
+	if !canTransition(r.State, phase, RideLocked) {
 		return ErrInvalidTransition
-	}
-
-	if roundPhase != DecisionPhase {
-		return ErrInvalidRoundPhase
 	}
 
 	// match, err := matches.NextMatch(ride.TeamID)
@@ -142,20 +130,15 @@ func (r *Ride) Lock(roundPhase RoundPhase) error {
 
 	r.State = RideLocked
 	r.MatchID = nextMatch.ID
-	r.RoundID = nextMatch.RoundID
 	r.Streak = r.Streak + 1
 
 	return nil
 }
 
 // Phase: DecisionPhase; Call when: Player decides to burn after the win
-func (r *Ride) Burn(roundPhase RoundPhase) error {
-	if !r.canTransition(RideBurned) {
+func (r *Ride) Burn(phase RoundPhase) error {
+	if !canTransition(r.State, phase, RideBurned) {
 		return ErrInvalidTransition
-	}
-
-	if roundPhase != DecisionPhase {
-		return ErrInvalidRoundPhase
 	}
 
 	r.State = RideBurned
@@ -164,13 +147,9 @@ func (r *Ride) Burn(roundPhase RoundPhase) error {
 }
 
 // Phase: DecisionPhase; Call when: Player decides to Unlock tokens after the win
-func (r *Ride) Unlock(roundPhase RoundPhase) error {
-	if !r.canTransition(RideUnlocked) {
+func (r *Ride) Unlock(phase RoundPhase) error {
+	if !canTransition(r.State, phase, RideUnlocked) {
 		return ErrInvalidTransition
-	}
-
-	if roundPhase != DecisionPhase {
-		return ErrInvalidRoundPhase
 	}
 
 	r.State = RideUnlocked
