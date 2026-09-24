@@ -50,6 +50,9 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/players/:player_id", app.requirePermission("players:write", app.updatePlayerHandler))
 	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/players/:player_id", app.requirePermission("players:write", app.deletePlayerHandler))
 
+	// Rides
+	router.HandlerFunc(http.MethodPost, "/v1/rides", app.createRideHandler)
+
 	// Users
 	router.HandlerFunc(http.MethodPost, "/v1/users", app.registerUserHandler)
 	router.HandlerFunc(http.MethodPut, "/v1/users/activated", app.activateUserHandler)

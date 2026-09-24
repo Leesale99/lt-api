@@ -5,7 +5,9 @@ import (
 	"slices"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
+	"lt-api.aleksrdvn.com/internal/validator"
 )
 
 type RideState string
@@ -32,23 +34,20 @@ type Ride struct {
 	Version      int             `json:"Version"`
 }
 
+func ValidateRide(v *validator.Validator, ride Ride) {
+	v.Check(ride.PlayerID > 0, "player_id", "must be provided")
+	v.Check(ride.TeamID > 0, "team_id", "must be provided")
+	v.Check(ride.MatchID > 0, "match_id", "must be provided")
+	v.Check(ride.TokensLocked.GreaterThan(decimal.Zero), "token_locked", "must be greater then zero")
+}
+
+type RideStore struct {
+	pool *pgxpool.Pool
+}
+
 var rides []Ride
 
-func (r *Ride) Insert(playerID, teamID, matchID, roundID, seasonID int, tokensLocked, baseAtLock decimal.Decimal) (Ride, error) {
-	ride := Ride{
-		ID:           len(rides),
-		CreatedAt:    time.Now(),
-		PlayerID:     playerID,
-		TeamID:       teamID,
-		MatchID:      matchID,
-		State:        RideLocked,
-		TokensLocked: tokensLocked,
-		BaseAtLock:   baseAtLock,
-		Acc:          decimal.Zero,
-		Streak:       0,
-		Version:      1,
-	}
-
+func (r *RideStore) Insert(ride Ride) (Ride, error) {
 	rides = append(rides, ride)
 
 	return ride, nil
@@ -71,7 +70,7 @@ func canTransition(state RideState, phase RoundPhase, next RideState) bool {
 
 var ErrInvalidTransition = errors.New("invalid state transition")
 
-// matches, err := matches.GetAll(ride.RoundID)
+// TODO:  matches, err := matches.GetAll(ride.RoundID)
 var matches = []Match{
 	{
 		ID:       1,

@@ -15,6 +15,7 @@ type Store struct {
 	Teams   TeamStore
 	Matches MatchStore
 	Players PlayerStore
+	Rides   RideStore
 }
 
 func NewStore(pool *pgxpool.Pool) *Store {
@@ -24,5 +25,6 @@ func NewStore(pool *pgxpool.Pool) *Store {
 		Teams:   TeamStore{pool},
 		Matches: MatchStore{pool},
 		Players: PlayerStore{pool},
+		Rides:   RideStore{pool},
 	}
 }
