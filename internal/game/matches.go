@@ -361,9 +361,9 @@ func (s *MatchStore) NextForTeam(ctx context.Context, teamID int) (Match, error)
 	query := `
 		SELECT m.id, m.created_at, m.starts_at, m.ended_at, m.season_id, m.round_id, m.home_team_id, m.away_team_id, m.status, m.home_odds, m.away_odds, m.home_score, m.away_score, m.version
 		FROM matches m
-		INNER JOIN rounds r
+		INNER JOIN rounds r ON r.id = m.round_id
 		WHERE (m.home_team_id = $1 OR m.away_team_id = $1) 
-			AND m.ended_at = NULL 
+			AND m.ended_at IS NULL 
 			AND r.status <> 'closed'
 		ORDER BY m.starts_at ASC, m.id ASC
 		LIMIT 1
