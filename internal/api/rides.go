@@ -25,6 +25,7 @@ func (app *Application) createRideHandler(w http.ResponseWriter, r *http.Request
 	err := app.readJSON(w, r, &input)
 	if err != nil {
 		app.badRequestResponse(w, r, err)
+		return
 	}
 
 	// TODO: token := app.Ledger.Tokens.GetByTeamID(input.TeamID)
@@ -155,11 +156,12 @@ func (app *Application) lockRideHandler(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		if errors.Is(err, game.ErrInvalidRoundPhase) {
 			app.invalidPhaseResponse(w, r, phase)
+			return
 		}
 		if errors.Is(err, game.ErrInvalidTransition) {
 			app.invalidStateTransitionResponse(w, r, ride.State)
+			return
 		}
-		return
 	}
 
 	ride, err = app.Game.Rides.Update(ride)

@@ -105,10 +105,11 @@ func (s *RideStore) Update(update Ride) (Ride, error) {
 	for _, ride := range rides {
 		if ride.ID == update.ID {
 			ride = update
+			return ride, nil
 		}
 	}
 
-	return update, nil
+	return Ride{}, store.ErrRecordNotFound
 }
 
 var transitions = map[RideState]map[RoundPhase][]RideState{
