@@ -54,7 +54,7 @@ func (app *Application) createRideHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	ride, err = app.Game.Rides.Insert(ride)
+	ride, err = app.Game.Store.Rides.Insert(ride)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 		return

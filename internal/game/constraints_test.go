@@ -238,7 +238,7 @@ func TestStatusVocabularyIsInSync(t *testing.T) {
 	})
 
 	t.Run("rounds", func(t *testing.T) {
-		for i, status := range roundsStatuses {
+		for i, status := range roundStatuses {
 			_, err := pool.Exec(ctx,
 				`INSERT INTO rounds (season_id, number, status) VALUES ($1, $2, $3)`,
 				seasonID, i+10, status)

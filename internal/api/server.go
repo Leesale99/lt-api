@@ -35,7 +35,10 @@ type Application struct {
 	// never mutated — a dependency like Logger, not ambient mutable state.
 	RootCtx context.Context
 
-	Game     *game.Store
+	// Game is the domain service: the single entry point to game rules and
+	// persistence. Handlers call domain operations on it; CRUD that carries
+	// no rules goes through Game.Store.
+	Game     *game.Service
 	Identity *identity.Store
 	Mailer   MailSender
 	wg       sync.WaitGroup
