@@ -116,8 +116,8 @@ func (app *Application) rateLimitExceededResponse(w http.ResponseWriter, r *http
 // open. Distinct from recordFrozenResponse (temporal hierarchy freeze): the
 // round exists and is valid, it just isn't accepting commands. Refusal
 // happens here, before phase derivation — a closed round has no phase.
-func (app *Application) roundNotOpenResponse(w http.ResponseWriter, r *http.Request, status game.RoundStatus) {
-	message := fmt.Sprintf("ride commands require an open round, but this round is %s", status)
+func (app *Application) roundNotOpenResponse(w http.ResponseWriter, r *http.Request) {
+	message := "ride commands require an open round"
 	app.writeError(w, r, http.StatusConflict, message)
 }
 
@@ -132,8 +132,8 @@ func (app *Application) noNextMatchResponse(w http.ResponseWriter, r *http.Reque
 	app.writeError(w, r, http.StatusConflict, message)
 }
 
-func (app *Application) invalidPhaseResponse(w http.ResponseWriter, r *http.Request, phase game.RoundPhase) {
-	message := fmt.Sprintf("this ride command is not allowed while the round is in the %s phase", phase)
+func (app *Application) invalidPhaseResponse(w http.ResponseWriter, r *http.Request) {
+	message := "this ride command is not allowed while the round is in current phase"
 	app.writeError(w, r, http.StatusConflict, message)
 }
 

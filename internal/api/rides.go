@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/shopspring/decimal"
 	"lt-api.aleksrdvn.com/internal/constants"
@@ -84,89 +83,24 @@ func (app *Application) lockRideHandler(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	ride, err := app.Game.Rides.Get(id)
-	if err != nil {
-		switch {
-		case errors.Is(err, store.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
-		default:
-			app.serverErrorResponse(w, r, err)
-		}
-		return
-	}
-
-	match, err := app.Game.Matches.Get(ctx, ride.MatchID)
+	ride, err := app.Game.RideLock(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
 		case errors.Is(err, store.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
-		default:
-			app.serverErrorResponse(w, r, err)
-		}
-		return
-	}
-
-	round, err := app.Game.Rounds.Get(ctx, match.RoundID)
-	if err != nil {
-		switch {
-		case errors.Is(err, context.Canceled):
-			return
-		case errors.Is(err, store.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
-		default:
-			app.serverErrorResponse(w, r, err)
-		}
-		return
-	}
-
-	if round.Status != game.RoundOpen {
-		app.roundNotOpenResponse(w, r, round.Status)
-		return
-	}
-
-	firstStartsAt, lastEndedAt, err := app.Game.Matches.PhaseWindow(ctx, round.ID)
-	if err != nil {
-		switch {
-		case errors.Is(err, context.Canceled):
-			return
-		default:
-			app.serverErrorResponse(w, r, err)
-		}
-		return
-	}
-
-	phase := game.Phase(time.Now(), firstStartsAt, lastEndedAt)
-
-	nextMatch, err := app.Game.Matches.NextForTeam(ctx, ride.TeamID)
-	if err != nil {
-		switch {
-		case errors.Is(err, context.Canceled):
-			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, game.ErrRoundNotOpen):
+			app.roundNotOpenResponse(w, r)
+		case errors.Is(err, game.ErrNoNextMatch):
 			app.noNextMatchResponse(w, r)
+		case errors.Is(err, game.ErrInvalidRoundPhase):
+			app.invalidPhaseResponse(w, r)
+		case errors.Is(err, game.ErrInvalidTransition):
+			app.invalidStateTransitionResponse(w, r, ride.State)
 		default:
 			app.serverErrorResponse(w, r, err)
 		}
-		return
-	}
-
-	err = ride.Lock(phase, nextMatch.ID)
-	if err != nil {
-		if errors.Is(err, game.ErrInvalidRoundPhase) {
-			app.invalidPhaseResponse(w, r, phase)
-			return
-		}
-		if errors.Is(err, game.ErrInvalidTransition) {
-			app.invalidStateTransitionResponse(w, r, ride.State)
-			return
-		}
-	}
-
-	ride, err = app.Game.Rides.Update(ride)
-	if err != nil {
-		app.serverErrorResponse(w, r, err)
 		return
 	}
 
