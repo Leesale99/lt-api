@@ -15,8 +15,11 @@ import (
 
 func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Number int              `json:"number"`
-		Status game.RoundStatus `json:"status"`
+		Number int `json:"number"`
+		// status is deliberately absent: new rounds are always created, the
+		// client cannot set it (see ValidateNewRound). Opening a round is a
+		// PATCH that must also start the season (RoundStore.Open), so creating
+		// directly as open would bypass that transaction.
 	}
 
 	seasonID, err := app.readIDParam(r)
@@ -49,12 +52,12 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 	round := game.Round{
 		SeasonID: seasonID,
 		Number:   input.Number,
-		Status:   input.Status,
+		Status:   game.RoundCreated, // server-assigned, see input struct
 	}
 
 	v := validator.New()
 
-	if game.ValidateRound(v, round); !v.Valid() {
+	if game.ValidateNewRound(v, round); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
@@ -116,10 +119,10 @@ func (app *Application) listRoundsHandler(w http.ResponseWriter, r *http.Request
 
 	qs := r.URL.Query()
 	seasonID := app.readInt(qs, "season_id", 0, v)
-	status := app.readString(qs, "status", "")
+	status := game.RoundStatus(app.readString(qs, "status", ""))
 
 	if status != "" {
-		game.ValidateRoundStatus(v, game.RoundStatus(status))
+		game.ValidateRoundStatus(v, status)
 	}
 
 	sortSafelist := []string{"id", "number", "-id", "-number"}

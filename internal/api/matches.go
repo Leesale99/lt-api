@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"lt-api.aleksrdvn.com/internal/constants"
@@ -23,6 +22,9 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		StartsAt   time.Time  `json:"starts_at"`
 		Odds       game.Odds  `json:"odds"`
 		Score      game.Score `json:"score"`
+		// status is deliberately absent: new matches are always created, the
+		// client cannot set it (see ValidateNewMatch). Update owns the rest of
+		// the lifecycle.
 	}
 
 	seasonID, err := app.readIDParam(r)
@@ -57,6 +59,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		RoundID:    input.RoundID,
 		HomeTeamID: input.HomeTeamID,
 		AwayTeamID: input.AwayTeamID,
+		Status:     game.MatchCreated, // server-assigned, see input struct
 		StartsAt:   input.StartsAt,
 		Odds:       input.Odds,
 		Score:      input.Score,
@@ -169,7 +172,7 @@ func (app *Application) listMatchHandler(w http.ResponseWriter, r *http.Request)
 	qs := r.URL.Query()
 	seasonID := app.readInt(qs, "season_id", 0, v)
 	roundID := app.readInt(qs, "round_id", 0, v)
-	status := strings.ToLower(app.readString(qs, "status", ""))
+	status := game.MatchStatus(app.readString(qs, "status", ""))
 
 	if status != "" {
 		game.ValidateMatchStatus(v, status)
@@ -266,12 +269,12 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 	current := match
 
 	var input struct {
-		StartsAt   *time.Time  `json:"starts_at"`
-		HomeTeamID *int        `json:"home_team_id"`
-		AwayTeamID *int        `json:"away_team_id"`
-		Status     *string     `json:"status"`
-		Odds       *game.Odds  `json:"odds"`
-		Score      *game.Score `json:"score"`
+		StartsAt   *time.Time        `json:"starts_at"`
+		HomeTeamID *int              `json:"home_team_id"`
+		AwayTeamID *int              `json:"away_team_id"`
+		Status     *game.MatchStatus `json:"status"`
+		Odds       *game.Odds        `json:"odds"`
+		Score      *game.Score       `json:"score"`
 	}
 
 	err = app.readJSON(w, r, &input)
@@ -290,7 +293,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		match.AwayTeamID = *input.AwayTeamID
 	}
 	if input.Status != nil {
-		match.Status = strings.ToLower(*input.Status)
+		match.Status = *input.Status
 	}
 	if input.Odds != nil {
 		match.Odds = *input.Odds

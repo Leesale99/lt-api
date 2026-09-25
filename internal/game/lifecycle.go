@@ -17,9 +17,13 @@ import (
 )
 
 // checkStatusRegression validates a status transition against the given
-// stage-order map. Unknown statuses are skipped here: the vocabulary check
-// on the new record already rejects them, and the stored status is trusted.
-func checkStatusRegression(v *validator.Validator, entity, oldStatus, newStatus string, rank map[string]int) {
+// stage-order map. It is generic over the per-entity status types (S must be
+// a named string type): the compiler then guarantees that the two statuses
+// and the rank map always come from the same vocabulary — Round statuses
+// cannot be compared against matchStatusRank. Unknown statuses are skipped
+// here: the vocabulary check on the new record already rejects them, and the
+// stored status is trusted.
+func checkStatusRegression[S ~string](v *validator.Validator, entity string, oldStatus, newStatus S, rank map[S]int) {
 	oldRank, oldOK := rank[oldStatus]
 	newRank, newOK := rank[newStatus]
 	if !oldOK || !newOK {

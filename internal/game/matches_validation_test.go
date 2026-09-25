@@ -16,13 +16,18 @@ func TestValidateNewMatch(t *testing.T) {
 
 	i := func(n int) *int { return &n }
 
+	// Closed matches must carry an ended_at; the mutation cases that flip the
+	// status to closed set it (and only it) so they test one rule at a time.
+	endsAt := now.Add(48 * time.Hour) // after the fixture's starts_at (now+24h)
+	setEnded := func(m *Match) { m.EndedAt = &endsAt }
+
 	valid := func() Match {
 		return Match{
 			SeasonID:   1,
 			RoundID:    1,
 			HomeTeamID: 1,
 			AwayTeamID: 2,
-			Status:     "created",
+			Status:     MatchCreated,
 			StartsAt:   now.Add(24 * time.Hour),
 			Odds:       Odds{Home: 1.5, Away: 2.5},
 		}
@@ -38,98 +43,106 @@ func TestValidateNewMatch(t *testing.T) {
 			mutate:   func(m *Match) {},
 			wantErrs: map[string]string{},
 		},
+		// Shape-valid, but new matches can never carry a non-created status:
+		// these cases pin the create-time status rule on top of the shape core.
 		{
-			name: "valid closed match with score",
+			name: "closed match with score is rejected on create",
 			mutate: func(m *Match) {
-				m.Status = "closed"
+				m.Status = MatchClosed
+				setEnded(m)
 				m.Score = Score{Home: i(88), Away: i(79)}
 			},
-			wantErrs: map[string]string{},
+			wantErrs: map[string]string{"status": "new matches can only have status created"},
 		},
 		{
-			name: "valid in_progress match at 0-0",
+			name: "in_progress match at 0-0 is rejected on create",
 			mutate: func(m *Match) {
-				m.Status = "in_progress"
+				m.Status = MatchInProgress
 				m.Score = Score{Home: i(0), Away: i(0)}
 			},
-			wantErrs: map[string]string{},
+			wantErrs: map[string]string{"status": "new matches can only have status created"},
 		},
 
 		// Score pair rule: both nil or both set.
 		{
 			name: "home score without away score",
 			mutate: func(m *Match) {
-				m.Status = "closed"
+				m.Status = MatchClosed
+				setEnded(m)
 				m.Score = Score{Home: i(88), Away: nil}
 			},
-			wantErrs: map[string]string{"score": "must contain both home and away values or neither"},
+			wantErrs: map[string]string{"score": "must contain both home and away values or neither", "status": "new matches can only have status created"},
 		},
 		{
 			name: "away score without home score",
 			mutate: func(m *Match) {
-				m.Status = "closed"
+				m.Status = MatchClosed
+				setEnded(m)
 				m.Score = Score{Home: nil, Away: i(79)}
 			},
-			wantErrs: map[string]string{"score": "must contain both home and away values or neither"},
+			wantErrs: map[string]string{"score": "must contain both home and away values or neither", "status": "new matches can only have status created"},
 		},
 
 		// Non-negative scores.
 		{
 			name: "negative home score",
 			mutate: func(m *Match) {
-				m.Status = "closed"
+				m.Status = MatchClosed
+				setEnded(m)
 				m.Score = Score{Home: i(-1), Away: i(79)}
 			},
-			wantErrs: map[string]string{"score": "must not be negative"},
+			wantErrs: map[string]string{"score": "must not be negative", "status": "new matches can only have status created"},
 		},
 		{
 			name: "negative away score",
 			mutate: func(m *Match) {
-				m.Status = "closed"
+				m.Status = MatchClosed
+				setEnded(m)
 				m.Score = Score{Home: i(88), Away: i(-1)}
 			},
-			wantErrs: map[string]string{"score": "must not be negative"},
+			wantErrs: map[string]string{"score": "must not be negative", "status": "new matches can only have status created"},
 		},
 
 		// Status/score matrix: in_progress and closed require a score.
 		{
 			name: "in_progress without score",
 			mutate: func(m *Match) {
-				m.Status = "in_progress"
+				m.Status = MatchInProgress
 			},
-			wantErrs: map[string]string{"score": "must be provided when the match is in progress or closed"},
+			wantErrs: map[string]string{"score": "must be provided when the match is in progress or closed", "status": "new matches can only have status created"},
 		},
 		{
 			name: "closed without score",
 			mutate: func(m *Match) {
-				m.Status = "closed"
+				m.Status = MatchClosed
+				setEnded(m)
 			},
-			wantErrs: map[string]string{"score": "must be provided when the match is in progress or closed"},
+			wantErrs: map[string]string{"score": "must be provided when the match is in progress or closed", "status": "new matches can only have status created"},
 		},
 
 		// Status/score matrix: created and postponed forbid a score.
 		{
 			name: "created with score",
 			mutate: func(m *Match) {
-				m.Status = "created"
+				m.Status = MatchCreated
 				m.Score = Score{Home: i(1), Away: i(0)}
 			},
 			wantErrs: map[string]string{"score": "must not be set before the match is in progress or closed"},
 		},
 		{
-			name: "valid postponed match without score",
+			name: "postponed match without score is rejected on create",
 			mutate: func(m *Match) {
-				m.Status = "postponed"
+				m.Status = MatchPostponed
 			},
-			wantErrs: map[string]string{},
+			wantErrs: map[string]string{"status": "new matches can only have status created"},
 		},
 		{
 			name: "postponed with score",
 			mutate: func(m *Match) {
-				m.Status = "postponed"
+				m.Status = MatchPostponed
 				m.Score = Score{Home: i(1), Away: i(0)}
 			},
-			wantErrs: map[string]string{"score": "must not be set before the match is in progress or closed"},
+			wantErrs: map[string]string{"score": "must not be set before the match is in progress or closed", "status": "new matches can only have status created"},
 		},
 
 		// starts_at: required and strictly after the injected now.
@@ -205,7 +218,7 @@ func TestValidateMatchUpdate(t *testing.T) {
 			name: "created to in_progress with a score",
 			old:  func(m *Match) {},
 			mutate: func(m *Match) {
-				m.Status = "in_progress"
+				m.Status = MatchInProgress
 				m.Score = scored(1, 0)
 			},
 			wantErrs: map[string]string{},
@@ -214,28 +227,28 @@ func TestValidateMatchUpdate(t *testing.T) {
 			name: "created to postponed",
 			old:  func(m *Match) {},
 			mutate: func(m *Match) {
-				m.Status = "postponed"
+				m.Status = MatchPostponed
 			},
 			wantErrs: map[string]string{},
 		},
 		{
 			name: "postponed back to created",
 			old: func(m *Match) {
-				m.Status = "postponed"
+				m.Status = MatchPostponed
 			},
 			mutate: func(m *Match) {
-				m.Status = "created"
+				m.Status = MatchCreated
 			},
 			wantErrs: map[string]string{},
 		},
 		{
 			name: "in_progress back to created",
 			old: func(m *Match) {
-				m.Status = "in_progress"
+				m.Status = MatchInProgress
 				m.Score = scored(1, 0)
 			},
 			mutate: func(m *Match) {
-				m.Status = "created"
+				m.Status = MatchCreated
 				m.Score = Score{}
 			},
 			wantErrs: map[string]string{"status": "cannot move to an earlier stage of the match lifecycle"},
@@ -243,11 +256,11 @@ func TestValidateMatchUpdate(t *testing.T) {
 		{
 			name: "in_progress to postponed",
 			old: func(m *Match) {
-				m.Status = "in_progress"
+				m.Status = MatchInProgress
 				m.Score = scored(1, 0)
 			},
 			mutate: func(m *Match) {
-				m.Status = "postponed"
+				m.Status = MatchPostponed
 				m.Score = Score{}
 			},
 			wantErrs: map[string]string{"status": "cannot move to an earlier stage of the match lifecycle"},
@@ -255,11 +268,12 @@ func TestValidateMatchUpdate(t *testing.T) {
 		{
 			name: "closed to created",
 			old: func(m *Match) {
-				m.Status = "closed"
+				m.Status = MatchClosed
+				m.EndedAt = &now
 				m.Score = scored(3, 2)
 			},
 			mutate: func(m *Match) {
-				m.Status = "created"
+				m.Status = MatchCreated
 				m.Score = Score{}
 			},
 			wantErrs: map[string]string{"status": "cannot be changed after the match is closed"},
@@ -267,7 +281,8 @@ func TestValidateMatchUpdate(t *testing.T) {
 		{
 			name: "closed stays closed",
 			old: func(m *Match) {
-				m.Status = "closed"
+				m.Status = MatchClosed
+				m.EndedAt = &now
 				m.Score = scored(3, 2)
 			},
 			mutate: func(m *Match) {
@@ -285,7 +300,7 @@ func TestValidateMatchUpdate(t *testing.T) {
 					RoundID:    1,
 					HomeTeamID: 1,
 					AwayTeamID: 2,
-					Status:     "created",
+					Status:     MatchCreated,
 					StartsAt:   now.Add(-2 * time.Hour),
 					Odds:       Odds{Home: 1.5, Away: 2.5},
 				}

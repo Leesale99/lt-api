@@ -75,10 +75,19 @@ func TestCreateSeasonHandler(t *testing.T) {
 		wantBody []string
 	}{
 		{
-			name:     "valid season",
+			// Status is server-assigned on create (always "created"); the
+			// client cannot set it, so it is an unknown key like any other.
+			name:     "status in the body is rejected",
 			body:     `{"status":"in_progress"}`,
+			wantCode: http.StatusBadRequest,
+			wantBody: []string{"unknown key"},
+		},
+		{
+			// An empty object creates a season in the created state.
+			name:     "empty object creates a created season",
+			body:     `{}`,
 			wantCode: http.StatusCreated,
-			wantBody: []string{`"status": "in_progress"`},
+			wantBody: []string{`"status": "created"`},
 		},
 		{
 			name:     "empty body",
@@ -94,21 +103,9 @@ func TestCreateSeasonHandler(t *testing.T) {
 		},
 		{
 			name:     "unknown field rejected",
-			body:     `{"status":"created","year":2026}`,
+			body:     `{"year":2026}`,
 			wantCode: http.StatusBadRequest,
 			wantBody: []string{"unknown key"},
-		},
-		{
-			name:     "missing status",
-			body:     `{}`,
-			wantCode: http.StatusUnprocessableEntity,
-			wantBody: []string{"status"},
-		},
-		{
-			name:     "unknown status",
-			body:     `{"status":"playoff"}`,
-			wantCode: http.StatusUnprocessableEntity,
-			wantBody: []string{"status"},
 		},
 	}
 
@@ -156,11 +153,13 @@ func TestUpdateSeasonHandler(t *testing.T) {
 			wantBody: []string{`"status": "closed"`, `"version": 2`},
 		},
 		{
-			name:     "uppercase status is normalized",
+			// Lowercase is the wire contract: vocabulary values are matched
+			// exactly, there is no server-side normalization.
+			name:     "uppercase status is rejected",
 			url:      "/v1/seasons/2",
 			body:     `{"status":"CLOSED"}`,
-			wantCode: http.StatusOK,
-			wantBody: []string{`"status": "closed"`},
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"status", "must be one of: created, open, in_progress, closed"},
 		},
 		{
 			name: "regressing the lifecycle is rejected",
@@ -279,7 +278,7 @@ func TestCreateSeasonHandlerLocation(t *testing.T) {
 	reset(t)
 	app := newTestApplication()
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/seasons", strings.NewReader(`{"status":"created"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/seasons", strings.NewReader(`{}`))
 	rr := httptest.NewRecorder()
 	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
@@ -362,8 +361,7 @@ func TestDeleteCreatedSeasonHandler(t *testing.T) {
 	reset(t)
 	app := newTestApplication()
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/seasons",
-		strings.NewReader(`{"status":"created"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/seasons", strings.NewReader(`{}`))
 	rr := httptest.NewRecorder()
 	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
@@ -430,10 +428,12 @@ func TestListSeasonsHandler(t *testing.T) {
 			wantBody: []string{`"total_records": 1`, `"status": "closed"`},
 		},
 		{
-			name:     "uppercase status filter is normalized",
+			// Lowercase is the wire contract: vocabulary values are matched
+			// exactly, there is no server-side normalization.
+			name:     "uppercase status filter is rejected",
 			url:      "/v1/seasons?status=IN_PROGRESS",
-			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 1`, `"status": "in_progress"`},
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"status", "must be one of: created, open, in_progress, closed"},
 		},
 		{
 			name:     "combined id and status",

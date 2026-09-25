@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	game "lt-api.aleksrdvn.com/internal/game"
@@ -19,7 +18,7 @@ func (app *Application) listSeasonsHandler(w http.ResponseWriter, r *http.Reques
 
 	qs := r.URL.Query()
 	id := app.readInt(qs, "id", 0, v)
-	status := strings.ToLower(app.readString(qs, "status", ""))
+	status := game.SeasonStatus(app.readString(qs, "status", ""))
 
 	if status != "" {
 		game.ValidateSeasonStatus(v, status)
@@ -39,7 +38,9 @@ func (app *Application) listSeasonsHandler(w http.ResponseWriter, r *http.Reques
 
 func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Status string `json:"status"`
+		// status is deliberately absent: new seasons are always created, the
+		// client cannot set it (see ValidateNewSeason). Update owns the rest
+		// of the lifecycle.
 	}
 
 	err := app.readJSON(w, r, &input)
@@ -49,12 +50,12 @@ func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	season := game.Season{
-		Status: strings.ToLower(input.Status),
+		Status: game.SeasonCreated, // server-assigned, see input struct
 	}
 
 	v := validator.New()
 
-	if game.ValidateSeason(v, season); !v.Valid() {
+	if game.ValidateNewSeason(v, season); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
@@ -143,7 +144,7 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	var input struct {
-		Status *string `json:"status"`
+		Status *game.SeasonStatus `json:"status"`
 	}
 
 	err = app.readJSON(w, r, &input)
@@ -153,7 +154,7 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	if input.Status != nil {
-		season.Status = strings.ToLower(*input.Status)
+		season.Status = *input.Status
 	}
 
 	v := validator.New()

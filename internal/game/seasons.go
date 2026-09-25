@@ -14,32 +14,48 @@ import (
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
+// SeasonStatus is the lifecycle state of a season.
+type SeasonStatus string
+
+const (
+	SeasonCreated    SeasonStatus = "created"
+	SeasonOpen       SeasonStatus = "open"
+	SeasonInProgress SeasonStatus = "in_progress"
+	SeasonClosed     SeasonStatus = "closed"
+)
+
 type Season struct {
-	ID        int       `json:"id"`
-	CreatedAt time.Time `json:"-"`
-	Status    string    `json:"status"`
-	Version   int       `json:"version"`
+	ID        int          `json:"id"`
+	CreatedAt time.Time    `json:"-"`
+	Status    SeasonStatus `json:"status"`
+	Version   int          `json:"version"`
 }
 
-var seasonStatuses = []string{"created", "open", "in_progress", "closed"}
+var seasonStatuses = []SeasonStatus{SeasonCreated, SeasonOpen, SeasonInProgress, SeasonClosed}
 
 func ValidateSeason(v *validator.Validator, season Season) {
-	status := strings.ToLower(season.Status)
-
-	v.Check(status != "", "status", "must be provided")
-	ValidateSeasonStatus(v, status)
+	v.Check(season.Status != "", "status", "must be provided")
+	ValidateSeasonStatus(v, season.Status)
 }
 
-func ValidateSeasonStatus(v *validator.Validator, status string) {
-	v.Check(validator.PermittedValue(status, seasonStatuses...), "status", "Must be one of: created, open, in_progress, closed")
+func ValidateSeasonStatus(v *validator.Validator, status SeasonStatus) {
+	v.Check(validator.PermittedValue(status, seasonStatuses...), "status", "must be one of: created, open, in_progress, closed")
 }
 
 // seasonStatusRank orders the season lifecycle for transition checks.
-var seasonStatusRank = map[string]int{
-	"created":     0,
-	"open":        1,
-	"in_progress": 2,
-	"closed":      3,
+var seasonStatusRank = map[SeasonStatus]int{
+	SeasonCreated:    0,
+	SeasonOpen:       1,
+	SeasonInProgress: 2,
+	SeasonClosed:     3,
+}
+
+// ValidateNewSeason validates a season about to be created. A new season
+// always starts in created: the client cannot choose the status, and the
+// lifecycle progression belongs to Update (see checkStatusRegression).
+func ValidateNewSeason(v *validator.Validator, season Season) {
+	ValidateSeason(v, season)
+	v.Check(season.Status == SeasonCreated, "status", "new seasons can only have status created")
 }
 
 // ValidateSeasonUpdate validates a season update (new) against the stored
@@ -120,7 +136,7 @@ func (s *SeasonStore) Update(ctx context.Context, season Season) (Season, error)
 	return season, err
 }
 
-func (s *SeasonStore) GetAll(ctx context.Context, id int, status string, filters store.Filters) ([]Season, store.Metadata, error) {
+func (s *SeasonStore) GetAll(ctx context.Context, id int, status SeasonStatus, filters store.Filters) ([]Season, store.Metadata, error) {
 	conds, args := []string{}, []any{}
 
 	if id != 0 {

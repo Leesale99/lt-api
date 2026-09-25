@@ -47,7 +47,7 @@ func TestRide_WonPending(t *testing.T) {
 	t.Run("from locked during match phase wins and credits acc", func(t *testing.T) {
 		r := lockedRide()
 
-		err := r.WonPending(MatchPhase)
+		err := r.WonPending(MatchPhase, 1.75)
 
 		if err != nil {
 			t.Fatalf("WonPending() = %v, want nil", err)
@@ -65,7 +65,7 @@ func TestRide_WonPending(t *testing.T) {
 		for _, phase := range []RoundPhase{ActionPhase, DecisionPhase} {
 			r := lockedRide()
 
-			err := r.WonPending(phase)
+			err := r.WonPending(phase, 1.75)
 
 			if !errors.Is(err, ErrInvalidRoundPhase) {
 				t.Fatalf("WonPending(%q) = %v, want ErrInvalidRoundPhase", phase, err)
@@ -114,7 +114,7 @@ func TestRide_Lock(t *testing.T) {
 		r := wonPendingRide()
 		before := r.Streak
 
-		err := r.Lock(DecisionPhase)
+		err := r.Lock(DecisionPhase, 1)
 
 		if err != nil {
 			t.Fatalf("Lock() = %v, want nil", err)
@@ -135,7 +135,7 @@ func TestRide_Lock(t *testing.T) {
 		for _, phase := range []RoundPhase{ActionPhase, MatchPhase} {
 			r := wonPendingRide()
 
-			err := r.Lock(phase)
+			err := r.Lock(phase, 1)
 
 			if !errors.Is(err, ErrInvalidRoundPhase) {
 				t.Fatalf("Lock(%q) = %v, want ErrInvalidRoundPhase", phase, err)
@@ -226,9 +226,9 @@ func TestRide_TerminalStates(t *testing.T) {
 	}
 
 	commands := []command{
-		{"won_pending", MatchPhase, func(r *Ride) error { return r.WonPending(MatchPhase) }},
+		{"won_pending", MatchPhase, func(r *Ride) error { return r.WonPending(MatchPhase, 1.75) }},
 		{"lost", MatchPhase, func(r *Ride) error { return r.Lost(MatchPhase) }},
-		{"lock", DecisionPhase, func(r *Ride) error { return r.Lock(DecisionPhase) }},
+		{"lock", DecisionPhase, func(r *Ride) error { return r.Lock(DecisionPhase, 1) }},
 		{"burn", DecisionPhase, func(r *Ride) error { return r.Burn(DecisionPhase) }},
 		{"unlock", DecisionPhase, func(r *Ride) error { return r.Unlock(DecisionPhase) }},
 	}
@@ -264,7 +264,7 @@ func TestRide_InvalidTransitions(t *testing.T) {
 		{
 			name: "won_pending cannot become won_pending",
 			ride: wonPendingRide(),
-			call: func(r *Ride) error { return r.WonPending(MatchPhase) },
+			call: func(r *Ride) error { return r.WonPending(MatchPhase, 1.75) },
 		},
 		{
 			name: "won_pending cannot become lost",
@@ -274,7 +274,7 @@ func TestRide_InvalidTransitions(t *testing.T) {
 		{
 			name: "locked cannot lock",
 			ride: lockedRide(),
-			call: func(r *Ride) error { return r.Lock(DecisionPhase) },
+			call: func(r *Ride) error { return r.Lock(DecisionPhase, 1) },
 		},
 		{
 			name: "locked cannot burn",

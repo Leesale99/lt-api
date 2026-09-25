@@ -51,10 +51,10 @@ const resetSQL = `
 
 	INSERT INTO matches (
 		season_id, round_id, home_team_id, away_team_id,
-		home_odds, away_odds, home_score, away_score, status, starts_at
+		home_odds, away_odds, home_score, away_score, status, starts_at, ended_at
 	) VALUES
-		(1, 1, 1, 2, 1.5, 2.5, 88, 79, 'closed', now() - interval '7 days'),
-		(1, 1, 2, 1, 2.0, 1.8, NULL, NULL, 'created', now() + interval '7 days');
+		(1, 1, 1, 2, 1.5, 2.5, 88, 79, 'closed', now() - interval '7 days', now() - interval '7 days' + interval '2 hours'),
+		(1, 1, 2, 1, 2.0, 1.8, NULL, NULL, 'created', now() + interval '7 days', NULL);
 
 `
 

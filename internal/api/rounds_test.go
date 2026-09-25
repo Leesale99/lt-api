@@ -77,23 +77,32 @@ func TestCreateRoundHandler(t *testing.T) {
 		wantBody []string
 	}{
 		{
-			name:     "valid round",
+			// Status is server-assigned on create (always "created"); the
+			// client cannot set it, so it is an unknown key like any other.
+			name:     "status in the body is rejected",
 			url:      "/v1/seasons/1/rounds",
 			body:     `{"number":3,"status":"open"}`,
+			wantCode: http.StatusBadRequest,
+			wantBody: []string{"unknown key"},
+		},
+		{
+			name:     "valid round",
+			url:      "/v1/seasons/1/rounds",
+			body:     `{"number":3}`,
 			wantCode: http.StatusCreated,
-			wantBody: []string{`"season_id": 1`, `"number": 3`},
+			wantBody: []string{`"season_id": 1`, `"number": 3`, `"status": "created"`},
 		},
 		{
 			name:     "unknown season",
 			url:      "/v1/seasons/999/rounds",
-			body:     `{"number":3,"status":"open"}`,
+			body:     `{"number":3}`,
 			wantCode: http.StatusNotFound,
 			wantBody: []string{"could not be found"},
 		},
 		{
 			name:     "non-numeric season id",
 			url:      "/v1/seasons/abc/rounds",
-			body:     `{"number":3,"status":"open"}`,
+			body:     `{"number":3}`,
 			wantCode: http.StatusNotFound,
 			wantBody: []string{"could not be found"},
 		},
@@ -114,30 +123,23 @@ func TestCreateRoundHandler(t *testing.T) {
 		{
 			name:     "unknown field rejected",
 			url:      "/v1/seasons/1/rounds",
-			body:     `{"number":3,"status":"open","label":"derby"}`,
+			body:     `{"number":3,"label":"derby"}`,
 			wantCode: http.StatusBadRequest,
 			wantBody: []string{"unknown key"},
 		},
 		{
 			name:     "number zero",
 			url:      "/v1/seasons/1/rounds",
-			body:     `{"number":0,"status":"open"}`,
+			body:     `{"number":0}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"number"},
 		},
 		{
 			name:     "number above league maximum",
 			url:      "/v1/seasons/1/rounds",
-			body:     `{"number":39,"status":"open"}`,
+			body:     `{"number":39}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"number"},
-		},
-		{
-			name:     "unknown status",
-			url:      "/v1/seasons/1/rounds",
-			body:     `{"number":3,"status":"pending"}`,
-			wantCode: http.StatusUnprocessableEntity,
-			wantBody: []string{"status"},
 		},
 	}
 
@@ -192,11 +194,13 @@ func TestUpdateRoundHandler(t *testing.T) {
 			wantBody: []string{`"status": "closed"`, `"version": 2`},
 		},
 		{
-			name:     "uppercase status is normalized",
+			// Lowercase is the wire contract: vocabulary values are matched
+			// exactly, there is no server-side normalization.
+			name:     "uppercase status is rejected",
 			url:      "/v1/seasons/1/rounds/2",
 			body:     `{"status":"CLOSED"}`,
-			wantCode: http.StatusOK,
-			wantBody: []string{`"status": "closed"`},
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"status", "must be one of: created, open, closed"},
 		},
 		{
 			name: "regressing the lifecycle is rejected",
@@ -541,10 +545,12 @@ func TestListRoundsHandler(t *testing.T) {
 			wantBody: []string{`"rounds": []`},
 		},
 		{
-			name:     "uppercase status filter is normalized",
+			// Lowercase is the wire contract: vocabulary values are matched
+			// exactly, there is no server-side normalization.
+			name:     "uppercase status filter is rejected",
 			url:      "/v1/rounds?status=OPEN",
-			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 3`},
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"status", "must be one of: created, open, closed"},
 		},
 		{
 			name:     "combined season_id and status",
@@ -632,7 +638,7 @@ func TestCreateRoundDuplicateNumber(t *testing.T) {
 	app := newTestApplication()
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/seasons/1/rounds",
-		strings.NewReader(`{"number":1,"status":"open"}`))
+		strings.NewReader(`{"number":1}`))
 	rr := httptest.NewRecorder()
 	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
@@ -654,8 +660,9 @@ func TestOpenRoundStartsSeason(t *testing.T) {
 	reset(t)
 	app := newTestApplication()
 
-	// An open season.
-	req := httptest.NewRequest(http.MethodPost, "/v1/seasons", strings.NewReader(`{"status":"open"}`))
+	// An open season (create is always created; move it up via the update
+	// transition created → open).
+	req := httptest.NewRequest(http.MethodPost, "/v1/seasons", strings.NewReader(`{}`))
 	rr := httptest.NewRecorder()
 	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 	if rr.Code != http.StatusCreated {
@@ -663,9 +670,17 @@ func TestOpenRoundStartsSeason(t *testing.T) {
 	}
 	seasonID := strings.TrimPrefix(rr.Header().Get("Location"), "/v1/seasons/")
 
+	req = httptest.NewRequest(http.MethodPatch, "/v1/seasons/"+seasonID,
+		strings.NewReader(`{"status":"open"}`))
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("open season: got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
 	// A created round under it.
 	req = httptest.NewRequest(http.MethodPost, "/v1/seasons/"+seasonID+"/rounds",
-		strings.NewReader(`{"number":1,"status":"created"}`))
+		strings.NewReader(`{"number":1}`))
 	rr = httptest.NewRecorder()
 	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 	if rr.Code != http.StatusCreated {
@@ -689,8 +704,10 @@ func TestOpenRoundStartsSeason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if seasonStatus != "in_progress" || seasonVersion != 2 {
-		t.Fatalf("season not flipped: status=%q version=%d, want in_progress/2", seasonStatus, seasonVersion)
+	// Version history: 1 at create, 2 at the created → open PATCH in the
+	// setup, 3 at the season flip riding the round open.
+	if seasonStatus != "in_progress" || seasonVersion != 3 {
+		t.Fatalf("season not flipped: status=%q version=%d, want in_progress/3", seasonStatus, seasonVersion)
 	}
 }
 
@@ -703,7 +720,7 @@ func TestOpenRoundSeasonFlipIsIdempotent(t *testing.T) {
 	reset(t)
 	app := newTestApplication()
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/seasons", strings.NewReader(`{"status":"open"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/seasons", strings.NewReader(`{}`))
 	rr := httptest.NewRecorder()
 	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 	if rr.Code != http.StatusCreated {
@@ -711,8 +728,16 @@ func TestOpenRoundSeasonFlipIsIdempotent(t *testing.T) {
 	}
 	seasonID := strings.TrimPrefix(rr.Header().Get("Location"), "/v1/seasons/")
 
+	req = httptest.NewRequest(http.MethodPatch, "/v1/seasons/"+seasonID,
+		strings.NewReader(`{"status":"open"}`))
+	rr = httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("open season: got status %d, want %d (body: %s)", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
 	req = httptest.NewRequest(http.MethodPost, "/v1/seasons/"+seasonID+"/rounds",
-		strings.NewReader(`{"number":1,"status":"created"}`))
+		strings.NewReader(`{"number":1}`))
 	rr = httptest.NewRecorder()
 	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 	if rr.Code != http.StatusCreated {
@@ -744,7 +769,9 @@ func TestOpenRoundSeasonFlipIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if seasonVersion != 2 {
-		t.Fatalf("season version bumped again: got %d, want 2", seasonVersion)
+	// Versions: 1 at create, 2 at the created → open PATCH, 3 at the flip
+	// riding the first round open; the second (no-op) PATCH must not add 4.
+	if seasonVersion != 3 {
+		t.Fatalf("season version bumped again: got %d, want 3", seasonVersion)
 	}
 }
