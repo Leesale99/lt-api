@@ -25,17 +25,18 @@ type Score struct {
 }
 
 type Match struct {
-	ID         int       `json:"id"`
-	CreatedAt  time.Time `json:"-"`
-	StartsAt   time.Time `json:"starts_at"`
-	SeasonID   int       `json:"season_id"`
-	RoundID    int       `json:"round_id"`
-	HomeTeamID int       `json:"home_team_id"`
-	AwayTeamID int       `json:"away_team_id"`
-	Status     string    `json:"status"`
-	Odds       Odds      `json:"odds"`
-	Score      Score     `json:"score"`
-	Version    int       `json:"version"`
+	ID         int        `json:"id"`
+	CreatedAt  time.Time  `json:"-"`
+	StartsAt   time.Time  `json:"starts_at"`
+	EndedAt    *time.Time `json:"_"`
+	SeasonID   int        `json:"season_id"`
+	RoundID    int        `json:"round_id"`
+	HomeTeamID int        `json:"home_team_id"`
+	AwayTeamID int        `json:"away_team_id"`
+	Status     string     `json:"status"`
+	Odds       Odds       `json:"odds"`
+	Score      Score      `json:"score"`
+	Version    int        `json:"version"`
 }
 
 func (m Match) Winner() *int {
@@ -70,6 +71,8 @@ func validateMatchShape(v *validator.Validator, match Match) {
 	v.Check(match.Status != "", "status", "must be provided")
 	v.Check(validator.PermittedValue(match.Status, matchStatuses...), "status", "must be one of: created, in_progress, postponed, closed")
 	v.Check(!match.StartsAt.IsZero(), "starts_at", "must be provided")
+	v.Check(match.EndedAt != nil && match.Status == "closed", "ended_at", "must be provided for the closed match")
+	v.Check(match.EndedAt != nil && match.EndedAt.After(match.StartsAt), "ended_at", "must be after the match started")
 	bothNil := match.Score.Home == nil && match.Score.Away == nil
 	bothSet := match.Score.Home != nil && match.Score.Away != nil
 	v.Check(bothNil || bothSet, "score", "must contain both home and away values or neither")
@@ -90,6 +93,7 @@ func ValidateNewMatch(v *validator.Validator, match Match, now time.Time) {
 	if !match.StartsAt.IsZero() {
 		v.Check(match.StartsAt.After(now), "starts_at", "must be in the future")
 	}
+	v.Check(match.Status == "created", "status", "new matches can only have status created")
 }
 
 // matchStatusRank orders the statuses along their lifecycle so that backward
@@ -131,7 +135,7 @@ func (s *MatchStore) Get(ctx context.Context, id int) (Match, error) {
 	}
 
 	query := `
-		SELECT  id, created_at, starts_at, season_id, round_id, home_team_id, away_team_id, status, home_odds, away_odds, home_score, away_score, version
+		SELECT  id, created_at, starts_at, ended_at, season_id, round_id, home_team_id, away_team_id, status, home_odds, away_odds, home_score, away_score, version
 		FROM matches
 		WHERE id = $1
 	`
@@ -142,6 +146,7 @@ func (s *MatchStore) Get(ctx context.Context, id int) (Match, error) {
 		&match.ID,
 		&match.CreatedAt,
 		&match.StartsAt,
+		&match.EndedAt,
 		&match.SeasonID,
 		&match.RoundID,
 		&match.HomeTeamID,
@@ -167,9 +172,9 @@ func (s *MatchStore) Get(ctx context.Context, id int) (Match, error) {
 
 func (s *MatchStore) Insert(ctx context.Context, match Match) (Match, error) {
 	query := `
-		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, starts_at, status)
+		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, starts_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		RETURNING id, created_at, version
+		RETURNING id, created_at, ended_at, status, version
 	`
 	args := []any{
 		match.SeasonID,
@@ -181,10 +186,9 @@ func (s *MatchStore) Insert(ctx context.Context, match Match) (Match, error) {
 		match.Score.Home,
 		match.Score.Away,
 		match.StartsAt,
-		match.Status,
 	}
 
-	err := s.pool.QueryRow(ctx, query, args...).Scan(&match.ID, &match.CreatedAt, &match.Version)
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&match.ID, &match.CreatedAt, &match.EndedAt, &match.Status, &match.Version)
 
 	return match, err
 }
@@ -213,7 +217,7 @@ func (s *MatchStore) GetAll(ctx context.Context, seasonID, roundID int, status s
 	}
 
 	query := fmt.Sprintf(`
-		SELECT count(*) OVER(), id, created_at, starts_at, season_id, round_id, home_team_id, away_team_id, status, home_odds, away_odds, home_score, away_score, version
+		SELECT count(*) OVER(), id, created_at, starts_at, ended_at, season_id, round_id, home_team_id, away_team_id, status, home_odds, away_odds, home_score, away_score, version
 		FROM matches%s
 		ORDER BY %s %s, id ASC
 		LIMIT $%d OFFSET $%d
@@ -238,6 +242,7 @@ func (s *MatchStore) GetAll(ctx context.Context, seasonID, roundID int, status s
 			&match.ID,
 			&match.CreatedAt,
 			&match.StartsAt,
+			&match.EndedAt,
 			&match.SeasonID,
 			&match.RoundID,
 			&match.HomeTeamID,
@@ -317,6 +322,63 @@ func (s *MatchStore) Update(ctx context.Context, match Match) (Match, error) {
 			// matches_freeze_gate: the match has started and the update tried
 			// to regress it to created/postponed (ADR-008).
 			return Match{}, store.ErrRecordInUse
+		default:
+			return Match{}, err
+		}
+	}
+
+	return match, nil
+}
+
+func (s *MatchStore) PhaseWindow(ctx context.Context, roundID int) (*time.Time, *time.Time, error) {
+	query := `
+		SELECT min(starts_at), max(ended_at)
+		FROM matches
+		WHERE round_id = $1
+	`
+	var firstStartsAt, lastEndedAt *time.Time
+	err := s.pool.QueryRow(ctx, query, roundID).Scan(&firstStartsAt, &lastEndedAt)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return firstStartsAt, lastEndedAt, nil
+}
+
+func (s *MatchStore) NextForTeam(ctx context.Context, teamID int) (Match, error) {
+	query := `
+		SELECT m.id, m.created_at, m.starts_at, m.ended_at, m.season_id, m.round_id, m.home_team_id, m.away_team_id, m.status, m.home_odds, m.away_odds, m.home_score, m.away_score, m.version
+		FROM matches m
+		INNER JOIN rounds r
+		WHERE (m.home_team_id = $1 OR m.away_team_id = $1) 
+			AND m.ended_at = NULL 
+			AND r.status <> 'closed'
+		ORDER BY m.starts_at ASC, m.id ASC
+		LIMIT 1
+	`
+
+	var match Match
+
+	err := s.pool.QueryRow(ctx, query, teamID).Scan(
+		&match.ID,
+		&match.CreatedAt,
+		&match.StartsAt,
+		&match.EndedAt,
+		&match.SeasonID,
+		&match.RoundID,
+		&match.HomeTeamID,
+		&match.AwayTeamID,
+		&match.Status,
+		&match.Odds.Home,
+		&match.Odds.Away,
+		&match.Score.Home,
+		&match.Score.Away,
+		&match.Version,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Match{}, store.ErrRecordNotFound
 		default:
 			return Match{}, err
 		}

@@ -7,8 +7,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
+	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
+
+// ErrInvalidTransition rejects a command invalid from the ride's current
+// state: terminal states accept nothing, and re-issuing a command whose
+// state has already moved on.
+var ErrInvalidTransition = errors.New("invalid state transition")
 
 type RideState string
 
@@ -45,12 +51,64 @@ type RideStore struct {
 	pool *pgxpool.Pool
 }
 
-var rides []Ride
+var rides = []Ride{
+	{
+		ID:           1,
+		CreatedAt:    time.Now().Add(-72 * time.Hour),
+		PlayerID:     1,
+		TeamID:       1,
+		MatchID:      1,
+		State:        RideLocked,
+		TokensLocked: decimal.NewFromInt(100),
+		BaseAtLock:   decimal.NewFromInt(100),
+		Acc:          decimal.Zero,
+		Streak:       0,
+		Version:      1,
+	},
+	{
+		ID:           2,
+		CreatedAt:    time.Now().Add(-48 * time.Hour),
+		PlayerID:     2,
+		TeamID:       3,
+		MatchID:      2,
+		State:        RideWonPending,
+		TokensLocked: decimal.NewFromInt(50),
+		BaseAtLock:   decimal.NewFromInt(50),
+		Acc:          decimal.NewFromFloat(35.0),
+		Streak:       2,
+		Version:      3,
+	},
+}
 
-func (r *RideStore) Insert(ride Ride) (Ride, error) {
+func (s *RideStore) Insert(ride Ride) (Ride, error) {
+	// Initial-state contract (pinned by TestRide_Insert): a fresh ride is
+	// locked with zero acc and streak, regardless of what the caller passed.
+	ride.State = RideLocked
+	ride.CreatedAt = time.Now()
+
 	rides = append(rides, ride)
 
 	return ride, nil
+}
+
+func (s *RideStore) Get(id int) (Ride, error) {
+	for _, ride := range rides {
+		if ride.ID == id {
+			return ride, nil
+		}
+	}
+
+	return Ride{}, store.ErrRecordNotFound
+}
+
+func (s *RideStore) Update(update Ride) (Ride, error) {
+	for _, ride := range rides {
+		if ride.ID == update.ID {
+			ride = update
+		}
+	}
+
+	return update, nil
 }
 
 var transitions = map[RideState]map[RoundPhase][]RideState{
@@ -68,8 +126,6 @@ func canTransition(state RideState, phase RoundPhase, next RideState) bool {
 	return slices.Contains(allowedStates, next)
 }
 
-var ErrInvalidTransition = errors.New("invalid state transition")
-
 // TODO:  matches, err := matches.GetAll(ride.RoundID)
 var matches = []Match{
 	{
@@ -86,28 +142,32 @@ var matches = []Match{
 	},
 }
 
-// The service layer owns the clock: it fetches the round's first/last match
-// start times and passes the derived phase into each command, e.g.
+// The service layer owns the clock: it fetches the round's first match
+// start time and last match end time, and passes the derived phase into each command, e.g.
 //
 //	phase := Phase(time.Now(), firstMatchAt, lastMatchAt)
 //	ride.Burn(phase)
 
 // Phase: MatchPhase; Call when: Match won; Ride transitions to won_pending
-func (r *Ride) WonPending(phase RoundPhase) error {
+func (r *Ride) WonPending(phase RoundPhase, odds float64) error {
+	if phase != MatchPhase {
+		return ErrInvalidRoundPhase
+	}
 	if !canTransition(r.State, phase, RideWonPending) {
 		return ErrInvalidTransition
 	}
 
-	matchOdds := decimal.NewFromFloat(matches[0].Odds.Home)
-
 	r.State = RideWonPending
-	r.Acc = calculateBonus(matchOdds, r.TokensLocked, r.Acc, r.Streak)
+	r.Acc = calculateBonus(decimal.NewFromFloat(odds), r.TokensLocked, r.Acc, r.Streak)
 
 	return nil
 }
 
 // Phase: MatchPhase; Call when: Match lost; Ride transitions to lost
 func (r *Ride) Lost(phase RoundPhase) error {
+	if phase != MatchPhase {
+		return ErrInvalidRoundPhase
+	}
 	if !canTransition(r.State, phase, RideLost) {
 		return ErrInvalidTransition
 	}
@@ -119,16 +179,16 @@ func (r *Ride) Lost(phase RoundPhase) error {
 }
 
 // Phase: DecisionPhase; Call when: Player decides to contiue the ride after the win
-func (r *Ride) Lock(phase RoundPhase) error {
+func (r *Ride) Lock(phase RoundPhase, nextMatchID int) error {
+	if phase != DecisionPhase {
+		return ErrInvalidRoundPhase
+	}
 	if !canTransition(r.State, phase, RideLocked) {
 		return ErrInvalidTransition
 	}
 
-	// match, err := matches.NextMatch(ride.TeamID)
-	nextMatch := matches[0]
-
 	r.State = RideLocked
-	r.MatchID = nextMatch.ID
+	r.MatchID = nextMatchID
 	r.Streak = r.Streak + 1
 
 	return nil
@@ -136,6 +196,9 @@ func (r *Ride) Lock(phase RoundPhase) error {
 
 // Phase: DecisionPhase; Call when: Player decides to burn after the win
 func (r *Ride) Burn(phase RoundPhase) error {
+	if phase != DecisionPhase {
+		return ErrInvalidRoundPhase
+	}
 	if !canTransition(r.State, phase, RideBurned) {
 		return ErrInvalidTransition
 	}
@@ -147,6 +210,9 @@ func (r *Ride) Burn(phase RoundPhase) error {
 
 // Phase: DecisionPhase; Call when: Player decides to Unlock tokens after the win
 func (r *Ride) Unlock(phase RoundPhase) error {
+	if phase != DecisionPhase {
+		return ErrInvalidRoundPhase
+	}
 	if !canTransition(r.State, phase, RideUnlocked) {
 		return ErrInvalidTransition
 	}

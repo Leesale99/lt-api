@@ -19,16 +19,24 @@ import (
 // of 10 matches each.
 const roundsPerSeason = 38
 
+type RoundStatus string
+
+var (
+	RoundCreated RoundStatus = "created"
+	RoundOpen    RoundStatus = "open"
+	RoundClosed  RoundStatus = "closed"
+)
+
 type Round struct {
-	ID        int       `json:"id"`
-	CreatedAt time.Time `json:"-"`
-	SeasonID  int       `json:"season_id"`
-	Number    int       `json:"number"`
-	Status    string    `json:"status"`
-	Version   int       `json:"version"`
+	ID        int         `json:"id"`
+	CreatedAt time.Time   `json:"-"`
+	SeasonID  int         `json:"season_id"`
+	Number    int         `json:"number"`
+	Status    RoundStatus `json:"status"`
+	Version   int         `json:"version"`
 }
 
-var roundsStatuses = []string{"created", "open", "closed"}
+var roundsStatuses = []RoundStatus{RoundCreated, RoundOpen, RoundClosed}
 
 func ValidateRound(v *validator.Validator, round Round) {
 	v.Check(round.SeasonID > 0, "season_id", "must be provided")
@@ -37,15 +45,15 @@ func ValidateRound(v *validator.Validator, round Round) {
 	ValidateRoundStatus(v, round.Status)
 }
 
-func ValidateRoundStatus(v *validator.Validator, status string) {
+func ValidateRoundStatus(v *validator.Validator, status RoundStatus) {
 	v.Check(validator.PermittedValue(status, roundsStatuses...), "status", "must be one of: created, open, closed")
 }
 
 // roundStatusRank orders the round lifecycle for transition checks.
-var roundStatusRank = map[string]int{
-	"created": 0,
-	"open":    1,
-	"closed":  2,
+var roundStatusRank = map[RoundStatus]int{
+	RoundCreated: 0,
+	RoundOpen:    1,
+	RoundClosed:  2,
 }
 
 // ValidateRoundUpdate validates a round update (new) against the stored

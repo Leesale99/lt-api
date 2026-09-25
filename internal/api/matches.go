@@ -20,7 +20,6 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		RoundID    int        `json:"round_id"`
 		HomeTeamID int        `json:"home_team_id"`
 		AwayTeamID int        `json:"away_team_id"`
-		Status     string     `json:"status"`
 		StartsAt   time.Time  `json:"starts_at"`
 		Odds       game.Odds  `json:"odds"`
 		Score      game.Score `json:"score"`
@@ -58,7 +57,6 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		RoundID:    input.RoundID,
 		HomeTeamID: input.HomeTeamID,
 		AwayTeamID: input.AwayTeamID,
-		Status:     strings.ToLower(input.Status),
 		StartsAt:   input.StartsAt,
 		Odds:       input.Odds,
 		Score:      input.Score,

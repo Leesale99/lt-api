@@ -27,8 +27,6 @@ func lockedRide() *Ride {
 		PlayerID:     10,
 		TeamID:       20,
 		MatchID:      1, // arbitrary: odds come from the matches stub, not this ID
-		RoundID:      1,
-		SeasonID:     1,
 		State:        RideLocked,
 		TokensLocked: decimal.NewFromInt(100),
 		Acc:          decimal.Zero,
@@ -124,9 +122,9 @@ func TestRide_Lock(t *testing.T) {
 		if r.State != RideLocked {
 			t.Fatalf("state = %q, want %q", r.State, RideLocked)
 		}
-		// Stub next match: ID 1, round 1.
-		if r.MatchID != 1 || r.RoundID != 1 {
-			t.Fatalf("match/round = %d/%d, want 1/1", r.MatchID, r.RoundID)
+		// Stub next match: ID 1.
+		if r.MatchID != 1 {
+			t.Fatalf("match = %d, want 1", r.MatchID)
 		}
 		if r.Streak != before+1 {
 			t.Fatalf("streak = %d, want %d", r.Streak, before+1)
@@ -310,7 +308,13 @@ func TestRide_InvalidTransitions(t *testing.T) {
 // switch to the store cannot silently change the initial state contract:
 // a fresh ride is locked, with zero acc and streak.
 func TestRide_Insert(t *testing.T) {
-	ride, err := new(Ride).Insert(1, 2, 3, 4, 5, decimal.NewFromInt(100), decimal.NewFromInt(90))
+	ride, err := (&RideStore{}).Insert(Ride{
+		PlayerID:     1,
+		TeamID:       2,
+		MatchID:      3,
+		TokensLocked: decimal.NewFromInt(100),
+		BaseAtLock:   decimal.NewFromInt(90),
+	})
 
 	if err != nil {
 		t.Fatalf("Insert() = %v, want nil", err)
