@@ -13,6 +13,28 @@ import (
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
+// gameErrorResponse maps domain errors from the game service to HTTP
+// responses. It returns true if it wrote a response.
+func (app *Application) gameErrorResponse(w http.ResponseWriter, r *http.Request, err error) bool {
+	switch {
+	case errors.Is(err, context.Canceled):
+		// Client gone; response would be discarded anyway.
+	case errors.Is(err, store.ErrRecordNotFound):
+		app.notFoundResponse(w, r)
+	case errors.Is(err, game.ErrRoundNotOpen):
+		app.roundNotOpenResponse(w, r)
+	case errors.Is(err, game.ErrNoNextMatch):
+		app.noNextMatchResponse(w, r)
+	case errors.Is(err, game.ErrInvalidRoundPhase):
+		app.invalidPhaseResponse(w, r)
+	case errors.Is(err, game.ErrInvalidTransition):
+		app.invalidStateTransitionResponse(w, r)
+	default:
+		app.serverErrorResponse(w, r, err)
+	}
+	return true
+}
+
 func (app *Application) createRideHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		PlayerID     int     `json:"player_id"`
@@ -54,9 +76,12 @@ func (app *Application) createRideHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	ride, err = app.Game.Store.Rides.Insert(ride)
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	ride, err = app.Game.RideCreate(ctx, ride)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		app.gameErrorResponse(w, r, err)
 		return
 	}
 
@@ -67,28 +92,6 @@ func (app *Application) createRideHandler(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}
-}
-
-// gameErrorResponse maps domain errors from the game service to HTTP
-// responses. It returns true if it wrote a response.
-func (app *Application) gameErrorResponse(w http.ResponseWriter, r *http.Request, err error) bool {
-	switch {
-	case errors.Is(err, context.Canceled):
-		// Client gone; response would be discarded anyway.
-	case errors.Is(err, store.ErrRecordNotFound):
-		app.notFoundResponse(w, r)
-	case errors.Is(err, game.ErrRoundNotOpen):
-		app.roundNotOpenResponse(w, r)
-	case errors.Is(err, game.ErrNoNextMatch):
-		app.noNextMatchResponse(w, r)
-	case errors.Is(err, game.ErrInvalidRoundPhase):
-		app.invalidPhaseResponse(w, r)
-	case errors.Is(err, game.ErrInvalidTransition):
-		app.invalidStateTransitionResponse(w, r)
-	default:
-		app.serverErrorResponse(w, r, err)
-	}
-	return true
 }
 
 func (app *Application) showRideHandler(w http.ResponseWriter, r *http.Request) {

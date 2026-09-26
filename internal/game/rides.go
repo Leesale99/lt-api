@@ -46,6 +46,7 @@ func ValidateRide(v *validator.Validator, ride Ride) {
 	v.Check(ride.TeamID > 0, "team_id", "must be provided")
 	v.Check(ride.MatchID > 0, "match_id", "must be provided")
 	v.Check(ride.TokensLocked.GreaterThan(decimal.Zero), "token_locked", "must be greater then zero")
+	v.Check(ride.State == RideLocked, "state", "ride must be created in locked state")
 }
 
 var rideStates = []RideState{RideLocked, RideWonPending, RideBurned, RideUnlocked, RideLost}
@@ -87,7 +88,7 @@ var rides = []Ride{
 	},
 }
 
-func (s *RideStore) Insert(ride Ride) (Ride, error) {
+func (s *RideStore) Insert(ctx context.Context, ride Ride) (Ride, error) {
 	// Initial-state contract (pinned by TestRide_Insert): a fresh ride is
 	// locked with zero acc and streak, regardless of what the caller passed.
 	ride.State = RideLocked
@@ -122,10 +123,10 @@ func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID in
 }
 
 func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
-	for _, r := range rides {
+	for i, r := range rides {
 		if r.ID == ride.ID {
-			r = ride
-			return r, nil
+			rides[i] = ride
+			return rides[i], nil
 		}
 	}
 
@@ -169,8 +170,19 @@ var matches = []Match{
 //	phase := Phase(time.Now(), firstMatchAt, lastMatchAt)
 //	ride.Burn(phase)
 
+// Phase ActionPhase; Call when: Player locks his tokens on a chosen match
+func (r *Ride) Create(phase RoundPhase, ride Ride) error {
+	if phase != ActionPhase {
+		return ErrInvalidRoundPhase
+	}
+
+	rides = append(rides, ride)
+
+	return nil
+}
+
 // Phase: MatchPhase; Call when: Match won; Ride transitions to won_pending
-func (r *Ride) WonPending(phase RoundPhase, odds float64) error {
+func (r *Ride) WonPending(phase RoundPhase, odds decimal.Decimal) error {
 	if phase != MatchPhase {
 		return ErrInvalidRoundPhase
 	}
@@ -179,7 +191,7 @@ func (r *Ride) WonPending(phase RoundPhase, odds float64) error {
 	}
 
 	r.State = RideWonPending
-	r.Acc = calculateBonus(decimal.NewFromFloat(odds), r.TokensLocked, r.Acc, r.Streak)
+	r.Acc = calculateBonus(odds, r.TokensLocked, r.Acc, r.Streak)
 
 	return nil
 }

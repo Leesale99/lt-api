@@ -23,38 +23,52 @@ func NewService(store *Store) *Service {
 	}
 }
 
-func (s *Service) RidePhase(ctx context.Context, rideID int) (Ride, RoundPhase, error) {
-	ride, err := s.Store.Rides.Get(ctx, rideID)
-	if err != nil {
-		return Ride{}, "", err
-	}
-
+func (s *Service) RidePhase(ctx context.Context, ride Ride) (RoundPhase, error) {
 	match, err := s.Store.Matches.Get(ctx, ride.MatchID)
 	if err != nil {
-		return ride, "", err
+		return "", err
 	}
 
 	round, err := s.Store.Rounds.Get(ctx, match.RoundID)
 	if err != nil {
-		return ride, "", err
+		return "", err
 	}
 
 	if round.Status != RoundOpen {
-		return ride, "", ErrRoundNotOpen
+		return "", ErrRoundNotOpen
 	}
 
 	firstStartsAt, lastEndedAt, err := s.Store.Matches.PhaseWindow(ctx, round.ID)
 	if err != nil {
-		return ride, "", err
+		return "", err
 	}
 
 	phase := Phase(time.Now(), firstStartsAt, lastEndedAt)
 
-	return ride, phase, nil
+	return phase, nil
+}
+
+func (s *Service) RideCreate(ctx context.Context, ride Ride) (Ride, error) {
+	phase, err := s.RidePhase(ctx, ride)
+	if err != nil {
+		return Ride{}, err
+	}
+
+	err = ride.Create(phase, ride)
+	if err != nil {
+		return Ride{}, err
+	}
+
+	return s.Store.Rides.Insert(ctx, ride)
 }
 
 func (s *Service) RideLock(ctx context.Context, rideID int) (Ride, error) {
-	ride, phase, err := s.RidePhase(ctx, rideID)
+	ride, err := s.Store.Rides.Get(ctx, rideID)
+	if err != nil {
+		return Ride{}, err
+	}
+
+	phase, err := s.RidePhase(ctx, ride)
 	if err != nil {
 		return Ride{}, err
 	}
@@ -78,7 +92,12 @@ func (s *Service) RideLock(ctx context.Context, rideID int) (Ride, error) {
 }
 
 func (s *Service) RideBurn(ctx context.Context, rideID int) (Ride, error) {
-	ride, phase, err := s.RidePhase(ctx, rideID)
+	ride, err := s.Store.Rides.Get(ctx, rideID)
+	if err != nil {
+		return Ride{}, err
+	}
+
+	phase, err := s.RidePhase(ctx, ride)
 	if err != nil {
 		return Ride{}, err
 	}
@@ -88,11 +107,16 @@ func (s *Service) RideBurn(ctx context.Context, rideID int) (Ride, error) {
 		return Ride{}, err
 	}
 
-	return ride, nil
+	return s.Store.Rides.Update(ctx, ride)
 }
 
 func (s *Service) RideUnlock(ctx context.Context, rideID int) (Ride, error) {
-	ride, phase, err := s.RidePhase(ctx, rideID)
+	ride, err := s.Store.Rides.Get(ctx, rideID)
+	if err != nil {
+		return Ride{}, err
+	}
+
+	phase, err := s.RidePhase(ctx, ride)
 	if err != nil {
 		return Ride{}, err
 	}
@@ -102,5 +126,5 @@ func (s *Service) RideUnlock(ctx context.Context, rideID int) (Ride, error) {
 		return Ride{}, err
 	}
 
-	return ride, nil
+	return s.Store.Rides.Update(ctx, ride)
 }
