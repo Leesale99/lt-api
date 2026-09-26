@@ -33,6 +33,8 @@ description: Write mechanics and rules routing for the lt-api Obsidian knowledge
 - Mechanical updates need no approval: task checkboxes, the `Now` section of `Home.md`, `Lessons/_Index.md` lines, phase `Knowledge` sections.
 - Keep the `Now` section of `Home.md` current at session end or task transition — the next session's briefing is that section and nothing more.
 
+(observed 2026-09-23, once) `write file=` reported `Updated:` yet the note kept its previous content — two consecutive full-file writes onto the same note (`Lessons/_Index.md`, `Home.md`) lost their new/edited lines with no error and no visible truncation. Full-file `write` is NOT a reliable fallback; the reliable path for edits is short surgical `search query=... replace=...` calls with long unique content anchors, each reporting `1 file(s)`, followed by a re-read to confirm. `create` worked fine the same session.
+
 (observed 2026-09-22, cause undetermined) a `write path="...md" content=...` (long filename with an em-dash, ~2KB content) reported `Successfully wrote` but the file did not exist afterwards — `files` listed nothing new and a subsequent read said "not found". Retrying the identical content with a shorter filename succeeded. After any vault write, verify existence via `files` AND read the content back — a success report does not prove the write landed.
 
 ## A message to future agents
