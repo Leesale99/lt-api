@@ -1,6 +1,7 @@
 package game
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"time"
@@ -47,6 +48,12 @@ func ValidateRide(v *validator.Validator, ride Ride) {
 	v.Check(ride.TokensLocked.GreaterThan(decimal.Zero), "token_locked", "must be greater then zero")
 }
 
+var rideStates = []RideState{RideLocked, RideWonPending, RideBurned, RideUnlocked, RideLost}
+
+func ValidateRideState(v *validator.Validator, state RideState) {
+	v.Check(validator.PermittedValue(state, rideStates...), "state", "must be one of: locked, won_pending, burned, unlocked, lost")
+}
+
 type RideStore struct {
 	pool *pgxpool.Pool
 }
@@ -91,7 +98,7 @@ func (s *RideStore) Insert(ride Ride) (Ride, error) {
 	return ride, nil
 }
 
-func (s *RideStore) Get(id int) (Ride, error) {
+func (s *RideStore) Get(ctx context.Context, id int) (Ride, error) {
 	for _, ride := range rides {
 		if ride.ID == id {
 			return ride, nil
@@ -101,11 +108,24 @@ func (s *RideStore) Get(id int) (Ride, error) {
 	return Ride{}, store.ErrRecordNotFound
 }
 
-func (s *RideStore) Update(update Ride) (Ride, error) {
+func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID int, state RideState, filters store.Filters) ([]Ride, store.Metadata, error) {
+	filteredRides := []Ride{}
 	for _, ride := range rides {
-		if ride.ID == update.ID {
-			ride = update
-			return ride, nil
+		if ride.ID == id || ride.PlayerID == playerID || ride.TeamID == teamID || ride.MatchID == matchID || ride.State == state {
+			filteredRides = append(filteredRides, ride)
+		}
+	}
+
+	metadata := store.CalculateMetadata(len(filteredRides), filters.Page, filters.PageSize)
+
+	return filteredRides, metadata, nil
+}
+
+func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
+	for _, r := range rides {
+		if r.ID == ride.ID {
+			r = ride
+			return r, nil
 		}
 	}
 

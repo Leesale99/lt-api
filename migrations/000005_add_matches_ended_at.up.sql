@@ -1,5 +1,8 @@
-ALTER TABLE matches ADD COLUMN ended_at timestamp(0) with time zone NULL
-  CONSTRAINT matches_ended_at_check CHECK (
+ALTER TABLE matches ADD COLUMN ended_at timestamp(0) with time zone NULL;
+
+UPDATE matches set ended_at = starts_at + interval '2 hours' WHERE status = 'closed';
+
+ALTER TABLE matches ADD CONSTRAINT matches_ended_at_check CHECK (
     (status = 'closed') = (ended_at IS NOT NULL)
     AND (ended_at IS NULL OR ended_at > starts_at)
   );

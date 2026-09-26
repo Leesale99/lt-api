@@ -3,8 +3,6 @@ package api
 import (
 	"fmt"
 	"net/http"
-
-	game "lt-api.aleksrdvn.com/internal/game"
 )
 
 func (app *Application) logError(r *http.Request, err error) {
@@ -137,7 +135,7 @@ func (app *Application) invalidPhaseResponse(w http.ResponseWriter, r *http.Requ
 	app.writeError(w, r, http.StatusConflict, message)
 }
 
-func (app *Application) invalidStateTransitionResponse(w http.ResponseWriter, r *http.Request, state game.RideState) {
-	message := fmt.Sprintf("this action is not allowed for a ride in the %s state", state)
+func (app *Application) invalidStateTransitionResponse(w http.ResponseWriter, r *http.Request) {
+	message := fmt.Sprintf("this action is not allowed for a ride in current state")
 	app.writeError(w, r, http.StatusConflict, message)
 }

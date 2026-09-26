@@ -24,7 +24,7 @@ func NewService(store *Store) *Service {
 }
 
 func (s *Service) RidePhase(ctx context.Context, rideID int) (Ride, RoundPhase, error) {
-	ride, err := s.Store.Rides.Get(rideID)
+	ride, err := s.Store.Rides.Get(ctx, rideID)
 	if err != nil {
 		return Ride{}, "", err
 	}
@@ -74,5 +74,33 @@ func (s *Service) RideLock(ctx context.Context, rideID int) (Ride, error) {
 		return Ride{}, err
 	}
 
-	return s.Store.Rides.Update(ride)
+	return s.Store.Rides.Update(ctx, ride)
+}
+
+func (s *Service) RideBurn(ctx context.Context, rideID int) (Ride, error) {
+	ride, phase, err := s.RidePhase(ctx, rideID)
+	if err != nil {
+		return Ride{}, err
+	}
+
+	err = ride.Burn(phase)
+	if err != nil {
+		return Ride{}, err
+	}
+
+	return ride, nil
+}
+
+func (s *Service) RideUnlock(ctx context.Context, rideID int) (Ride, error) {
+	ride, phase, err := s.RidePhase(ctx, rideID)
+	if err != nil {
+		return Ride{}, err
+	}
+
+	err = ride.Unlock(phase)
+	if err != nil {
+		return Ride{}, err
+	}
+
+	return ride, nil
 }
