@@ -63,10 +63,7 @@ func (app *Application) createRideHandler(w http.ResponseWriter, r *http.Request
 		TeamID:       input.TeamID,
 		MatchID:      input.MatchID,
 		TokensLocked: decimal.NewFromFloat(input.TokensLocked),
-		State:        game.RideLocked,
 		BaseAtLock:   token.Base,
-		Acc:          decimal.Zero,
-		Streak:       0,
 	}
 
 	v := validator.New()

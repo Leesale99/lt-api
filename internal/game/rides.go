@@ -38,15 +38,14 @@ type Ride struct {
 	BaseAtLock   decimal.Decimal `json:"base_at_lock"`
 	Acc          decimal.Decimal `json:"-"`
 	Streak       int             `json:"-"`
-	Version      int             `json:"Version"`
+	Version      int             `json:"version"`
 }
 
 func ValidateRide(v *validator.Validator, ride Ride) {
 	v.Check(ride.PlayerID > 0, "player_id", "must be provided")
 	v.Check(ride.TeamID > 0, "team_id", "must be provided")
 	v.Check(ride.MatchID > 0, "match_id", "must be provided")
-	v.Check(ride.TokensLocked.GreaterThan(decimal.Zero), "token_locked", "must be greater then zero")
-	v.Check(ride.State == RideLocked, "state", "ride must be created in locked state")
+	v.Check(ride.TokensLocked.GreaterThan(decimal.Zero), "token_locked", "must be greater than zero")
 }
 
 var rideStates = []RideState{RideLocked, RideWonPending, RideBurned, RideUnlocked, RideLost}
@@ -89,9 +88,10 @@ var rides = []Ride{
 }
 
 func (s *RideStore) Insert(ctx context.Context, ride Ride) (Ride, error) {
-	// Initial-state contract (pinned by TestRide_Insert): a fresh ride is
-	// locked with zero acc and streak, regardless of what the caller passed.
-	ride.State = RideLocked
+	// Persistence facts only: the domain Create command owns the ADR-019
+	// initial-state contract, so Insert stamps server-side values (ID,
+	// created_at) and stores the ride exactly as the domain produced it.
+	ride.ID = len(rides) + 1
 	ride.CreatedAt = time.Now()
 
 	rides = append(rides, ride)
@@ -110,11 +110,25 @@ func (s *RideStore) Get(ctx context.Context, id int) (Ride, error) {
 }
 
 func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID int, state RideState, filters store.Filters) ([]Ride, store.Metadata, error) {
+	// Zero-valued filters are ignored; provided filters are ANDed.
 	filteredRides := []Ride{}
 	for _, ride := range rides {
-		if ride.ID == id || ride.PlayerID == playerID || ride.TeamID == teamID || ride.MatchID == matchID || ride.State == state {
-			filteredRides = append(filteredRides, ride)
+		if id != 0 && ride.ID != id {
+			continue
 		}
+		if playerID != 0 && ride.PlayerID != playerID {
+			continue
+		}
+		if teamID != 0 && ride.TeamID != teamID {
+			continue
+		}
+		if matchID != 0 && ride.MatchID != matchID {
+			continue
+		}
+		if state != "" && ride.State != state {
+			continue
+		}
+		filteredRides = append(filteredRides, ride)
 	}
 
 	metadata := store.CalculateMetadata(len(filteredRides), filters.Page, filters.PageSize)
@@ -148,35 +162,26 @@ func canTransition(state RideState, phase RoundPhase, next RideState) bool {
 	return slices.Contains(allowedStates, next)
 }
 
-// TODO:  matches, err := matches.GetAll(ride.RoundID)
-var matches = []Match{
-	{
-		ID:       1,
-		StartsAt: time.Now().Add(24 * time.Hour),
-		RoundID:  1,
-		Odds:     Odds{Home: 1.75, Away: 2.50},
-	},
-	{
-		ID:       2,
-		StartsAt: time.Now().Add(72 * time.Hour),
-		RoundID:  2,
-		Odds:     Odds{Home: 1.75, Away: 2.50},
-	},
-}
-
 // The service layer owns the clock: it fetches the round's first match
 // start time and last match end time, and passes the derived phase into each command, e.g.
 //
 //	phase := Phase(time.Now(), firstMatchAt, lastMatchAt)
 //	ride.Burn(phase)
 
-// Phase ActionPhase; Call when: Player locks his tokens on a chosen match
-func (r *Ride) Create(phase RoundPhase, ride Ride) error {
+// Phase: ActionPhase; Call when: Player locks tokens on a chosen match.
+// The creation command is the single enforcement point for the ADR-019
+// initial-state contract: it overwrites state, acc and streak, so an
+// invalid initial state cannot be produced through normal domain
+// operations — whatever the caller supplied is discarded. Persistence is
+// the store's job.
+func (r *Ride) Create(phase RoundPhase) error {
 	if phase != ActionPhase {
 		return ErrInvalidRoundPhase
 	}
 
-	rides = append(rides, ride)
+	r.State = RideLocked
+	r.Acc = decimal.Zero
+	r.Streak = 0
 
 	return nil
 }
@@ -211,7 +216,7 @@ func (r *Ride) Lost(phase RoundPhase) error {
 	return nil
 }
 
-// Phase: DecisionPhase; Call when: Player decides to contiue the ride after the win
+// Phase: DecisionPhase; Call when: Player decides to continue the ride after the win
 func (r *Ride) Lock(phase RoundPhase, nextMatchID int) error {
 	if phase != DecisionPhase {
 		return ErrInvalidRoundPhase

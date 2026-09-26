@@ -8,12 +8,12 @@ package game
 //
 // The tests build Ride values as literals — Insert is a persistence stub
 // and mutating the package-level rides slice from tests would couple tests
-// to each other. WonPending and Lock read the package-level matches stub
-// until service extraction, so the happy-path cases pin the stub values
-// they depend on (all stub Home odds are 1.75; next match is ID 1,
-// round 1).
+// to each other. Command inputs (odds, next-match ID) come from the stores
+// today; the tests pass the values they were written against
+// (odds 1.75, next match ID 1) as literals.
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -21,12 +21,16 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// stubOdds is the odds the happy-path assertions were computed against
+// (stub 1.75): delta = tokens * (odds - 1) * (1 + 0.20 * streak).
+var stubOdds = decimal.NewFromFloat(1.75)
+
 func lockedRide() *Ride {
 	return &Ride{
 		ID:           1,
 		PlayerID:     10,
 		TeamID:       20,
-		MatchID:      1, // arbitrary: odds come from the matches stub, not this ID
+		MatchID:      1, // arbitrary: odds are passed literally, not looked up
 		State:        RideLocked,
 		TokensLocked: decimal.NewFromInt(100),
 		Acc:          decimal.Zero,
@@ -47,7 +51,7 @@ func TestRide_WonPending(t *testing.T) {
 	t.Run("from locked during match phase wins and credits acc", func(t *testing.T) {
 		r := lockedRide()
 
-		err := r.WonPending(MatchPhase, 1.75)
+		err := r.WonPending(MatchPhase, stubOdds)
 
 		if err != nil {
 			t.Fatalf("WonPending() = %v, want nil", err)
@@ -55,7 +59,7 @@ func TestRide_WonPending(t *testing.T) {
 		if r.State != RideWonPending {
 			t.Fatalf("state = %q, want %q", r.State, RideWonPending)
 		}
-		// Stub odds 1.75, tokens 100, streak 0: delta = 100 * 0.75 * 1 = 75.
+		// Odds 1.75, tokens 100, streak 0: delta = 100 * 0.75 * 1 = 75.
 		if !r.Acc.Equal(decimal.NewFromInt(75)) {
 			t.Fatalf("acc = %s, want 75", r.Acc)
 		}
@@ -65,7 +69,7 @@ func TestRide_WonPending(t *testing.T) {
 		for _, phase := range []RoundPhase{ActionPhase, DecisionPhase} {
 			r := lockedRide()
 
-			err := r.WonPending(phase, 1.75)
+			err := r.WonPending(phase, stubOdds)
 
 			if !errors.Is(err, ErrInvalidRoundPhase) {
 				t.Fatalf("WonPending(%q) = %v, want ErrInvalidRoundPhase", phase, err)
@@ -212,10 +216,10 @@ func TestRide_Unlock(t *testing.T) {
 }
 
 // TestRide_TerminalStates pins the machine's exit guarantee: once a ride
-// reaches burned, unlocked or lost, no command may move it again. The
-// transition-table check fires before the phase check, so the phase
-// argument is irrelevant here — passing the "correct" phase per command
-// proves the table alone rejects terminal states.
+// reaches burned, unlocked or lost, no command may move it again. Each
+// command checks phase before the transition table, so each case passes
+// the "correct" phase per command to prove the table alone rejects
+// terminal states.
 func TestRide_TerminalStates(t *testing.T) {
 	terminal := []RideState{RideBurned, RideUnlocked, RideLost}
 
@@ -226,7 +230,7 @@ func TestRide_TerminalStates(t *testing.T) {
 	}
 
 	commands := []command{
-		{"won_pending", MatchPhase, func(r *Ride) error { return r.WonPending(MatchPhase, 1.75) }},
+		{"won_pending", MatchPhase, func(r *Ride) error { return r.WonPending(MatchPhase, stubOdds) }},
 		{"lost", MatchPhase, func(r *Ride) error { return r.Lost(MatchPhase) }},
 		{"lock", DecisionPhase, func(r *Ride) error { return r.Lock(DecisionPhase, 1) }},
 		{"burn", DecisionPhase, func(r *Ride) error { return r.Burn(DecisionPhase) }},
@@ -264,7 +268,7 @@ func TestRide_InvalidTransitions(t *testing.T) {
 		{
 			name: "won_pending cannot become won_pending",
 			ride: wonPendingRide(),
-			call: func(r *Ride) error { return r.WonPending(MatchPhase, 1.75) },
+			call: func(r *Ride) error { return r.WonPending(MatchPhase, stubOdds) },
 		},
 		{
 			name: "won_pending cannot become lost",
@@ -304,11 +308,66 @@ func TestRide_InvalidTransitions(t *testing.T) {
 	}
 }
 
-// TestRide_Insert documents the persistence stub's current behavior so the
-// switch to the store cannot silently change the initial state contract:
-// a fresh ride is locked, with zero acc and streak.
+// TestRide_Create pins the creation command: the ADR-019 initial-state
+// contract (locked, zero acc and streak) is enforced by the domain, not by
+// the request or the store — caller-supplied values for domain-owned
+// fields are overwritten, so an invalid initial state cannot be produced
+// through normal domain operations.
+func TestRide_Create(t *testing.T) {
+	t.Run("during action phase confirms the initial-state contract", func(t *testing.T) {
+		r := Ride{
+			PlayerID:     10,
+			TeamID:       20,
+			MatchID:      1,
+			TokensLocked: decimal.NewFromInt(100),
+			BaseAtLock:   decimal.NewFromInt(95),
+			// Caller-supplied domain-owned values must be discarded.
+			State:  RideWonPending,
+			Acc:    decimal.NewFromInt(5),
+			Streak: 7,
+		}
+
+		err := r.Create(ActionPhase)
+
+		if err != nil {
+			t.Fatalf("Create() = %v, want nil", err)
+		}
+		if r.State != RideLocked {
+			t.Fatalf("state = %q, want %q", r.State, RideLocked)
+		}
+		if !r.Acc.IsZero() {
+			t.Fatalf("acc = %s, want 0", r.Acc)
+		}
+		if r.Streak != 0 {
+			t.Fatalf("streak = %d, want 0", r.Streak)
+		}
+		// Inputs the caller owns are preserved.
+		if r.TokensLocked.IsZero() || r.BaseAtLock.IsZero() {
+			t.Fatal("caller-supplied tokens/base were lost")
+		}
+	})
+
+	t.Run("outside action phase is rejected and changes nothing", func(t *testing.T) {
+		for _, phase := range []RoundPhase{MatchPhase, DecisionPhase} {
+			r := Ride{State: RideLocked, Acc: decimal.NewFromInt(5), Streak: 7}
+
+			err := r.Create(phase)
+
+			if !errors.Is(err, ErrInvalidRoundPhase) {
+				t.Fatalf("Create(%q) = %v, want ErrInvalidRoundPhase", phase, err)
+			}
+			if r.State != RideLocked {
+				t.Fatalf("state = %q, want unchanged %q", r.State, RideLocked)
+			}
+		}
+	})
+}
+
+// TestRide_Insert documents the persistence stub's behavior: Insert stamps
+// server-side facts (id, created_at) and stores the ride exactly as the
+// domain produced it — no rules live here.
 func TestRide_Insert(t *testing.T) {
-	ride, err := (&RideStore{}).Insert(Ride{
+	ride, err := (&RideStore{}).Insert(context.Background(), Ride{
 		PlayerID:     1,
 		TeamID:       2,
 		MatchID:      3,
@@ -319,16 +378,13 @@ func TestRide_Insert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Insert() = %v, want nil", err)
 	}
-	if ride.State != RideLocked {
-		t.Fatalf("state = %q, want %q", ride.State, RideLocked)
-	}
-	if !ride.Acc.IsZero() {
-		t.Fatalf("acc = %s, want 0", ride.Acc)
-	}
-	if ride.Streak != 0 {
-		t.Fatalf("streak = %d, want 0", ride.Streak)
+	if ride.ID == 0 {
+		t.Fatal("id = 0, want assigned")
 	}
 	if ride.CreatedAt.After(time.Now()) {
 		t.Fatalf("created_at %v is in the future", ride.CreatedAt)
+	}
+	if ride.PlayerID != 1 || ride.TeamID != 2 || ride.MatchID != 3 {
+		t.Fatal("caller-supplied fields were modified by the store")
 	}
 }

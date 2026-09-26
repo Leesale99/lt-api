@@ -54,7 +54,7 @@ func (s *Service) RideCreate(ctx context.Context, ride Ride) (Ride, error) {
 		return Ride{}, err
 	}
 
-	err = ride.Create(phase, ride)
+	err = ride.Create(phase)
 	if err != nil {
 		return Ride{}, err
 	}
