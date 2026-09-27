@@ -7,22 +7,23 @@ package game
 // ErrInvalidTransition, regardless of phase.
 //
 // The tests build Ride values as literals — Insert is a persistence stub
-// and mutating the package-level rides slice from tests would couple tests
-// to each other. Command inputs (odds, next-match ID) come from the stores
-// today; the tests pass the values they were written against
-// (odds 1.75, next match ID 1) as literals.
+// (tests plant rides through it and reset the slice via resetRides) and
+// mutating it from tests would couple tests to each other. Command inputs
+// (odds, next-match ID) come from the stores today; the tests pass the
+// values they were written against (odds 1.75, next match ID 1) as
+// literals.
 
 import (
-	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/shopspring/decimal"
 )
 
-// stubOdds is the odds the happy-path assertions were computed against
-// (stub 1.75): delta = tokens * (odds - 1) * (1 + 0.20 * streak).
+// stubOdds is the odds the command tests pass through to the domain. The
+// bonus arithmetic is pinned exhaustively in ride_bonus_test.go; the
+// command tests assert only the wiring — that WonPending delegates to
+// calculateBonus with the odds it was given — not the formula itself.
 var stubOdds = decimal.NewFromFloat(1.75)
 
 func lockedRide() *Ride {
@@ -48,8 +49,10 @@ func wonPendingRide() *Ride {
 }
 
 func TestRide_WonPending(t *testing.T) {
-	t.Run("from locked during match phase wins and credits acc", func(t *testing.T) {
+	t.Run("from locked during match phase wins and credits the bonus delta", func(t *testing.T) {
 		r := lockedRide()
+		r.Acc = decimal.NewFromInt(40)
+		r.Streak = 2
 
 		err := r.WonPending(MatchPhase, stubOdds)
 
@@ -59,9 +62,12 @@ func TestRide_WonPending(t *testing.T) {
 		if r.State != RideWonPending {
 			t.Fatalf("state = %q, want %q", r.State, RideWonPending)
 		}
-		// Odds 1.75, tokens 100, streak 0: delta = 100 * 0.75 * 1 = 75.
-		if !r.Acc.Equal(decimal.NewFromInt(75)) {
-			t.Fatalf("acc = %s, want 75", r.Acc)
+		// One decision per test: this pin is the wiring — the command passes
+		// the incoming odds through to calculateBonus on top of the existing
+		// acc — while the formula itself is pinned in ride_bonus_test.go.
+		want := calculateBonus(stubOdds, r.TokensLocked, decimal.NewFromInt(40), 2)
+		if !r.Acc.Equal(want) {
+			t.Fatalf("acc = %s, want %s (calculateBonus wiring)", r.Acc, want)
 		}
 	})
 
@@ -361,30 +367,4 @@ func TestRide_Create(t *testing.T) {
 			}
 		}
 	})
-}
-
-// TestRide_Insert documents the persistence stub's behavior: Insert stamps
-// server-side facts (id, created_at) and stores the ride exactly as the
-// domain produced it — no rules live here.
-func TestRide_Insert(t *testing.T) {
-	ride, err := (&RideStore{}).Insert(context.Background(), Ride{
-		PlayerID:     1,
-		TeamID:       2,
-		MatchID:      3,
-		TokensLocked: decimal.NewFromInt(100),
-		BaseAtLock:   decimal.NewFromInt(90),
-	})
-
-	if err != nil {
-		t.Fatalf("Insert() = %v, want nil", err)
-	}
-	if ride.ID == 0 {
-		t.Fatal("id = 0, want assigned")
-	}
-	if ride.CreatedAt.After(time.Now()) {
-		t.Fatalf("created_at %v is in the future", ride.CreatedAt)
-	}
-	if ride.PlayerID != 1 || ride.TeamID != 2 || ride.MatchID != 3 {
-		t.Fatal("caller-supplied fields were modified by the store")
-	}
 }

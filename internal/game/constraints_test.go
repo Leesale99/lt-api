@@ -23,7 +23,13 @@ import (
 	"lt-api.aleksrdvn.com/internal/testdb"
 )
 
-const migFile = "../../migrations/000001_create_initial_game_models.up.sql"
+// migFile lists all migrations the game schema needs: 000001 creates the
+// base hierarchy, 000005 adds matches.ended_at — phase derivation reads it
+// via MatchStore.PhaseWindow, so every ride service call depends on it.
+var migFiles = []string{
+	"../../migrations/000001_create_initial_game_models.up.sql",
+	"../../migrations/000005_add_matches_ended_at.up.sql",
+}
 
 // PostgreSQL error codes (see pgerrcode; inlined to avoid the extra dependency).
 const (
@@ -53,7 +59,7 @@ func TestMain(m *testing.M) {
 	// Fresh database per run: the migration itself is under test.
 	var teardown func()
 	var err error
-	pool, teardown, err = testdb.Setup(ctx, dsn, "game", migFile)
+	pool, teardown, err = testdb.Setup(ctx, dsn, "game", migFiles...)
 	if err != nil {
 		// DSN set but unusable: fail loudly rather than report a green run
 		// that tested nothing.
@@ -164,8 +170,11 @@ func TestMatchConstraints(t *testing.T) {
 			args:  []any{seasonID, roundID, homeID, awayID, 1.5, 2.5, "created"},
 		},
 		{
+			// Migration 000005: a closed match must carry ended_at (the
+			// matches_ended_at_check invariant). The insert sets it explicitly —
+			// the ended-at trigger only fires on UPDATE, not INSERT.
 			name:  "closed match with score",
-			query: fmt.Sprintf(base, ", home_score, away_score", ", $8, $9"),
+			query: fmt.Sprintf(base, ", home_score, away_score, ended_at", ", $8, $9, now() + interval '31 days'"),
 			args:  []any{seasonID, roundID, homeID, awayID, 1.5, 2.5, "closed", 88, 79},
 		},
 		{
@@ -182,7 +191,7 @@ func TestMatchConstraints(t *testing.T) {
 		},
 		{
 			name:     "negative score rejected",
-			query:    fmt.Sprintf(base, ", home_score, away_score", ", $8, $9"),
+			query:    fmt.Sprintf(base, ", home_score, away_score, ended_at", ", $8, $9, now() + interval '31 days'"),
 			args:     []any{seasonID, roundID, homeID, awayID, 1.5, 2.5, "closed", -1, 0},
 			wantCode: errCheckViolation,
 		},
@@ -251,19 +260,24 @@ func TestStatusVocabularyIsInSync(t *testing.T) {
 	t.Run("matches", func(t *testing.T) {
 		for _, status := range matchStatuses {
 			// in_progress/closed require a score per matches_status_score_check,
-			// so the vocabulary probe must supply one for those statuses.
+			// so the vocabulary probe must supply one for those statuses; closed
+			// also requires ended_at (migration 000005, matches_ended_at_check).
 			scored := status == "in_progress" || status == "closed"
-			query := `
+			query, arg := `
 				INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at, home_score, away_score)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '30 days', $8, $9)`
+				VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '30 days', $8, $9)`, []any{seasonID, roundID, homeID, awayID, 1.5, 2.5, status, nil, nil}
 			var home, away int
-			var homeArg, awayArg any
 			if scored {
 				home, away = 80, 75
-				homeArg, awayArg = &home, &away
+				arg[7], arg[8] = home, away
 			}
-			_, err := pool.Exec(ctx, query,
-				seasonID, roundID, homeID, awayID, 1.5, 2.5, status, homeArg, awayArg)
+			if status == "closed" {
+				// The ended-at trigger fires on UPDATE only; INSERT supplies it.
+				query = `
+					INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at, home_score, away_score, ended_at)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '30 days', $8, $9, now() + interval '31 days')`
+			}
+			_, err := pool.Exec(ctx, query, arg...)
 			// A round hosts one match in this fixture; reuse it — matches has
 			// no per-round uniqueness constraint, so this is fine.
 			if err != nil {

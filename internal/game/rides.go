@@ -58,33 +58,16 @@ type RideStore struct {
 	pool *pgxpool.Pool
 }
 
-var rides = []Ride{
-	{
-		ID:           1,
-		CreatedAt:    time.Now().Add(-72 * time.Hour),
-		PlayerID:     1,
-		TeamID:       1,
-		MatchID:      1,
-		State:        RideLocked,
-		TokensLocked: decimal.NewFromInt(100),
-		BaseAtLock:   decimal.NewFromInt(100),
-		Acc:          decimal.Zero,
-		Streak:       0,
-		Version:      1,
-	},
-	{
-		ID:           2,
-		CreatedAt:    time.Now().Add(-48 * time.Hour),
-		PlayerID:     2,
-		TeamID:       3,
-		MatchID:      2,
-		State:        RideWonPending,
-		TokensLocked: decimal.NewFromInt(50),
-		BaseAtLock:   decimal.NewFromInt(50),
-		Acc:          decimal.NewFromFloat(35.0),
-		Streak:       2,
-		Version:      3,
-	},
+// rides is the in-memory persistence stub — Phase 03 replaces it with the
+// rides table. It starts empty; tests plant rides through Insert and reset
+// it via resetRides (service_test.go), mirroring the DB cleanup().
+var rides []Ride
+
+// resetRides clears the ride stub. Test-only hygiene, mirroring the DB
+// fixture's cleanup(): planted rides and their ever-growing IDs must not
+// leak across subtests.
+func resetRides() {
+	rides = nil
 }
 
 func (s *RideStore) Insert(ctx context.Context, ride Ride) (Ride, error) {
