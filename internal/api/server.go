@@ -126,7 +126,7 @@ func (app *Application) runServer(srv *http.Server, opts RunOptions) error {
 			select {
 			case s := <-secondSignal:
 				app.Logger.Warn("second signal during drain, force-closing", "signal", s.String())
-				srv.Close()
+				_ = srv.Close() // force-close escalation: conns are being dropped regardless
 			case <-drainDone:
 			}
 		}()

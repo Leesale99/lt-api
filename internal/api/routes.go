@@ -1,3 +1,6 @@
+// Package api implements the HTTP surface of the service: route wiring,
+// request parsing and validation helpers, authentication and permission
+// middleware, and the shared JSON envelope writers every handler uses.
 package api
 
 import (

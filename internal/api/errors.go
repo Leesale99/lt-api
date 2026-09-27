@@ -136,6 +136,6 @@ func (app *Application) invalidPhaseResponse(w http.ResponseWriter, r *http.Requ
 }
 
 func (app *Application) invalidStateTransitionResponse(w http.ResponseWriter, r *http.Request) {
-	message := fmt.Sprintf("this action is not allowed for a ride in current state")
+	message := "this action is not allowed for a ride in current state"
 	app.writeError(w, r, http.StatusConflict, message)
 }

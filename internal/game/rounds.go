@@ -190,7 +190,8 @@ func (s *RoundStore) Open(ctx context.Context, round Round) (Round, error) {
 	}
 	// Commit below makes the deferred Rollback a harmless no-op (pgx returns
 	// ErrTxClosed, which we discard).
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // Commit below makes this a
+	// harmless no-op (pgx returns ErrTxClosed, which we discard).
 
 	if _, err := tx.Exec(ctx, seasonOpenToInProgressSQL, round.SeasonID); err != nil {
 		return Round{}, err

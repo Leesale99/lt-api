@@ -1,3 +1,6 @@
+// Package constants holds process-wide tuning values: database timeouts,
+// shutdown grace period, background task budget and rate-limit intervals.
+// Change them here, not at call sites.
 package constants
 
 import "time"

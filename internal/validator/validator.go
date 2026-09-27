@@ -1,3 +1,6 @@
+// Package validator collects field-level validation outcomes so handlers
+// can turn them into one structured 422 response instead of fail-fast
+// errors.
 package validator
 
 import (

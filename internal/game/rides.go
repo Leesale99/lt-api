@@ -151,7 +151,7 @@ func canTransition(state RideState, phase RoundPhase, next RideState) bool {
 //	phase := Phase(time.Now(), firstMatchAt, lastMatchAt)
 //	ride.Burn(phase)
 
-// Phase: ActionPhase; Call when: Player locks tokens on a chosen match.
+// Create locks the ride on a chosen match. Phase: ActionPhase; call when: Player decides to lock tokens on a chosen match.
 // The creation command is the single enforcement point for the ADR-019
 // initial-state contract: it overwrites state, acc and streak, so an
 // invalid initial state cannot be produced through normal domain
@@ -169,7 +169,7 @@ func (r *Ride) Create(phase RoundPhase) error {
 	return nil
 }
 
-// Phase: MatchPhase; Call when: Match won; Ride transitions to won_pending
+// WonPending records a won match. Phase: MatchPhase; call when: Match won; Ride transitions to won_pending
 func (r *Ride) WonPending(phase RoundPhase, odds decimal.Decimal) error {
 	if phase != MatchPhase {
 		return ErrInvalidRoundPhase
@@ -184,7 +184,7 @@ func (r *Ride) WonPending(phase RoundPhase, odds decimal.Decimal) error {
 	return nil
 }
 
-// Phase: MatchPhase; Call when: Match lost; Ride transitions to lost
+// Lost records a lost match. Phase: MatchPhase; call when: Match lost; Ride transitions to lost
 func (r *Ride) Lost(phase RoundPhase) error {
 	if phase != MatchPhase {
 		return ErrInvalidRoundPhase
@@ -199,7 +199,7 @@ func (r *Ride) Lost(phase RoundPhase) error {
 	return nil
 }
 
-// Phase: DecisionPhase; Call when: Player decides to continue the ride after the win
+// Lock continues the ride after the win. Phase: DecisionPhase; call when: Player decides to continue the ride after the win
 func (r *Ride) Lock(phase RoundPhase, nextMatchID int) error {
 	if phase != DecisionPhase {
 		return ErrInvalidRoundPhase
@@ -215,7 +215,8 @@ func (r *Ride) Lock(phase RoundPhase, nextMatchID int) error {
 	return nil
 }
 
-// Phase: DecisionPhase; Call when: Player decides to burn after the win
+// Burn ends a won ride: state becomes RideBurned,
+// tokens and accumulated bonus are fulfiled as TB. Phase: DecisionPhase; call when: Player decides to burn after the win
 func (r *Ride) Burn(phase RoundPhase) error {
 	if phase != DecisionPhase {
 		return ErrInvalidRoundPhase
@@ -229,7 +230,8 @@ func (r *Ride) Burn(phase RoundPhase) error {
 	return nil
 }
 
-// Phase: DecisionPhase; Call when: Player decides to Unlock tokens after the win
+// Unlock ends a won ride: state becomes RideUnlocked and the accumulated
+// bonus is cleared. Phase: DecisionPhase; call when: Player decides to Unlock tokens after the win
 func (r *Ride) Unlock(phase RoundPhase) error {
 	if phase != DecisionPhase {
 		return ErrInvalidRoundPhase

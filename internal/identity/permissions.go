@@ -1,3 +1,5 @@
+// Package identity models authorization: users, roles and permissions,
+// plus the stores that read them for authentication middleware checks.
 package identity
 
 import (

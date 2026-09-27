@@ -1,3 +1,7 @@
+// Package game owns the match/round lifecycle domain: the state machines
+// for matches, rounds and seasons, their persistence, and the schema
+// gates that keep Go-side validation and the SQL CHECK constraints in
+// lockstep.
 package game
 
 import (
