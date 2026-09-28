@@ -58,14 +58,14 @@ func Setup(ctx context.Context, dsn, suite string, migrationFiles ...string) (*p
 	drop := fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", pgx.Identifier{dbName}.Sanitize())
 	create := fmt.Sprintf("CREATE DATABASE %s", pgx.Identifier{dbName}.Sanitize())
 	if _, err := admin.Exec(ctx, drop); err != nil {
-		admin.Close(ctx)
+		_ = admin.Close(ctx)
 		return nil, nil, fmt.Errorf("drop test database %s: %w", dbName, err)
 	}
 	if _, err := admin.Exec(ctx, create); err != nil {
-		admin.Close(ctx)
+		_ = admin.Close(ctx)
 		return nil, nil, fmt.Errorf("create test database %s: %w", dbName, err)
 	}
-	admin.Close(ctx)
+	_ = admin.Close(ctx)
 
 	// Migration files contain multiple statements, which the default
 	// (extended) protocol cannot run in one Exec. Apply them over a dedicated
@@ -80,10 +80,10 @@ func Setup(ctx context.Context, dsn, suite string, migrationFiles ...string) (*p
 			return nil, nil, fmt.Errorf("connect to %s: %w", dbName, err)
 		}
 		if _, err := conn.Exec(ctx, string(sqlBytes)); err != nil {
-			conn.Close(ctx)
+			_ = conn.Close(ctx)
 			return nil, nil, fmt.Errorf("apply migration %s: %w", file, err)
 		}
-		conn.Close(ctx)
+		_ = conn.Close(ctx)
 	}
 
 	pool, err := pgxpool.New(ctx, dsnWithName(dsn, dbName))
@@ -98,7 +98,7 @@ func Setup(ctx context.Context, dsn, suite string, migrationFiles ...string) (*p
 			return // pool already closed; nothing else to clean up
 		}
 		_, _ = admin.Exec(context.Background(), drop)
-		admin.Close(context.Background())
+		_ = admin.Close(context.Background())
 	}
 
 	return pool, teardown, nil

@@ -71,6 +71,9 @@ func main() {
 		cfg.Limiter.Enabled,
 	)
 
+	gameStore := game.NewStore(pool)
+	gameService := game.NewService(gameStore)
+
 	app := &api.Application{
 		Version:        cfg.Version,
 		Env:            cfg.Env,
@@ -79,7 +82,7 @@ func main() {
 		RateLimiter:    rateLimiter,
 		Logger:         logger,
 		RootCtx:        root,
-		Game:           game.NewStore(pool),
+		Game:           gameService,
 		Identity:       identity.NewStore(pool),
 		Mailer:         mailer,
 	}

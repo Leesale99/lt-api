@@ -25,7 +25,7 @@ import (
 func newTestApplication() *Application {
 	return &Application{
 		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
-		Game:     game.NewStore(testPool),
+		Game:     game.NewService(game.NewStore(testPool)),
 		Identity: identity.NewStore(testPool),
 		Mailer:   nopMailer{},
 	}

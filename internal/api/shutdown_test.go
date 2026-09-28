@@ -36,7 +36,7 @@ func freeAddr(t *testing.T) string {
 		t.Fatalf("find free port: %v", err)
 	}
 	addr := ln.Addr().String()
-	ln.Close()
+	_ = ln.Close()
 	return addr
 }
 
@@ -144,7 +144,7 @@ func TestDrainTimeoutForceCloses(t *testing.T) {
 	errc := startServe(app, srv, opts)
 
 	conn := busyConn(t, srv.Addr)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	<-started // guaranteed in-flight: the drain will see a busy connection
 
 	start := time.Now()
@@ -183,7 +183,7 @@ func TestSecondSignalForceClosesDuringDrain(t *testing.T) {
 	errc := startServe(app, srv, opts)
 
 	conn := busyConn(t, srv.Addr)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	<-started // guaranteed in-flight before the first signal arms the tripwire
 
 	sigterm(t)                         // first signal: begins the (stuck) drain
@@ -234,7 +234,7 @@ func TestBackgroundTaskBudgetBoundsWait(t *testing.T) {
 
 	// Wait until listening, then cancel the root the way a signal would.
 	conn := busyConn(t, srv.Addr)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	cancel()
 
 	start := time.Now()

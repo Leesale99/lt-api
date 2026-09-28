@@ -36,6 +36,7 @@ func TestMain(m *testing.M) {
 		"../../migrations/000002_create_users_table.up.sql",
 		"../../migrations/000003_create_user_tokens_table.up.sql",
 		"../../migrations/000004_add_permissions.up.sql",
+		"../../migrations/000005_add_matches_ended_at.up.sql",
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "test database setup: %v\n", err)

@@ -30,6 +30,9 @@ github.com/jackc/puddle/v2/internal/genstack
 # github.com/julienschmidt/httprouter v1.3.0
 ## explicit; go 1.7
 github.com/julienschmidt/httprouter
+# github.com/shopspring/decimal v1.4.0
+## explicit; go 1.10
+github.com/shopspring/decimal
 # github.com/wneessen/go-mail v0.8.1
 ## explicit; go 1.25.0
 github.com/wneessen/go-mail

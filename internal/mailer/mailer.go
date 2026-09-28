@@ -1,3 +1,5 @@
+// Package mailer renders and sends transactional email over SMTP, with
+// templates embedded in the binary and background-worker-friendly Send.
 package mailer
 
 import (

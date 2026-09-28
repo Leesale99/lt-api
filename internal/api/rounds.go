@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	game "lt-api.aleksrdvn.com/internal/game"
@@ -16,8 +15,11 @@ import (
 
 func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Number int    `json:"number"`
-		Status string `json:"status"`
+		Number int `json:"number"`
+		// status is deliberately absent: new rounds are always created, the
+		// client cannot set it (see ValidateNewRound). Opening a round is a
+		// PATCH that must also start the season (RoundStore.Open), so creating
+		// directly as open would bypass that transaction.
 	}
 
 	seasonID, err := app.readIDParam(r)
@@ -29,7 +31,7 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	if _, err := app.Game.Seasons.Get(ctx, seasonID); err != nil {
+	if _, err := app.Game.Store.Seasons.Get(ctx, seasonID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -50,17 +52,17 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 	round := game.Round{
 		SeasonID: seasonID,
 		Number:   input.Number,
-		Status:   strings.ToLower(input.Status),
+		Status:   game.RoundCreated, // server-assigned, see input struct
 	}
 
 	v := validator.New()
 
-	if game.ValidateRound(v, round); !v.Valid() {
+	if game.ValidateNewRound(v, round); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
 
-	round, err = app.Game.Rounds.Insert(ctx, round)
+	round, err = app.Game.Store.Rounds.Insert(ctx, round)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -93,7 +95,7 @@ func (app *Application) showRoundHandler(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	round, err := app.Game.Rounds.Get(ctx, id)
+	round, err := app.Game.Store.Rounds.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -117,7 +119,7 @@ func (app *Application) listRoundsHandler(w http.ResponseWriter, r *http.Request
 
 	qs := r.URL.Query()
 	seasonID := app.readInt(qs, "season_id", 0, v)
-	status := strings.ToLower(app.readString(qs, "status", ""))
+	status := game.RoundStatus(app.readString(qs, "status", ""))
 
 	if status != "" {
 		game.ValidateRoundStatus(v, status)
@@ -132,7 +134,7 @@ func (app *Application) listRoundsHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	rounds, metadata, err := app.Game.Rounds.GetAll(ctx, seasonID, status, filters)
+	rounds, metadata, err := app.Game.Store.Rounds.GetAll(ctx, seasonID, status, filters)
 	app.writeListResponse(w, r, "rounds", rounds, metadata, err)
 }
 
@@ -152,7 +154,7 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	round, err := app.Game.Rounds.Get(ctx, roundID)
+	round, err := app.Game.Store.Rounds.Get(ctx, roundID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -181,8 +183,8 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 	// season_id is not part of the input: it is immutable after creation
 	// (see RoundStore.Update for the composite-FK reason).
 	var input struct {
-		Number *int    `json:"number"`
-		Status *string `json:"status"`
+		Number *int              `json:"number"`
+		Status *game.RoundStatus `json:"status"`
 	}
 
 	err = app.readJSON(w, r, &input)
@@ -195,7 +197,7 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 		round.Number = *input.Number
 	}
 	if input.Status != nil {
-		round.Status = strings.ToLower(*input.Status)
+		round.Status = *input.Status
 	}
 
 	v := validator.New()
@@ -208,10 +210,10 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 	// ADR-008 point 3: the created → open transition also starts the season
 	// (open → in_progress), and the two writes must succeed together — so it
 	// goes through RoundStore.Open's transaction rather than Update.
-	if current.Status == "created" && round.Status == "open" {
-		round, err = app.Game.Rounds.Open(ctx, round)
+	if current.Status == game.RoundCreated && round.Status == game.RoundOpen {
+		round, err = app.Game.Store.Rounds.Open(ctx, round)
 	} else {
-		round, err = app.Game.Rounds.Update(ctx, round)
+		round, err = app.Game.Store.Rounds.Update(ctx, round)
 	}
 	if err != nil {
 		switch {
@@ -251,7 +253,7 @@ func (app *Application) deleteRoundHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	err = app.Game.Rounds.Delete(ctx, roundID, seasonID)
+	err = app.Game.Store.Rounds.Delete(ctx, roundID, seasonID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):

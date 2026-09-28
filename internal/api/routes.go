@@ -1,3 +1,6 @@
+// Package api implements the HTTP surface of the service: route wiring,
+// request parsing and validation helpers, authentication and permission
+// middleware, and the shared JSON envelope writers every handler uses.
 package api
 
 import (
@@ -49,6 +52,14 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/players", app.requirePermission("players:write", app.createPlayerHandler))
 	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/players/:player_id", app.requirePermission("players:write", app.updatePlayerHandler))
 	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/players/:player_id", app.requirePermission("players:write", app.deletePlayerHandler))
+
+	// Rides
+	router.HandlerFunc(http.MethodGet, "/v1/rides", app.listRidesHandler)
+	router.HandlerFunc(http.MethodGet, "/v1/rides/:id", app.showRideHandler)
+	router.HandlerFunc(http.MethodPost, "/v1/rides", app.createRideHandler)
+	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/lock", app.lockRideHandler)
+	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/burn", app.burnRideHandler)
+	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/unlock", app.unlockRideHandler)
 
 	// Users
 	router.HandlerFunc(http.MethodPost, "/v1/users", app.registerUserHandler)

@@ -109,3 +109,33 @@ func (app *Application) rateLimitExceededResponse(w http.ResponseWriter, r *http
 	message := "rate limit exceeded"
 	app.writeError(w, r, http.StatusTooManyRequests, message)
 }
+
+// roundNotOpenResponse refuses a ride command issued on a round that is not
+// open. Distinct from recordFrozenResponse (temporal hierarchy freeze): the
+// round exists and is valid, it just isn't accepting commands. Refusal
+// happens here, before phase derivation — a closed round has no phase.
+func (app *Application) roundNotOpenResponse(w http.ResponseWriter, r *http.Request) {
+	message := "ride commands require an open round"
+	app.writeError(w, r, http.StatusConflict, message)
+}
+
+// noNextMatchResponse refuses a Lock command when the team has no remaining
+// match to continue into (e.g. the season has finished). The ride itself
+// exists and is in a valid state — the conflict is with the team's
+// schedule, not the request. Distinct from roundNotOpenResponse (the ride's
+// current round refuses commands) — here the refusal is about the
+// destination, not the origin.
+func (app *Application) noNextMatchResponse(w http.ResponseWriter, r *http.Request) {
+	message := "the ride cannot be continued because the team has no upcoming matches"
+	app.writeError(w, r, http.StatusConflict, message)
+}
+
+func (app *Application) invalidPhaseResponse(w http.ResponseWriter, r *http.Request) {
+	message := "this ride command is not allowed while the round is in current phase"
+	app.writeError(w, r, http.StatusConflict, message)
+}
+
+func (app *Application) invalidStateTransitionResponse(w http.ResponseWriter, r *http.Request) {
+	message := "this action is not allowed for a ride in current state"
+	app.writeError(w, r, http.StatusConflict, message)
+}

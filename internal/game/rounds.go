@@ -19,16 +19,24 @@ import (
 // of 10 matches each.
 const roundsPerSeason = 38
 
+type RoundStatus string
+
+var (
+	RoundCreated RoundStatus = "created"
+	RoundOpen    RoundStatus = "open"
+	RoundClosed  RoundStatus = "closed"
+)
+
 type Round struct {
-	ID        int       `json:"id"`
-	CreatedAt time.Time `json:"-"`
-	SeasonID  int       `json:"season_id"`
-	Number    int       `json:"number"`
-	Status    string    `json:"status"`
-	Version   int       `json:"version"`
+	ID        int         `json:"id"`
+	CreatedAt time.Time   `json:"-"`
+	SeasonID  int         `json:"season_id"`
+	Number    int         `json:"number"`
+	Status    RoundStatus `json:"status"`
+	Version   int         `json:"version"`
 }
 
-var roundsStatuses = []string{"created", "open", "closed"}
+var roundStatuses = []RoundStatus{RoundCreated, RoundOpen, RoundClosed}
 
 func ValidateRound(v *validator.Validator, round Round) {
 	v.Check(round.SeasonID > 0, "season_id", "must be provided")
@@ -37,15 +45,24 @@ func ValidateRound(v *validator.Validator, round Round) {
 	ValidateRoundStatus(v, round.Status)
 }
 
-func ValidateRoundStatus(v *validator.Validator, status string) {
-	v.Check(validator.PermittedValue(status, roundsStatuses...), "status", "must be one of: created, open, closed")
+func ValidateRoundStatus(v *validator.Validator, status RoundStatus) {
+	v.Check(validator.PermittedValue(status, roundStatuses...), "status", "must be one of: created, open, closed")
+}
+
+// ValidateNewRound validates a round about to be created. A new round always
+// starts in created: opening it belongs to the update flow, whose
+// created → open transition also starts the season (RoundStore.Open,
+// ADR-008). Creating a round directly as open would skip that flip.
+func ValidateNewRound(v *validator.Validator, round Round) {
+	ValidateRound(v, round)
+	v.Check(round.Status == RoundCreated, "status", "new rounds can only have status created")
 }
 
 // roundStatusRank orders the round lifecycle for transition checks.
-var roundStatusRank = map[string]int{
-	"created": 0,
-	"open":    1,
-	"closed":  2,
+var roundStatusRank = map[RoundStatus]int{
+	RoundCreated: 0,
+	RoundOpen:    1,
+	RoundClosed:  2,
 }
 
 // ValidateRoundUpdate validates a round update (new) against the stored
@@ -173,7 +190,8 @@ func (s *RoundStore) Open(ctx context.Context, round Round) (Round, error) {
 	}
 	// Commit below makes the deferred Rollback a harmless no-op (pgx returns
 	// ErrTxClosed, which we discard).
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // Commit below makes this a
+	// harmless no-op (pgx returns ErrTxClosed, which we discard).
 
 	if _, err := tx.Exec(ctx, seasonOpenToInProgressSQL, round.SeasonID); err != nil {
 		return Round{}, err
@@ -191,7 +209,7 @@ func (s *RoundStore) Open(ctx context.Context, round Round) (Round, error) {
 	return round, nil
 }
 
-func (s *RoundStore) GetAll(ctx context.Context, seasonID int, status string, filters store.Filters) ([]Round, store.Metadata, error) {
+func (s *RoundStore) GetAll(ctx context.Context, seasonID int, status RoundStatus, filters store.Filters) ([]Round, store.Metadata, error) {
 	conds, args := []string{}, []any{}
 
 	if seasonID != 0 {

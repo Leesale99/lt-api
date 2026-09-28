@@ -14,7 +14,7 @@ func TestWinner(t *testing.T) {
 
 	closed := func(home, away, homeTeamID, awayTeamID int) Match {
 		return Match{
-			Status:     "closed",
+			Status:     MatchClosed,
 			HomeTeamID: homeTeamID,
 			AwayTeamID: awayTeamID,
 			Score:      Score{Home: i(home), Away: i(away)},
@@ -44,7 +44,7 @@ func TestWinner(t *testing.T) {
 		{
 			name: "created match without a score returns nil",
 			match: Match{
-				Status:     "created",
+				Status:     MatchCreated,
 				HomeTeamID: 1,
 				AwayTeamID: 2,
 			},
@@ -52,7 +52,7 @@ func TestWinner(t *testing.T) {
 		},
 		{
 			name:  "created match without a score returns nil",
-			match: Match{Status: "created", HomeTeamID: 1, AwayTeamID: 2},
+			match: Match{Status: MatchCreated, HomeTeamID: 1, AwayTeamID: 2},
 			want:  nil,
 		},
 	}

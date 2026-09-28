@@ -34,50 +34,50 @@ func assertValidatorErrors(t *testing.T, v *validator.Validator, wantErrs map[st
 func TestValidateSeasonUpdate(t *testing.T) {
 	tests := []struct {
 		name     string
-		old      string
-		new      string
+		old      SeasonStatus
+		new      SeasonStatus
 		wantErrs map[string]string
 	}{
 		{
 			name:     "created to open",
-			old:      "created",
-			new:      "open",
+			old:      SeasonCreated,
+			new:      SeasonOpen,
 			wantErrs: map[string]string{},
 		},
 		{
 			name:     "open to in_progress",
-			old:      "open",
-			new:      "in_progress",
+			old:      SeasonOpen,
+			new:      SeasonInProgress,
 			wantErrs: map[string]string{},
 		},
 		{
 			name:     "in_progress to closed",
-			old:      "in_progress",
-			new:      "closed",
+			old:      SeasonInProgress,
+			new:      SeasonClosed,
 			wantErrs: map[string]string{},
 		},
 		{
 			name:     "same status is a no-op update",
-			old:      "open",
-			new:      "open",
+			old:      SeasonOpen,
+			new:      SeasonOpen,
 			wantErrs: map[string]string{},
 		},
 		{
 			name:     "open back to created",
-			old:      "open",
-			new:      "created",
+			old:      SeasonOpen,
+			new:      SeasonCreated,
 			wantErrs: map[string]string{"status": "cannot move to an earlier stage of the season lifecycle"},
 		},
 		{
 			name:     "in_progress back to open",
-			old:      "in_progress",
-			new:      "open",
+			old:      SeasonInProgress,
+			new:      SeasonOpen,
 			wantErrs: map[string]string{"status": "cannot move to an earlier stage of the season lifecycle"},
 		},
 		{
 			name:     "closed back to in_progress",
-			old:      "closed",
-			new:      "in_progress",
+			old:      SeasonClosed,
+			new:      SeasonInProgress,
 			wantErrs: map[string]string{"status": "cannot move to an earlier stage of the season lifecycle"},
 		},
 	}
@@ -92,42 +92,42 @@ func TestValidateSeasonUpdate(t *testing.T) {
 }
 
 func TestValidateRoundUpdate(t *testing.T) {
-	round := func(status string) Round { return Round{SeasonID: 1, Number: 1, Status: status} }
+	round := func(status RoundStatus) Round { return Round{SeasonID: 1, Number: 1, Status: status} }
 
 	tests := []struct {
 		name     string
-		old      string
-		new      string
+		old      RoundStatus
+		new      RoundStatus
 		wantErrs map[string]string
 	}{
 		{
 			name:     "created to open",
-			old:      "created",
-			new:      "open",
+			old:      RoundCreated,
+			new:      RoundOpen,
 			wantErrs: map[string]string{},
 		},
 		{
 			name:     "open to closed",
-			old:      "open",
-			new:      "closed",
+			old:      RoundOpen,
+			new:      RoundClosed,
 			wantErrs: map[string]string{},
 		},
 		{
 			name:     "same status is a no-op update",
-			old:      "open",
-			new:      "open",
+			old:      RoundOpen,
+			new:      RoundOpen,
 			wantErrs: map[string]string{},
 		},
 		{
 			name:     "open back to created",
-			old:      "open",
-			new:      "created",
+			old:      RoundOpen,
+			new:      RoundCreated,
 			wantErrs: map[string]string{"status": "cannot move to an earlier stage of the round lifecycle"},
 		},
 		{
 			name:     "closed back to open",
-			old:      "closed",
-			new:      "open",
+			old:      RoundClosed,
+			new:      RoundOpen,
 			wantErrs: map[string]string{"status": "cannot move to an earlier stage of the round lifecycle"},
 		},
 	}

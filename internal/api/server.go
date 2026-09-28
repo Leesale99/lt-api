@@ -35,7 +35,10 @@ type Application struct {
 	// never mutated — a dependency like Logger, not ambient mutable state.
 	RootCtx context.Context
 
-	Game     *game.Store
+	// Game is the domain service: the single entry point to game rules and
+	// persistence. Handlers call domain operations on it; CRUD that carries
+	// no rules goes through Game.Store.
+	Game     *game.Service
 	Identity *identity.Store
 	Mailer   MailSender
 	wg       sync.WaitGroup
@@ -123,7 +126,7 @@ func (app *Application) runServer(srv *http.Server, opts RunOptions) error {
 			select {
 			case s := <-secondSignal:
 				app.Logger.Warn("second signal during drain, force-closing", "signal", s.String())
-				srv.Close()
+				_ = srv.Close() // force-close escalation: conns are being dropped regardless
 			case <-drainDone:
 			}
 		}()

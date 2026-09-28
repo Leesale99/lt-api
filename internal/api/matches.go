@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"lt-api.aleksrdvn.com/internal/constants"
@@ -20,10 +19,12 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		RoundID    int        `json:"round_id"`
 		HomeTeamID int        `json:"home_team_id"`
 		AwayTeamID int        `json:"away_team_id"`
-		Status     string     `json:"status"`
 		StartsAt   time.Time  `json:"starts_at"`
 		Odds       game.Odds  `json:"odds"`
 		Score      game.Score `json:"score"`
+		// status is deliberately absent: new matches are always created, the
+		// client cannot set it (see ValidateNewMatch). Update owns the rest of
+		// the lifecycle.
 	}
 
 	seasonID, err := app.readIDParam(r)
@@ -35,7 +36,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	if _, err := app.Game.Seasons.Get(ctx, seasonID); err != nil {
+	if _, err := app.Game.Store.Seasons.Get(ctx, seasonID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -58,7 +59,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		RoundID:    input.RoundID,
 		HomeTeamID: input.HomeTeamID,
 		AwayTeamID: input.AwayTeamID,
-		Status:     strings.ToLower(input.Status),
+		Status:     game.MatchCreated, // server-assigned, see input struct
 		StartsAt:   input.StartsAt,
 		Odds:       input.Odds,
 		Score:      input.Score,
@@ -71,7 +72,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	round, err := app.Game.Rounds.Get(ctx, input.RoundID)
+	round, err := app.Game.Store.Rounds.Get(ctx, input.RoundID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -90,7 +91,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, err := app.Game.Teams.Get(ctx, input.HomeTeamID); err != nil {
+	if _, err := app.Game.Store.Teams.Get(ctx, input.HomeTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -103,7 +104,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, err := app.Game.Teams.Get(ctx, input.AwayTeamID); err != nil {
+	if _, err := app.Game.Store.Teams.Get(ctx, input.AwayTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -116,7 +117,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	match, err = app.Game.Matches.Insert(ctx, match)
+	match, err = app.Game.Store.Matches.Insert(ctx, match)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -146,7 +147,7 @@ func (app *Application) showMatchHandler(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	match, err := app.Game.Matches.Get(ctx, id)
+	match, err := app.Game.Store.Matches.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -171,7 +172,7 @@ func (app *Application) listMatchHandler(w http.ResponseWriter, r *http.Request)
 	qs := r.URL.Query()
 	seasonID := app.readInt(qs, "season_id", 0, v)
 	roundID := app.readInt(qs, "round_id", 0, v)
-	status := strings.ToLower(app.readString(qs, "status", ""))
+	status := game.MatchStatus(app.readString(qs, "status", ""))
 
 	if status != "" {
 		game.ValidateMatchStatus(v, status)
@@ -186,7 +187,7 @@ func (app *Application) listMatchHandler(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	matches, metadata, err := app.Game.Matches.GetAll(ctx, seasonID, roundID, status, filters)
+	matches, metadata, err := app.Game.Store.Matches.GetAll(ctx, seasonID, roundID, status, filters)
 	app.writeListResponse(w, r, "matches", matches, metadata, err)
 }
 
@@ -206,7 +207,7 @@ func (app *Application) deleteMatchHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	err = app.Game.Matches.Delete(ctx, matchID, seasonID)
+	err = app.Game.Store.Matches.Delete(ctx, matchID, seasonID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -241,7 +242,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	match, err := app.Game.Matches.Get(ctx, matchID)
+	match, err := app.Game.Store.Matches.Get(ctx, matchID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -268,12 +269,12 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 	current := match
 
 	var input struct {
-		StartsAt   *time.Time  `json:"starts_at"`
-		HomeTeamID *int        `json:"home_team_id"`
-		AwayTeamID *int        `json:"away_team_id"`
-		Status     *string     `json:"status"`
-		Odds       *game.Odds  `json:"odds"`
-		Score      *game.Score `json:"score"`
+		StartsAt   *time.Time        `json:"starts_at"`
+		HomeTeamID *int              `json:"home_team_id"`
+		AwayTeamID *int              `json:"away_team_id"`
+		Status     *game.MatchStatus `json:"status"`
+		Odds       *game.Odds        `json:"odds"`
+		Score      *game.Score       `json:"score"`
 	}
 
 	err = app.readJSON(w, r, &input)
@@ -292,7 +293,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		match.AwayTeamID = *input.AwayTeamID
 	}
 	if input.Status != nil {
-		match.Status = strings.ToLower(*input.Status)
+		match.Status = *input.Status
 	}
 	if input.Odds != nil {
 		match.Odds = *input.Odds
@@ -308,7 +309,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, err := app.Game.Teams.Get(ctx, match.HomeTeamID); err != nil {
+	if _, err := app.Game.Store.Teams.Get(ctx, match.HomeTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -321,7 +322,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, err := app.Game.Teams.Get(ctx, match.AwayTeamID); err != nil {
+	if _, err := app.Game.Store.Teams.Get(ctx, match.AwayTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -334,7 +335,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	match, err = app.Game.Matches.Update(ctx, match)
+	match, err = app.Game.Store.Matches.Update(ctx, match)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):

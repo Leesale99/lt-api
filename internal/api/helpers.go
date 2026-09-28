@@ -101,7 +101,7 @@ func (app *Application) writeJSON(w http.ResponseWriter, status int, data envelo
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	w.Write(js)
+	_, _ = w.Write(js) // headers already sent; nothing left to do with a write error
 
 	return nil
 }
