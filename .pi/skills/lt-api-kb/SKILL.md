@@ -25,6 +25,7 @@ description: Write mechanics and rules routing for the lt-api Obsidian knowledge
 - There is no dry-run mode: `preview=true` switches `search` to operator-query parsing (`query=status: active` errors with "Operator not recognized"). Do not treat it as a preview.
 - (observed once, 2026-09-20, cause undetermined) a multiline `search query=... replace=...` reported `0 file(s)` yet the first line of the target block (a `- [ ]` checkbox) was found flipped to `- [x]` on the subsequent read. Could also have been a concurrent manual edit by the user. Lesson regardless: after every search/replace, re-read the affected file and diff the full replaced block against expectations — a `0 file(s)` report does not prove nothing changed, and a partial application cannot be ruled out.
 - Multiline `\n`-escaped queries work and match exactly — this is how you make a query unique (e.g. span from `status: open` through the trigger line).
+- (observed 2026-09-23) a plain-text query whose text before the FIRST `: ` is not a valid operator errors with `Operator "..." not recognized` — even mid-string, so any query containing a frontmatter `key:` line trips this (checked: `status: open\ntrigger:...`, `type: deferred\n...`, `---\ntype:...`, and a trigger-bullet line followed by `date:`). Plain-text search/replace on frontmatter content is therefore impractical: for such edits do a full-file `write` (content read back first) instead — that worked fine on both deferred notes the same session.
 
 ## Write discipline
 
