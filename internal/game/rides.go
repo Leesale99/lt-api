@@ -246,6 +246,11 @@ func (r *Ride) Unlock(phase RoundPhase) error {
 	return nil
 }
 
+// streakRate is a ≤2-dp decimal by contract (ADR-021): the bonus scale chain
+// in the rides schema assumes the multiplier 1 + streakRate×streak never
+// carries more than 2 decimal places. Tuning beyond that budget re-opens
+// silent rounding — declare the new budget in the ADR and widen bonus_acc
+// before changing this constant.
 var streakRate = decimal.NewFromFloat(0.20)
 
 func calculateBonus(matchOdds, tokensLocked, acc decimal.Decimal, streak int) decimal.Decimal {
