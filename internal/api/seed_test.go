@@ -3,8 +3,8 @@ package api
 // Canonical fixture: after reset(), every table is empty and re-seeded with
 // fixed IDs (TRUNCATE ... RESTART IDENTITY), so all handler tests can address
 // rows by ID — team 1 is always Olympiacos, match 1 is always the closed one.
-// Tests needing extra rows (e.g. a second season for the wrong-round case)
-// insert them via the seed helpers and use the returned IDs.
+// Tests needing extra rows (e.g. a started match in the open round) insert
+// them via the seed helpers and use the returned IDs.
 
 import (
 	"context"
@@ -15,6 +15,19 @@ import (
 // migration 000004 and never mutated by any handler, so reset() deliberately
 // leaves them in place. Everything else is truncated and re-seeded with fixed
 // IDs.
+//
+// The game data mirrors a season mid-flight (ADR-008 freeze rule respected:
+// once any match has started, the round/season cannot regress):
+//
+//	season 1 (in_progress) — frozen by its started matches, only forward
+//	  round 1 (closed)   match history, ended ~2 weeks ago
+//	  round 2 (closed)   match history, ended ~1 week ago
+//	  round 3 (open)     ActionPhase: all matches ≥ 1 day out, so ride
+//	                     commands that need an open round work out of the
+//	                     box and the phase is stable for the whole run
+//	  round 4 (created)  future schedule, not open yet
+//	  round 5 (created)  empty — the "open me / add matches" target
+//	season 2 (created)   nothing started → delete and regression paths live
 const resetSQL = `
 	TRUNCATE user_tokens, users, matches, players, rounds, seasons, teams
 	RESTART IDENTITY;
@@ -38,13 +51,17 @@ const resetSQL = `
 		('Real Madrid', 'https://x.example/rm.png', 'Madrid');
 
 	INSERT INTO seasons (status) VALUES
-		('closed'),      -- id 1
-		('in_progress'); -- id 2
+		('in_progress'), -- id 1: the live season (has started matches, cannot regress)
+		('created');     -- id 2: scheduled, nothing started yet
 
 	INSERT INTO rounds (season_id, number, status) VALUES
-		(1, 1, 'open'),  -- id 1: hosts the canonical matches
-		(1, 2, 'open'),  -- id 2
-		(2, 1, 'open');  -- id 3: round in season 2 (wrong-season cases)
+		(1, 1, 'closed'),  -- id 1: history, all matches ended ~2 weeks ago
+		(1, 2, 'closed'),  -- id 2: history, ended ~1 week ago
+		(1, 3, 'open'),    -- id 3: THE open round — ActionPhase (no match started)
+		(1, 4, 'created'), -- id 4: future schedule, not open yet
+		(1, 5, 'created'), -- id 5: created and empty (open/add-match target)
+		(2, 1, 'created'), -- id 6: another-season cases
+		(2, 2, 'created'); -- id 7
 
 	INSERT INTO players (season_id, favorite_team_id, name) VALUES
 		(2, 1, 'Sasha Vezenkov');
@@ -53,8 +70,22 @@ const resetSQL = `
 		season_id, round_id, home_team_id, away_team_id,
 		home_odds, away_odds, home_score, away_score, status, starts_at, ended_at
 	) VALUES
-		(1, 1, 1, 2, 1.5, 2.5, 88, 79, 'closed', now() - interval '7 days', now() - interval '7 days' + interval '2 hours'),
-		(1, 1, 2, 1, 2.0, 1.8, NULL, NULL, 'created', now() + interval '7 days', NULL);
+		-- Round 1 (closed): match 1 stays the canonical closed match.
+		(1, 1, 1, 2, 1.5, 2.5, 88, 79, 'closed', now() - interval '14 days', now() - interval '14 days' + interval '2 hours'),
+		(1, 1, 2, 1, 1.9, 1.9, 76, 81, 'closed', now() - interval '13 days', now() - interval '13 days' + interval '2 hours'),
+		-- Round 2 (closed): ended ~1 week ago.
+		(1, 2, 1, 2, 1.4, 2.7, 90, 84, 'closed', now() - interval '8 days', now() - interval '8 days' + interval '2 hours'),
+		(1, 2, 2, 1, 2.2, 1.7, 71, 74, 'closed', now() - interval '7 days', now() - interval '7 days' + interval '2 hours'),
+		-- Round 3 (open, ActionPhase): nothing started, scores and ended_at NULL.
+		(1, 3, 1, 2, 1.5, 2.5, NULL, NULL, 'created', now() + interval '2 days', NULL),
+		(1, 3, 2, 1, 2.0, 1.8, NULL, NULL, 'created', now() + interval '2 days', NULL),
+		(1, 3, 1, 2, 1.6, 2.3, NULL, NULL, 'created', now() + interval '3 days', NULL),
+		-- Round 4 (created): future schedule, one postponed.
+		(1, 4, 1, 2, 1.5, 2.5, NULL, NULL, 'created', now() + interval '4 days', NULL),
+		(1, 4, 2, 1, 2.0, 1.8, NULL, NULL, 'created', now() + interval '5 days', NULL),
+		(1, 4, 1, 2, 2.3, 1.6, NULL, NULL, 'postponed', now() + interval '6 days', NULL),
+		-- Season 2 (created): one future match for another-season cases.
+		(2, 6, 1, 2, 1.5, 2.5, NULL, NULL, 'created', now() + interval '10 days', NULL);
 
 `
 
