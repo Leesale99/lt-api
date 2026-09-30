@@ -180,6 +180,10 @@ func TestUpdateRoundHandler(t *testing.T) {
 		body     string
 		wantCode int
 		wantBody []string
+		// setup plants state the lifecycle gates (000008) require for the
+		// statement under test, e.g. settling a round's matches before a
+		// close.
+		setup func(t *testing.T)
 	}{
 		{
 			name: "valid number update",
@@ -191,7 +195,19 @@ func TestUpdateRoundHandler(t *testing.T) {
 		},
 		{
 			name: "valid status update",
-			// Round 3 is the canonical open round.
+			// Round 3 is the canonical open round. rounds_close_gate (000008)
+			// refuses a close over unsettled matches, so the fixture settles
+			// them first: starts_at moves into the past (the score constraints
+			// and the freeze gate key on it); the close transition stamps
+			// ended_at. The rides side of the gate is empty in this fixture.
+			setup: func(t *testing.T) {
+				if _, err := testPool.Exec(context.Background(),
+					`UPDATE matches SET starts_at = now() - interval '3 hours',
+						status = 'closed', home_score = 2, away_score = 1
+					 WHERE round_id = 3`); err != nil {
+					t.Fatalf("settle round 3 matches: %v", err)
+				}
+			},
 			url:      "/v1/seasons/1/rounds/3",
 			body:     `{"status":"closed"}`,
 			wantCode: http.StatusOK,
@@ -310,9 +326,12 @@ func TestUpdateRoundHandler(t *testing.T) {
 		},
 		{
 			name:     "matching version header",
+			// A number-only update on a created round: the lifecycle gates do
+			// not fire (no status transition), the version machinery is what is
+			// under test here.
 			url:      "/v1/seasons/1/rounds/4",
 			headers:  map[string]string{"X-Expected-Version": "1"},
-			body:     `{"status":"closed"}`,
+			body:     `{"number":6}`,
 			wantCode: http.StatusOK,
 			wantBody: []string{`"version": 2`},
 		},
@@ -320,7 +339,7 @@ func TestUpdateRoundHandler(t *testing.T) {
 			name:     "stale version header",
 			url:      "/v1/seasons/1/rounds/4",
 			headers:  map[string]string{"X-Expected-Version": "9"},
-			body:     `{"status":"closed"}`,
+			body:     `{"number":9}`,
 			wantCode: http.StatusConflict,
 			wantBody: []string{"edit conflict"},
 		},
@@ -330,6 +349,9 @@ func TestUpdateRoundHandler(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			reset(t)
 			app := newTestApplication()
+			if tt.setup != nil {
+				tt.setup(t)
+			}
 
 			var reader io.Reader
 			if tt.body != "" {
@@ -363,7 +385,9 @@ func TestUpdateRoundPersists(t *testing.T) {
 	app := newTestApplication()
 
 	req := httptest.NewRequest(http.MethodPatch, "/v1/seasons/1/rounds/4",
-		strings.NewReader(`{"number":7,"status":"closed"}`))
+		// Number-only: round 4 has live matches, so closing it would hit
+		// rounds_close_gate — the persistence check needs no status change.
+		strings.NewReader(`{"number":7}`))
 	rr := httptest.NewRecorder()
 	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
@@ -379,7 +403,7 @@ func TestUpdateRoundPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if number != 7 || status != "closed" || version != 2 {
+	if number != 7 || status != "created" || version != 2 {
 		t.Fatalf("row not updated: number=%d status=%q version=%d", number, status, version)
 	}
 }

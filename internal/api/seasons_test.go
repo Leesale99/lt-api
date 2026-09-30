@@ -375,9 +375,11 @@ func TestDeleteCreatedSeasonHandler(t *testing.T) {
 	}
 	id := strings.TrimPrefix(rr.Header().Get("Location"), "/v1/seasons/")
 
-	// A round under the new season proves the cascade fires on delete.
+	// A round under the new season proves the cascade fires on delete. It
+	// stays created: the lifecycle gates (000008) refuse an open round under
+	// a season that is not live, and this season is freshly created.
 	if _, err := testPool.Exec(context.Background(),
-		`INSERT INTO rounds (season_id, number, status) VALUES ($1, 1, 'open')`, id); err != nil {
+		`INSERT INTO rounds (season_id, number, status) VALUES ($1, 1, 'created')`, id); err != nil {
 		t.Fatalf("seed round: %v", err)
 	}
 

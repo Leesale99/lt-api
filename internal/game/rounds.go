@@ -255,10 +255,13 @@ const seasonInProgressToClosedSQL = `
 // load-bearing: the ride resolution runs first, because rounds_close_gate
 // refuses to close a round that still owns unresolved rides and evaluates
 // at the status flip — resolving after the flip would abort the tx. The
-// ride resolution is a single conditional UPDATE whose WHERE clause is the
-// concurrency guard, so no row locks are taken up front. Callers must have
-// verified the transition is open → closed; the version check inside
-// updateRound still guards against a concurrent change.
+// season flip runs last (the mirror of Open, which flips the season before
+// the round): the season must still be live while its round closes, and
+// rounds_progress_gate would refuse a round closing under an already-closed
+// season. The ride resolution is a single conditional UPDATE whose WHERE
+// clause is the concurrency guard, so no row locks are taken up front.
+// Callers must have verified the transition is open → closed; the version
+// check inside updateRound still guards against a concurrent change.
 func (s *RoundStore) Close(ctx context.Context, round Round) (Round, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -282,6 +285,14 @@ func (s *RoundStore) Close(ctx context.Context, round Round) (Round, error) {
 		return Round{}, err
 	}
 
+	// The status flip: updateRound carries the version check against
+	// concurrent writers and is where both rounds gates land
+	// (P0001 → ErrRecordInUse). The season is still live here.
+	round, err = s.updateRound(ctx, tx, round)
+	if err != nil {
+		return Round{}, err
+	}
+
 	// The only season rule is a last-round predicate: the app-side check
 	// skips the statement entirely for rounds 1-37, and the conditional
 	// WHERE makes it a no-op if the season is not live.
@@ -289,14 +300,6 @@ func (s *RoundStore) Close(ctx context.Context, round Round) (Round, error) {
 		if _, err := tx.Exec(ctx, seasonInProgressToClosedSQL, round.SeasonID); err != nil {
 			return Round{}, err
 		}
-	}
-
-	// The status flip: updateRound carries the version check against
-	// concurrent writers and is where rounds_close_gate's refusal lands
-	// (P0001 → ErrRecordInUse).
-	round, err = s.updateRound(ctx, tx, round)
-	if err != nil {
-		return Round{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

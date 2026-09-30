@@ -250,10 +250,19 @@ func TestStatusVocabularyIsInSync(t *testing.T) {
 	})
 
 	t.Run("rounds", func(t *testing.T) {
-		for i, status := range roundStatuses {
+		for _, status := range roundStatuses {
+			// Each vocabulary value gets its own live season: the lifecycle
+			// gates (000008) refuse a round beyond created in a season that is
+			// not open/in_progress, and number 1 is the only round a fresh
+			// season accepts — so this is the one shape that admits every
+			// vocabulary value for a direct INSERT.
+			var sid int
+			if err := pool.QueryRow(ctx, `INSERT INTO seasons (status) VALUES ('in_progress') RETURNING id`).Scan(&sid); err != nil {
+				t.Fatalf("seed season for round status %q: %v", status, err)
+			}
 			_, err := pool.Exec(ctx,
-				`INSERT INTO rounds (season_id, number, status) VALUES ($1, $2, $3)`,
-				seasonID, i+10, status)
+				`INSERT INTO rounds (season_id, number, status) VALUES ($1, 1, $2)`,
+				sid, status)
 			if err != nil {
 				t.Errorf("round status %q rejected by DB: %v", status, err)
 			}
@@ -338,33 +347,36 @@ func TestRoundAndSeasonConstraints(t *testing.T) {
 	seasonID, _, _, _ := seed(ctx, t)
 	defer cleanup(ctx, t)
 
+	// Rounds are inserted as 'created' so the constraint under test is what
+	// fires: the lifecycle gates (000008) run BEFORE the constraints and
+	// would mask a CHECK/UNIQUE/FK violation with P0001 on an 'open' insert.
 	cases := []constraintCase{
 		{
 			name:  "valid round",
-			query: `INSERT INTO rounds (season_id, number, status) VALUES ($1, 2, 'open')`,
+			query: `INSERT INTO rounds (season_id, number, status) VALUES ($1, 2, 'created')`,
 			args:  []any{seasonID},
 		},
 		{
 			name:     "duplicate (season, number) rejected",
-			query:    `INSERT INTO rounds (season_id, number, status) VALUES ($1, 2, 'open')`,
+			query:    `INSERT INTO rounds (season_id, number, status) VALUES ($1, 2, 'created')`,
 			args:     []any{seasonID},
 			wantCode: errUniqueViolation,
 		},
 		{
 			name:     "round number 0 rejected",
-			query:    `INSERT INTO rounds (season_id, number, status) VALUES ($1, 0, 'open')`,
+			query:    `INSERT INTO rounds (season_id, number, status) VALUES ($1, 0, 'created')`,
 			args:     []any{seasonID},
 			wantCode: errCheckViolation,
 		},
 		{
 			name:     "round number 39 rejected",
-			query:    `INSERT INTO rounds (season_id, number, status) VALUES ($1, 39, 'open')`,
+			query:    `INSERT INTO rounds (season_id, number, status) VALUES ($1, 39, 'created')`,
 			args:     []any{seasonID},
 			wantCode: errCheckViolation,
 		},
 		{
 			name:     "round in nonexistent season rejected",
-			query:    `INSERT INTO rounds (season_id, number, status) VALUES ($1, 5, 'open')`,
+			query:    `INSERT INTO rounds (season_id, number, status) VALUES ($1, 5, 'created')`,
 			args:     []any{seasonID + 999999},
 			wantCode: errForeignKey,
 		},

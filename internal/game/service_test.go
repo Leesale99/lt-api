@@ -215,8 +215,12 @@ func TestService_RideLock(t *testing.T) {
 		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
 		// The continuation destination: a future match for the same team in
-		// another open round of the same season.
-		if _, err := pool.Exec(ctx, `INSERT INTO rounds (season_id, number, status) VALUES (1, 2, 'open')`); err != nil {
+		// another round of the same season. The destination round stays
+		// created — RideLock requires only the ride's own round to be in its
+		// DecisionPhase, and NextForTeam filters r.status <> 'closed' — so
+		// round 2 opens only after round 1 closes (rounds_progress_gate,
+		// 000008), with the ride already re-pointed onto it.
+		if _, err := pool.Exec(ctx, `INSERT INTO rounds (season_id, number, status) VALUES (1, 2, 'created')`); err != nil {
 			t.Fatalf("insert round 2: %v", err)
 		}
 		nextMatch := insertFutureMatch(ctx, t, 1, 2, homeID, awayID, "7 days")
