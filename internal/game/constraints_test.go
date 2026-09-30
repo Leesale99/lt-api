@@ -29,6 +29,9 @@ import (
 var migFiles = []string{
 	"../../migrations/000001_create_initial_game_models.up.sql",
 	"../../migrations/000005_add_matches_ended_at.up.sql",
+	// Ride persistence: phase 03 replaced the in-memory ride stub with the
+	// rides table — the service ride tests plant rides into it directly.
+	"../../migrations/000006_create_rides_table.up.sql",
 }
 
 // PostgreSQL error codes (see pgerrcode; inlined to avoid the extra dependency).

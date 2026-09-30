@@ -79,8 +79,19 @@ func (s *RideStore) Insert(ctx context.Context, ride Ride) (Ride, error) {
 	}
 
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&ride.ID, &ride.CreatedAt, &ride.Version)
+	if err != nil {
+		switch {
+		case store.IsFKViolation(err):
+			// The referenced player, team or match does not exist — the
+			// handler validates only positivity, so an unknown parent can
+			// only be caught here (same convention as PlayerStore.Insert).
+			return Ride{}, store.ErrRecordNotFound
+		default:
+			return Ride{}, err
+		}
+	}
 
-	return ride, err
+	return ride, nil
 }
 
 func (s *RideStore) Get(ctx context.Context, id int) (Ride, error) {
@@ -120,23 +131,23 @@ func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID in
 	conds, args := []string{}, []any{}
 	if id != 0 {
 		args = append(args, id)
-		conds = append(conds, fmt.Sprintf("id = %d", len(args)))
+		conds = append(conds, fmt.Sprintf("id = $%d", len(args)))
 	}
 	if playerID != 0 {
-		args = append(args, id)
-		conds = append(conds, fmt.Sprintf("player_id = %d", len(args)))
+		args = append(args, playerID)
+		conds = append(conds, fmt.Sprintf("player_id = $%d", len(args)))
 	}
 	if teamID != 0 {
-		args = append(args, id)
-		conds = append(conds, fmt.Sprintf("team_id = %d", len(args)))
+		args = append(args, teamID)
+		conds = append(conds, fmt.Sprintf("team_id = $%d", len(args)))
 	}
 	if matchID != 0 {
-		args = append(args, id)
-		conds = append(conds, fmt.Sprintf("match_id = %d", len(args)))
+		args = append(args, matchID)
+		conds = append(conds, fmt.Sprintf("match_id = $%d", len(args)))
 	}
 	if state != "" {
-		args = append(args, id)
-		conds = append(conds, fmt.Sprintf("state = %d", len(args)))
+		args = append(args, state)
+		conds = append(conds, fmt.Sprintf("state = $%d", len(args)))
 	}
 
 	where := ""
@@ -198,11 +209,11 @@ func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID in
 func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
 	query := `
 		UPDATE rides
-	 	SET match_id = $1, state = $2, bonus_acc = $3, streak = $4, version + 1
+		SET match_id = $1, state = $2, bonus_acc = $3, streak = $4, version = version + 1
 		WHERE id = $5 AND version = $6
 		RETURNING id, player_id, team_id, version
 	`
-	args := []any{ride.MatchID, ride.State, ride.Acc, ride.Streak}
+	args := []any{ride.MatchID, ride.State, ride.Acc, ride.Streak, ride.Version, ride.ID}
 
 	err := s.pool.QueryRow(ctx, query, args...).Scan(
 		&ride.ID,
@@ -214,6 +225,12 @@ func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			return Ride{}, store.ErrEditConflict
+		case store.IsTriggerViolation(err):
+			// rides_state_gate (ADR-020): the DB refused the transition.
+			// Deliberately ErrInvalidTransition — the invalid-state 409 —
+			// NOT ErrRecordInUse: the row is not referenced by anything,
+			// its state machine rejected the write.
+			return Ride{}, ErrInvalidTransition
 		default:
 			return Ride{}, err
 		}

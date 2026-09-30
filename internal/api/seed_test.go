@@ -29,7 +29,7 @@ import (
 //	  round 5 (created)  empty — the "open me / add matches" target
 //	season 2 (created)   nothing started → delete and regression paths live
 const resetSQL = `
-	TRUNCATE user_tokens, users, matches, players, rounds, seasons, teams
+	TRUNCATE user_tokens, users, matches, players, rides, rounds, seasons, teams
 	RESTART IDENTITY;
 
 	INSERT INTO users (name, email, password_hash, activated, role_id) VALUES
