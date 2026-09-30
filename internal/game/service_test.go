@@ -163,8 +163,12 @@ func TestService_RideCreate(t *testing.T) {
 		if got.ID == 0 {
 			t.Fatal("id = 0, want assigned")
 		}
-		if got.CreatedAt.After(time.Now()) {
-			t.Fatalf("created_at %v is in the future", got.CreatedAt)
+		// created_at is stamped by the PostgreSQL server clock; this assertion
+		// runs on the test-process clock. Two clocks, so a small positive delta
+		// is host/sandbox skew, not a fabricated timestamp — tolerate it,
+		// still fail on anything beyond that.
+		if got.CreatedAt.After(time.Now().Add(2 * time.Second)) {
+			t.Fatalf("created_at %v is more than 2s in the future", got.CreatedAt)
 		}
 		if got.State != RideLocked {
 			t.Fatalf("state = %q, want %q (caller-supplied garbage must be discarded)", got.State, RideLocked)
