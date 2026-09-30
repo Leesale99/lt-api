@@ -192,6 +192,11 @@ func TestService_RideCreate(t *testing.T) {
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		playerID := plantPlayer(ctx, t, homeID)
 
+		if _, err := pool.Exec(ctx, `UPDATE matches SET starts_at = now() - interval '3 hours',
+			status = 'closed', home_score = 2, away_score = 1
+			WHERE id = $1`, matchID); err != nil {
+			t.Fatalf("settle match: %v", err)
+		}
 		if _, err := pool.Exec(ctx, `UPDATE rounds SET status = 'closed' WHERE id = $1`, roundID); err != nil {
 			t.Fatalf("close round: %v", err)
 		}

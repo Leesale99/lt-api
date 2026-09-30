@@ -32,6 +32,11 @@ var migFiles = []string{
 	// Ride persistence: phase 03 replaced the in-memory ride stub with the
 	// rides table — the service ride tests plant rides into it directly.
 	"../../migrations/000006_create_rides_table.up.sql",
+	// Round lifecycle gates (000008): rounds_close_gate is the backstop the
+	// round-close transaction tests refuse against, and rounds_progress_gate
+	// participates in the mid-transaction-failure case (it fires on the
+	// status flip after the ride resolution, making the whole tx abort).
+	"../../migrations/000008_add_round_lifecycle_gates.up.sql",
 }
 
 // PostgreSQL error codes (see pgerrcode; inlined to avoid the extra dependency).
@@ -354,6 +359,13 @@ func TestRoundAndSeasonConstraints(t *testing.T) {
 		{
 			name:  "valid round",
 			query: `INSERT INTO rounds (season_id, number, status) VALUES ($1, 2, 'created')`,
+			args:  []any{seasonID},
+		},
+		// A second distinct (season, number) pair: the duplicate case below
+		// refuses number 2 on an already-planted round 2, not on its own insert.
+		{
+			name:  "second created round at its own number",
+			query: `INSERT INTO rounds (season_id, number, status) VALUES ($1, 3, 'created')`,
 			args:  []any{seasonID},
 		},
 		{

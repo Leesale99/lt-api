@@ -198,11 +198,9 @@ func (s *TeamStore) Delete(ctx context.Context, id int) error {
 	result, err := s.pool.Exec(ctx, query, id)
 	if err != nil {
 		// teams is referenced with ON DELETE RESTRICT by matches and players:
-		// a referenced team must not be deleted (domain decision), so map the
-		// FK violation to a sentinel instead of leaking it. Postgres raises
-		// 23001 (restrict_violation) for RESTRICT FKs and 23503
-		// (foreign_key_violation) for NO ACTION.
-		if store.Code(err, "23001", "23503") {
+		// a referenced team must not be deleted (domain decision). See
+		// IsDeleteRestricted for the SQLSTATE codes.
+		if store.IsDeleteRestricted(err) {
 			return store.ErrRecordInUse
 		}
 		return err

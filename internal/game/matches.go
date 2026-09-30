@@ -290,6 +290,13 @@ func (s *MatchStore) Delete(ctx context.Context, id, seasonID int) error {
 
 	result, err := s.pool.Exec(ctx, query, id, seasonID)
 	if err != nil {
+		// rides references matches with ON DELETE RESTRICT (ADR-018): a match
+		// with rides on it must not be deleted — the tokens would vanish with
+		// it. Same mapping as TeamStore.Delete; see IsDeleteRestricted for the
+		// SQLSTATE codes.
+		if store.IsDeleteRestricted(err) {
+			return store.ErrRecordInUse
+		}
 		return err
 	}
 
