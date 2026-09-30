@@ -325,7 +325,7 @@ func TestUpdateRoundHandler(t *testing.T) {
 			wantBody: []string{"could not be found"},
 		},
 		{
-			name:     "matching version header",
+			name: "matching version header",
 			// A number-only update on a created round: the lifecycle gates do
 			// not fire (no status transition), the version machinery is what is
 			// under test here.
