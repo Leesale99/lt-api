@@ -190,8 +190,7 @@ func (s *RoundStore) Open(ctx context.Context, round Round) (Round, error) {
 	}
 	// Commit below makes the deferred Rollback a harmless no-op (pgx returns
 	// ErrTxClosed, which we discard).
-	defer func() { _ = tx.Rollback(ctx) }() // Commit below makes this a
-	// harmless no-op (pgx returns ErrTxClosed, which we discard).
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx, seasonOpenToInProgressSQL, round.SeasonID); err != nil {
 		return Round{}, err
@@ -200,6 +199,106 @@ func (s *RoundStore) Open(ctx context.Context, round Round) (Round, error) {
 	round, err = s.updateRound(ctx, tx, round)
 	if err != nil {
 		return Round{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Round{}, err
+	}
+
+	return round, nil
+}
+
+// rideAutoUnlockSQL resolves every undecided won_pending ride of a closing
+// round to unlocked. Rides carry no round_id (ADR-018), so the round comes
+// from the join through matches. The state filter is the concurrency guard:
+// a player decision that lands first re-evaluates the WHERE and the row is
+// skipped — the single statement is the whole read-modify-write, no
+// SELECT ... FOR UPDATE. bonus_acc = 0 because rides_state_gate refuses a
+// non-zero acc on the unlocked arrival — the same rule ride.Unlock obeys,
+// inherited from one place by both arrival paths.
+const rideAutoUnlockSQL = `
+		UPDATE rides
+		SET state = 'unlocked', bonus_acc = 0, version = rides.version + 1
+		FROM matches
+		WHERE rides.match_id = matches.id
+		  AND matches.round_id = $1
+		  AND rides.state = 'won_pending'
+	`
+
+// rideAutoBurnSQL is the season-end counterpart of rideAutoUnlockSQL
+// (ADR-022): the last round's undecided rides are force-resolved to burned
+// instead — the chase option is unrepresentable once the season is over,
+// and the forfeited tokens move to TB. bonus_acc is deliberately left as
+// accrued: the gate couples acc to zero only on unlocked/lost arrivals.
+const rideAutoBurnSQL = `
+		UPDATE rides
+		SET state = 'burned', version = rides.version + 1
+		FROM matches
+		WHERE rides.match_id = matches.id
+		  AND matches.round_id = $1
+		  AND rides.state = 'won_pending'
+	`
+
+// seasonInProgressToClosedSQL closes the season. Conditional on
+// status = 'in_progress', so aiming it at a season that is not live updates
+// nothing — the same no-op shape as Open's season flip.
+const seasonInProgressToClosedSQL = `
+		UPDATE seasons
+		SET status = 'closed', version = version + 1
+		WHERE id = $1 AND status = 'in_progress'
+	`
+
+// Close transitions a round open → closed and, in the same transaction,
+// resolves every undecided won_pending ride of the round and — when the
+// round is the season's last — closes the season. Statement order is
+// load-bearing: the ride resolution runs first, because rounds_close_gate
+// refuses to close a round that still owns unresolved rides and evaluates
+// at the status flip — resolving after the flip would abort the tx. The
+// season flip runs last (the mirror of Open, which flips the season before
+// the round): the season must still be live while its round closes, and
+// rounds_progress_gate would refuse a round closing under an already-closed
+// season. The ride resolution is a single conditional UPDATE whose WHERE
+// clause is the concurrency guard, so no row locks are taken up front.
+// Callers must have verified the transition is open → closed; the version
+// check inside updateRound still guards against a concurrent change.
+func (s *RoundStore) Close(ctx context.Context, round Round) (Round, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Round{}, err
+	}
+
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Auto-resolution (ADR-022): rounds 1-37 unlock undecided rides; the
+	// season's last round burns them. System-initiated, but both arrivals
+	// ride the same legal transitions the players use, so a P0001 here is
+	// an app/DB disagreement and maps like RideStore does.
+	resolutionSQL := rideAutoUnlockSQL
+	if round.Number == roundsPerSeason {
+		resolutionSQL = rideAutoBurnSQL
+	}
+	if _, err := tx.Exec(ctx, resolutionSQL, round.ID); err != nil {
+		if store.IsTriggerViolation(err) {
+			return Round{}, ErrInvalidTransition
+		}
+		return Round{}, err
+	}
+
+	// The status flip: updateRound carries the version check against
+	// concurrent writers and is where both rounds gates land
+	// (P0001 → ErrRecordInUse). The season is still live here.
+	round, err = s.updateRound(ctx, tx, round)
+	if err != nil {
+		return Round{}, err
+	}
+
+	// The only season rule is a last-round predicate: the app-side check
+	// skips the statement entirely for rounds 1-37, and the conditional
+	// WHERE makes it a no-op if the season is not live.
+	if round.Number == roundsPerSeason {
+		if _, err := tx.Exec(ctx, seasonInProgressToClosedSQL, round.SeasonID); err != nil {
+			return Round{}, err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

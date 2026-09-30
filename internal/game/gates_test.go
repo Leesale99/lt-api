@@ -148,6 +148,10 @@ func TestRoundFreezeGate(t *testing.T) {
 			name: "round with a started match cannot return to open",
 			prepare: func(ctx context.Context, t *testing.T, f fixture) {
 				insertMatchRow(ctx, t, startedMatchSQL, f)
+				// Closing the round in the fixture must satisfy rounds_close_gate
+				// (000008): settle the match first, then the refusal below comes
+				// from the freeze gate, where it belongs.
+				mustExec(ctx, t, `UPDATE matches SET status = 'closed', home_score = 50, away_score = 49 WHERE id = (SELECT id FROM matches WHERE round_id = $1 LIMIT 1)`, f.round)
 				mustExec(ctx, t, `UPDATE rounds SET status = 'closed' WHERE id = $1`, f.round)
 			},
 			query:    `UPDATE rounds SET status = 'open' WHERE id = $1`,
@@ -158,6 +162,7 @@ func TestRoundFreezeGate(t *testing.T) {
 			name: "round with a started match cannot return to created",
 			prepare: func(ctx context.Context, t *testing.T, f fixture) {
 				insertMatchRow(ctx, t, startedMatchSQL, f)
+				mustExec(ctx, t, `UPDATE matches SET status = 'closed', home_score = 50, away_score = 49 WHERE id = (SELECT id FROM matches WHERE round_id = $1 LIMIT 1)`, f.round)
 				mustExec(ctx, t, `UPDATE rounds SET status = 'closed' WHERE id = $1`, f.round)
 			},
 			query:    `UPDATE rounds SET status = 'created' WHERE id = $1`,

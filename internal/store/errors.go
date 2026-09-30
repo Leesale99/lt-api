@@ -61,6 +61,13 @@ func IsUniqueViolation(err error, constraints ...string) bool {
 // instead of a 500.
 func IsFKViolation(err error) bool { return Code(err, "23503") }
 
+// IsDeleteRestricted reports whether err is a PostgreSQL violation meaning the
+// row is still referenced and must not be deleted: 23001 (restrict_violation)
+// for ON DELETE RESTRICT, or 23503 (foreign_key_violation) for the NO ACTION
+// that Postgres raises for deferred/unenforced-at-delete FKs. Call sites map
+// it to ErrRecordInUse.
+func IsDeleteRestricted(err error) bool { return Code(err, "23001", "23503") }
+
 // IsTriggerViolation reports whether err is a PostgreSQL raised exception
 // (P0001) — the ADR-007/ADR-008 gate pattern: BEFORE triggers RAISE
 // EXCEPTION with ERRCODE P0001 to refuse lifecycle-illegal writes, and the

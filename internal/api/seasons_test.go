@@ -22,7 +22,7 @@ func TestShowSeasonHandler(t *testing.T) {
 			name:     "existing season",
 			url:      "/v1/seasons/1",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"status": "closed"`},
+			wantBody: []string{`"status": "in_progress"`},
 		},
 		{
 			name:     "unknown season",
@@ -164,8 +164,10 @@ func TestUpdateSeasonHandler(t *testing.T) {
 		{
 			name: "regressing the lifecycle is rejected",
 			// Advisory check (seasons_freeze_gate backs it up in the DB):
-			// in_progress cannot go back to open.
-			url:      "/v1/seasons/2",
+			// in_progress cannot go back to open. Season 1 is the canonical
+			// in_progress season; season 2 is created, so its transitions
+			// are all forward.
+			url:      "/v1/seasons/1",
 			body:     `{"status":"open"}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"status", "earlier stage of the season lifecycle"},
@@ -196,7 +198,7 @@ func TestUpdateSeasonHandler(t *testing.T) {
 			url:      "/v1/seasons/2",
 			body:     `{}`,
 			wantCode: http.StatusOK,
-			wantBody: []string{`"status": "in_progress"`, `"version": 2`},
+			wantBody: []string{`"status": "created"`, `"version": 2`},
 		},
 		{
 			name:     "unknown status",
@@ -300,16 +302,19 @@ func TestDeleteSeasonHandler(t *testing.T) {
 		wantBody []string
 	}{
 		{
-			name:     "closed season is lifecycle-gated",
+			name: "in_progress season is lifecycle-gated",
+			// Season 1 is the canonical in_progress season (ADR-007).
 			url:      "/v1/seasons/1",
 			wantCode: http.StatusConflict,
 			wantBody: []string{"referenced by other records"},
 		},
 		{
-			name:     "in_progress season is lifecycle-gated",
+			name: "created season can be deleted",
+			// Season 2 is created with nothing started; the delete cascades
+			// its rounds, matches and players.
 			url:      "/v1/seasons/2",
-			wantCode: http.StatusConflict,
-			wantBody: []string{"referenced by other records"},
+			wantCode: http.StatusOK,
+			wantBody: []string{"successfully deleted"},
 		},
 		{
 			name:     "unknown season",
@@ -370,9 +375,11 @@ func TestDeleteCreatedSeasonHandler(t *testing.T) {
 	}
 	id := strings.TrimPrefix(rr.Header().Get("Location"), "/v1/seasons/")
 
-	// A round under the new season proves the cascade fires on delete.
+	// A round under the new season proves the cascade fires on delete. It
+	// stays created: the lifecycle gates (000008) refuse an open round under
+	// a season that is not live, and this season is freshly created.
 	if _, err := testPool.Exec(context.Background(),
-		`INSERT INTO rounds (season_id, number, status) VALUES ($1, 1, 'open')`, id); err != nil {
+		`INSERT INTO rounds (season_id, number, status) VALUES ($1, 1, 'created')`, id); err != nil {
 		t.Fatalf("seed round: %v", err)
 	}
 
@@ -413,19 +420,19 @@ func TestListSeasonsHandler(t *testing.T) {
 			name:     "no filters",
 			url:      "/v1/seasons",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 2`, `"status": "closed"`, `"status": "in_progress"`},
+			wantBody: []string{`"total_records": 2`, `"status": "in_progress"`, `"status": "created"`},
 		},
 		{
 			name:     "filter by id",
 			url:      "/v1/seasons?id=2",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 1`, `"status": "in_progress"`, `"id": 2`},
+			wantBody: []string{`"total_records": 1`, `"status": "created"`, `"id": 2`},
 		},
 		{
 			name:     "filter by status",
-			url:      "/v1/seasons?status=closed",
+			url:      "/v1/seasons?status=in_progress",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 1`, `"status": "closed"`},
+			wantBody: []string{`"total_records": 1`, `"status": "in_progress"`},
 		},
 		{
 			// Lowercase is the wire contract: vocabulary values are matched
@@ -437,9 +444,9 @@ func TestListSeasonsHandler(t *testing.T) {
 		},
 		{
 			name:     "combined id and status",
-			url:      "/v1/seasons?id=1&status=closed",
+			url:      "/v1/seasons?id=1&status=in_progress",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 1`, `"status": "closed"`},
+			wantBody: []string{`"total_records": 1`, `"status": "in_progress"`},
 		},
 		{
 			name:     "combined id and status with no match",
@@ -458,13 +465,13 @@ func TestListSeasonsHandler(t *testing.T) {
 			name:     "pagination honored",
 			url:      "/v1/seasons?page=2&page_size=1",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 2`, `"status": "in_progress"`, `"current_page": 2`},
+			wantBody: []string{`"total_records": 2`, `"status": "created"`, `"current_page": 2`},
 		},
 		{
 			name:     "descending sort",
 			url:      "/v1/seasons?sort=-id",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"status": "in_progress"`},
+			wantBody: []string{`"status": "created"`},
 		},
 		{
 			name:     "invalid status filter",

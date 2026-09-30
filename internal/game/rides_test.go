@@ -6,10 +6,8 @@ package game
 // separately: from a terminal state every command must fail with
 // ErrInvalidTransition, regardless of phase.
 //
-// The tests build Ride values as literals — Insert is a persistence stub
-// (tests plant rides through it and reset the slice via resetRides) and
-// mutating it from tests would couple tests to each other. Command inputs
-// (odds, next-match ID) come from the stores today; the tests pass the
+// The tests build Ride values as literals — no store round-trip and no
+// coupling from tests to each other. Command inputs (odds, next-match ID) come from the stores today; the tests pass the
 // values they were written against (odds 1.75, next match ID 1) as
 // literals.
 

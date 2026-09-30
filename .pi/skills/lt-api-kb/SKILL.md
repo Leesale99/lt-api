@@ -5,38 +5,57 @@ description: Write mechanics and rules routing for the lt-api Obsidian knowledge
 
 # lt-api knowledge base
 
-## Write mechanics (pi-obsidian tool)
+## Tool layering (hard rule)
 
-- Use the pi-obsidian tool's commands (`read`, `write`, `create`, `append`, `move`, `delete`, `search`, …) — never bash or sandbox file tools on vault paths.
-- Writes must be sequential, never parallel — parallel writes can silently produce empty files. Re-read every note after writing and verify the TAIL of the file, not just the head — writes have been observed to truncate silently.
-- `write`/`create` do not add the `.md` extension — use `path=` with the explicit `.md` (same for `move`).
-- `content=` (and `search query=`/`replace=`) must be one double-quoted value; raw newlines silently truncate the write — emit `\n` escapes instead. Inside, only `\"` `\n` `\t` `\r` are escapes; other backslashes pass through literally (so backticks stay plain, `\"` for `"`, single-quoted YAML scalars in frontmatter).
+Obsidian tool for EVERYTHING on vault paths — reads, greps, listings, counts, not just writes. Bash commands naming a vault path are rejected by a guard ("Command targets Obsidian vault …"); do not retry with cosmetic tweaks or route around via `cd` — that is the guard working, not a bug.
+
+## Primitives, ranked by reliability (verified 2026-10-01)
+
+1. **`eval code='…'` + `app.vault.modify(f, text)`** — the most reliable edit primitive. Actually applies, survives re-read, handles multi-line edits. Rendered snippets fail on literal apostrophes and dense syntax: avoid `'` in strings (or escape `''`), prefer `for` loops over `forEach`, use plain `String.replace(literal, literal)`.
+2. **Full `write` / `create`** — for new notes or full rewrites. Works, but see failure modes.
+3. **`prepend` / `append`** — top/bottom of file only; `append` cannot target a section (verified 2026-09-18: a line meant for `## http` landed under `## transactions` — for sectioned notes use full write).
+4. **`search`/`replace`** — last resort. No dry-run; replaces in every matching file vault-wide; see Blast radius.
+
+## Failure modes (each verified; re-read after every write, check the TAIL)
+
+| Behavior | Detail | Verified |
+|---|---|---|
+| Write reports success, did not land | `write path=…` lost content twice in a row (Home.md, 2026-10-01); a long em-dash filename created an empty file (2026-09-22). Retry with a shorter/ASCII name; verify by `read` | 09-22, 10-01 |
+| CLI `write file=` strips frontmatter | Overwriting an existing note starts it at the `# H1`; `updated:` gone. Repair: `prepend` re-attaches, but glues `---# Heading` (no closing separator). Fix with eval+modify | 10-01 |
+| `eval` result echo dropped | Same construct sometimes returns its value, sometimes `(eval ran; result echo was dropped by Obsidian 1.13.x)`. Never depend on the return value; verify the side effect with a `read`. To *know* a computed fact: write it to a probe note, read, delete | 10-01 |
+| eval replace acts global | A `c.replace(old, new)` on a unique anchor also flipped an unrelated checkbox in the same file. After ANY edit (eval, search, write) re-read the full region + neighbors | 09-30 |
+| `search` results stale | search (no replace) listed a phrase that existed in zero files (cross-checked on disk and by eval over all files). Treat as a hint about past state; verify load-bearing claims by re-read | 10-01 |
+| `search`/`replace` operator errors | Plain-text queries whose text before the first `: ` is not an operator error with `Operator "…" not recognized` — frontmatter lines (`status: open`) and task bullets (`- [ ] …`) both trip it. Use eval+modify for those targets | 09-23 |
+| Multi-line `replace=` not delivered | `\n`-escaped queries DO match (use that for uniqueness), but multi-line `\n` replacement through `search` reported `0 file(s)` and did nothing. Multi-line repairs: eval+modify or full write | 10-01 |
+| Parallel writes → empty files | Writes must be sequential | 09-1x |
+
+## Syntax rules (pi-obsidian tool)
+
+- `write`/`create`/`move` need the explicit `.md` (`path=`/`file=` do not add it).
+- `content=` (and `search query=`/`replace=`) must be ONE double-quoted value; raw newlines silently truncate — emit `\n` escapes. Only `\"` `\n` `\t` `\r` are escapes; other backslashes pass through.
 - `delete` moves to trash (recoverable).
-- `append` always writes at end-of-file — it cannot target a section. For sectioned notes (e.g. `Lessons/_Index.md` is grouped by tag), do a full `write` instead of an append-and-fix (verified 2026-09-18: appended index line landed under `## transactions` instead of `## http`).
-- `eval code=` quoting: inside double-quoted values, `\n`/`\t`/`\r` escapes are decoded into real characters, breaking JS string/regex literals. Single-quote the code value, or avoid escapes entirely.
 
-## search/replace — vault-wide blast radius (verified 2026-09-17)
+## Blast radius (`search`/`replace`)
 
-- `search query=x replace=y` replaces the matched substring in **every vault file whose content contains the query**. `file=` does NOT reliably scope the replace — a call scoped to one note flipped `status:` fields in five other files (templates and `Conventions.md` included).
-- Rules of engagement:
-  - Before replacing, run the same `query` WITHOUT `replace` — the output lists every file it would touch. That list is your blast radius; verify each file by full `read` afterwards.
-  - Only replace on queries that are unique vault-wide: long, content-anchored strings (a trigger wikilink line, a full sentence). Never short generic keys (`status: open`, `type: phase`), even when you pass `file=`.
-  - If the edit touches more than one file, or the query cannot be made unique — do a full `write` per file instead. Full-file `write` with `\n` escapes is the reliable path; use `search/replace` only for tiny surgical edits you have proven unique.
-- There is no dry-run mode: `preview=true` switches `search` to operator-query parsing (`query=status: active` errors with "Operator not recognized"). Do not treat it as a preview.
-- (observed once, 2026-09-20, cause undetermined) a multiline `search query=... replace=...` reported `0 file(s)` yet the first line of the target block (a `- [ ]` checkbox) was found flipped to `- [x]` on the subsequent read. Could also have been a concurrent manual edit by the user. Lesson regardless: after every search/replace, re-read the affected file and diff the full replaced block against expectations — a `0 file(s)` report does not prove nothing changed, and a partial application cannot be ruled out.
-- Multiline `\n`-escaped queries work and match exactly — this is how you make a query unique (e.g. span from `status: open` through the trigger line).
+- Before replacing, run the query WITHOUT `replace` — that list is the blast radius; verify each listed file afterwards by full `read`.
+- Only replace on long, content-anchored strings that are unique vault-wide. Never short generic keys (`status: open`, `type: phase`), even with `file=` — one scoped call flipped `status:` in five other files (2026-09-17).
+- Multi-file edits: full `write` or eval+modify per file, instead of one replace.
+- A `0 file(s)` report proves nothing — re-read and diff the region.
 
-## Write discipline
+## Content rules (unchanged)
 
-- Before writing any note: read the vault's `Conventions.md` (tags, skeletons, writing style), then start from the matching `_Templates/` note — its comment block carries the rules; delete it on use.
-- Never write unasked. At closure points ask two independent questions — did we decide something (ADR)? did we learn something (Lesson)? — propose entries, wait for approval.
-- Mechanical updates need no approval: task checkboxes, the `Now` section of `Home.md`, `Lessons/_Index.md` lines, phase `Knowledge` sections.
-- Keep the `Now` section of `Home.md` current at session end or task transition — the next session's briefing is that section and nothing more.
+- Read `Conventions.md` before writing; start from the matching `_Templates/` note (delete its comment block on use).
+- Never write unasked. At closure points ask two questions — did we decide something (ADR)? did we learn something (Lesson)? — propose, wait for approval.
+- No approval needed: task checkboxes, `Home.md` `Now`, `_Index.md` lines, phase `Knowledge` sections.
+- Keep `Home.md` `Now` current at session end or task transition — it is the next session's entire briefing.
 
-(observed 2026-09-23, once) `write file=` reported `Updated:` yet the note kept its previous content — two consecutive full-file writes onto the same note (`Lessons/_Index.md`, `Home.md`) lost their new/edited lines with no error and no visible truncation. Full-file `write` is NOT a reliable fallback; the reliable path for edits is short surgical `search query=... replace=...` calls with long unique content anchors, each reporting `1 file(s)`, followed by a re-read to confirm. `create` worked fine the same session.
+## Recipe: in-place edit of an existing note
 
-(observed 2026-09-22, cause undetermined) a `write path="...md" content=...` (long filename with an em-dash, ~2KB content) reported `Successfully wrote` but the file did not exist afterwards — `files` listed nothing new and a subsequent read said "not found". Retrying the identical content with a shorter filename succeeded. After any vault write, verify existence via `files` AND read the content back — a success report does not prove the write landed.
+1. `read` the note — confirm the exact anchor text and current frontmatter.
+2. `eval code='const f=app.vault.getAbstractFileByPath("<path>"); let t=await app.vault.read(f); t=t.replace("<exact unique old>","<new>"); await app.vault.modify(f, t);'`
+3. `read` again — verify the changed region AND its neighbors (global-replace hazard).
+4. If frontmatter was involved and the last write was `write file=` — expect stripped/glued frontmatter; repair with eval+modify, not another blind write.
 
 ## A message to future agents
 
-This skill file is the cross-session memory for vault write mechanics — whatever you learn about tool misbehavior here dies with your session unless it lands in this file. If a command behaves differently from what this file promises, do not silently work around it: (1) verify the actual behavior (scope the failure, don't guess from one sample), (2) correct or delete the false rule, (3) add the finding with the date it was verified. This file must describe the tool as it behaves, not as we wish it did — stale rules here cause the same corruption again in a session that cannot see yours.
+This file is the cross-session memory for vault write mechanics — findings die with the session unless they land here. If the tool behaves differently from what this file promises: (1) verify the actual behavior (scope the failure, don't extrapolate from one sample), (2) correct or delete the false rule, (3) add the finding with the date verified. Describe the tool as it behaves, not as we wish it did.

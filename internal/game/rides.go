@@ -3,9 +3,12 @@ package game
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 	"lt-api.aleksrdvn.com/internal/store"
@@ -34,7 +37,7 @@ type Ride struct {
 	TeamID       int             `json:"team_id"`
 	MatchID      int             `json:"match_id"`
 	State        RideState       `json:"state"`
-	TokensLocked decimal.Decimal `json:"token_locked"`
+	TokensLocked decimal.Decimal `json:"tokens_locked"`
 	BaseAtLock   decimal.Decimal `json:"base_at_lock"`
 	Acc          decimal.Decimal `json:"-"`
 	Streak       int             `json:"-"`
@@ -45,7 +48,7 @@ func ValidateRide(v *validator.Validator, ride Ride) {
 	v.Check(ride.PlayerID > 0, "player_id", "must be provided")
 	v.Check(ride.TeamID > 0, "team_id", "must be provided")
 	v.Check(ride.MatchID > 0, "match_id", "must be provided")
-	v.Check(ride.TokensLocked.GreaterThan(decimal.Zero), "token_locked", "must be greater than zero")
+	v.Check(ride.TokensLocked.GreaterThan(decimal.Zero), "tokens_locked", "must be greater than zero")
 }
 
 var rideStates = []RideState{RideLocked, RideWonPending, RideBurned, RideUnlocked, RideLost}
@@ -58,76 +61,182 @@ type RideStore struct {
 	pool *pgxpool.Pool
 }
 
-// rides is the in-memory persistence stub — Phase 03 replaces it with the
-// rides table. It starts empty; tests plant rides through Insert and reset
-// it via resetRides (service_test.go), mirroring the DB cleanup().
-var rides []Ride
-
-// resetRides clears the ride stub. Test-only hygiene, mirroring the DB
-// fixture's cleanup(): planted rides and their ever-growing IDs must not
-// leak across subtests.
-func resetRides() {
-	rides = nil
-}
-
 func (s *RideStore) Insert(ctx context.Context, ride Ride) (Ride, error) {
-	// Persistence facts only: the domain Create command owns the ADR-019
-	// initial-state contract, so Insert stamps server-side values (ID,
-	// created_at) and stores the ride exactly as the domain produced it.
-	ride.ID = len(rides) + 1
-	ride.CreatedAt = time.Now()
+	query := `
+		INSERT INTO rides (player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, created_at, version
+	`
+	args := []any{
+		ride.PlayerID,
+		ride.TeamID,
+		ride.MatchID,
+		ride.State,
+		ride.TokensLocked,
+		ride.BaseAtLock,
+		ride.Acc,
+		ride.Streak,
+	}
 
-	rides = append(rides, ride)
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&ride.ID, &ride.CreatedAt, &ride.Version)
+	if err != nil {
+		switch {
+		case store.IsFKViolation(err):
+			// The referenced player, team or match does not exist — the
+			// handler validates only positivity, so an unknown parent can
+			// only be caught here (same convention as PlayerStore.Insert).
+			return Ride{}, store.ErrRecordNotFound
+		default:
+			return Ride{}, err
+		}
+	}
 
 	return ride, nil
 }
 
 func (s *RideStore) Get(ctx context.Context, id int) (Ride, error) {
-	for _, ride := range rides {
-		if ride.ID == id {
-			return ride, nil
+	query := `
+		SELECT id, player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak, created_at, version
+		FROM rides
+		WHERE id = $1
+	`
+	var ride Ride
+
+	err := s.pool.QueryRow(ctx, query, id).Scan(
+		&ride.ID,
+		&ride.PlayerID,
+		&ride.TeamID,
+		&ride.MatchID,
+		&ride.State,
+		&ride.TokensLocked,
+		&ride.BaseAtLock,
+		&ride.Acc,
+		&ride.Streak,
+		&ride.CreatedAt,
+		&ride.Version,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Ride{}, store.ErrRecordNotFound
+		default:
+			return Ride{}, err
 		}
 	}
 
-	return Ride{}, store.ErrRecordNotFound
+	return ride, nil
 }
 
 func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID int, state RideState, filters store.Filters) ([]Ride, store.Metadata, error) {
-	// Zero-valued filters are ignored; provided filters are ANDed.
-	filteredRides := []Ride{}
-	for _, ride := range rides {
-		if id != 0 && ride.ID != id {
-			continue
-		}
-		if playerID != 0 && ride.PlayerID != playerID {
-			continue
-		}
-		if teamID != 0 && ride.TeamID != teamID {
-			continue
-		}
-		if matchID != 0 && ride.MatchID != matchID {
-			continue
-		}
-		if state != "" && ride.State != state {
-			continue
-		}
-		filteredRides = append(filteredRides, ride)
+	conds, args := []string{}, []any{}
+	if id != 0 {
+		args = append(args, id)
+		conds = append(conds, fmt.Sprintf("id = $%d", len(args)))
+	}
+	if playerID != 0 {
+		args = append(args, playerID)
+		conds = append(conds, fmt.Sprintf("player_id = $%d", len(args)))
+	}
+	if teamID != 0 {
+		args = append(args, teamID)
+		conds = append(conds, fmt.Sprintf("team_id = $%d", len(args)))
+	}
+	if matchID != 0 {
+		args = append(args, matchID)
+		conds = append(conds, fmt.Sprintf("match_id = $%d", len(args)))
+	}
+	if state != "" {
+		args = append(args, state)
+		conds = append(conds, fmt.Sprintf("state = $%d", len(args)))
 	}
 
-	metadata := store.CalculateMetadata(len(filteredRides), filters.Page, filters.PageSize)
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
 
-	return filteredRides, metadata, nil
+	query := fmt.Sprintf(`
+		SELECT count(*) OVER(), id, player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak, version
+		FROM rides%s
+		ORDER BY %s %s, id ASC
+		LIMIT $%d OFFSET $%d
+	`, where, filters.SortColumn(), filters.SortDirection(), len(args)+1, len(args)+2)
+
+	args = append(args, filters.Limit(), filters.Offset())
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, store.Metadata{}, err
+	}
+
+	defer rows.Close()
+
+	totalRecords := 0
+	rides := []Ride{}
+
+	for rows.Next() {
+		var ride Ride
+
+		err := rows.Scan(
+			&totalRecords,
+			&ride.ID,
+			&ride.PlayerID,
+			&ride.TeamID,
+			&ride.MatchID,
+			&ride.State,
+			&ride.TokensLocked,
+			&ride.BaseAtLock,
+			&ride.Acc,
+			&ride.Streak,
+			&ride.Version,
+		)
+		if err != nil {
+			return nil, store.Metadata{}, err
+		}
+
+		rides = append(rides, ride)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, store.Metadata{}, err
+	}
+
+	metadata := store.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
+
+	return rides, metadata, nil
 }
 
 func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
-	for i, r := range rides {
-		if r.ID == ride.ID {
-			rides[i] = ride
-			return rides[i], nil
+	query := `
+		UPDATE rides
+		SET match_id = $1, state = $2, bonus_acc = $3, streak = $4, version = version + 1
+		WHERE id = $5 AND version = $6
+		RETURNING id, player_id, team_id, version
+	`
+	args := []any{ride.MatchID, ride.State, ride.Acc, ride.Streak, ride.ID, ride.Version}
+
+	err := s.pool.QueryRow(ctx, query, args...).Scan(
+		&ride.ID,
+		&ride.PlayerID,
+		&ride.TeamID,
+		&ride.Version,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Ride{}, store.ErrEditConflict
+		case store.IsTriggerViolation(err):
+			// rides_state_gate (ADR-020): the DB refused the transition.
+			// Deliberately ErrInvalidTransition — the invalid-state 409 —
+			// NOT ErrRecordInUse: the row is not referenced by anything,
+			// its state machine rejected the write.
+			return Ride{}, ErrInvalidTransition
+		default:
+			return Ride{}, err
 		}
 	}
 
-	return Ride{}, store.ErrRecordNotFound
+	return ride, nil
 }
 
 var transitions = map[RideState]map[RoundPhase][]RideState{
@@ -246,6 +355,11 @@ func (r *Ride) Unlock(phase RoundPhase) error {
 	return nil
 }
 
+// streakRate is a ≤2-dp decimal by contract (ADR-021): the bonus scale chain
+// in the rides schema assumes the multiplier 1 + streakRate×streak never
+// carries more than 2 decimal places. Tuning beyond that budget re-opens
+// silent rounding — declare the new budget in the ADR and widen bonus_acc
+// before changing this constant.
 var streakRate = decimal.NewFromFloat(0.20)
 
 func calculateBonus(matchOdds, tokensLocked, acc decimal.Decimal, streak int) decimal.Decimal {

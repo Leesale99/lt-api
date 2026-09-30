@@ -20,10 +20,11 @@ func TestShowRoundHandler(t *testing.T) {
 		wantBody []string
 	}{
 		{
-			name:     "existing round",
-			url:      "/v1/rounds/2",
+			name: "existing round",
+			// Round 3 is the canonical open round (ActionPhase).
+			url:      "/v1/rounds/3",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"number": 2`, `"status": "open"`},
+			wantBody: []string{`"number": 3`, `"status": "open"`},
 		},
 		{
 			name:     "unknown round",
@@ -86,11 +87,12 @@ func TestCreateRoundHandler(t *testing.T) {
 			wantBody: []string{"unknown key"},
 		},
 		{
-			name:     "valid round",
+			name: "valid round",
+			// Season 1 hosts numbers 1-5; 6 is the first free one.
 			url:      "/v1/seasons/1/rounds",
-			body:     `{"number":3}`,
+			body:     `{"number":6}`,
 			wantCode: http.StatusCreated,
-			wantBody: []string{`"season_id": 1`, `"number": 3`, `"status": "created"`},
+			wantBody: []string{`"season_id": 1`, `"number": 6`, `"status": "created"`},
 		},
 		{
 			name:     "unknown season",
@@ -178,17 +180,35 @@ func TestUpdateRoundHandler(t *testing.T) {
 		body     string
 		wantCode int
 		wantBody []string
+		// setup plants state the lifecycle gates (000008) require for the
+		// statement under test, e.g. settling a round's matches before a
+		// close.
+		setup func(t *testing.T)
 	}{
 		{
-			name:     "valid number update",
-			url:      "/v1/seasons/1/rounds/2",
-			body:     `{"number":5}`,
+			name: "valid number update",
+			// Round 4 is a created round; 6 is free in season 1.
+			url:      "/v1/seasons/1/rounds/4",
+			body:     `{"number":6}`,
 			wantCode: http.StatusOK,
-			wantBody: []string{`"number": 5`, `"version": 2`},
+			wantBody: []string{`"number": 6`, `"version": 2`},
 		},
 		{
-			name:     "valid status update",
-			url:      "/v1/seasons/1/rounds/2",
+			name: "valid status update",
+			// Round 3 is the canonical open round. rounds_close_gate (000008)
+			// refuses a close over unsettled matches, so the fixture settles
+			// them first: starts_at moves into the past (the score constraints
+			// and the freeze gate key on it); the close transition stamps
+			// ended_at. The rides side of the gate is empty in this fixture.
+			setup: func(t *testing.T) {
+				if _, err := testPool.Exec(context.Background(),
+					`UPDATE matches SET starts_at = now() - interval '3 hours',
+						status = 'closed', home_score = 2, away_score = 1
+					 WHERE round_id = 3`); err != nil {
+					t.Fatalf("settle round 3 matches: %v", err)
+				}
+			},
+			url:      "/v1/seasons/1/rounds/3",
 			body:     `{"status":"closed"}`,
 			wantCode: http.StatusOK,
 			wantBody: []string{`"status": "closed"`, `"version": 2`},
@@ -197,7 +217,7 @@ func TestUpdateRoundHandler(t *testing.T) {
 			// Lowercase is the wire contract: vocabulary values are matched
 			// exactly, there is no server-side normalization.
 			name:     "uppercase status is rejected",
-			url:      "/v1/seasons/1/rounds/2",
+			url:      "/v1/seasons/1/rounds/3",
 			body:     `{"status":"CLOSED"}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"status", "must be one of: created, open, closed"},
@@ -205,7 +225,8 @@ func TestUpdateRoundHandler(t *testing.T) {
 		{
 			name: "regressing the lifecycle is rejected",
 			// Advisory check (rounds_freeze_gate backs it up in the DB):
-			// round 1 hosts the canonical started match.
+			// round 1 is closed with started matches; regression is also
+			// rank-rejected without them.
 			url:      "/v1/seasons/1/rounds/1",
 			body:     `{"status":"created"}`,
 			wantCode: http.StatusUnprocessableEntity,
@@ -234,10 +255,10 @@ func TestUpdateRoundHandler(t *testing.T) {
 		},
 		{
 			name:     "empty object is a no-op",
-			url:      "/v1/seasons/1/rounds/2",
+			url:      "/v1/seasons/1/rounds/4",
 			body:     `{}`,
 			wantCode: http.StatusOK,
-			wantBody: []string{`"number": 2`, `"version": 2`},
+			wantBody: []string{`"number": 4`, `"version": 2`},
 		},
 		{
 			name:     "number zero",
@@ -268,11 +289,12 @@ func TestUpdateRoundHandler(t *testing.T) {
 			wantBody: []string{"unique values"},
 		},
 		{
-			name:     "same number in another season is fine",
-			url:      "/v1/seasons/2/rounds/3",
-			body:     `{"number":2}`,
+			name: "same number in another season is fine",
+			// Round 6 is season 2's number-1 round; 3 is free there.
+			url:      "/v1/seasons/2/rounds/6",
+			body:     `{"number":3}`,
 			wantCode: http.StatusOK,
-			wantBody: []string{`"number": 2`},
+			wantBody: []string{`"number": 3`},
 		},
 		{
 			name:     "unknown round",
@@ -297,24 +319,27 @@ func TestUpdateRoundHandler(t *testing.T) {
 		},
 		{
 			name:     "round in another season",
-			url:      "/v1/seasons/1/rounds/3",
+			url:      "/v1/seasons/1/rounds/6",
 			body:     `{"number":5}`,
 			wantCode: http.StatusNotFound,
 			wantBody: []string{"could not be found"},
 		},
 		{
-			name:     "matching version header",
-			url:      "/v1/seasons/1/rounds/2",
+			name: "matching version header",
+			// A number-only update on a created round: the lifecycle gates do
+			// not fire (no status transition), the version machinery is what is
+			// under test here.
+			url:      "/v1/seasons/1/rounds/4",
 			headers:  map[string]string{"X-Expected-Version": "1"},
-			body:     `{"status":"closed"}`,
+			body:     `{"number":6}`,
 			wantCode: http.StatusOK,
 			wantBody: []string{`"version": 2`},
 		},
 		{
 			name:     "stale version header",
-			url:      "/v1/seasons/1/rounds/2",
+			url:      "/v1/seasons/1/rounds/4",
 			headers:  map[string]string{"X-Expected-Version": "9"},
-			body:     `{"status":"closed"}`,
+			body:     `{"number":9}`,
 			wantCode: http.StatusConflict,
 			wantBody: []string{"edit conflict"},
 		},
@@ -324,6 +349,9 @@ func TestUpdateRoundHandler(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			reset(t)
 			app := newTestApplication()
+			if tt.setup != nil {
+				tt.setup(t)
+			}
 
 			var reader io.Reader
 			if tt.body != "" {
@@ -356,8 +384,10 @@ func TestUpdateRoundPersists(t *testing.T) {
 	reset(t)
 	app := newTestApplication()
 
-	req := httptest.NewRequest(http.MethodPatch, "/v1/seasons/1/rounds/2",
-		strings.NewReader(`{"number":7,"status":"closed"}`))
+	req := httptest.NewRequest(http.MethodPatch, "/v1/seasons/1/rounds/4",
+		// Number-only: round 4 has live matches, so closing it would hit
+		// rounds_close_gate — the persistence check needs no status change.
+		strings.NewReader(`{"number":7}`))
 	rr := httptest.NewRecorder()
 	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
@@ -369,11 +399,11 @@ func TestUpdateRoundPersists(t *testing.T) {
 	var status string
 	var version int
 	err := testPool.QueryRow(context.Background(),
-		`SELECT number, status, version FROM rounds WHERE id = 2`).Scan(&number, &status, &version)
+		`SELECT number, status, version FROM rounds WHERE id = 4`).Scan(&number, &status, &version)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if number != 7 || status != "closed" || version != 2 {
+	if number != 7 || status != "created" || version != 2 {
 		t.Fatalf("row not updated: number=%d status=%q version=%d", number, status, version)
 	}
 }
@@ -390,25 +420,25 @@ func TestDeleteRoundHandler(t *testing.T) {
 	}{
 		{
 			name: "closed round is lifecycle-gated",
-			url:  "/v1/seasons/1/rounds/4",
-			// number 3 is free in season 1 (canonical round 3 lives in season 2),
-			// so the (season_id, number) unique constraint does not fire
-			seed:     `INSERT INTO rounds (season_id, number, status) VALUES (1, 3, 'closed')`,
+			// Round 1 is the canonical closed round (ADR-008).
+			url:      "/v1/seasons/1/rounds/1",
 			wantCode: http.StatusConflict,
 			wantBody: []string{"referenced by other records"},
 		},
 		{
 			name: "open round with a started match is lifecycle-gated",
-			url:  "/v1/seasons/1/rounds/1",
-			// Round 1 hosts the canonical started match; the gate refuses the
-			// delete because it would cascade the match away (ADR-008, same
-			// rule as the seasons delete gate).
+			// The fixture's open round has no started matches, so one is
+			// seeded: the gate refuses the delete because it would cascade the
+			// match away (ADR-008, same rule as the seasons delete gate).
+			seed:     `INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at) VALUES (1, 3, 1, 2, 1.5, 2.5, 'created', now() - interval '1 hour')`,
+			url:      "/v1/seasons/1/rounds/3",
 			wantCode: http.StatusConflict,
 			wantBody: []string{"referenced by other records"},
 		},
 		{
-			name:     "open round can be deleted",
-			url:      "/v1/seasons/1/rounds/2",
+			name: "open round can be deleted",
+			// Round 3 without the seeded started match is deletable.
+			url:      "/v1/seasons/1/rounds/3",
 			wantCode: http.StatusOK,
 			wantBody: []string{"successfully deleted"},
 		},
@@ -432,7 +462,7 @@ func TestDeleteRoundHandler(t *testing.T) {
 		},
 		{
 			name:     "round in another season",
-			url:      "/v1/seasons/1/rounds/3",
+			url:      "/v1/seasons/1/rounds/6",
 			wantCode: http.StatusNotFound,
 			wantBody: []string{"could not be found"},
 		},
@@ -468,7 +498,7 @@ func TestDeleteRoundHandler(t *testing.T) {
 // TestDeleteOpenRoundCascadesMatches covers the permitted path of the rounds
 // delete gate: an open round whose matches have not started is hard-deleted
 // and the cascade removes them (a started match would make the round durable
-// — round 1 hosts the canonical one and is gated, see TestDeleteRoundHandler).
+// — TestDeleteRoundHandler seeds one into round 3 for the gated case).
 func TestDeleteOpenRoundCascadesMatches(t *testing.T) {
 	requireDB(t)
 
@@ -478,12 +508,12 @@ func TestDeleteOpenRoundCascadesMatches(t *testing.T) {
 	// A match that has not started yet does not make the round durable.
 	_, err := testPool.Exec(context.Background(),
 		`INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at)
-		VALUES (1, 2, 1, 2, 1.5, 2.5, 'created', now() + interval '7 days')`)
+		VALUES (1, 3, 1, 2, 1.5, 2.5, 'created', now() + interval '7 days')`)
 	if err != nil {
 		t.Fatalf("insert future match: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodDelete, "/v1/seasons/1/rounds/2", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/v1/seasons/1/rounds/3", nil)
 	rr := httptest.NewRecorder()
 	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
@@ -494,13 +524,13 @@ func TestDeleteOpenRoundCascadesMatches(t *testing.T) {
 	var rounds, matches int
 	err = testPool.QueryRow(context.Background(),
 		`SELECT
-			(SELECT count(*) FROM rounds WHERE id = 2),
-			(SELECT count(*) FROM matches WHERE round_id = 2)`).Scan(&rounds, &matches)
+			(SELECT count(*) FROM rounds WHERE id = 3),
+			(SELECT count(*) FROM matches WHERE round_id = 3)`).Scan(&rounds, &matches)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rounds != 0 || matches != 0 {
-		t.Fatalf("round 2 not fully deleted: %d round(s), %d match(es) remain", rounds, matches)
+		t.Fatalf("round 3 not fully deleted: %d round(s), %d match(es) remain", rounds, matches)
 	}
 }
 
@@ -517,13 +547,13 @@ func TestListRoundsHandler(t *testing.T) {
 			name:     "no filters",
 			url:      "/v1/rounds",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 3`, `"number": 1`, `"number": 2`},
+			wantBody: []string{`"total_records": 7`, `"number": 1`, `"number": 2`},
 		},
 		{
 			name:     "filter by season_id",
 			url:      "/v1/rounds?season_id=1",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 2`, `"season_id": 1`},
+			wantBody: []string{`"total_records": 5`, `"season_id": 1`},
 		},
 		{
 			name:     "filter by season_id no match",
@@ -533,16 +563,16 @@ func TestListRoundsHandler(t *testing.T) {
 			wantBody: []string{`"rounds": []`},
 		},
 		{
-			name:     "filter by status",
+			name:     "filter by status open",
 			url:      "/v1/rounds?status=open",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 3`},
+			wantBody: []string{`"total_records": 1`},
 		},
 		{
-			name:     "filter by status no match",
+			name:     "filter by status closed",
 			url:      "/v1/rounds?status=closed",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"rounds": []`},
+			wantBody: []string{`"total_records": 2`},
 		},
 		{
 			// Lowercase is the wire contract: vocabulary values are matched
@@ -553,10 +583,11 @@ func TestListRoundsHandler(t *testing.T) {
 			wantBody: []string{"status", "must be one of: created, open, closed"},
 		},
 		{
-			name:     "combined season_id and status",
-			url:      "/v1/rounds?season_id=2&status=open",
+			name: "combined season_id and status",
+			// Round 3 is season 1's only open round.
+			url:      "/v1/rounds?season_id=1&status=open",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 1`, `"season_id": 2`, `"number": 1`},
+			wantBody: []string{`"total_records": 1`, `"season_id": 1`, `"number": 3`},
 		},
 		{
 			name:     "combined season_id and status with no match",
@@ -568,25 +599,25 @@ func TestListRoundsHandler(t *testing.T) {
 			name:     "season_id zero is no filter",
 			url:      "/v1/rounds?season_id=0",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 3`},
+			wantBody: []string{`"total_records": 7`},
 		},
 		{
 			name:     "pagination honored",
 			url:      "/v1/rounds?page=2&page_size=1",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"total_records": 3`, `"current_page": 2`, `"number": 2`},
+			wantBody: []string{`"total_records": 7`, `"current_page": 2`, `"number": 2`},
 		},
 		{
 			name:     "sort by number ascending",
 			url:      "/v1/rounds?page_size=1&sort=number",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"number": 1`, `"total_records": 3`},
+			wantBody: []string{`"number": 1`, `"total_records": 7`},
 		},
 		{
 			name:     "sort by number descending",
 			url:      "/v1/rounds?page_size=1&sort=-number",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"number": 2`, `"total_records": 3`},
+			wantBody: []string{`"number": 5`, `"total_records": 7`},
 		},
 		{
 			name:     "invalid status filter",

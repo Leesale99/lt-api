@@ -212,6 +212,11 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 	// goes through RoundStore.Open's transaction rather than Update.
 	if current.Status == game.RoundCreated && round.Status == game.RoundOpen {
 		round, err = app.Game.Store.Rounds.Open(ctx, round)
+	} else if current.Status == game.RoundOpen && round.Status == game.RoundClosed {
+		// ADR-022: closing resolves undecided rides (auto-unlock; auto-burn on
+		// the season's last round) and may close the season — one tx, so it
+		// bypasses Update like the open transition does.
+		round, err = app.Game.Store.Rounds.Close(ctx, round)
 	} else {
 		round, err = app.Game.Store.Rounds.Update(ctx, round)
 	}
@@ -222,9 +227,18 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 		case errors.Is(err, store.ErrDuplicateRecord):
 			app.duplicateRecordResponse(w, r)
 		case errors.Is(err, store.ErrRecordInUse):
-			// rounds_freeze_gate: a match of this round has started and the
-			// update tried to regress it (ADR-008).
+			// A DB gate refused: rounds_freeze_gate (the update tried to
+			// regress a round with started matches, ADR-008) or
+			// rounds_close_gate (close over unresolved rides, ADR-022).
 			app.recordFrozenResponse(w, r)
+		case errors.Is(err, game.ErrInvalidTransition):
+			// RoundStore.Close's ride resolution was refused by a rides gate
+			// (ADR-020). Both arrivals there (auto-unlock, auto-burn) are
+			// legal transitions the players can also take, so a refusal means
+			// the app and the DB disagree — a bug, not client input. A 409
+			// would blame the caller for our inconsistency; this case is
+			// deliberately a 500 and should be unreachable in practice.
+			app.serverErrorResponse(w, r, err)
 		default:
 			app.serverErrorResponse(w, r, err)
 		}

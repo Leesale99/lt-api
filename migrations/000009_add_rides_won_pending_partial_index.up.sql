@@ -1,0 +1,30 @@
+-- Partial index on the won_pending subset (ADR-023): the round-close
+-- statements filter rides by match_id AND state = 'won_pending' — the
+-- rounds_close_gate EXISTS backstop and the auto-unlock/auto-burn
+-- UPDATE ... FROM. Without it, both seq-scan the whole rides table
+-- whenever the planner sees won_pending as a large fraction of the heap,
+-- and the gate's seq-scan cost grows with lifetime ride history, not
+-- with the handful of unresolved rides it is actually looking for.
+--
+-- Measured (EXPLAIN ANALYZE, BUFFERS; 50k rides, 10k won_pending on the
+-- closing round) before this migration:
+--   gate EXISTS, unresolved round:  seq scan, 508 buffers, ~8.6 ms
+--   auto-unlock UPDATE:             seq scan join, 650 buffers, ~15.8 ms
+--   gate EXISTS, resolved round:    seq scan, 670 buffers, ~20 ms
+-- after:
+--   gate EXISTS, unresolved round:  index-only scan, 8 buffers, ~0.06 ms
+--   auto-unlock UPDATE:             bitmap heap scan, 154 buffers, ~2.9 ms
+--   gate EXISTS, resolved round:    STILL a seq scan (~20 ms) — the
+--     planner prices per-match probes above the scan because it estimates
+--     won_pending rides per match_id from table-wide stats; it cannot
+--     know at plan time that this round's rides are already resolved.
+--     The common-case scan is the accepted cost (linear in rides table
+--     size); revisit only if the rides table reaches millions of rows.
+--
+-- The predicate keeps the index transient: rides leave won_pending at
+-- their round's close or the player's decision, so the index stays small
+-- (88 kB vs 544 kB for rides_match_id_idx in the measurement). The plain
+-- rides_match_id_idx stays — it serves FK RESTRICT enforcement, the
+-- Phase 04 ResolveMatch, and GetAll filters.
+CREATE INDEX rides_won_pending_match_id_idx ON rides (match_id)
+  WHERE state = 'won_pending';
