@@ -37,10 +37,10 @@ func (app *Application) gameErrorResponse(w http.ResponseWriter, r *http.Request
 
 func (app *Application) createRideHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		PlayerID     int     `json:"player_id"`
-		TeamID       int     `json:"team_id"`
-		MatchID      int     `json:"match_id"`
-		TokensLocked float64 `json:"token_locked"`
+		PlayerID     int   `json:"player_id"`
+		TeamID       int   `json:"team_id"`
+		MatchID      int   `json:"match_id"`
+		TokensLocked int64 `json:"tokens_locked"`
 	}
 
 	err := app.readJSON(w, r, &input)
@@ -62,7 +62,7 @@ func (app *Application) createRideHandler(w http.ResponseWriter, r *http.Request
 		PlayerID:     input.PlayerID,
 		TeamID:       input.TeamID,
 		MatchID:      input.MatchID,
-		TokensLocked: decimal.NewFromFloat(input.TokensLocked),
+		TokensLocked: decimal.NewFromInt(input.TokensLocked),
 		BaseAtLock:   token.Base,
 	}
 
