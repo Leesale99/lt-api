@@ -95,7 +95,7 @@ func TestValidateRide(t *testing.T) {
 			v := validator.New()
 			ValidateRide(v, ride)
 
-			if tt.wantErrs == nil || len(tt.wantErrs) == 0 {
+			if len(tt.wantErrs) == 0 {
 				if !v.Valid() {
 					t.Fatalf("ValidateRide() = %v, want no errors", v.Errors)
 				}
