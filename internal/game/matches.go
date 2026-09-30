@@ -349,19 +349,41 @@ func (s *MatchStore) Update(ctx context.Context, match Match) (Match, error) {
 	return match, nil
 }
 
-func (s *MatchStore) PhaseWindow(ctx context.Context, roundID int) (*time.Time, *time.Time, error) {
+// PhaseForMatch returns the ride-phase inputs for the round the given
+// match belongs to, in one statement: the round status (the ErrRoundNotOpen
+// gate input) plus the phase window — min(starts_at), max(ended_at) over
+// the round's matches.
+//
+// One statement, not three reads: the round-status gate and the window
+// come from the same snapshot with no explicit transaction, and the old
+// match-to-round hop (Matches.Get → Rounds.Get → PhaseWindow) is gone.
+// Phase stays derived in Go from these facts (ADR-017); the store returns
+// only facts.
+//
+// GROUP BY r.id suffices for selecting r.status: r.id is rounds' primary
+// key, so PostgreSQL treats every other rounds column as functionally
+// dependent (single-valued per group).
+func (s *MatchStore) PhaseForMatch(ctx context.Context, matchID int) (RoundStatus, *time.Time, *time.Time, error) {
 	query := `
-		SELECT min(starts_at), max(ended_at)
-		FROM matches
-		WHERE round_id = $1
+		SELECT r.status, min(m.starts_at), max(m.ended_at)
+		FROM matches m
+		INNER JOIN rounds r ON r.id = m.round_id
+		WHERE m.id = $1
+		GROUP BY r.id
 	`
+	var status RoundStatus
 	var firstStartsAt, lastEndedAt *time.Time
-	err := s.pool.QueryRow(ctx, query, roundID).Scan(&firstStartsAt, &lastEndedAt)
+	err := s.pool.QueryRow(ctx, query, matchID).Scan(&status, &firstStartsAt, &lastEndedAt)
 	if err != nil {
-		return nil, nil, err
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return "", nil, nil, store.ErrRecordNotFound
+		default:
+			return "", nil, nil, err
+		}
 	}
 
-	return firstStartsAt, lastEndedAt, nil
+	return status, firstStartsAt, lastEndedAt, nil
 }
 
 func (s *MatchStore) NextForTeam(ctx context.Context, teamID int) (Match, error) {

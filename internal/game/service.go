@@ -28,23 +28,13 @@ func NewService(store *Store) *Service {
 }
 
 func (s *Service) RidePhase(ctx context.Context, ride Ride) (RoundPhase, error) {
-	match, err := s.Store.Matches.Get(ctx, ride.MatchID)
+	status, firstStartsAt, lastEndedAt, err := s.Store.Matches.PhaseForMatch(ctx, ride.MatchID)
 	if err != nil {
 		return "", err
 	}
 
-	round, err := s.Store.Rounds.Get(ctx, match.RoundID)
-	if err != nil {
-		return "", err
-	}
-
-	if round.Status != RoundOpen {
+	if status != RoundOpen {
 		return "", ErrRoundNotOpen
-	}
-
-	firstStartsAt, lastEndedAt, err := s.Store.Matches.PhaseWindow(ctx, round.ID)
-	if err != nil {
-		return "", err
 	}
 
 	phase := Phase(time.Now(), firstStartsAt, lastEndedAt)

@@ -25,7 +25,7 @@ import (
 
 // migFile lists all migrations the game schema needs: 000001 creates the
 // base hierarchy, 000005 adds matches.ended_at — phase derivation reads it
-// via MatchStore.PhaseWindow, so every ride service call depends on it.
+// via MatchStore.PhaseForMatch, so every ride service call depends on it.
 var migFiles = []string{
 	"../../migrations/000001_create_initial_game_models.up.sql",
 	"../../migrations/000005_add_matches_ended_at.up.sql",
