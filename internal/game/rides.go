@@ -171,14 +171,14 @@ func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID in
 
 	defer rows.Close()
 
-	totalRecors := 0
+	totalRecords := 0
 	rides := []Ride{}
 
 	for rows.Next() {
 		var ride Ride
 
 		err := rows.Scan(
-			&totalRecors,
+			&totalRecords,
 			&ride.ID,
 			&ride.PlayerID,
 			&ride.TeamID,
@@ -201,7 +201,7 @@ func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID in
 		return nil, store.Metadata{}, err
 	}
 
-	metadata := store.CalculateMetadata(totalRecors, filters.Page, filters.PageSize)
+	metadata := store.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
 
 	return rides, metadata, nil
 }
@@ -213,7 +213,7 @@ func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
 		WHERE id = $5 AND version = $6
 		RETURNING id, player_id, team_id, version
 	`
-	args := []any{ride.MatchID, ride.State, ride.Acc, ride.Streak, ride.Version, ride.ID}
+	args := []any{ride.MatchID, ride.State, ride.Acc, ride.Streak, ride.ID, ride.Version}
 
 	err := s.pool.QueryRow(ctx, query, args...).Scan(
 		&ride.ID,

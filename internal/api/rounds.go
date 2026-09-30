@@ -231,6 +231,14 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 			// regress a round with started matches, ADR-008) or
 			// rounds_close_gate (close over unresolved rides, ADR-022).
 			app.recordFrozenResponse(w, r)
+		case errors.Is(err, game.ErrInvalidTransition):
+			// RoundStore.Close's ride resolution was refused by a rides gate
+			// (ADR-020). Both arrivals there (auto-unlock, auto-burn) are
+			// legal transitions the players can also take, so a refusal means
+			// the app and the DB disagree — a bug, not client input. A 409
+			// would blame the caller for our inconsistency; this case is
+			// deliberately a 500 and should be unreachable in practice.
+			app.serverErrorResponse(w, r, err)
 		default:
 			app.serverErrorResponse(w, r, err)
 		}
