@@ -94,6 +94,90 @@ func (s *RideStore) Insert(ctx context.Context, ride Ride) (Ride, error) {
 	return ride, nil
 }
 
+// guardedInsertSQL is RideCreate's guarded write (Phase 04 TOCTOU sweep,
+// ADR-024): an INSERT has no prior row, so there is no version column to
+// piggyback on — the guard moves onto the source SELECT, and the ride is
+// written only if its match's round is still open at the write instant.
+//
+// The SELECT takes FOR SHARE on the round row. Under READ COMMITTED a
+// statement's snapshot is taken once at its start, so a bare
+// INSERT ... SELECT would still let a concurrent close commit after that
+// snapshot and land a live ride inside a closed round — the exact defect
+// this sweep removes. The row lock makes the close's guarded flip on the
+// round row and this INSERT serialize in either order: if the close holds
+// the lock, this SELECT waits, then re-reads the newest committed row and
+// re-evaluates the WHERE (EvalPlanQual — the same mechanism
+// guardedUpdateSQL rides from the write side) and the flip to closed
+// rejects the insert with 0 rows. Unlike the rejected lock-then-act shape
+// (ADR-024), the lock never spans statements: the statement is the
+// transaction and the lock is held only for its duration, and create has
+// exactly one contended fact (round status), so "pins only one of three
+// facts" does not apply.
+const guardedInsertSQL = `
+		INSERT INTO rides (player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak)
+		SELECT $1, $2, $3, $4, $5, $6, $7, $8
+		FROM matches m
+		INNER JOIN rounds r ON r.id = m.round_id
+		WHERE m.id = $3 AND r.status = 'open'
+		FOR SHARE OF r
+		RETURNING id, created_at, version
+	`
+
+// InsertGuarded writes the created ride under the guardedInsertSQL guard.
+// The ride arrives post-Create — state, acc and streak are the domain
+// command's (ADR-019) — and the round-open fact is re-checked in the same
+// statement:
+//   - 0 rows is the race lost (the round closed under us) ->
+//     ErrRoundNotOpen, the round-refusal 409; the rowcount also covers an
+//     unknown match, which is classified with one follow-up read
+//   - unknown player/team still surface as the FK 23503 ->
+//     ErrRecordNotFound, same mapping as Insert
+func (s *RideStore) InsertGuarded(ctx context.Context, ride Ride) (Ride, error) {
+	err := s.pool.QueryRow(ctx, guardedInsertSQL,
+		ride.PlayerID, ride.TeamID, ride.MatchID, ride.State,
+		ride.TokensLocked, ride.BaseAtLock, ride.Acc, ride.Streak,
+	).Scan(&ride.ID, &ride.CreatedAt, &ride.Version)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Ride{}, s.classifyInsertRefusal(ctx, ride.MatchID)
+		case store.IsFKViolation(err):
+			return Ride{}, store.ErrRecordNotFound
+		default:
+			return Ride{}, err
+		}
+	}
+
+	return ride, nil
+}
+
+// classifyInsertRefusal distinguishes the two 0-row causes of the guarded
+// insert: an unknown match (ErrRecordNotFound, the FK mapping Insert gives)
+// and a round that is not open (ErrRoundNotOpen, the round-refusal 409).
+// Both facts are settled by the time this runs — the write already did not
+// happen — so this read classifies the refusal, it does not gate anything.
+func (s *RideStore) classifyInsertRefusal(ctx context.Context, matchID int) error {
+	var status RoundStatus
+	err := s.pool.QueryRow(ctx, `
+		SELECT r.status
+		FROM matches m
+		INNER JOIN rounds r ON r.id = m.round_id
+		WHERE m.id = $1
+	`, matchID).Scan(&status)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return store.ErrRecordNotFound
+	case err != nil:
+		return err
+	case status != RoundOpen:
+		return ErrRoundNotOpen
+	default:
+		// Unreachable through the gates (a round cannot re-open), but a
+		// refusal without a cause must not pass as success.
+		return fmt.Errorf("ride insert refused while match %d round open", matchID)
+	}
+}
+
 func (s *RideStore) Get(ctx context.Context, id int) (Ride, error) {
 	query := `
 		SELECT id, player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak, created_at, version

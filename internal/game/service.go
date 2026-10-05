@@ -42,6 +42,13 @@ func (s *Service) RidePhase(ctx context.Context, ride Ride) (RoundPhase, error) 
 	return phase, nil
 }
 
+// RideCreate locks tokens on a chosen match: created -> locked, ActionPhase
+// only (ADR-019: the initial-state contract is ride.Create's — caller-supplied
+// state/acc/streak is discarded). The RidePhase read is the phase gate; it is
+// advisory like every other ride-command read (ADR-024) — the round-status
+// fact is re-checked at the write instant by InsertGuarded, 0 rows being the
+// race lost (ErrRoundNotOpen, the round-refusal 409). Keyless for now: the
+// create flow does not yet want the idempotency layer.
 func (s *Service) RideCreate(ctx context.Context, ride Ride) (Ride, error) {
 	phase, err := s.RidePhase(ctx, ride)
 	if err != nil {
@@ -53,7 +60,7 @@ func (s *Service) RideCreate(ctx context.Context, ride Ride) (Ride, error) {
 		return Ride{}, err
 	}
 
-	return s.Store.Rides.Insert(ctx, ride)
+	return s.Store.Rides.InsertGuarded(ctx, ride)
 }
 
 // RideLock continues a won ride: won_pending -> locked onto the team's next

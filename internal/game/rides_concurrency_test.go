@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/shopspring/decimal"
 )
@@ -127,6 +128,169 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 			}
 		})
 	}
+}
+
+// insertSettledFutureMatch plants the create-vs-close seam fixture: a match
+// already closed (settled, scored) whose starts_at is still in the future.
+// The close's gate sees every match settled; the create's phase derivation
+// sees a round whose matches have not started (ActionPhase). Real data
+// cannot hold this shape — a match settles only after it starts — but the
+// race these two commands run on the round row does not care: each side's
+// own gate is satisfied, so the outcome is decided by the write instant
+// alone.
+func insertSettledFutureMatch(ctx context.Context, t *testing.T, seasonID, roundID, homeID, awayID int, lead string) int {
+	t.Helper()
+
+	var id int
+	err := pool.QueryRow(ctx, `
+		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at, ended_at)
+		VALUES ($1, $2, $3, $4, 1.75, 2.20, 88, 79, 'closed', now() + $5::interval, now() + $5::interval + interval '2 hours')
+		RETURNING id
+	`, seasonID, roundID, homeID, awayID, lead).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert settled future match: %v", err)
+	}
+
+	return id
+}
+
+// waitUntilInsertBlocked polls pg_stat_activity until the given goroutine's
+// ride insert is actually waiting on the round row's lock. The scripted
+// close-first race relies on this ordering: without the wait, a slow
+// goroutine could see the committed close and be refused for the mundane
+// reason, proving nothing about the lock.
+func waitUntilInsertBlocked(ctx context.Context, t *testing.T) {
+	t.Helper()
+
+	for i := 0; i < 100; i++ {
+		var waiting int
+		err := pool.QueryRow(ctx, `
+			SELECT count(*)
+			FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND query LIKE '%INSERT INTO rides%'
+		`).Scan(&waiting)
+		if err != nil {
+			t.Fatalf("poll pg_stat_activity: %v", err)
+		}
+		if waiting > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("ride insert never blocked on the round row lock")
+}
+
+func TestService_RideCreateRacesRoundClose(t *testing.T) {
+	requireDB(t)
+
+	ctx := context.Background()
+	svc := NewService(NewStore(pool))
+
+	t.Run("close wins the write instant: the guarded insert is refused", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		matchID := insertSettledFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
+		playerID := plantPlayer(ctx, t, homeID)
+
+		// The close command's status flip, held uncommitted: updateRound
+		// takes the round row's lock exactly like Rounds.Close does. Both
+		// gates pass — the match is settled, no ride exists yet.
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin close tx: %v", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		var round Round
+		if err := pool.QueryRow(ctx, `
+			SELECT id, season_id, number, status, version
+			FROM rounds WHERE id = $1
+		`, roundID).Scan(&round.ID, &round.SeasonID, &round.Number, &round.Status, &round.Version); err != nil {
+			t.Fatalf("read round: %v", err)
+		}
+		round.Status = RoundClosed
+		if _, err := NewStore(pool).Rounds.updateRound(ctx, tx, round); err != nil {
+			t.Fatalf("uncommitted close flip: %v", err)
+		}
+
+		// RidePhase's read sees the round open (the close is uncommitted),
+		// but the guarded insert blocks on its FOR SHARE until the close
+		// commits, then re-evaluates the WHERE against the committed row.
+		var (
+			done      = make(chan struct{})
+			createErr error
+		)
+		go func() {
+			defer close(done)
+			_, createErr = svc.RideCreate(ctx, Ride{
+				PlayerID:     playerID,
+				TeamID:       homeID,
+				MatchID:      matchID,
+				TokensLocked: decimal.NewFromInt(100),
+				BaseAtLock:   decimal.NewFromInt(95),
+			})
+		}()
+		waitUntilInsertBlocked(ctx, t)
+
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit close: %v", err)
+		}
+		<-done
+
+		if !errors.Is(createErr, ErrRoundNotOpen) {
+			t.Fatalf("RideCreate() = %v, want ErrRoundNotOpen", createErr)
+		}
+
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM rides WHERE match_id = $1`, matchID).Scan(&n); err != nil {
+			t.Fatalf("count rides: %v", err)
+		}
+		if n != 0 {
+			t.Fatalf("rides on the closed round's match = %d, want 0 (no live ride inside a closed round)", n)
+		}
+	})
+
+	t.Run("create wins the write instant: the ride survives the close", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		matchID := insertSettledFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
+		playerID := plantPlayer(ctx, t, homeID)
+
+		ride, err := svc.RideCreate(ctx, Ride{
+			PlayerID:     playerID,
+			TeamID:       homeID,
+			MatchID:      matchID,
+			TokensLocked: decimal.NewFromInt(100),
+			BaseAtLock:   decimal.NewFromInt(95),
+		})
+		if err != nil {
+			t.Fatalf("RideCreate() = %v, want nil", err)
+		}
+		if ride.State != RideLocked {
+			t.Fatalf("state = %q, want locked", ride.State)
+		}
+
+		// The close commits after the create: the ride is locked, outside
+		// the close's auto-resolution set (won_pending only), and the close
+		// gates see no undecided rides — the round closes around it.
+		var round Round
+		if err := pool.QueryRow(ctx, `
+			SELECT id, season_id, number, status, version
+			FROM rounds WHERE id = $1
+		`, roundID).Scan(&round.ID, &round.SeasonID, &round.Number, &round.Status, &round.Version); err != nil {
+			t.Fatalf("read round: %v", err)
+		}
+		round.Status = RoundClosed
+		if _, err := NewStore(pool).Rounds.Close(ctx, round); err != nil {
+			t.Fatalf("Close() = %v, want nil", err)
+		}
+
+		got, err := NewStore(pool).Rides.Get(ctx, ride.ID)
+		if err != nil {
+			t.Fatalf("Get() = %v, want nil", err)
+		}
+		if got.State != RideLocked {
+			t.Errorf("state = %q, want locked (the create committed first — legal order)", got.State)
+		}
+	})
 }
 
 func TestService_RideBurnRacesExactlyOnce(t *testing.T) {
