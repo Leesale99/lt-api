@@ -239,6 +239,83 @@ func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
 	return ride, nil
 }
 
+// guardedUpdateSQL is the ride commands' guarded write (Phase 04, ADR-024):
+// the full-column shape of Update plus the contended facts in the WHERE, so
+// check and write are one statement under READ COMMITTED:
+//   - state = 'won_pending' — Lock/Burn/Unlock's only source state (ADR-016)
+//   - the ride's own round is still open — cross-row (rides -> matches ->
+//     rounds), not the version column alone
+//   - for continuations ($7 = destinationMatchID > 0): destination match
+//     un-ended, its round not closed — the predicate NextForTeam filters on
+//
+// A blocked UPDATE re-reads the newest committed row when the lock frees and
+// re-evaluates this WHERE (EvalPlanQual — the round-close auto-unlock rides
+// the same mechanism from the other side). 0 rows is the race lost, not a bug.
+const guardedUpdateSQL = `
+		UPDATE rides
+		SET match_id = $1, state = $2, bonus_acc = $3, streak = $4, version = version + 1
+		WHERE id = $5 AND version = $6
+			AND state = 'won_pending'
+			AND EXISTS (
+				SELECT 1
+				FROM matches om
+				INNER JOIN rounds o ON o.id = om.round_id
+				WHERE om.id = rides.match_id AND o.status = 'open'
+			)
+			AND (
+				$7 = 0
+				OR EXISTS (
+					SELECT 1
+					FROM matches nm
+					INNER JOIN rounds n ON n.id = nm.round_id
+					WHERE nm.id = $7 AND nm.ended_at IS NULL AND n.status <> 'closed'
+				)
+			)
+		RETURNING id, player_id, team_id, created_at, state, tokens_locked,
+			base_at_lock, bonus_acc, streak, version
+	`
+
+// UpdateGuardedTx writes a ride decision (Lock, Burn, Unlock) under the
+// guardedUpdateSQL guard, on the caller's transaction — every ride command
+// is idempotent (ADR-024), so the write shares the claim's transaction:
+//   - the ride arrives post-mutation; the WHERE re-verifies pre-mutation facts
+//   - destinationMatchID is the continuation's match, or 0 for Burn/Unlock
+//   - 0 rows -> ErrRoundNotOpen (the round-refusal 409); rides_state_gate
+//     P0001 -> ErrInvalidTransition (ADR-020); destination deleted
+//     mid-flight -> ErrRecordNotFound
+func (s *RideStore) UpdateGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride, destinationMatchID int) (Ride, error) {
+	err := tx.QueryRow(ctx, guardedUpdateSQL,
+		ride.MatchID, ride.State, ride.Acc, ride.Streak, ride.ID, ride.Version, destinationMatchID,
+	).Scan(
+		&ride.ID,
+		&ride.PlayerID,
+		&ride.TeamID,
+		&ride.CreatedAt,
+		&ride.State,
+		&ride.TokensLocked,
+		&ride.BaseAtLock,
+		&ride.Acc,
+		&ride.Streak,
+		&ride.Version,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Ride{}, ErrRoundNotOpen
+		case store.IsTriggerViolation(err):
+			return Ride{}, ErrInvalidTransition
+		case store.IsFKViolation(err):
+			// The destination match was deleted between NextForTeam's pick
+			// and this write — same parent-gone mapping as Insert.
+			return Ride{}, store.ErrRecordNotFound
+		default:
+			return Ride{}, err
+		}
+	}
+
+	return ride, nil
+}
+
 var transitions = map[RideState]map[RoundPhase][]RideState{
 	RideLocked: {
 		MatchPhase: {RideWonPending, RideLost},

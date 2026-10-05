@@ -24,6 +24,7 @@ package game
 // capture IDs from return values rather than hard-code them.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -213,6 +214,7 @@ func TestService_RideLock(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
+	svc := NewService(NewStore(pool))
 
 	t.Run("in decision phase continues onto the team's next match", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
@@ -230,23 +232,29 @@ func TestService_RideLock(t *testing.T) {
 		}
 		nextMatch := insertFutureMatch(ctx, t, 1, 2, homeID, awayID, "7 days")
 
-		got, err := NewService(NewStore(pool)).RideLock(ctx, ride.ID)
-
+		_, err := svc.RideLock(ctx, ride.ID, rideToken("svc-lock-continues", "POST /v1/rides/:id/lock"), idempotentMarshal)
 		if err != nil {
 			t.Fatalf("RideLock() = %v, want nil", err)
 		}
-		if got.State != RideLocked {
-			t.Fatalf("state = %q, want %q", got.State, RideLocked)
+
+		// The command's return value is the stored response; the assertions
+		// read the persisted row — the effect the command must have.
+		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		if err != nil {
+			t.Fatalf("Get() = %v, want nil", err)
 		}
-		if got.MatchID != nextMatch {
-			t.Fatalf("match_id = %d, want %d (continuation re-points one FK)", got.MatchID, nextMatch)
+		if persisted.State != RideLocked {
+			t.Fatalf("state = %q, want %q", persisted.State, RideLocked)
 		}
-		if got.Streak != 3 {
-			t.Fatalf("streak = %d, want 3", got.Streak)
+		if persisted.MatchID != nextMatch {
+			t.Fatalf("match_id = %d, want %d (continuation re-points one FK)", persisted.MatchID, nextMatch)
+		}
+		if persisted.Streak != 3 {
+			t.Fatalf("streak = %d, want 3", persisted.Streak)
 		}
 		// Lock is not a payout: acc survives into the next match.
-		if !got.Acc.Equal(decimal.NewFromInt(90)) {
-			t.Fatalf("acc = %s, want unchanged 90", got.Acc)
+		if !persisted.Acc.Equal(decimal.NewFromInt(90)) {
+			t.Fatalf("acc = %s, want unchanged 90", persisted.Acc)
 		}
 	})
 
@@ -255,7 +263,7 @@ func TestService_RideLock(t *testing.T) {
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
 		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-		_, err := NewService(NewStore(pool)).RideLock(ctx, ride.ID)
+		_, err := svc.RideLock(ctx, ride.ID, rideToken("svc-lock-no-next", "POST /v1/rides/:id/lock"), idempotentMarshal)
 
 		if !errors.Is(err, ErrNoNextMatch) {
 			t.Fatalf("RideLock() = %v, want ErrNoNextMatch", err)
@@ -267,23 +275,55 @@ func TestService_RideBurn(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
+	svc := NewService(NewStore(pool))
 
 	t.Run("in decision phase burns and keeps acc", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
 		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-		got, err := NewService(NewStore(pool)).RideBurn(ctx, ride.ID)
-
+		_, err := svc.RideBurn(ctx, ride.ID, rideToken("svc-burn", "POST /v1/rides/:id/burn"), idempotentMarshal)
 		if err != nil {
 			t.Fatalf("RideBurn() = %v, want nil", err)
 		}
-		if got.State != RideBurned {
-			t.Fatalf("state = %q, want %q", got.State, RideBurned)
+
+		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		if err != nil {
+			t.Fatalf("Get() = %v, want nil", err)
+		}
+		if persisted.State != RideBurned {
+			t.Fatalf("state = %q, want %q", persisted.State, RideBurned)
 		}
 		// Payout is not the ride's concern; Burn leaves acc untouched.
-		if !got.Acc.Equal(decimal.NewFromInt(90)) {
-			t.Fatalf("acc = %s, want unchanged 90", got.Acc)
+		if !persisted.Acc.Equal(decimal.NewFromInt(90)) {
+			t.Fatalf("acc = %s, want unchanged 90", persisted.Acc)
+		}
+	})
+
+	t.Run("retry with the same key replays without re-executing", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
+		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+
+		token := rideToken("svc-burn-replay", "POST /v1/rides/:id/burn")
+		first, err := svc.RideBurn(ctx, ride.ID, token, idempotentMarshal)
+		if err != nil {
+			t.Fatalf("first RideBurn() error = %v", err)
+		}
+		second, err := svc.RideBurn(ctx, ride.ID, token, idempotentMarshal)
+		if err != nil {
+			t.Fatalf("replayed RideBurn() error = %v", err)
+		}
+		if !bytes.Equal(first.Body, second.Body) {
+			t.Errorf("replayed body differs:\nfirst:  %s\nsecond: %s", first.Body, second.Body)
+		}
+
+		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		if err != nil {
+			t.Fatalf("read ride: %v", err)
+		}
+		if persisted.Version != ride.Version+1 {
+			t.Errorf("version = %d, want %d (one transition total)", persisted.Version, ride.Version+1)
 		}
 	})
 }
@@ -292,22 +332,54 @@ func TestService_RideUnlock(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
+	svc := NewService(NewStore(pool))
 
 	t.Run("in decision phase unlocks and forfeits acc", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
 		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-		got, err := NewService(NewStore(pool)).RideUnlock(ctx, ride.ID)
-
+		_, err := svc.RideUnlock(ctx, ride.ID, rideToken("svc-unlock", "POST /v1/rides/:id/unlock"), idempotentMarshal)
 		if err != nil {
 			t.Fatalf("RideUnlock() = %v, want nil", err)
 		}
-		if got.State != RideUnlocked {
-			t.Fatalf("state = %q, want %q", got.State, RideUnlocked)
+
+		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		if err != nil {
+			t.Fatalf("Get() = %v, want nil", err)
 		}
-		if !got.Acc.IsZero() {
-			t.Fatalf("acc = %s, want 0 (unlock forfeits acc)", got.Acc)
+		if persisted.State != RideUnlocked {
+			t.Fatalf("state = %q, want %q", persisted.State, RideUnlocked)
+		}
+		if !persisted.Acc.IsZero() {
+			t.Fatalf("acc = %s, want 0 (unlock forfeits acc)", persisted.Acc)
+		}
+	})
+
+	t.Run("retry with the same key replays without re-executing", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
+		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+
+		token := rideToken("svc-unlock-replay", "POST /v1/rides/:id/unlock")
+		first, err := svc.RideUnlock(ctx, ride.ID, token, idempotentMarshal)
+		if err != nil {
+			t.Fatalf("first RideUnlock() error = %v", err)
+		}
+		second, err := svc.RideUnlock(ctx, ride.ID, token, idempotentMarshal)
+		if err != nil {
+			t.Fatalf("replayed RideUnlock() error = %v", err)
+		}
+		if !bytes.Equal(first.Body, second.Body) {
+			t.Errorf("replayed body differs:\nfirst:  %s\nsecond: %s", first.Body, second.Body)
+		}
+
+		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		if err != nil {
+			t.Fatalf("read ride: %v", err)
+		}
+		if persisted.Version != ride.Version+1 {
+			t.Errorf("version = %d, want %d (one transition total)", persisted.Version, ride.Version+1)
 		}
 	})
 }
@@ -407,7 +479,7 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		ride := plantRide(ctx, t, matchID, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-		_, err := NewService(NewStore(pool)).RideLock(ctx, ride.ID)
+		_, err := NewService(NewStore(pool)).RideLock(ctx, ride.ID, rideToken("svc-lock-action", "POST /v1/rides/:id/lock"), idempotentMarshal)
 
 		if !errors.Is(err, ErrInvalidRoundPhase) {
 			t.Fatalf("RideLock() = %v, want ErrInvalidRoundPhase", err)
@@ -419,7 +491,7 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 minutes")
 		ride := plantRide(ctx, t, matchID, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-		_, err := NewService(NewStore(pool)).RideBurn(ctx, ride.ID)
+		_, err := NewService(NewStore(pool)).RideBurn(ctx, ride.ID, rideToken("svc-burn-match-phase", "POST /v1/rides/:id/burn"), idempotentMarshal)
 
 		if !errors.Is(err, ErrInvalidRoundPhase) {
 			t.Fatalf("RideBurn() = %v, want ErrInvalidRoundPhase", err)
@@ -431,7 +503,7 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 minutes")
 		ride := plantRide(ctx, t, matchID, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-		_, err := NewService(NewStore(pool)).RideUnlock(ctx, ride.ID)
+		_, err := NewService(NewStore(pool)).RideUnlock(ctx, ride.ID, rideToken("svc-unlock-match-phase", "POST /v1/rides/:id/unlock"), idempotentMarshal)
 
 		if !errors.Is(err, ErrInvalidRoundPhase) {
 			t.Fatalf("RideUnlock() = %v, want ErrInvalidRoundPhase", err)

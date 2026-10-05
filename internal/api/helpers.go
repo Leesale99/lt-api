@@ -106,6 +106,14 @@ func (app *Application) writeJSON(w http.ResponseWriter, status int, data envelo
 	return nil
 }
 
+// writeRawJSON emits a pre-marshaled JSON body — the idempotent replay path,
+// which must return the stored response byte-identical (ADR-024).
+func (app *Application) writeRawJSON(w http.ResponseWriter, status int, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body) // headers already sent; nothing left to do with a write error
+}
+
 func (app *Application) readJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, 1_048_576)
 

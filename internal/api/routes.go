@@ -57,9 +57,11 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodGet, "/v1/rides", app.listRidesHandler)
 	router.HandlerFunc(http.MethodGet, "/v1/rides/:id", app.showRideHandler)
 	router.HandlerFunc(http.MethodPost, "/v1/rides", app.createRideHandler)
-	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/lock", app.lockRideHandler)
-	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/burn", app.burnRideHandler)
-	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/unlock", app.unlockRideHandler)
+	// Every ride command is idempotent (ADR-024): one shared handler takes
+	// the endpoint tag for the dedup identity and the service command.
+	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/lock", app.rideCommandHandler("POST /v1/rides/:id/lock", app.Game.RideLock))
+	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/burn", app.rideCommandHandler("POST /v1/rides/:id/burn", app.Game.RideBurn))
+	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/unlock", app.rideCommandHandler("POST /v1/rides/:id/unlock", app.Game.RideUnlock))
 
 	// Users
 	router.HandlerFunc(http.MethodPost, "/v1/users", app.registerUserHandler)

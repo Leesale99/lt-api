@@ -492,9 +492,14 @@ func TestRideCommandHandlers(t *testing.T) {
 		return plantDecidedMatch(t)
 	}
 
-	command := func(method, url string) *httptest.ResponseRecorder {
+	// command issues a ride command; pass an Idempotency-Key — every ride
+	// command requires one (ADR-024).
+	command := func(method, url string, key ...string) *httptest.ResponseRecorder {
 		app := newTestApplication()
 		req := httptest.NewRequest(method, url, nil)
+		if len(key) > 0 {
+			req.Header.Set("Idempotency-Key", key[0])
+		}
 		rr := httptest.NewRecorder()
 		app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 		return rr
@@ -517,7 +522,7 @@ func TestRideCommandHandlers(t *testing.T) {
 		playerID := plantPlayerRow(t, 1)
 		rideID := plantRideRow(t, playerID, 1, closedMatch, "won_pending", "90", 1)
 
-		assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/burn"),
+		assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/burn", "burn-decided"),
 			http.StatusOK, `"state": "burned"`, `"version": 2`)
 	})
 
@@ -526,7 +531,7 @@ func TestRideCommandHandlers(t *testing.T) {
 		playerID := plantPlayerRow(t, 1)
 		rideID := plantRideRow(t, playerID, 1, closedMatch, "won_pending", "90", 1)
 
-		assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/unlock"),
+		assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/unlock", "unlock-decided"),
 			http.StatusOK, `"state": "unlocked"`, `"version": 2`)
 	})
 
@@ -537,8 +542,21 @@ func TestRideCommandHandlers(t *testing.T) {
 
 		// Team 1's next upcoming match is match 5 (round 3, starts +2 days)
 		// — the earliest the NextForTeam query can find.
-		assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/lock"),
+		assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/lock", "lock-continues"),
 			http.StatusOK, `"state": "locked"`, `"match_id": 5`)
+	})
+
+	t.Run("a command without an idempotency key is a validation 422", func(t *testing.T) {
+		// Every ride command is idempotent (ADR-024), so all three endpoints
+		// refuse a keyless request before anything executes.
+		closedMatch := decidedFixture(t)
+		playerID := plantPlayerRow(t, 1)
+		rideID := plantRideRow(t, playerID, 1, closedMatch, "won_pending", "90", 1)
+
+		for _, action := range []string{"lock", "burn", "unlock"} {
+			assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/"+action),
+				http.StatusUnprocessableEntity, "must be provided")
+		}
 	})
 
 	t.Run("burn outside the transition graph is the invalid-state 409", func(t *testing.T) {
@@ -550,7 +568,7 @@ func TestRideCommandHandlers(t *testing.T) {
 		playerID := plantPlayerRow(t, 1)
 		rideID := plantRideRow(t, playerID, 1, closedMatch, "locked", "0", 0)
 
-		assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/burn"),
+		assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/burn", "burn-invalid-state"),
 			http.StatusConflict, "not allowed for a ride in current state")
 	})
 
@@ -561,7 +579,7 @@ func TestRideCommandHandlers(t *testing.T) {
 		playerID := plantPlayerRow(t, 1)
 		rideID := plantRideRow(t, playerID, 1, 5, "won_pending", "90", 1)
 
-		assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/unlock"),
+		assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/unlock", "unlock-action-phase"),
 			http.StatusConflict, "not allowed while the round is in current phase")
 	})
 
@@ -570,7 +588,7 @@ func TestRideCommandHandlers(t *testing.T) {
 		playerID := plantPlayerRow(t, 1)
 		rideID := plantRideRow(t, playerID, 1, 5, "locked", "0", 0)
 
-		assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/burn"),
+		assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/burn", "burn-action-phase"),
 			http.StatusConflict, "not allowed while the round is in current phase")
 	})
 
@@ -592,16 +610,137 @@ func TestRideCommandHandlers(t *testing.T) {
 		playerID := plantPlayerRow(t, 3)
 		rideID := plantRideRow(t, playerID, 3, closedMatch, "won_pending", "90", 1)
 
-		assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/lock"),
+		assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/lock", "lock-no-next-match"),
 			http.StatusConflict, "the ride cannot be continued because the team has no upcoming matches")
 	})
 
 	t.Run("command on an unknown ride is 404", func(t *testing.T) {
 		decidedFixture(t)
 
-		for _, url := range []string{"/v1/rides/999/lock", "/v1/rides/999/burn", "/v1/rides/999/unlock"} {
-			assertResponse(t, command(http.MethodPost, url),
+		// Every command now requires a key (ADR-024); the claim made before
+		// the ride lookup rolls back with the failed tx.
+		for _, action := range []string{"lock", "burn", "unlock"} {
+			assertResponse(t, command(http.MethodPost, "/v1/rides/999/"+action, action+"-unknown"),
 				http.StatusNotFound, "could not be found")
+		}
+	})
+}
+
+// TestRideLockIdempotentHandler covers the Idempotency-Key contract on the
+// lock endpoint (ADR-024): a retry of an executed command replays the stored
+// response byte-identical and re-executes nothing; the same key behind a
+// different request is the 409 idempotency conflict; a failed command rolls
+// its claim back, so the retry re-executes.
+func TestRideLockIdempotentHandler(t *testing.T) {
+	requireDB(t)
+
+	lock := func(rideID int, key string) *httptest.ResponseRecorder {
+		app := newTestApplication()
+		req := httptest.NewRequest(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/lock", nil)
+		req.Header.Set("Idempotency-Key", key)
+		rr := httptest.NewRecorder()
+		app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+		return rr
+	}
+
+	t.Run("retry with the same key replays the stored response", func(t *testing.T) {
+		reset(t)
+		closedMatch := plantDecidedMatch(t)
+		playerID := plantPlayerRow(t, 1)
+		rideID := plantRideRow(t, playerID, 1, closedMatch, "won_pending", "90", 1)
+
+		first := lock(rideID, "retry-key")
+		if first.Code != http.StatusOK {
+			t.Fatalf("first lock: got %d, want 200 (body: %s)", first.Code, first.Body.String())
+		}
+		second := lock(rideID, "retry-key")
+		if second.Code != http.StatusOK {
+			t.Fatalf("replayed lock: got %d, want 200 (body: %s)", second.Code, second.Body.String())
+		}
+		if first.Body.String() != second.Body.String() {
+			t.Errorf("replayed body differs from the original:\nfirst:  %s\nsecond: %s", first.Body.String(), second.Body.String())
+		}
+
+		// The replay executed nothing: one transition total (version 2,
+		// streak incremented once from the planted 1) and exactly one key row,
+		// completed.
+		var version, streak, keyRows int
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT version, streak FROM rides WHERE id = $1`, rideID,
+		).Scan(&version, &streak); err != nil {
+			t.Fatalf("read ride: %v", err)
+		}
+		if version != 2 || streak != 2 {
+			t.Errorf("ride version = %d, streak = %d; want 2 and 2 (no double transition)", version, streak)
+		}
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT count(*) FROM idempotency_keys`,
+		).Scan(&keyRows); err != nil {
+			t.Fatalf("count key rows: %v", err)
+		}
+		if keyRows != 1 {
+			t.Errorf("idempotency_keys rows = %d, want 1", keyRows)
+		}
+	})
+
+	t.Run("same key with a different request is the 409 idempotency conflict", func(t *testing.T) {
+		reset(t)
+		closedMatch := plantDecidedMatch(t)
+		playerID := plantPlayerRow(t, 1)
+		rideID := plantRideRow(t, playerID, 1, closedMatch, "won_pending", "90", 1)
+
+		// A second won_pending ride for the same team: same command shape,
+		// different request URI — the hash must refuse the key reuse.
+		otherPlayer := plantPlayerRow(t, 1)
+		otherRide := plantRideRow(t, otherPlayer, 1, closedMatch, "won_pending", "90", 1)
+
+		if code := lock(rideID, "shared-key").Code; code != http.StatusOK {
+			t.Fatalf("first lock: got %d, want 200", code)
+		}
+
+		app := newTestApplication()
+		req := httptest.NewRequest(http.MethodPost, "/v1/rides/"+strconv.Itoa(otherRide)+"/lock", nil)
+		req.Header.Set("Idempotency-Key", "shared-key")
+		rr := httptest.NewRecorder()
+		app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("got status %d, want 409 (body: %s)", rr.Code, rr.Body.String())
+		}
+		for _, fragment := range []string{"already used with a different request"} {
+			if !strings.Contains(rr.Body.String(), fragment) {
+				t.Errorf("body missing %q (body: %s)", fragment, rr.Body.String())
+			}
+		}
+
+		// The refused request executed nothing and cached nothing.
+		var version int
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT version FROM rides WHERE id = $1`, otherRide,
+		).Scan(&version); err != nil {
+			t.Fatalf("read refused ride: %v", err)
+		}
+		if version != 1 {
+			t.Errorf("refused ride version = %d, want 1 (no execution)", version)
+		}
+	})
+
+	t.Run("a failed command rolls its claim back, the retry re-executes", func(t *testing.T) {
+		reset(t)
+		plantDecidedMatch(t)
+
+		// Unknown ride: the claim is made, then the 404 rolls the tx back.
+		if code := lock(999, "failed-key").Code; code != http.StatusNotFound {
+			t.Fatalf("got status %d, want 404", code)
+		}
+
+		var keyRows int
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT count(*) FROM idempotency_keys`,
+		).Scan(&keyRows); err != nil {
+			t.Fatalf("count key rows: %v", err)
+		}
+		if keyRows != 0 {
+			t.Errorf("idempotency_keys rows = %d, want 0 (claim rolled back)", keyRows)
 		}
 	})
 }

@@ -37,6 +37,9 @@ var migFiles = []string{
 	// participates in the mid-transaction-failure case (it fires on the
 	// status flip after the ride resolution, making the whole tx abort).
 	"../../migrations/000008_add_round_lifecycle_gates.up.sql",
+	// Idempotency keys (000010): the idempotent lock service tests claim
+	// and replay through the real table.
+	"../../migrations/000010_add_idempotency_keys_table.up.sql",
 }
 
 // PostgreSQL error codes (see pgerrcode; inlined to avoid the extra dependency).

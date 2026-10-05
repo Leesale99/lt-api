@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -29,6 +31,8 @@ func (app *Application) gameErrorResponse(w http.ResponseWriter, r *http.Request
 		app.invalidPhaseResponse(w, r)
 	case errors.Is(err, game.ErrInvalidTransition):
 		app.invalidStateTransitionResponse(w, r)
+	case errors.Is(err, game.ErrIdempotencyConflict):
+		app.idempotencyConflictResponse(w, r)
 	default:
 		app.serverErrorResponse(w, r, err)
 	}
@@ -160,68 +164,71 @@ func (app *Application) listRidesHandler(w http.ResponseWriter, r *http.Request)
 	app.writeListResponse(w, r, "rides", rides, metadata, err)
 }
 
-func (app *Application) lockRideHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := app.readIDParam(r)
+// rideMarshal is the presentation callback the ride command handlers share:
+// the same shape writeJSON emits (MarshalIndent + newline), so a replay is
+// byte-identical to the original response (ADR-024).
+func rideMarshal(ride game.Ride) (int, []byte, error) {
+	body, err := json.MarshalIndent(envelope{"ride": ride}, "", "\t")
 	if err != nil {
-		app.notFoundResponse(w, r)
-		return
+		return 0, nil, err
 	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
-	defer cancel()
-
-	ride, err := app.Game.RideLock(ctx, id)
-	if err != nil {
-		app.gameErrorResponse(w, r, err)
-		return
-	}
-
-	err = app.writeJSON(w, http.StatusOK, envelope{"ride": ride}, nil)
-	if err != nil {
-		app.serverErrorResponse(w, r, err)
-	}
+	return http.StatusOK, append(body, '\n'), nil
 }
 
-func (app *Application) burnRideHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := app.readIDParam(r)
-	if err != nil {
-		app.notFoundResponse(w, r)
-		return
+// rideCommand is one ride command service call: ride id, idempotency token
+// and the presentation callback in, the stored-or-fresh response out.
+type rideCommand func(ctx context.Context, id int, token game.IdempotencyToken, marshal game.RideMarshal) (game.IdempotentResponse, error)
+
+// rideCommandToken builds the command's dedup identity (ADR-024). The key
+// rules live next to the model (game.ValidateIdempotencyToken); the hash
+// covers method + request URI, so the same key on a different ride (or any
+// altered request) is the 409 idempotency conflict. ok=false means the
+// header failed validation and the 422 is written.
+func (app *Application) rideCommandToken(w http.ResponseWriter, r *http.Request, endpoint string) (game.IdempotencyToken, bool) {
+	key := r.Header.Get("Idempotency-Key")
+
+	// The ride commands have no body; when a body-carrying command adopts
+	// keys, its bytes join the hash input.
+	hash := sha256.Sum256([]byte(r.Method + "\n" + r.URL.RequestURI()))
+
+	token := game.IdempotencyToken{Key: key, Endpoint: endpoint, Hash: hash[:]}
+
+	v := validator.New()
+
+	if game.ValidateIdempotencyToken(v, token); !v.Valid() {
+		app.failedValidationResponse(w, r, v.Errors)
+		return game.IdempotencyToken{}, false
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
-	defer cancel()
-
-	ride, err := app.Game.RideBurn(ctx, id)
-	if err != nil {
-		app.gameErrorResponse(w, r, err)
-		return
-	}
-
-	err = app.writeJSON(w, http.StatusOK, envelope{"ride": ride}, nil)
-	if err != nil {
-		app.serverErrorResponse(w, r, err)
-	}
+	return token, true
 }
 
-func (app *Application) unlockRideHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := app.readIDParam(r)
-	if err != nil {
-		app.notFoundResponse(w, r)
-		return
-	}
+// rideCommandHandler is the shared body of the three ride command endpoints
+// (lock, burn, unlock): every ride command is idempotent (ADR-024), so each
+// runs under an Idempotency-Key and a retry of an executed command replays
+// the stored response.
+func (app *Application) rideCommandHandler(endpoint string, command rideCommand) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := app.readIDParam(r)
+		if err != nil {
+			app.notFoundResponse(w, r)
+			return
+		}
 
-	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
-	defer cancel()
+		token, ok := app.rideCommandToken(w, r, endpoint)
+		if !ok {
+			return
+		}
 
-	ride, err := app.Game.RideUnlock(ctx, id)
-	if err != nil {
-		app.gameErrorResponse(w, r, err)
-		return
-	}
+		ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+		defer cancel()
 
-	err = app.writeJSON(w, http.StatusOK, envelope{"ride": ride}, nil)
-	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		res, err := command(ctx, id, token, rideMarshal)
+		if err != nil {
+			app.gameErrorResponse(w, r, err)
+			return
+		}
+
+		app.writeRawJSON(w, res.Status, res.Body)
 	}
 }

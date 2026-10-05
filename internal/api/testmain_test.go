@@ -40,6 +40,9 @@ func TestMain(m *testing.M) {
 		// Ride persistence: phase 03 replaced the in-memory ride stub with
 		// the rides table — the ride handler tests run against it.
 		"../../migrations/000006_create_rides_table.up.sql",
+		// Idempotency keys (000010): the lock handler claims and replays
+		// through the real table.
+		"../../migrations/000010_add_idempotency_keys_table.up.sql",
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "test database setup: %v\n", err)
