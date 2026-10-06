@@ -34,7 +34,9 @@ func ValidateIdempotencyToken(v *validator.Validator, token IdempotencyToken) {
 
 // IdempotentResponse is the stored HTTP answer a replay returns
 // byte-identical: status and marshaled body are the handler's presentation
-// choice, persisted inside the command's transaction (ADR-024).
+// choice, persisted inside the command's transaction (ADR-024). Headers are
+// not persisted — anything derivable (create's Location) is derived from
+// the body by the handler, on the fresh path and the replay alike.
 type IdempotentResponse struct {
 	Status int
 	Body   []byte

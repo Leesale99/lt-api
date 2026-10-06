@@ -108,11 +108,14 @@ func (s *RideStore) Insert(ctx context.Context, ride Ride) (Ride, error) {
 // the lock, this SELECT waits, then re-reads the newest committed row and
 // re-evaluates the WHERE (EvalPlanQual — the same mechanism
 // guardedUpdateSQL rides from the write side) and the flip to closed
-// rejects the insert with 0 rows. Unlike the rejected lock-then-act shape
-// (ADR-024), the lock never spans statements: the statement is the
-// transaction and the lock is held only for its duration, and create has
-// exactly one contended fact (round status), so "pins only one of three
-// facts" does not apply.
+// rejects the insert with 0 rows. Create has exactly one contended fact
+// (round status), so "pins only one of three facts" does not apply.
+//
+// With the idempotency claim (ADR-024) the insert shares the command
+// transaction, so the SHARE lock is held until the claim tx commits — not
+// merely for the statement. The tx's other writes (the claim, the stored
+// response) touch only idempotency_keys, never rounds: the serialization
+// against the close stays exactly what the guard promises.
 const guardedInsertSQL = `
 		INSERT INTO rides (player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak)
 		SELECT $1, $2, $3, $4, $5, $6, $7, $8
@@ -123,20 +126,20 @@ const guardedInsertSQL = `
 		RETURNING id, created_at, version
 	`
 
-// InsertGuarded writes the created ride under the guardedInsertSQL guard.
-// The ride arrives post-Create — state, acc and streak are the domain
-// command's (ADR-019) — and the round-open fact is re-checked in the same
-// statement:
+// InsertGuardedTx writes the created ride under the guardedInsertSQL guard,
+// on the caller's transaction — RideCreate is idempotent (ADR-024), so the
+// write shares the claim's transaction. The ride arrives post-Create —
+// state, acc and streak are the domain command's (ADR-019) — and the
+// round-open fact is re-checked in the same statement:
 //   - 0 rows is the race lost (the round closed under us) ->
 //     ErrRoundNotOpen, the round-refusal 409; the rowcount also covers an
 //     unknown match, which is classified with one follow-up read
 //   - unknown player/team still surface as the FK 23503 ->
 //     ErrRecordNotFound, same mapping as Insert
-func (s *RideStore) InsertGuarded(ctx context.Context, ride Ride) (Ride, error) {
-	err := s.pool.QueryRow(ctx, guardedInsertSQL,
-		ride.PlayerID, ride.TeamID, ride.MatchID, ride.State,
-		ride.TokensLocked, ride.BaseAtLock, ride.Acc, ride.Streak,
-	).Scan(&ride.ID, &ride.CreatedAt, &ride.Version)
+func (s *RideStore) InsertGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride) (Ride, error) {
+	args := []any{ride.PlayerID, ride.TeamID, ride.MatchID, ride.State, ride.TokensLocked, ride.BaseAtLock, ride.Acc, ride.Streak}
+
+	err := tx.QueryRow(ctx, guardedInsertSQL, args...).Scan(&ride.ID, &ride.CreatedAt, &ride.Version)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -156,14 +159,18 @@ func (s *RideStore) InsertGuarded(ctx context.Context, ride Ride) (Ride, error) 
 // and a round that is not open (ErrRoundNotOpen, the round-refusal 409).
 // Both facts are settled by the time this runs — the write already did not
 // happen — so this read classifies the refusal, it does not gate anything.
+// It deliberately reads on the pool beside the tx (per-statement snapshot):
+// the refusal already happened, the read only names the reason.
 func (s *RideStore) classifyInsertRefusal(ctx context.Context, matchID int) error {
-	var status RoundStatus
-	err := s.pool.QueryRow(ctx, `
+	query := `
 		SELECT r.status
 		FROM matches m
 		INNER JOIN rounds r ON r.id = m.round_id
 		WHERE m.id = $1
-	`, matchID).Scan(&status)
+	`
+	var status RoundStatus
+
+	err := s.pool.QueryRow(ctx, query, matchID).Scan(&status)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return store.ErrRecordNotFound

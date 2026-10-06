@@ -89,8 +89,13 @@ func plantDecidedMatch(t *testing.T) int {
 func TestCreateRideHandler(t *testing.T) {
 	requireDB(t)
 
+	// Every ride command is idempotent (ADR-024), create included: the
+	// requests below carry an Idempotency-Key (each subtest runs its own
+	// reset, so one key is safe per row). The keyless refusal has its own
+	// case at the bottom of the table.
 	tests := []struct {
 		name     string
+		key      bool
 		url      string
 		body     string
 		wantCode int
@@ -98,22 +103,35 @@ func TestCreateRideHandler(t *testing.T) {
 	}{
 		{
 			name:     "valid ride",
+			key:      true,
 			url:      "/v1/rides",
 			body:     `{"player_id":1,"team_id":1,"match_id":5,"tokens_locked":100}`,
 			wantCode: http.StatusCreated,
 			wantBody: []string{`"player_id": 1`, `"team_id": 1`, `"match_id": 5`, `"state": "locked"`, `"tokens_locked": "100"`, `"version": 1`},
 		},
 		{
+			// The key check is first: a keyless create is refused before
+			// anything executes (ADR-024), nothing is claimed or inserted.
+			name:     "missing idempotency key is refused",
+			url:      "/v1/rides",
+			body:     `{"player_id":1,"team_id":1,"match_id":5,"tokens_locked":100}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"idempotency_key", "must be provided"},
+		},
+		{
 			// The handler's token lookup is a stub (TODO in rides.go): the
 			// base is hard-wired to 1.95 until the ledger lands.
 			name:     "base_at_lock comes from the token, not the request",
+			key:      true,
 			url:      "/v1/rides",
 			body:     `{"player_id":1,"team_id":1,"match_id":5,"tokens_locked":100}`,
 			wantCode: http.StatusCreated,
 			wantBody: []string{`"base_at_lock": "1.95"`},
 		},
 		{
+			// Field validation runs before the command: nothing is claimed.
 			name:     "missing fields are rejected",
+			key:      true,
 			url:      "/v1/rides",
 			body:     `{}`,
 			wantCode: http.StatusUnprocessableEntity,
@@ -121,6 +139,7 @@ func TestCreateRideHandler(t *testing.T) {
 		},
 		{
 			name:     "zero tokens_locked is rejected",
+			key:      true,
 			url:      "/v1/rides",
 			body:     `{"player_id":1,"team_id":1,"match_id":5,"tokens_locked":0}`,
 			wantCode: http.StatusUnprocessableEntity,
@@ -128,6 +147,7 @@ func TestCreateRideHandler(t *testing.T) {
 		},
 		{
 			name:     "unknown key in body is rejected",
+			key:      true,
 			url:      "/v1/rides",
 			body:     `{"player_id":1,"team_id":1,"match_id":5,"tokens_locked":100,"state":"burned"}`,
 			wantCode: http.StatusBadRequest,
@@ -135,6 +155,7 @@ func TestCreateRideHandler(t *testing.T) {
 		},
 		{
 			name:     "malformed body is rejected",
+			key:      true,
 			url:      "/v1/rides",
 			body:     `{"player_id":1,`,
 			wantCode: http.StatusBadRequest,
@@ -142,6 +163,7 @@ func TestCreateRideHandler(t *testing.T) {
 		},
 		{
 			name:     "unknown match is refused",
+			key:      true,
 			url:      "/v1/rides",
 			body:     `{"player_id":1,"team_id":1,"match_id":999,"tokens_locked":100}`,
 			wantCode: http.StatusNotFound,
@@ -150,7 +172,9 @@ func TestCreateRideHandler(t *testing.T) {
 		{
 			// Match 1 sits in the closed round 1: RidePhase refuses before
 			// any write, so nothing is created even on the happy-looking body.
+			// The claim rolls back with the failed tx (nothing cached).
 			name:     "closed round is refused",
+			key:      true,
 			url:      "/v1/rides",
 			body:     `{"player_id":1,"team_id":1,"match_id":1,"tokens_locked":100}`,
 			wantCode: http.StatusConflict,
@@ -160,6 +184,7 @@ func TestCreateRideHandler(t *testing.T) {
 			// Match 8 sits in round 4, which is only 'created' — the ride's
 			// round must be open, not merely scheduled.
 			name:     "created (not open) round is refused",
+			key:      true,
 			url:      "/v1/rides",
 			body:     `{"player_id":1,"team_id":1,"match_id":8,"tokens_locked":100}`,
 			wantCode: http.StatusConflict,
@@ -173,6 +198,9 @@ func TestCreateRideHandler(t *testing.T) {
 			app := newTestApplication()
 
 			req := httptest.NewRequest(http.MethodPost, tt.url, strings.NewReader(tt.body))
+			if tt.key {
+				req.Header.Set("Idempotency-Key", "create-key")
+			}
 			rr := httptest.NewRecorder()
 			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
@@ -188,6 +216,114 @@ func TestCreateRideHandler(t *testing.T) {
 	}
 }
 
+// TestCreateRideIdempotentHandler covers the Idempotency-Key contract on
+// the create endpoint (ADR-024): a retried POST /v1/rides replays the stored
+// 201 byte-identical and inserts no second ride; the same key behind a
+// different body is the 409 idempotency conflict (the create hash covers
+// the raw body bytes); a failed create rolls its claim back, so the retry
+// re-executes.
+func TestCreateRideIdempotentHandler(t *testing.T) {
+	requireDB(t)
+
+	create := func(body, key string) *httptest.ResponseRecorder {
+		app := newTestApplication()
+		req := httptest.NewRequest(http.MethodPost, "/v1/rides", strings.NewReader(body))
+		req.Header.Set("Idempotency-Key", key)
+		rr := httptest.NewRecorder()
+		app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+		return rr
+	}
+
+	t.Run("retry with the same key replays the stored response", func(t *testing.T) {
+		reset(t)
+		body := `{"player_id":1,"team_id":1,"match_id":5,"tokens_locked":100}`
+
+		first := create(body, "create-retry")
+		if first.Code != http.StatusCreated {
+			t.Fatalf("first create: got %d, want 201 (body: %s)", first.Code, first.Body.String())
+		}
+		second := create(body, "create-retry")
+		if second.Code != http.StatusCreated {
+			t.Fatalf("replayed create: got %d, want 201 (body: %s)", second.Code, second.Body.String())
+		}
+		if first.Body.String() != second.Body.String() {
+			t.Errorf("replayed body differs from the original:\nfirst:  %s\nsecond: %s", first.Body.String(), second.Body.String())
+		}
+		// The Location header is derived from the stored answer, so the
+		// replay carries the same one.
+		if got := second.Header().Get("Location"); got != "/v1/rides/1" {
+			t.Errorf("replayed Location = %q, want %q", got, "/v1/rides/1")
+		}
+
+		// The replay executed nothing: exactly one ride row and one key
+		// row. There is no version bump to count — create is the INSERT's
+		// only write — so the row count is the dedup evidence.
+		var rideRows, keyRows int
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT count(*) FROM rides`,
+		).Scan(&rideRows); err != nil {
+			t.Fatalf("count rides: %v", err)
+		}
+		if rideRows != 1 {
+			t.Errorf("rides rows = %d, want 1 (no second insert)", rideRows)
+		}
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT count(*) FROM idempotency_keys`,
+		).Scan(&keyRows); err != nil {
+			t.Fatalf("count key rows: %v", err)
+		}
+		if keyRows != 1 {
+			t.Errorf("idempotency_keys rows = %d, want 1", keyRows)
+		}
+	})
+
+	t.Run("same key with a different body is the 409 idempotency conflict", func(t *testing.T) {
+		reset(t)
+
+		if code := create(`{"player_id":1,"team_id":1,"match_id":5,"tokens_locked":100}`, "create-misuse").Code; code != http.StatusCreated {
+			t.Fatalf("first create: got %d, want 201", code)
+		}
+
+		// Different tokens_locked under the same key: the body hash no
+		// longer matches the stored one — the 409 fires before the guard.
+		rr := create(`{"player_id":1,"team_id":1,"match_id":5,"tokens_locked":50}`, "create-misuse")
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("got status %d, want 409 (body: %s)", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "already used with a different request") {
+			t.Errorf("body missing conflict message (body: %s)", rr.Body.String())
+		}
+
+		// The refused request executed nothing: still exactly one ride.
+		var rideRows int
+		if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM rides`).Scan(&rideRows); err != nil {
+			t.Fatalf("count rides: %v", err)
+		}
+		if rideRows != 1 {
+			t.Errorf("rides rows = %d, want 1 (nothing executed)", rideRows)
+		}
+	})
+
+	t.Run("a failed create rolls its claim back, the retry re-executes", func(t *testing.T) {
+		reset(t)
+
+		// Unknown match: the claim is made, then the 404 rolls the tx back.
+		if code := create(`{"player_id":1,"team_id":1,"match_id":999,"tokens_locked":100}`, "create-rolled").Code; code != http.StatusNotFound {
+			t.Fatalf("got status %d, want 404", code)
+		}
+
+		var keyRows int
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT count(*) FROM idempotency_keys`,
+		).Scan(&keyRows); err != nil {
+			t.Fatalf("count key rows: %v", err)
+		}
+		if keyRows != 0 {
+			t.Errorf("idempotency_keys rows = %d, want 0 (claim rolled back)", keyRows)
+		}
+	})
+}
+
 func TestCreateRideHandlerLocation(t *testing.T) {
 	requireDB(t)
 
@@ -195,6 +331,7 @@ func TestCreateRideHandlerLocation(t *testing.T) {
 	app := newTestApplication()
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/rides", strings.NewReader(`{"player_id":1,"team_id":1,"match_id":5,"tokens_locked":100}`))
+	req.Header.Set("Idempotency-Key", "create-location")
 	rr := httptest.NewRecorder()
 	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 

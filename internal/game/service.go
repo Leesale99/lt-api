@@ -27,6 +27,18 @@ func NewService(store *Store) *Service {
 	}
 }
 
+// rideResponse runs the command's presentation callback (ADR-024): its
+// answer is exactly what gets stored and what a replay returns byte-
+// identical — the handler owns status and body shape, the service never
+// re-serializes on top of it.
+func rideResponse(ride Ride, marshal RideMarshal) (IdempotentResponse, error) {
+	status, body, err := marshal(ride)
+	if err != nil {
+		return IdempotentResponse{}, err
+	}
+	return IdempotentResponse{Status: status, Body: body}, nil
+}
+
 func (s *Service) RidePhase(ctx context.Context, ride Ride) (RoundPhase, error) {
 	status, firstStartsAt, lastEndedAt, err := s.Store.Matches.PhaseForMatch(ctx, ride.MatchID)
 	if err != nil {
@@ -46,21 +58,57 @@ func (s *Service) RidePhase(ctx context.Context, ride Ride) (RoundPhase, error) 
 // only (ADR-019: the initial-state contract is ride.Create's — caller-supplied
 // state/acc/streak is discarded). The RidePhase read is the phase gate; it is
 // advisory like every other ride-command read (ADR-024) — the round-status
-// fact is re-checked at the write instant by InsertGuarded, 0 rows being the
-// race lost (ErrRoundNotOpen, the round-refusal 409). Keyless for now: the
-// create flow does not yet want the idempotency layer.
-func (s *Service) RideCreate(ctx context.Context, ride Ride) (Ride, error) {
+// fact is re-checked at the write instant by InsertGuardedTx, 0 rows being
+// the race lost (ErrRoundNotOpen, the round-refusal 409).
+//
+// Every ride command is idempotent (ADR-024), so create executes in the
+// RideLock shape (claim-first, one tx): the key claim, the guarded insert
+// and the stored response share one transaction — any failure rolls the
+// claim back (failures are never cached), and a duplicate replays the
+// stored response byte-identical instead of creating a second ride.
+// The handler validates the ride before the call, so a 422 never claims.
+func (s *Service) RideCreate(ctx context.Context, ride Ride, token IdempotencyToken, marshal RideMarshal) (IdempotentResponse, error) {
+	tx, err := s.Store.Pool.Begin(ctx)
+	if err != nil {
+		return IdempotentResponse{}, err
+	}
+	// Background context: the request may be canceled mid-tx; the rollback
+	// must still run and release the connection.
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	claimed, replay, err := s.Store.Idempotency.Claim(ctx, tx, token)
+	if err != nil || !claimed {
+		return replay, err
+	}
+
 	phase, err := s.RidePhase(ctx, ride)
 	if err != nil {
-		return Ride{}, err
+		return IdempotentResponse{}, err
 	}
 
-	err = ride.Create(phase)
+	if err := ride.Create(phase); err != nil {
+		return IdempotentResponse{}, err
+	}
+
+	ride, err = s.Store.Rides.InsertGuardedTx(ctx, tx, ride)
 	if err != nil {
-		return Ride{}, err
+		return IdempotentResponse{}, err
 	}
 
-	return s.Store.Rides.InsertGuarded(ctx, ride)
+	res, err := rideResponse(ride, marshal)
+	if err != nil {
+		return IdempotentResponse{}, err
+	}
+
+	if err := s.Store.Idempotency.Save(ctx, tx, token, res); err != nil {
+		return IdempotentResponse{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return IdempotentResponse{}, err
+	}
+
+	return res, nil
 }
 
 // RideLock continues a won ride: won_pending -> locked onto the team's next
@@ -123,12 +171,10 @@ func (s *Service) RideLock(ctx context.Context, rideID int, token IdempotencyTok
 		return IdempotentResponse{}, err
 	}
 
-	status, body, err := marshal(ride)
+	res, err := rideResponse(ride, marshal)
 	if err != nil {
 		return IdempotentResponse{}, err
 	}
-
-	res := IdempotentResponse{Status: status, Body: body}
 	if err := s.Store.Idempotency.Save(ctx, tx, token, res); err != nil {
 		return IdempotentResponse{}, err
 	}
@@ -178,12 +224,10 @@ func (s *Service) RideBurn(ctx context.Context, rideID int, token IdempotencyTok
 		return IdempotentResponse{}, err
 	}
 
-	status, body, err := marshal(ride)
+	res, err := rideResponse(ride, marshal)
 	if err != nil {
 		return IdempotentResponse{}, err
 	}
-
-	res := IdempotentResponse{Status: status, Body: body}
 	if err := s.Store.Idempotency.Save(ctx, tx, token, res); err != nil {
 		return IdempotentResponse{}, err
 	}
@@ -233,12 +277,10 @@ func (s *Service) RideUnlock(ctx context.Context, rideID int, token IdempotencyT
 		return IdempotentResponse{}, err
 	}
 
-	status, body, err := marshal(ride)
+	res, err := rideResponse(ride, marshal)
 	if err != nil {
 		return IdempotentResponse{}, err
 	}
-
-	res := IdempotentResponse{Status: status, Body: body}
 	if err := s.Store.Idempotency.Save(ctx, tx, token, res); err != nil {
 		return IdempotentResponse{}, err
 	}

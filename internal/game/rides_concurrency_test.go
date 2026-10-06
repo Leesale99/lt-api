@@ -22,6 +22,7 @@ package game
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -215,6 +216,8 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 		// RidePhase's read sees the round open (the close is uncommitted),
 		// but the guarded insert blocks on its FOR SHARE until the close
 		// commits, then re-evaluates the WHERE against the committed row.
+		// The idempotency key is iteration-unique: each iteration replants
+		// the fixture (cleanup cascades), but idempotency_keys survives it.
 		var (
 			done      = make(chan struct{})
 			createErr error
@@ -227,7 +230,7 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 				MatchID:      matchID,
 				TokensLocked: decimal.NewFromInt(100),
 				BaseAtLock:   decimal.NewFromInt(95),
-			})
+			}, rideToken("create-vs-close", "POST /v1/rides"), idempotentMarshal)
 		}()
 		waitUntilInsertBlocked(ctx, t)
 
@@ -254,18 +257,24 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 		matchID := insertSettledFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		playerID := plantPlayer(ctx, t, homeID)
 
-		ride, err := svc.RideCreate(ctx, Ride{
+		create, err := svc.RideCreate(ctx, Ride{
 			PlayerID:     playerID,
 			TeamID:       homeID,
 			MatchID:      matchID,
 			TokensLocked: decimal.NewFromInt(100),
 			BaseAtLock:   decimal.NewFromInt(95),
-		})
+		}, rideToken("create-wins", "POST /v1/rides"), idempotentMarshal)
 		if err != nil {
 			t.Fatalf("RideCreate() = %v, want nil", err)
 		}
-		if ride.State != RideLocked {
-			t.Fatalf("state = %q, want locked", ride.State)
+		// The stored presentation is the marshaled ride: the created id
+		// comes out of the response body.
+		var created Ride
+		if err := json.Unmarshal(create.Body, &created); err != nil {
+			t.Fatalf("decode stored ride: %v", err)
+		}
+		if created.ID == 0 {
+			t.Fatal("created id = 0, want assigned")
 		}
 
 		// The close commits after the create: the ride is locked, outside
@@ -283,7 +292,7 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 			t.Fatalf("Close() = %v, want nil", err)
 		}
 
-		got, err := NewStore(pool).Rides.Get(ctx, ride.ID)
+		got, err := NewStore(pool).Rides.Get(ctx, created.ID)
 		if err != nil {
 			t.Fatalf("Get() = %v, want nil", err)
 		}

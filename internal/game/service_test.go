@@ -26,6 +26,7 @@ package game
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -156,10 +157,16 @@ func TestService_RideCreate(t *testing.T) {
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		playerID := plantPlayer(ctx, t, homeID)
 
-		got, err := NewService(NewStore(pool)).RideCreate(ctx, newRide(playerID, matchID, homeID))
+		res, err := NewService(NewStore(pool)).RideCreate(ctx, newRide(playerID, matchID, homeID), rideToken("create-happy", "POST /v1/rides"), idempotentMarshal)
 
 		if err != nil {
 			t.Fatalf("RideCreate() = %v, want nil", err)
+		}
+		// The stored presentation is the marshaled ride: decode it before
+		// asserting the stored columns.
+		var got Ride
+		if err := json.Unmarshal(res.Body, &got); err != nil {
+			t.Fatalf("decode stored ride: %v", err)
 		}
 		if got.ID == 0 {
 			t.Fatal("id = 0, want assigned")
@@ -202,7 +209,7 @@ func TestService_RideCreate(t *testing.T) {
 			t.Fatalf("close round: %v", err)
 		}
 
-		_, err := NewService(NewStore(pool)).RideCreate(ctx, newRide(playerID, matchID, homeID))
+		_, err := NewService(NewStore(pool)).RideCreate(ctx, newRide(playerID, matchID, homeID), rideToken("create-closed", "POST /v1/rides"), idempotentMarshal)
 
 		if !errors.Is(err, ErrRoundNotOpen) {
 			t.Fatalf("RideCreate() = %v, want ErrRoundNotOpen", err)
@@ -403,7 +410,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 			MatchID:      999, // no such match
 			TokensLocked: decimal.NewFromInt(100),
 			BaseAtLock:   decimal.NewFromInt(95),
-		})
+		}, rideToken("create-unknown-match", "POST /v1/rides"), idempotentMarshal)
 
 		if !errors.Is(err, store.ErrRecordNotFound) {
 			t.Fatalf("RideCreate() = %v, want ErrRecordNotFound", err)
@@ -420,7 +427,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 			MatchID:      matchID,
 			TokensLocked: decimal.NewFromInt(100),
 			BaseAtLock:   decimal.NewFromInt(95),
-		})
+		}, rideToken("create-unknown-player", "POST /v1/rides"), idempotentMarshal)
 
 		if !errors.Is(err, store.ErrRecordNotFound) {
 			t.Fatalf("RideCreate() = %v, want ErrRecordNotFound", err)
@@ -438,7 +445,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 			MatchID:      matchID,
 			TokensLocked: decimal.NewFromInt(100),
 			BaseAtLock:   decimal.NewFromInt(95),
-		})
+		}, rideToken("create-unknown-team", "POST /v1/rides"), idempotentMarshal)
 
 		if !errors.Is(err, store.ErrRecordNotFound) {
 			t.Fatalf("RideCreate() = %v, want ErrRecordNotFound", err)
@@ -466,7 +473,7 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 			MatchID:      matchID,
 			TokensLocked: decimal.NewFromInt(100),
 			BaseAtLock:   decimal.NewFromInt(95),
-		})
+		}, rideToken("create-match-phase", "POST /v1/rides"), idempotentMarshal)
 
 		if !errors.Is(err, ErrInvalidRoundPhase) {
 			t.Fatalf("RideCreate() = %v, want ErrInvalidRoundPhase", err)

@@ -1,9 +1,9 @@
 package game
 
 // Idempotency tests for the ride commands' shared engine (ADR-024),
-// exercised through RideLock: claim-first single flight, stored-response
-// replay, key-misuse conflict, and claim rollback on failure. Runs against
-// the real idempotency_keys table (migration 000010).
+// exercised through RideLock and RideCreate: claim-first single flight,
+// stored-response replay, key-misuse conflict, and claim rollback on
+// failure. Runs against the real idempotency_keys table (migration 000010).
 
 import (
 	"bytes"
@@ -240,6 +240,127 @@ func TestService_RideLockIdempotency(t *testing.T) {
 		}
 		if keyRows != 0 {
 			t.Errorf("failed-key rows = %d, want 0 (claim rolled back)", keyRows)
+		}
+	})
+}
+
+// TestService_RideCreateIdempotent covers the create flow's idempotency
+// wiring (ADR-024): the claim-first shape is the RideLock engine, so these
+// cases pin only what create adds — a replay never inserts a second ride
+// (there is no version column to count, the row count is the evidence),
+// replay is keyed on the body hash, and a failed create rolls its claim
+// back. Unique keys per subtest: the game fixture cleanup does not
+// truncate idempotency_keys.
+func TestService_RideCreateIdempotent(t *testing.T) {
+	requireDB(t)
+
+	ctx := context.Background()
+	svc := NewService(NewStore(pool))
+
+	newRide := func(playerID, matchID, teamID int) Ride {
+		return Ride{
+			PlayerID:     playerID,
+			TeamID:       teamID,
+			MatchID:      matchID,
+			TokensLocked: decimal.NewFromInt(100),
+			BaseAtLock:   decimal.NewFromInt(95),
+		}
+	}
+
+	t.Run("retry with the same key replays and inserts nothing", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
+		playerID := plantPlayer(ctx, t, homeID)
+
+		token := rideToken("create-replay", "POST /v1/rides")
+
+		first, err := svc.RideCreate(ctx, newRide(playerID, matchID, homeID), token, idempotentMarshal)
+		if err != nil {
+			t.Fatalf("first RideCreate() error = %v", err)
+		}
+		second, err := svc.RideCreate(ctx, newRide(playerID, matchID, homeID), token, idempotentMarshal)
+		if err != nil {
+			t.Fatalf("replayed RideCreate() error = %v", err)
+		}
+
+		if !bytes.Equal(first.Body, second.Body) {
+			t.Errorf("replayed body differs:\nfirst:  %s\nsecond: %s", first.Body, second.Body)
+		}
+
+		var rideRows, keyRows int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM rides WHERE match_id = $1`, matchID).Scan(&rideRows); err != nil {
+			t.Fatalf("count rides: %v", err)
+		}
+		if rideRows != 1 {
+			t.Errorf("rides rows = %d, want 1 (no second insert)", rideRows)
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_keys WHERE key = $1`, token.Key).Scan(&keyRows); err != nil {
+			t.Fatalf("count key rows: %v", err)
+		}
+		if keyRows != 1 {
+			t.Errorf("key rows = %d, want 1", keyRows)
+		}
+	})
+
+	t.Run("same key with a different body is ErrIdempotencyConflict", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
+		playerID := plantPlayer(ctx, t, homeID)
+
+		token := rideToken("create-body-misuse", "POST /v1/rides")
+		if _, err := svc.RideCreate(ctx, newRide(playerID, matchID, homeID), token, idempotentMarshal); err != nil {
+			t.Fatalf("first RideCreate() error = %v", err)
+		}
+
+		// The handler would hash the altered body, so the stored hash no
+		// longer matches — the reuse must be refused before any write.
+		reused := rideToken("create-body-misuse-differs", "POST /v1/rides")
+		reused.Key = token.Key
+		if _, err := svc.RideCreate(ctx, newRide(playerID, matchID, homeID), reused, idempotentMarshal); err != ErrIdempotencyConflict {
+			t.Errorf("RideCreate() error = %v, want ErrIdempotencyConflict", err)
+		}
+
+		var rideRows int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM rides WHERE match_id = $1`, matchID).Scan(&rideRows); err != nil {
+			t.Fatalf("count rides: %v", err)
+		}
+		if rideRows != 1 {
+			t.Errorf("rides rows = %d, want 1 (refused request executed nothing)", rideRows)
+		}
+	})
+
+	t.Run("a failed create rolls its claim back", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
+		playerID := plantPlayer(ctx, t, homeID)
+
+		// Settle then close, exactly like the plain closed-round refusal in
+		// TestService_RideCreate: the close gate demands settled matches.
+		if _, err := pool.Exec(ctx, `UPDATE matches SET starts_at = now() - interval '3 hours',
+			status = 'closed', home_score = 2, away_score = 1
+			WHERE id = $1`, matchID); err != nil {
+			t.Fatalf("settle match: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE rounds SET status = 'closed' WHERE id = $1`, roundID); err != nil {
+			t.Fatalf("close round: %v", err)
+		}
+
+		if _, err := svc.RideCreate(ctx, newRide(playerID, matchID, homeID), rideToken("create-rolled", "POST /v1/rides"), idempotentMarshal); err != ErrRoundNotOpen {
+			t.Errorf("RideCreate() error = %v, want ErrRoundNotOpen", err)
+		}
+
+		var keyRows, rideRows int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_keys WHERE key = $1`, "create-rolled").Scan(&keyRows); err != nil {
+			t.Fatalf("count key rows: %v", err)
+		}
+		if keyRows != 0 {
+			t.Errorf("create-rolled rows = %d, want 0 (claim rolled back)", keyRows)
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM rides WHERE match_id = $1`, matchID).Scan(&rideRows); err != nil {
+			t.Fatalf("count rides: %v", err)
+		}
+		if rideRows != 0 {
+			t.Errorf("rides rows = %d, want 0 (nothing written)", rideRows)
 		}
 	})
 }
