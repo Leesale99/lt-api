@@ -575,7 +575,6 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 	})
 }
 
-
 // resolveScore builds the Score pointer pair the resolver takes; a helper
 // keeps the call sites on one line.
 func resolveScore(home, away int) Score {

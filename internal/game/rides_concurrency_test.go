@@ -522,14 +522,25 @@ func TestService_MatchResolveRaces(t *testing.T) {
 				if resolveErr != nil {
 					t.Fatalf("MatchResolve() = %v, want nil", resolveErr)
 				}
+				// The two legal interleavings also differ in the ride's final
+				// state (ADR-022): whatever is still won_pending when the
+				// round closes is auto-resolved by the close tx itself.
+				var wantState RideState
+				var wantVersion int
 				switch {
 				case closeErr == nil:
-					// The close committed after the resolution: its auto-
-					// resolution saw no won_pending rides (they settled as
-					// won_pending/lost) and its gate passed on settled matches.
+					// The close committed after the resolution: its gate saw
+					// the closed match, and its auto-resolution found the ride
+					// still won_pending (a won ride settles TO won_pending —
+					// it is undecided until the player claims or burns it) and
+					// unlocked it: unlocked/3.
+					wantState, wantVersion = RideUnlocked, 3
 				case errors.Is(closeErr, store.ErrRecordInUse):
 					// The close's flip evaluated before the resolution
 					// committed: rounds_close_gate refused the unclosed match.
+					// Nothing auto-resolves, the player keeps the decision: the
+					// ride stays where the resolve left it.
+					wantState, wantVersion = RideWonPending, 2
 				default:
 					t.Fatalf("Close() = %v, want nil or ErrRecordInUse", closeErr)
 				}
@@ -546,8 +557,8 @@ func TestService_MatchResolveRaces(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Get() = %v, want nil", err)
 				}
-				if got.State != RideWonPending || got.Version != 2 {
-					t.Errorf("ride state/version = %q/%d, want won_pending/2", got.State, got.Version)
+				if got.State != wantState || got.Version != wantVersion {
+					t.Errorf("ride state/version = %q/%d, want %q/%d", got.State, got.Version, wantState, wantVersion)
 				}
 
 				// The forbidden third shape: a closed round that owns an

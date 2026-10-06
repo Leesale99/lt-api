@@ -470,7 +470,7 @@ func TestListRidesHandler(t *testing.T) {
 		// r2 sits on match 1, the canonical decided match (88:79, team 1
 		// wins): won_pending must agree with the match's scores through the
 		// gate, and match 6 (open round, no scores) cannot hold it.
-		r1 = plantRideRow(t, 1, 1, 5, "locked", "0", 0)         // fixture player 1, team 1
+		r1 = plantRideRow(t, 1, 1, 5, "locked", "0", 0) // fixture player 1, team 1
 		r2 = plantRideRow(t, player2, 1, 1, "won_pending", "90", 1)
 		r3 = plantRideRow(t, player3, 2, 5, "locked", "0", 0)
 

@@ -43,7 +43,7 @@ func rideToken(key, endpoint string) IdempotencyToken {
 
 // TestValidateIdempotencyToken pins the key rules next to the model: the
 // same rule the DB's idempotency_keys_key_check enforces as the backstop
-// (key <> '' AND octet_length(key) <= 255).
+// (key is a non-empty string of at most 255 bytes: octet_length <= 255).
 func TestValidateIdempotencyToken(t *testing.T) {
 	valid := func() IdempotencyToken {
 		return rideToken("replay-key", "POST /v1/rides/:id/lock")
