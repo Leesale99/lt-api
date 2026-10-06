@@ -173,7 +173,58 @@ func (s *UserStore) Update(ctx context.Context, user User) (User, error) {
 	return user, nil
 }
 
+// rowQuerier is the common shape of pgxpool.Pool and pgx.Tx: both answer
+// QueryRow with a pgx.Row. Naming it (rather than overloading) keeps the
+// pool and tx variants of a read from drifting apart.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// UpdateTx is Update on a caller's transaction: same guarded write, same
+// error mapping (unique violation 23505, 0 rows is the lost version race).
+// The activation use case runs it beside the token cleanup so the flip and
+// the token deletion are one commit.
+func (s *UserStore) UpdateTx(ctx context.Context, tx pgx.Tx, user User) (User, error) {
+	if user.Password.hash == nil {
+		panic("missing password hash for the user")
+	}
+
+	query := `
+		UPDATE users
+		SET name = $1, email = $2, password_hash = $3, activated = $4, version = version + 1
+		WHERE id = $5 AND version = $6
+		RETURNING role_id, version
+	`
+	args := []any{user.Name, user.Email, user.Password.hash, user.Activated, user.ID, user.Version}
+
+	err := tx.QueryRow(ctx, query, args...).Scan(&user.RoleID, &user.Version)
+	if err != nil {
+		switch {
+		case store.IsUniqueViolation(err, "users_email_key"):
+			return User{}, ErrDuplicateEmail
+		case errors.Is(err, pgx.ErrNoRows):
+			return User{}, store.ErrEditConflict
+		default:
+			return User{}, err
+		}
+	}
+
+	return user, nil
+}
+
 func (s *UserStore) GetForToken(ctx context.Context, tokenScope, tokenPlanetext string) (User, error) {
+	return s.getForToken(ctx, s.pool, tokenScope, tokenPlanetext)
+}
+
+// GetForTokenTx is GetForToken on a caller's transaction: the activation
+// use case reads the token-protected user in the same tx that will flip
+// the flag and delete the tokens, so the guarded write re-checks against
+// the same snapshot the read produced.
+func (s *UserStore) GetForTokenTx(ctx context.Context, tx pgx.Tx, tokenScope, tokenPlanetext string) (User, error) {
+	return s.getForToken(ctx, tx, tokenScope, tokenPlanetext)
+}
+
+func (s *UserStore) getForToken(ctx context.Context, q rowQuerier, tokenScope, tokenPlanetext string) (User, error) {
 	tokenHash := sha256.Sum256([]byte(tokenPlanetext))
 
 	query := `
@@ -188,7 +239,7 @@ func (s *UserStore) GetForToken(ctx context.Context, tokenScope, tokenPlanetext 
 
 	var user User
 
-	err := s.pool.QueryRow(ctx, query, args...).Scan(
+	err := q.QueryRow(ctx, query, args...).Scan(
 		&user.ID,
 		&user.CreatedAt,
 		&user.Name,

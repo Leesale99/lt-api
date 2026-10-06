@@ -110,36 +110,24 @@ func (app *Application) activateUserHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	user, err := app.Identity.Users.GetForToken(ctx, identity.ScopeActivation, input.TokenPlaintext)
+	// The use case owns the transaction (ADR-025): the flip and the token
+	// cleanup are one unit of persistence, so the handler choreographs one
+	// call instead of three store calls.
+	user, err := app.Identity.Activate(ctx, input.TokenPlaintext)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
 		case errors.Is(err, store.ErrRecordNotFound):
+			// Unknown, expired or out-of-scope token — the same 422 the
+			// handler produced when the lookup was its own store call.
 			v.AddError("user_token", "invalid or expired activation token")
 			app.failedValidationResponse(w, r, v.Errors)
-		default:
-			app.serverErrorResponse(w, r, err)
-		}
-		return
-	}
-
-	user.Activated = true
-
-	user, err = app.Identity.Users.Update(ctx, user)
-	if err != nil {
-		switch {
 		case errors.Is(err, store.ErrEditConflict):
 			app.editConflictResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
 		}
-		return
-	}
-
-	err = app.Identity.UserTokens.DeleteAllForUser(ctx, identity.ScopeActivation, user.ID)
-	if err != nil {
-		app.serverErrorResponse(w, r, err)
 		return
 	}
 
