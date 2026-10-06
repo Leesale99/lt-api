@@ -364,15 +364,26 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Request) {
+	matchID, err := app.readIDParam(r, "match_id")
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+
 	var input struct {
-		ID      int        `json:"id"`
 		EndedAt *time.Time `json:"ended_at"`
 		Score   game.Score `json:"score"`
 		Version int        `json:"version"`
 	}
 
+	err = app.readJSON(w, r, &input)
+	if err != nil {
+		app.badRequestResponse(w, r, err)
+		return
+	}
+
 	match := game.Match{
-		ID:      input.ID,
+		ID:      matchID,
 		EndedAt: input.EndedAt,
 		Score:   input.Score,
 		Version: input.Version,
@@ -380,7 +391,7 @@ func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Reque
 
 	v := validator.New()
 
-	if game.ValdateResolveMatch(v, match, time.Now()); !v.Valid() {
+	if game.ValidateResolveMatch(v, match, time.Now()); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
@@ -388,7 +399,7 @@ func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	match, err := app.Game.MatchResolve(ctx, match.ID, match.Score, *match.EndedAt, match.Version)
+	match, err = app.Game.MatchResolve(ctx, match.ID, match.Score, *match.EndedAt, match.Version)
 	if err != nil {
 		// gameErrorResponse maps the full domain surface this flow can
 		// produce: ErrRecordNotFound (unknown match), ErrEditConflict (lost

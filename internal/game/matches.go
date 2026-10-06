@@ -108,14 +108,19 @@ func ValidateNewMatch(v *validator.Validator, match Match, now time.Time) {
 	v.Check(match.Status == "created", "status", "new matches can only have status created")
 }
 
-func ValdateResolveMatch(v *validator.Validator, match Match, now time.Time) {
+func ValidateResolveMatch(v *validator.Validator, match Match, now time.Time) {
 	v.Check(match.EndedAt != nil, "ended_at", "must be provided")
 	if match.EndedAt != nil {
 		v.Check(match.EndedAt.Before(now), "ended_at", "must be in the past")
 	}
 	v.Check(match.ID > 0, "id", "must be provided")
 	v.Check(match.Score.Home != nil && match.Score.Away != nil, "score", "must contain both home and away values")
-	v.Check(*match.Score.Home >= 0 && *match.Score.Away >= 0, "score", "must not be negative")
+	// The nil guard above runs first, but Check is not short-circuiting:
+	// dereferencing a nil pointer here turned a 422 into a 500, so the
+	// negativity check runs its own guard.
+	if match.Score.Home != nil && match.Score.Away != nil {
+		v.Check(*match.Score.Home >= 0 && *match.Score.Away >= 0, "score", "must not be negative")
+	}
 }
 
 // matchStatusRank orders the statuses along their lifecycle so that backward

@@ -555,6 +555,197 @@ func TestUpdateMatchHandler(t *testing.T) {
 	}
 }
 
+func TestResolveMatchHandler(t *testing.T) {
+	requireDB(t)
+
+	tests := []struct {
+		name     string
+		url      string
+		seed     string
+		body     string
+		wantCode int
+		wantBody []string
+	}{
+		{
+			// Round 3 is the fixture's open round; the seed (a started
+			// in-progress match) becomes match id 12 after reset's 11.
+			name: "resolves a started match in an open round",
+			seed: `INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at)
+			       VALUES (1, 3, 1, 2, 1.5, 2.5, 70, 69, 'in_progress', now() - interval '1 hour')`,
+			url:      "/v1/seasons/1/matches/12/resolve",
+			body:     `{"id":12,"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
+			wantCode: http.StatusOK,
+			wantBody: []string{`"status": "closed"`, `"home": 80`, `"away": 79`, `"version": 2`},
+		},
+		{
+			// Match 1 is the canonical closed match: the store classifies the
+			// refusal (stale version, status past in_progress, round closed are
+			// indistinguishable at 0 rows) as ErrEditConflict → the clean 409,
+			// never dangling as a 404 or a 500.
+			name:     "already-closed match is the clean conflict",
+			url:      "/v1/seasons/1/matches/1/resolve",
+			body:     `{"id":1,"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
+			wantCode: http.StatusConflict,
+			wantBody: []string{"edit conflict"},
+		},
+		{
+			name:     "unknown match",
+			url:      "/v1/seasons/1/matches/999/resolve",
+			body:     `{"id":999,"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
+		},
+		{
+			name:     "ended_at missing",
+			url:      "/v1/seasons/1/matches/1/resolve",
+			body:     `{"id":1,"score":{"home":80,"away":79},"version":1}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"ended_at", "must be provided"},
+		},
+		{
+			name:     "ended_at in the future",
+			url:      "/v1/seasons/1/matches/1/resolve",
+			body:     `{"id":1,"ended_at":"2030-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"ended_at", "must be in the past"},
+		},
+		{
+			name:     "score missing entirely",
+			url:      "/v1/seasons/1/matches/1/resolve",
+			body:     `{"id":1,"ended_at":"2020-01-01T12:00:00Z","version":1}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"score", "must contain both home and away values"},
+		},
+		{
+			name:     "partial score",
+			url:      "/v1/seasons/1/matches/1/resolve",
+			body:     `{"id":1,"ended_at":"2020-01-01T12:00:00Z","score":{"home":80},"version":1}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"score", "must contain both home and away values"},
+		},
+		{
+			name:     "negative score",
+			url:      "/v1/seasons/1/matches/1/resolve",
+			body:     `{"id":1,"ended_at":"2020-01-01T12:00:00Z","score":{"home":-1,"away":79},"version":1}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"score", "must not be negative"},
+		},
+		{
+			name:     "zero id",
+			url:      "/v1/seasons/1/matches/0/resolve",
+			body:     `{"id":0,"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: []string{"id", "must be provided"},
+		},
+		{
+			name:     "empty body",
+			url:      "/v1/seasons/1/matches/1/resolve",
+			body:     ``,
+			wantCode: http.StatusBadRequest,
+			wantBody: []string{"body must not be empty"},
+		},
+		{
+			name:     "badly-formed JSON",
+			url:      "/v1/seasons/1/matches/1/resolve",
+			body:     `{"id":`,
+			wantCode: http.StatusBadRequest,
+			wantBody: []string{"badly-formed JSON"},
+		},
+		{
+			name:     "unknown field rejected",
+			url:      "/v1/seasons/1/matches/1/resolve",
+			body:     `{"id":1,"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1,"venue":"Athens"}`,
+			wantCode: http.StatusBadRequest,
+			wantBody: []string{"unknown key"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reset(t)
+			app := newTestApplication()
+
+			if tt.seed != "" {
+				if _, err := testPool.Exec(context.Background(), tt.seed); err != nil {
+					t.Fatalf("seed: %v", err)
+				}
+			}
+
+			req := httptest.NewRequest(http.MethodPatch, tt.url, strings.NewReader(tt.body))
+			rr := httptest.NewRecorder()
+			app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+
+			if rr.Code != tt.wantCode {
+				t.Fatalf("got status %d, want %d (body: %s)", rr.Code, tt.wantCode, rr.Body.String())
+			}
+			for _, fragment := range tt.wantBody {
+				if !strings.Contains(rr.Body.String(), fragment) {
+					t.Errorf("body missing %q (body: %s)", fragment, rr.Body.String())
+				}
+			}
+		})
+	}
+}
+
+// TestResolveMatchSettlesRowOnce asserts the Phase 04 exactly-once contract
+// at the HTTP face: the resolution commits once (200, version bumped), the
+// replay with the stale version is refused with the clean 409, and the
+// committed row is untouched by the replay — no double bump, no partial
+// rewrite.
+func TestResolveMatchSettlesRowOnce(t *testing.T) {
+	requireDB(t)
+
+	reset(t)
+	app := newTestApplication()
+
+	if _, err := testPool.Exec(context.Background(),
+		`INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at)
+		 VALUES (1, 3, 1, 2, 1.5, 2.5, 70, 69, 'in_progress', now() - interval '1 hour')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	body := `{"id":12,"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`
+
+	solve := func(t *testing.T) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPatch, "/v1/seasons/1/matches/12/resolve", strings.NewReader(body))
+		rr := httptest.NewRecorder()
+		app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+		return rr
+	}
+
+	if rr := solve(t); rr.Code != http.StatusOK {
+		t.Fatalf("first resolve: got status %d, want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+
+	var status string
+	var homeScore, awayScore int
+	var version int
+	err := testPool.QueryRow(context.Background(),
+		`SELECT status, home_score, away_score, version FROM matches WHERE id = 12`).Scan(&status, &homeScore, &awayScore, &version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "closed" || homeScore != 80 || awayScore != 79 || version != 2 {
+		t.Fatalf("resolved row = %s/%d:%d/v%d, want closed/80:79/v2", status, homeScore, awayScore, version)
+	}
+
+	// The replay carries the same (now stale) version: one winner, clean
+	// conflict for the loser, nothing written twice.
+	if rr := solve(t); rr.Code != http.StatusConflict {
+		t.Fatalf("replay resolve: got status %d, want 409 (body: %s)", rr.Code, rr.Body.String())
+	}
+
+	err = testPool.QueryRow(context.Background(),
+		`SELECT status, home_score, away_score, version FROM matches WHERE id = 12`).Scan(&status, &homeScore, &awayScore, &version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "closed" || homeScore != 80 || awayScore != 79 || version != 2 {
+		t.Fatalf("row after replay = %s/%d:%d/v%d, want untouched closed/80:79/v2", status, homeScore, awayScore, version)
+	}
+}
+
 // TestPostponeStartedMatchFrozen asserts the DB gate actually left the row
 // untouched: the frozen write must be a full no-op, not a partial one.
 func TestPostponeStartedMatchFrozen(t *testing.T) {
