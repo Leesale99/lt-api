@@ -573,7 +573,7 @@ func TestResolveMatchHandler(t *testing.T) {
 			seed: `INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at)
 			       VALUES (1, 3, 1, 2, 1.5, 2.5, 70, 69, 'in_progress', now() - interval '1 hour')`,
 			url:      "/v1/seasons/1/matches/12/resolve",
-			body:     `{"id":12,"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
+			body:     `{"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
 			wantCode: http.StatusOK,
 			wantBody: []string{`"status": "closed"`, `"home": 80`, `"away": 79`, `"version": 2`},
 		},
@@ -584,58 +584,60 @@ func TestResolveMatchHandler(t *testing.T) {
 			// never dangling as a 404 or a 500.
 			name:     "already-closed match is the clean conflict",
 			url:      "/v1/seasons/1/matches/1/resolve",
-			body:     `{"id":1,"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
+			body:     `{"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
 			wantCode: http.StatusConflict,
 			wantBody: []string{"edit conflict"},
 		},
 		{
 			name:     "unknown match",
 			url:      "/v1/seasons/1/matches/999/resolve",
-			body:     `{"id":999,"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
+			body:     `{"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
 			wantCode: http.StatusNotFound,
 			wantBody: []string{"could not be found"},
 		},
 		{
 			name:     "ended_at missing",
 			url:      "/v1/seasons/1/matches/1/resolve",
-			body:     `{"id":1,"score":{"home":80,"away":79},"version":1}`,
+			body:     `{"score":{"home":80,"away":79},"version":1}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"ended_at", "must be provided"},
 		},
 		{
 			name:     "ended_at in the future",
 			url:      "/v1/seasons/1/matches/1/resolve",
-			body:     `{"id":1,"ended_at":"2030-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
+			body:     `{"ended_at":"2030-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"ended_at", "must be in the past"},
 		},
 		{
 			name:     "score missing entirely",
 			url:      "/v1/seasons/1/matches/1/resolve",
-			body:     `{"id":1,"ended_at":"2020-01-01T12:00:00Z","version":1}`,
+			body:     `{"ended_at":"2020-01-01T12:00:00Z","version":1}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"score", "must contain both home and away values"},
 		},
 		{
 			name:     "partial score",
 			url:      "/v1/seasons/1/matches/1/resolve",
-			body:     `{"id":1,"ended_at":"2020-01-01T12:00:00Z","score":{"home":80},"version":1}`,
+			body:     `{"ended_at":"2020-01-01T12:00:00Z","score":{"home":80},"version":1}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"score", "must contain both home and away values"},
 		},
 		{
 			name:     "negative score",
 			url:      "/v1/seasons/1/matches/1/resolve",
-			body:     `{"id":1,"ended_at":"2020-01-01T12:00:00Z","score":{"home":-1,"away":79},"version":1}`,
+			body:     `{"ended_at":"2020-01-01T12:00:00Z","score":{"home":-1,"away":79},"version":1}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"score", "must not be negative"},
 		},
 		{
-			name:     "zero id",
+			// The path owns the match id: readIDParam refuses anything below
+			// 1 before the body is even read.
+			name:     "zero id on the path",
 			url:      "/v1/seasons/1/matches/0/resolve",
-			body:     `{"id":0,"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
-			wantCode: http.StatusUnprocessableEntity,
-			wantBody: []string{"id", "must be provided"},
+			body:     `{"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
+			wantCode: http.StatusNotFound,
+			wantBody: []string{"could not be found"},
 		},
 		{
 			name:     "empty body",
@@ -654,7 +656,7 @@ func TestResolveMatchHandler(t *testing.T) {
 		{
 			name:     "unknown field rejected",
 			url:      "/v1/seasons/1/matches/1/resolve",
-			body:     `{"id":1,"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1,"venue":"Athens"}`,
+			body:     `{"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1,"venue":"Athens"}`,
 			wantCode: http.StatusBadRequest,
 			wantBody: []string{"unknown key"},
 		},
@@ -704,7 +706,7 @@ func TestResolveMatchSettlesRowOnce(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	body := `{"id":12,"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`
+	body := `{"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`
 
 	solve := func(t *testing.T) *httptest.ResponseRecorder {
 		t.Helper()
