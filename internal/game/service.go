@@ -305,7 +305,7 @@ func (s *Service) MatchResolve(ctx context.Context, matchID int, score Score, en
 		return Match{}, err
 	}
 
-	_, err = s.Store.Rides.UpdateAllForMatchTx(ctx, match.ID)
+	_, err = s.Store.Rides.UpdateAllForMatchTx(ctx, tx, match.ID)
 	if err != nil {
 		return Match{}, err
 	}

@@ -25,6 +25,11 @@ func (app *Application) gameErrorResponse(w http.ResponseWriter, r *http.Request
 		// Client gone; response would be discarded anyway.
 	case errors.Is(err, store.ErrRecordNotFound):
 		app.notFoundResponse(w, r)
+	case errors.Is(err, store.ErrEditConflict):
+		// Store-level optimistic-concurrency refusals (version guards, the
+		// resolve classification) — 409, same as the edit handlers that map
+		// it inline.
+		app.editConflictResponse(w, r)
 	case errors.Is(err, game.ErrRoundNotOpen):
 		app.roundNotOpenResponse(w, r)
 	case errors.Is(err, game.ErrNoNextMatch):

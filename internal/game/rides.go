@@ -302,7 +302,23 @@ type Result struct {
 	State RideState
 }
 
-func (s *RideStore) UpdateAllForMatchTx(ctx context.Context, matchID int) ([]Result, error) {
+// UpdateAllForMatchTx is ResolveMatch's ride half: one set-based statement
+// moving every locked ride of the match to its score-derived state. The
+// destination is a function of (match scores, ride.team_id) — computed in
+// SQL from the source of truth (ADR-018), not shipped per-ride from Go: the
+// UPDATE rides the join to matches, so one statement is one pass over the
+// (match_id, state = 'locked') index range. A draw crowns no winner (the
+// rule Match.Winner encodes in Go), so the CASE's ELSE lands every ride of
+// a drawn match lost.
+//
+// It runs on the caller's transaction, AFTER MatchStore.ResolveTx has
+// written the scores: rides_state_gate's result-agreement check reads the
+// match row in this same tx and refuses (P0001 → ErrInvalidTransition) any
+// ride whose destination disagrees with the scores — the gate enforces what
+// the CASE merely computes. The state = 'locked' filter makes a
+// re-resolution a 0-row no-op, which is the idempotency half of
+// ResolveMatch's Phase 04 contract.
+func (s *RideStore) UpdateAllForMatchTx(ctx context.Context, tx pgx.Tx, matchID int) ([]Result, error) {
 	query := `
 		UPDATE rides r
 		SET state = CASE
@@ -315,7 +331,7 @@ func (s *RideStore) UpdateAllForMatchTx(ctx context.Context, matchID int) ([]Res
 		WHERE m.id = $1 AND r.match_id = $1 AND r.state = 'locked'
 		RETURNING r.id, r.state
 	`
-	rows, err := s.pool.Query(ctx, query, matchID)
+	rows, err := tx.Query(ctx, query, matchID)
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +350,15 @@ func (s *RideStore) UpdateAllForMatchTx(ctx context.Context, matchID int) ([]Res
 		results = append(results, result)
 	}
 
+	// Trigger refusals surface here, not at Query: the statement fails while
+	// the rows are being streamed, so the gate's P0001 arrives via rows.Err.
 	if err := rows.Err(); err != nil {
+		if store.IsTriggerViolation(err) {
+			// rides_state_gate result agreement: some ride's destination
+			// disagreed with the match's scores (ADR-020). The tx rolls back
+			// upstream — scores and rides together.
+			return nil, ErrInvalidTransition
+		}
 		return nil, err
 	}
 

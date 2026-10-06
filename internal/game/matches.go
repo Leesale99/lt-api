@@ -436,16 +436,24 @@ func (s *MatchStore) NextForTeam(ctx context.Context, teamID int) (Match, error)
 	return match, nil
 }
 
+// ResolveTx is ResolveMatch's match half: the guarded score write. The
+// WHERE re-verifies the contended facts at the write instant under READ
+// COMMITTED — status still in_progress, match started, not yet ended, the
+// caller's version still current, and the match's own round still open
+// (resolution is a match-phase operation; the EXISTS is correlated to this
+// match's round_id, not a free-standing "some open round exists"). A
+// blocked write re-reads and re-evaluates on lock release (EvalPlanQual),
+// so 0 rows means the race was lost or the facts never held — classified
+// by classifyResolveRefusal, not guessed.
 func (s *MatchStore) ResolveTx(ctx context.Context, tx pgx.Tx, matchID int, score Score, endedAt time.Time, version int) (Match, error) {
 	query := `
 		UPDATE matches
-		SET status = 'closed', home_score = $1, away_score = $2, ended_at = $3 version = version + 1
+		SET status = 'closed', home_score = $1, away_score = $2, ended_at = $3, version = version + 1
 		WHERE id = $4 AND status = 'in_progress' AND starts_at < now() AND ended_at IS NULL AND version = $5
 		AND EXISTS (
 			SELECT 1
-			FROM rounds r 
-			INNER JOIN matches m ON m.round_id = r.id
-			WHERE r.status = 'open')
+			FROM rounds r
+			WHERE r.id = matches.round_id AND r.status = 'open')
 		RETURNING created_at, starts_at, season_id, round_id, status, home_odds, away_odds, version
 	`
 	args := []any{score.Home, score.Away, endedAt, matchID, version}
@@ -456,7 +464,7 @@ func (s *MatchStore) ResolveTx(ctx context.Context, tx pgx.Tx, matchID int, scor
 		EndedAt: &endedAt,
 	}
 
-	err := s.pool.QueryRow(ctx, query, args...).Scan(
+	err := tx.QueryRow(ctx, query, args...).Scan(
 		&match.CreatedAt,
 		&match.StartsAt,
 		&match.SeasonID,
@@ -469,11 +477,36 @@ func (s *MatchStore) ResolveTx(ctx context.Context, tx pgx.Tx, matchID int, scor
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Match{}, store.ErrRecordNotFound
+			// 0 rows is ambiguous — unknown match, stale version, wrong status,
+			// round no longer open — so name the cause before responding. The
+			// classification reads on the pool beside the tx (per-statement
+			// snapshot): the refusal already happened, the read only names the
+			// reason (the classifyInsertRefusal convention).
+			return Match{}, s.classifyResolveRefusal(ctx, matchID)
 		default:
 			return Match{}, err
 		}
 	}
 
 	return match, nil
+}
+
+// classifyResolveRefusal distinguishes the 0-row causes of ResolveTx. An
+// unknown match is ErrRecordNotFound (404); every surviving cause — stale
+// version, status past in_progress, round closed — is ErrEditConflict
+// (409): another resolution won, or the match moved on. Re-resolution of
+// an already-closed match therefore surfaces as a clean conflict, the
+// Phase 04 contract for two concurrent resolutions.
+func (s *MatchStore) classifyResolveRefusal(ctx context.Context, matchID int) error {
+	var id int
+
+	err := s.pool.QueryRow(ctx, `SELECT id FROM matches WHERE id = $1`, matchID).Scan(&id)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return store.ErrRecordNotFound
+	case err != nil:
+		return err
+	default:
+		return store.ErrEditConflict
+	}
 }

@@ -390,15 +390,12 @@ func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Reque
 
 	match, err := app.Game.MatchResolve(ctx, match.ID, match.Score, *match.EndedAt, match.Version)
 	if err != nil {
-		switch {
-		case errors.Is(err, context.Canceled):
-			return
-		case errors.Is(err, store.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
-		default:
-			app.serverErrorResponse(w, r, err)
-		}
-
+		// gameErrorResponse maps the full domain surface this flow can
+		// produce: ErrRecordNotFound (unknown match), ErrEditConflict (lost
+		// race or already-closed match, classified by the store),
+		// ErrInvalidTransition (rides_state_gate result agreement), canceled
+		// context.
+		app.gameErrorResponse(w, r, err)
 		return
 	}
 
