@@ -362,3 +362,48 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		app.serverErrorResponse(w, r, err)
 	}
 }
+
+func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		ID      int        `json:"id"`
+		EndedAt *time.Time `json:"ended_at"`
+		Score   game.Score `json:"score"`
+		Version int        `json:"version"`
+	}
+
+	match := game.Match{
+		ID:      input.ID,
+		EndedAt: input.EndedAt,
+		Score:   input.Score,
+		Version: input.Version,
+	}
+
+	v := validator.New()
+
+	if game.ValdateResolveMatch(v, match, time.Now()); !v.Valid() {
+		app.failedValidationResponse(w, r, v.Errors)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	defer cancel()
+
+	match, err := app.Game.MatchResolve(ctx, match.ID, match.Score, *match.EndedAt, match.Version)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, store.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+
+		return
+	}
+
+	err = app.writeJSON(w, http.StatusOK, envelope{"match": match}, nil)
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
+	}
+}

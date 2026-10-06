@@ -291,3 +291,28 @@ func (s *Service) RideUnlock(ctx context.Context, rideID int, token IdempotencyT
 
 	return res, nil
 }
+
+func (s *Service) MatchResolve(ctx context.Context, matchID int, score Score, endedAt time.Time, version int) (Match, error) {
+	tx, err := s.Store.Pool.Begin(ctx)
+	if err != nil {
+		return Match{}, err
+	}
+
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	match, err := s.Store.Matches.ResolveTx(ctx, tx, matchID, score, endedAt, version)
+	if err != nil {
+		return Match{}, err
+	}
+
+	_, err = s.Store.Rides.UpdateAllForMatchTx(ctx, match.ID)
+	if err != nil {
+		return Match{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Match{}, err
+	}
+
+	return match, nil
+}

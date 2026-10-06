@@ -297,6 +297,50 @@ func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID in
 	return rides, metadata, nil
 }
 
+type Result struct {
+	ID    int
+	State RideState
+}
+
+func (s *RideStore) UpdateAllForMatchTx(ctx context.Context, matchID int) ([]Result, error) {
+	query := `
+		UPDATE rides r
+		SET state = CASE
+			WHEN m.home_score > m.away_score AND r.team_id = m.home_team_id THEN 'won_pending'
+			WHEN m.home_score < m.away_score AND r.team_id = m.away_team_id THEN 'won_pending'
+			ELSE 'lost'
+		END,
+		version = version + 1
+		FROM matches m
+		WHERE m.id = $1 AND r.match_id = $1 AND r.state = 'locked'
+		RETURNING r.id, r.state
+	`
+	rows, err := s.pool.Query(ctx, query, matchID)
+	if err != nil {
+		return nil, err
+	}
+
+	defer rows.Close()
+
+	var results []Result
+	for rows.Next() {
+		var result Result
+
+		err := rows.Scan(&result.ID, &result.State)
+		if err != nil {
+			return nil, err
+		}
+
+		results = append(results, result)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return results, nil
+}
+
 func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
 	query := `
 		UPDATE rides
