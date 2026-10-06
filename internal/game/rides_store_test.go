@@ -6,10 +6,10 @@ package game
 // parents (23503 → ErrRecordNotFound, the PlayerStore convention).
 //
 // Same harness as the service tests (constraints_test.go: pool, seed,
-// cleanup, requireDB). Rides are planted with RideStore.Insert, which
-// stores caller-supplied state — the creation contract belongs to
-// ride.Create — and the state gate is BEFORE UPDATE, so INSERTs plant
-// won_pending/burned rows freely.
+// cleanup, requireDB). Since 000012 rides are planted locked and walked
+// to the requested state through the gate (service_test.go plantRide) —
+// the walk needs the fixture match's scores to agree with the planted
+// state, so decided-state plants go on closed matches.
 
 import (
 	"context"
@@ -118,6 +118,37 @@ func TestRideStore_InsertAndGet(t *testing.T) {
 			t.Fatalf("Insert() = %v, want ErrRecordNotFound (FK 23503 mapping)", err)
 		}
 	})
+
+	t.Run("insert of a non-locked state is ErrInvalidTransition (000012)", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
+		playerID := plantPlayer(ctx, t, homeID)
+
+		// rides_state_insert_gate: rides are born locked (ADR-019) — a
+		// direct INSERT that skips the transition graph reaches no other
+		// state, the same hole the BEFORE UPDATE gate could not close.
+		rs := NewStore(pool).Rides
+		_, err := rs.Insert(ctx, Ride{
+			PlayerID:     playerID,
+			TeamID:       homeID,
+			MatchID:      matchID,
+			State:        RideWonPending,
+			TokensLocked: decimal.NewFromInt(100),
+			BaseAtLock:   decimal.NewFromInt(95),
+		})
+
+		if !errors.Is(err, ErrInvalidTransition) {
+			t.Fatalf("Insert() = %v, want ErrInvalidTransition (000012 gate mapping)", err)
+		}
+
+		var count int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM rides WHERE match_id = $1`, matchID).Scan(&count); err != nil {
+			t.Fatalf("count rides: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("rides for match %d = %d, want 0 (the refusal must not have written)", matchID, count)
+		}
+	})
 }
 
 // TestRideStore_GetAll pins the filter/sort/pagination contract of the list
@@ -132,7 +163,10 @@ func TestRideStore_GetAll(t *testing.T) {
 	t.Run("filters, sort and pagination", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		match1 := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
-		match2 := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "31 days")
+		// match2 is decided-with-score: r2 plants won_pending on it through
+		// the gate (000011 result agreement), which needs scores agreeing
+		// with homeID (the fixture closed match ends 88:79, home wins).
+		match2 := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
 		player1 := plantPlayer(ctx, t, homeID)
 		player2 := plantPlayer(ctx, t, awayID)
 
@@ -142,9 +176,14 @@ func TestRideStore_GetAll(t *testing.T) {
 		if err != nil {
 			t.Fatalf("plant r1: %v", err)
 		}
-		r2, err := rs.Insert(ctx, Ride{PlayerID: player1, TeamID: homeID, MatchID: match2, State: RideWonPending, TokensLocked: decimal.NewFromInt(100), BaseAtLock: decimal.NewFromInt(95), Acc: decimal.NewFromInt(90), Streak: 1})
+		r2, err := rs.Insert(ctx, Ride{PlayerID: player1, TeamID: homeID, MatchID: match2, State: RideLocked, TokensLocked: decimal.NewFromInt(100), BaseAtLock: decimal.NewFromInt(95), Acc: decimal.NewFromInt(90), Streak: 1})
 		if err != nil {
 			t.Fatalf("plant r2: %v", err)
+		}
+		// The gated walk to won_pending — r2 must hold a second state for
+		// the state-filter cases, and INSERT cannot plant it directly.
+		if _, err := pool.Exec(ctx, `UPDATE rides SET state = 'won_pending' WHERE id = $1`, r2.ID); err != nil {
+			t.Fatalf("walk r2 to won_pending: %v", err)
 		}
 		r3, err := rs.Insert(ctx, Ride{PlayerID: player2, TeamID: awayID, MatchID: match1, State: RideLocked, TokensLocked: decimal.NewFromInt(50), BaseAtLock: decimal.NewFromInt(95)})
 		if err != nil {
@@ -407,6 +446,26 @@ func TestRideStore_Update(t *testing.T) {
 
 		if !errors.Is(err, ErrInvalidTransition) {
 			t.Fatalf("Update() = %v, want ErrInvalidTransition", err)
+		}
+	})
+
+	t.Run("result disagreement is ErrInvalidTransition (000011)", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
+		// Away team planted: the fixture closed match ends 88:79 (home
+		// wins), so a won_pending arrival for the away ride disagrees.
+		ride := plantRide(ctx, t, closedMatch, awayID, RideLocked, decimal.Zero, 0)
+
+		// The transition itself passes check 3 (locked → won_pending is in
+		// the graph). What refuses is the result-agreement check alone: the
+		// DB re-derives the winner from the match row (ADR-018) instead of
+		// trusting the writer — a rogue UPDATE cannot plant a fake win.
+		ride.State = RideWonPending
+
+		_, err := NewStore(pool).Rides.Update(ctx, ride)
+
+		if !errors.Is(err, ErrInvalidTransition) {
+			t.Fatalf("Update() = %v, want ErrInvalidTransition (result disagreement)", err)
 		}
 	})
 

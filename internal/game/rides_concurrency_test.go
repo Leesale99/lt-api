@@ -30,6 +30,8 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+
+	"lt-api.aleksrdvn.com/internal/store"
 )
 
 // raceIterations is how many fresh fixtures each race test re-runs. Each
@@ -365,4 +367,209 @@ func TestService_RideBurnRacesExactlyOnce(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestService_MatchResolveRaces pins ResolveMatch's two Phase 04 races
+// (the deferred note's excursion: "two concurrent resolutions ... idempotent
+// or a clean conflict"):
+//
+//	two resolutions:  the version guard inside ResolveTx serializes them —
+//	                  exactly one settles match and rides, the loser reads
+//	                  0 rows and reports the clean ErrEditConflict (not the
+//	                  ambiguous ErrRecordNotFound);
+//	resolve vs close: the close can only pass rounds_close_gate
+//	                  (round_close_has_unclosed_matches) after the
+//	                  resolution committed — the match flip and the ride
+//	                  settlement are one commit, so a committed close and
+//	                  an unresolved ride cannot coexist. The outcome set is
+//	                  (resolve nil, close nil) or (resolve nil, close
+//	                  ErrRecordInUse); resolve never loses.
+//
+// As everywhere in this file: both legal outcomes are accepted, no
+// interleaving order is pinned, and the assertions hold under either.
+func TestService_MatchResolveRaces(t *testing.T) {
+	requireDB(t)
+
+	ctx := context.Background()
+	svc := NewService(NewStore(pool))
+
+	// startedMatch builds the resolve fixture: the match must satisfy
+	// ResolveTx's contended facts honestly (in_progress, started in the
+	// past, un-ended) — the WHERE is the concurrency contract under test.
+	startedMatch := func(ctx context.Context, t *testing.T, roundID, homeID, awayID int) (int, int) {
+		t.Helper()
+		fixtureMatch := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "-30 minutes")
+		scoreStartedMatch(ctx, t, fixtureMatch)
+
+		var version int
+		if err := pool.QueryRow(ctx, `SELECT version FROM matches WHERE id = $1`, fixtureMatch).Scan(&version); err != nil {
+			t.Fatalf("read match version: %v", err)
+		}
+		return fixtureMatch, version
+	}
+
+	t.Run("two concurrent resolutions settle exactly once", func(t *testing.T) {
+		for i := 0; i < raceIterations; i++ {
+			t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
+				roundID, homeID, awayID := seedFixture(ctx, t)
+				matchID, version := startedMatch(ctx, t, roundID, homeID, awayID)
+				r1 := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
+				r2 := plantRide(ctx, t, matchID, awayID, RideLocked, decimal.Zero, 0)
+
+				// Two independent resolutions, same caller version: both pass
+				// their snapshot check, then serialize on the match row lock.
+				var (
+					wg   sync.WaitGroup
+					errs = make([]error, 2)
+				)
+				wg.Add(2)
+				for j := range errs {
+					go func() {
+						defer wg.Done()
+						_, errs[j] = svc.MatchResolve(ctx, matchID, resolveScore(70, 69), time.Now().Add(-2*time.Hour), version)
+					}()
+				}
+				wg.Wait()
+
+				winners := 0
+				for _, err := range errs {
+					switch {
+					case err == nil:
+						winners++
+					case errors.Is(err, store.ErrEditConflict):
+						// The loser: blocked ResolveTx re-evaluated its WHERE
+						// after the winner's commit and matched 0 rows — the
+						// EvalPlanQual re-check refused the stale version, and
+						// classifyResolveRefusal named it a clean 409.
+					default:
+						t.Fatalf("MatchResolve() = %v, want nil or ErrEditConflict", err)
+					}
+				}
+				if winners != 1 {
+					t.Fatalf("winners = %d (errs: %v), want exactly 1", winners, errs)
+				}
+
+				// The settled states, and nothing more: home won_pending,
+				// away lost, both at exactly one version bump. A loser that
+				// had written anything would show up here as a double bump.
+				for _, tc := range []struct {
+					ride  Ride
+					state RideState
+				}{{r1, RideWonPending}, {r2, RideLost}} {
+					got, err := svc.Store.Rides.Get(ctx, tc.ride.ID)
+					if err != nil {
+						t.Fatalf("Get(%d): %v", tc.ride.ID, err)
+					}
+					if got.State != tc.state || got.Version != 2 {
+						t.Errorf("ride %d state/version = %q/%d, want %q/2", got.ID, got.State, got.Version, tc.state)
+					}
+				}
+
+				var status string
+				if err := pool.QueryRow(ctx, `SELECT status FROM matches WHERE id = $1`, matchID).Scan(&status); err != nil {
+					t.Fatalf("read match status: %v", err)
+				}
+				if status != "closed" {
+					t.Errorf("match status = %q, want closed", status)
+				}
+			})
+		}
+	})
+
+	t.Run("resolution beats the close on an unsettled round", func(t *testing.T) {
+		for i := 0; i < raceIterations; i++ {
+			t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
+				roundID, homeID, awayID := seedFixture(ctx, t)
+				matchID, _ := startedMatch(ctx, t, roundID, homeID, awayID)
+				ride := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
+
+				// The close command's round row, as its callers supply it:
+				// read the stored facts, carry the target status like the
+				// handler does.
+				var round Round
+				if err := pool.QueryRow(ctx, `
+					SELECT id, season_id, number, status, version
+					FROM rounds WHERE id = $1
+				`, roundID).Scan(&round.ID, &round.SeasonID, &round.Number, &round.Status, &round.Version); err != nil {
+					t.Fatalf("read round: %v", err)
+				}
+				if round.Status != RoundOpen {
+					t.Fatalf("fixture round status = %q, want open", round.Status)
+				}
+				round.Status = RoundClosed
+
+				var (
+					wg         sync.WaitGroup
+					resolveErr error
+					closeErr   error
+				)
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					_, resolveErr = svc.MatchResolve(ctx, matchID, resolveScore(70, 69), time.Now().Add(-2*time.Hour), 1)
+				}()
+				go func() {
+					defer wg.Done()
+					_, closeErr = NewStore(pool).Rounds.Close(ctx, round)
+				}()
+				wg.Wait()
+
+				// The resolve cannot lose: for the close to pass
+				// rounds_close_gate at its flip, the match must be closed
+				// committed — which only the resolve did, together with the
+				// ride settlement. Close loses to the gate (ErrRecordInUse)
+				// or runs after.
+				if resolveErr != nil {
+					t.Fatalf("MatchResolve() = %v, want nil", resolveErr)
+				}
+				switch {
+				case closeErr == nil:
+					// The close committed after the resolution: its auto-
+					// resolution saw no won_pending rides (they settled as
+					// won_pending/lost) and its gate passed on settled matches.
+				case errors.Is(closeErr, store.ErrRecordInUse):
+					// The close's flip evaluated before the resolution
+					// committed: rounds_close_gate refused the unclosed match.
+				default:
+					t.Fatalf("Close() = %v, want nil or ErrRecordInUse", closeErr)
+				}
+
+				var matchStatus string
+				if err := pool.QueryRow(ctx, `SELECT status FROM matches WHERE id = $1`, matchID).Scan(&matchStatus); err != nil {
+					t.Fatalf("read match status: %v", err)
+				}
+				if matchStatus != "closed" {
+					t.Errorf("match status = %q, want closed", matchStatus)
+				}
+
+				got, err := NewStore(pool).Rides.Get(ctx, ride.ID)
+				if err != nil {
+					t.Fatalf("Get() = %v, want nil", err)
+				}
+				if got.State != RideWonPending || got.Version != 2 {
+					t.Errorf("ride state/version = %q/%d, want won_pending/2", got.State, got.Version)
+				}
+
+				// The forbidden third shape: a closed round that owns an
+				// unresolved ride. Both outcomes must agree with the gate's
+				// own backstop.
+				var violations int
+				if err := pool.QueryRow(ctx, `
+					SELECT count(*)
+					FROM rides rd
+					JOIN matches m ON m.id = rd.match_id
+					WHERE m.round_id = $1 AND rd.state IN ('locked', 'won_pending')
+				`, roundID).Scan(&violations); err != nil {
+					t.Fatalf("count unresolved rides: %v", err)
+				}
+				var roundStatus string
+				if err := pool.QueryRow(ctx, `SELECT status FROM rounds WHERE id = $1`, roundID).Scan(&roundStatus); err != nil {
+					t.Fatalf("read round status: %v", err)
+				}
+				if roundStatus == "closed" && violations > 0 {
+					t.Errorf("round closed with %d unresolved rides (the third shape)", violations)
+				}
+			})
+		}
+	})
 }

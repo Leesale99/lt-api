@@ -62,6 +62,11 @@ type RideStore struct {
 }
 
 func (s *RideStore) Insert(ctx context.Context, ride Ride) (Ride, error) {
+	// Insert admits locked only: rides are created locked (ADR-019), and
+	// since 000012 the rides_state_insert_gate refuses every other state —
+	// all other states must be reached through a gated UPDATE. The domain's
+	// ride.Create (the only production caller) stamps RideLocked before
+	// this runs.
 	query := `
 		INSERT INTO rides (player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -86,6 +91,10 @@ func (s *RideStore) Insert(ctx context.Context, ride Ride) (Ride, error) {
 			// handler validates only positivity, so an unknown parent can
 			// only be caught here (same convention as PlayerStore.Insert).
 			return Ride{}, store.ErrRecordNotFound
+		case store.IsTriggerViolation(err):
+			// rides_state_insert_gate: a non-locked state tried to be born
+			// (ADR-019). Same 409 surface as every other gate refusal.
+			return Ride{}, ErrInvalidTransition
 		default:
 			return Ride{}, err
 		}
@@ -326,7 +335,7 @@ func (s *RideStore) UpdateAllForMatchTx(ctx context.Context, tx pgx.Tx, matchID 
 			WHEN m.home_score < m.away_score AND r.team_id = m.away_team_id THEN 'won_pending'
 			ELSE 'lost'
 		END,
-		version = version + 1
+		version = r.version + 1
 		FROM matches m
 		WHERE m.id = $1 AND r.match_id = $1 AND r.state = 'locked'
 		RETURNING r.id, r.state

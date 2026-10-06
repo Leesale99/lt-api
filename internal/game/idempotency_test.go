@@ -223,7 +223,10 @@ func TestService_RideLockIdempotency(t *testing.T) {
 	t.Run("a failed command rolls its claim back", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideLost, decimal.Zero, 0)
+		// Away team planted: the fixture closed match ends 88:79 (home
+		// wins), and the result-agreement gate (000011) only lets a losing
+		// team's ride walk to lost.
+		ride := plantRide(ctx, t, closedMatch, awayID, RideLost, decimal.Zero, 0)
 		// A destination must exist so the failure comes from the state
 		// machine (lost is terminal), not the schedule.
 		ensureRound2(ctx, t)

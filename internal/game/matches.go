@@ -109,8 +109,10 @@ func ValidateNewMatch(v *validator.Validator, match Match, now time.Time) {
 }
 
 func ValdateResolveMatch(v *validator.Validator, match Match, now time.Time) {
-	v.Check(!match.EndedAt.IsZero(), "ended_at", "must be provided")
-	v.Check(match.EndedAt.Before(now), "ended_at", "must be in the past")
+	v.Check(match.EndedAt != nil, "ended_at", "must be provided")
+	if match.EndedAt != nil {
+		v.Check(match.EndedAt.Before(now), "ended_at", "must be in the past")
+	}
 	v.Check(match.ID > 0, "id", "must be provided")
 	v.Check(match.Score.Home != nil && match.Score.Away != nil, "score", "must contain both home and away values")
 	v.Check(*match.Score.Home >= 0 && *match.Score.Away >= 0, "score", "must not be negative")

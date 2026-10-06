@@ -49,19 +49,37 @@ func plantPlayerRow(t *testing.T, teamID int) int {
 }
 
 // plantRideRow inserts a ride with caller-chosen state and returns its id.
-// Direct INSERT bypasses the state gate (BEFORE UPDATE only) — that is the
-// point: tests need rides in states no current producer can reach.
+// Since 000012 the INSERT gate admits locked only, so the helper plants
+// locked and walks to the requested state through the same UPDATE gate
+// every writer faces — burned/unlocked via the won_pending intermediate,
+// result agreement enforced along the way (a state the match's scores
+// disagree with fails loudly). The walk is incidental to what tests
+// arrange, so the final UPDATE resets version to 1.
 func plantRideRow(t *testing.T, playerID, teamID, matchID int, state, acc string, streak int) int {
 	t.Helper()
 
 	var id int
 	err := testPool.QueryRow(context.Background(), `
 		INSERT INTO rides (player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak)
-		VALUES ($1, $2, $3, $4, 100, 95, $5, $6)
+		VALUES ($1, $2, $3, 'locked', 100, 95, $4, $5)
 		RETURNING id
-	`, playerID, teamID, matchID, state, acc, streak).Scan(&id)
+	`, playerID, teamID, matchID, acc, streak).Scan(&id)
 	if err != nil {
 		t.Fatalf("plant ride: %v", err)
+	}
+
+	if state != "locked" {
+		if state == "burned" || state == "unlocked" {
+			if _, err := testPool.Exec(context.Background(),
+				`UPDATE rides SET state = 'won_pending' WHERE id = $1`, id); err != nil {
+				t.Fatalf("plant ride walk (locked → won_pending): %v", err)
+			}
+		}
+		if _, err := testPool.Exec(context.Background(), `
+			UPDATE rides SET state = $2, bonus_acc = $3, version = 1 WHERE id = $1
+		`, id, state, acc); err != nil {
+			t.Fatalf("plant ride walk (→ %s): %v", state, err)
+		}
 	}
 
 	return id
@@ -449,8 +467,11 @@ func TestListRidesHandler(t *testing.T) {
 		player2 = plantPlayerRow(t, 2)
 		player3 = plantPlayerRow(t, 1)
 
-		r1 = plantRideRow(t, 1, 1, 5, "locked", "0", 0) // fixture player 1, team 1
-		r2 = plantRideRow(t, player2, 1, 6, "won_pending", "90", 1)
+		// r2 sits on match 1, the canonical decided match (88:79, team 1
+		// wins): won_pending must agree with the match's scores through the
+		// gate, and match 6 (open round, no scores) cannot hold it.
+		r1 = plantRideRow(t, 1, 1, 5, "locked", "0", 0)         // fixture player 1, team 1
+		r2 = plantRideRow(t, player2, 1, 1, "won_pending", "90", 1)
 		r3 = plantRideRow(t, player3, 2, 5, "locked", "0", 0)
 
 		return player2, player3, r1, r2, r3
@@ -763,8 +784,13 @@ func TestRideCommandHandlers(t *testing.T) {
 
 	t.Run("unlock in action phase is the invalid-phase 409", func(t *testing.T) {
 		// Round 3 without a decided match stays in ActionPhase; unlock is a
-		// decision-phase command.
+		// decision-phase command. Match 5 goes in_progress-with-score so the
+		// walk in plantRideRow can agree on won_pending (000011) — ended_at
+		// stays nil, so round 3's phase window is untouched.
 		reset(t)
+		if _, err := testPool.Exec(context.Background(), `UPDATE matches SET status = 'in_progress', home_score = 70, away_score = 69 WHERE id = 5`); err != nil {
+			t.Fatalf("score match 5: %v", err)
+		}
 		playerID := plantPlayerRow(t, 1)
 		rideID := plantRideRow(t, playerID, 1, 5, "won_pending", "90", 1)
 
@@ -784,20 +810,24 @@ func TestRideCommandHandlers(t *testing.T) {
 	t.Run("lock without a next match is the no-next-match 409", func(t *testing.T) {
 		// Team 3 has no other match anywhere: the ride's continuation has no
 		// destination, which is a schedule conflict, not a state conflict.
-		closedMatch := decidedFixture(t)
+		decidedFixture(t)
 		if _, err := testPool.Exec(context.Background(), `INSERT INTO teams (name, logo, description) VALUES ('AEK', 'https://x.example/aek.png', 'Athens')`); err != nil {
 			t.Fatalf("plant team 3: %v", err)
 		}
-		if _, err := testPool.Exec(context.Background(), `
+		var team3Match int
+		if err := testPool.QueryRow(context.Background(), `
 			INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at, ended_at)
 			VALUES (1, 3, 3, 2, 1.75, 2.20, 70, 69, 'closed', now() - interval '3 hours', now() - interval '2 hours')
-		`); err != nil {
+			RETURNING id
+		`).Scan(&team3Match); err != nil {
 			t.Fatalf("plant team-3 match: %v", err)
 		}
 		// Lock continues on ride.TeamID, so the ride itself must belong to
-		// team 3 — the player row is just the FK parent.
+		// team 3 — the player row is just the FK parent. The ride sits on
+		// team 3's own decided match: won_pending must agree with its scores
+		// through the gate (000011), and team 3 is the 70:69 home winner.
 		playerID := plantPlayerRow(t, 3)
-		rideID := plantRideRow(t, playerID, 3, closedMatch, "won_pending", "90", 1)
+		rideID := plantRideRow(t, playerID, 3, team3Match, "won_pending", "90", 1)
 
 		assertResponse(t, command(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/lock", "lock-no-next-match"),
 			http.StatusConflict, "the ride cannot be continued because the team has no upcoming matches")
