@@ -200,8 +200,22 @@ func rideCreateMarshal(ride game.Ride) (int, []byte, error) {
 // is drained into memory and handed back on r.Body for readJSON.
 // ok=false means the token failed validation and the 422 is written.
 func (app *Application) createRideToken(w http.ResponseWriter, r *http.Request) ([]byte, game.IdempotencyToken, bool) {
+	// The size cap must wrap the body before it is drained, not at decode:
+	// create hashes raw request bytes (ADR-024), so hash input and decoded
+	// body must be the same bytes. Capping only in readJSON would buffer an
+	// oversized body here in full, store its hash if the decode somehow
+	// passed, and then truncate the retry's re-read into a hash mismatch —
+	// a 409 on the exact bytes that once succeeded. MaxBytesReader instead
+	// hard-stops the read at maxBodyBytes and requests connection close.
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			app.requestTooLargeResponse(w, r, maxBytesError.Limit)
+			return nil, game.IdempotencyToken{}, false
+		}
 		app.badRequestResponse(w, r, err)
 		return nil, game.IdempotencyToken{}, false
 	}

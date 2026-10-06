@@ -20,6 +20,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -322,6 +323,57 @@ func TestCreateRideIdempotentHandler(t *testing.T) {
 			t.Errorf("idempotency_keys rows = %d, want 0 (claim rolled back)", keyRows)
 		}
 	})
+}
+
+func TestCreateRideHandlerBodyTooLarge(t *testing.T) {
+	requireDB(t)
+
+	app := newTestApplication()
+
+	// Valid JSON padded with whitespace past maxBodyBytes: json tolerates
+	// space outside the value, so if the intake cap were missing (or only
+	// applied at decode) this body would decode and create a ride — 201.
+	// The 413 can therefore only come from the MaxBytesReader at drain time.
+	payload := `{"player_id":1,"team_id":1,"match_id":5,"tokens_locked":100}`
+	body := strings.Repeat(" ", 600_000) + payload + strings.Repeat(" ", 600_000)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/rides", strings.NewReader(body))
+	req.Header.Set("Idempotency-Key", "create-oversize")
+	rr := httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("got status %d, want 413 (body: %.200s)", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), fmt.Sprintf("larger than %d bytes", int64(maxBodyBytes))) {
+		t.Errorf("body missing size message (body: %.200s)", rr.Body.String())
+	}
+
+	// The rejection fired before hash, claim and decode: no ride, no key.
+	var rideRows, keyRows int
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM rides`).Scan(&rideRows); err != nil {
+		t.Fatalf("count rides: %v", err)
+	}
+	if rideRows != 0 {
+		t.Errorf("rides rows = %d, want 0 (oversized body never decoded)", rideRows)
+	}
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM idempotency_keys`).Scan(&keyRows); err != nil {
+		t.Fatalf("count keys: %v", err)
+	}
+	if keyRows != 0 {
+		t.Errorf("idempotency_keys rows = %d, want 0 (oversized body never claimed)", keyRows)
+	}
+
+	// The 413 did not burn the key: a normal-bodied retry under the same
+	// key executes fresh instead of conflicting with the refused attempt.
+	normal := httptest.NewRequest(http.MethodPost, "/v1/rides", strings.NewReader(payload))
+	normal.Header.Set("Idempotency-Key", "create-oversize")
+	rr2 := httptest.NewRecorder()
+	app.routes().ServeHTTP(rr2, withAuth(normal, adminAuthToken))
+
+	if rr2.Code != http.StatusCreated {
+		t.Fatalf("retry after 413: got status %d, want 201 (body: %s)", rr2.Code, rr2.Body.String())
+	}
 }
 
 func TestCreateRideHandlerLocation(t *testing.T) {

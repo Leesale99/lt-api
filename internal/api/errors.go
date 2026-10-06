@@ -45,6 +45,14 @@ func (app *Application) badRequestResponse(w http.ResponseWriter, r *http.Reques
 	app.writeError(w, r, http.StatusBadRequest, err.Error())
 }
 
+// requestTooLargeResponse answers a body that exceeded maxBodyBytes at
+// intake (413): the read was cut short before anything was decoded or
+// hashed, so nothing is claimed and a retry with a normal body re-executes.
+func (app *Application) requestTooLargeResponse(w http.ResponseWriter, r *http.Request, limit int64) {
+	message := fmt.Sprintf("body must not be larger than %d bytes", limit)
+	app.writeError(w, r, http.StatusRequestEntityTooLarge, message)
+}
+
 func (app *Application) failedValidationResponse(w http.ResponseWriter, r *http.Request, errors map[string]string) {
 	app.writeError(w, r, http.StatusUnprocessableEntity, errors)
 }
