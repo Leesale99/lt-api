@@ -164,9 +164,10 @@ func plantRide(ctx context.Context, t *testing.T, matchID, teamID int, state Rid
 			}
 		}
 
-		// The arrival writes state and acc in one statement: the gate's
-		// money-state coupling (check 4) reads NEW.bonus_acc on the
-		// lost/unlocked arrivals.
+		// The arrival writes state and acc in one statement: the money-
+		// state coupling reads NEW.bonus_acc on the lost/unlocked arrivals
+		// — the declarative rides_money_state_coupling CHECK (000013) now,
+		// which took the UPDATE gate's trigger check 4 in the sweep.
 		if _, err := pool.Exec(ctx, `
 			UPDATE rides SET state = $2, bonus_acc = $3, version = 1 WHERE id = $1
 		`, ride.ID, state, acc); err != nil {

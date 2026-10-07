@@ -364,13 +364,19 @@ func (s *RideStore) UpdateAllForMatchTx(ctx context.Context, tx pgx.Tx, matchID 
 		results = append(results, result)
 	}
 
-	// Trigger refusals surface here, not at Query: the statement fails while
-	// the rows are being streamed, so the gate's P0001 arrives via rows.Err.
+	// Refusals surface here, not at Query: the statement fails while
+	// the rows are being streamed, so a gate refusal arrives via rows.Err.
 	if err := rows.Err(); err != nil {
-		if store.IsTriggerViolation(err) {
+		switch {
+		case store.IsTriggerViolation(err):
 			// rides_state_gate result agreement: some ride's destination
 			// disagreed with the match's scores (ADR-020). The tx rolls back
 			// upstream — scores and rides together.
+			return nil, ErrInvalidTransition
+		case store.IsCheckViolation(err, ridesMoneyStateCoupling):
+			// rides_money_state_coupling (000013): the declarative check
+			// that took trigger check 4's job — unlocked|lost arrivals
+			// carry no acc. Same 409 surface the P0001 refusal produced.
 			return nil, ErrInvalidTransition
 		}
 		return nil, err
@@ -404,6 +410,11 @@ func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
 			// NOT ErrRecordInUse: the row is not referenced by anything,
 			// its state machine rejected the write.
 			return Ride{}, ErrInvalidTransition
+		case store.IsCheckViolation(err, ridesMoneyStateCoupling):
+			// rides_money_state_coupling (000013): the declarative check
+			// that took trigger check 4's job — unlocked|lost arrivals
+			// carry no acc. Same 409 surface the P0001 refusal produced.
+			return Ride{}, ErrInvalidTransition
 		default:
 			return Ride{}, err
 		}
@@ -411,6 +422,19 @@ func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
 
 	return ride, nil
 }
+
+// ridesMoneyStateCoupling is the declarative money-state-coupling gate
+// (000013): unlocked|lost arrivals carry no accumulated bonus_acc — the
+// predicate ride.Unlock and ride.Lost obey in the domain. It is row-local
+// (references only NEW), so a CHECK constraint owns it instead of trigger
+// check 4, per the Postgres hierarchy: declarative constraint above
+// trigger whenever the constraint can express the rule. The store maps it
+// by name, not by bare SQLSTATE: the rides table carries five other
+// CHECKs that must keep falling through unhandled. Change-detector: the
+// domain copies live in ride.Unlock/ride.Lost and the persistence copy in
+// rideAutoUnlockSQL (internal/game/rounds.go); the DB probe is
+// TestRideMoneyStateCoupling (internal/game/constraints_test.go).
+const ridesMoneyStateCoupling = "rides_money_state_coupling"
 
 // guardedUpdateSQL is the ride commands' guarded write (Phase 04, ADR-024):
 // the full-column shape of Update plus the contended facts in the WHERE, so
@@ -458,8 +482,9 @@ const guardedUpdateSQL = `
 //     ErrRoundNotOpen (the round-refusal 409), a CAS lost to a concurrent
 //     ride command answers ErrInvalidTransition (ADR-020), a destination
 //     stopped between the pick and the write answers ErrRoundNotOpen;
-//     rides_state_gate P0001 -> ErrInvalidTransition; destination deleted
-//     mid-flight -> ErrRecordNotFound
+//     rides_state_gate P0001 and rides_money_state_coupling 23514 ->
+//     ErrInvalidTransition; destination deleted mid-flight ->
+//     ErrRecordNotFound
 func (s *RideStore) UpdateGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride, destinationMatchID int) (Ride, error) {
 	err := tx.QueryRow(ctx, guardedUpdateSQL,
 		ride.MatchID, ride.State, ride.Acc, ride.Streak, ride.ID, ride.Version, destinationMatchID,
@@ -480,6 +505,11 @@ func (s *RideStore) UpdateGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride, d
 		case errors.Is(err, pgx.ErrNoRows):
 			return Ride{}, s.classifyUpdateRefusal(ctx, ride.ID, ride.Version, destinationMatchID)
 		case store.IsTriggerViolation(err):
+			return Ride{}, ErrInvalidTransition
+		case store.IsCheckViolation(err, ridesMoneyStateCoupling):
+			// rides_money_state_coupling (000013): the declarative check
+			// that took trigger check 4's job — unlocked|lost arrivals
+			// carry no acc. Same 409 surface the P0001 refusal produced.
 			return Ride{}, ErrInvalidTransition
 		case store.IsFKViolation(err):
 			// The destination match was deleted between NextForTeam's pick

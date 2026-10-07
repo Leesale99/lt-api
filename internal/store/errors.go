@@ -55,6 +55,20 @@ func IsUniqueViolation(err error, constraints ...string) bool {
 	return len(constraints) == 0 || slices.Contains(constraints, pgErr.ConstraintName)
 }
 
+// IsCheckViolation reports whether err is a PostgreSQL check-constraint
+// violation (23514). Same constraint-name pattern as IsUniqueViolation:
+// without names it matches any check violation, with names only those
+// constraints — declarative gates refuse with the constraint's name
+// instead of a P0001 message, so a store maps one specific rule by name
+// while leaving the table's other CHECKs falling through unhandled.
+func IsCheckViolation(err error, constraints ...string) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		return false
+	}
+	return len(constraints) == 0 || slices.Contains(constraints, pgErr.ConstraintName)
+}
+
 // IsFKViolation reports whether err is a PostgreSQL foreign-key violation
 // (23503). It lets stores collapse a violated reference into
 // ErrRecordNotFound so handlers can translate it into a validation error
