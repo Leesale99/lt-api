@@ -327,6 +327,11 @@ type Result struct {
 // the CASE merely computes. The state = 'locked' filter makes a
 // re-resolution a 0-row no-op, which is the idempotency half of
 // ResolveMatch's Phase 04 contract.
+// Score→state rule site 2 of 3 (the SQL computation): check 5 of
+// rides_state_gate (migrations/000011_add_rides_result_agreement_gate.up.sql)
+// is the enforcement home, Match.Winner (internal/game/matches.go) the Go
+// copy; all three are tied by the shared fixture in
+// internal/game/score_state_rule_test.go — change one, change all three.
 func (s *RideStore) UpdateAllForMatchTx(ctx context.Context, tx pgx.Tx, matchID int) ([]Result, error) {
 	query := `
 		UPDATE rides r

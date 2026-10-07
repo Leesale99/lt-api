@@ -51,6 +51,14 @@ type Match struct {
 	Version    int         `json:"version"`
 }
 
+// Winner is site 1 of 3 for the score→state rule: a closed match's final
+// scores decide a ride's destination, a draw crowns no winner. The other
+// two encodings: the CASE in RideStore.UpdateAllForMatchTx
+// (internal/game/rides.go) and check 5 of rides_block_illegal_transition
+// (migrations/000011_add_rides_result_agreement_gate.up.sql). The
+// database is the enforcement home (ADR-018/ADR-020); Winner and the CASE
+// are derived copies tied to it by the shared fixture in
+// internal/game/score_state_rule_test.go — change one, change all three.
 func (m Match) Winner() *int {
 	switch {
 	case m.Status != MatchClosed:
