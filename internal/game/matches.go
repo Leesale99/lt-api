@@ -108,11 +108,13 @@ func ValidateNewMatch(v *validator.Validator, match Match, now time.Time) {
 	v.Check(match.Status == "created", "status", "new matches can only have status created")
 }
 
-func ValidateResolveMatch(v *validator.Validator, match Match, now time.Time) {
+// ValidateResolveMatch validates the request shape of a resolve payload:
+// field presence and score arithmetic, the checks a handler runs on whatever
+// bytes arrived. Domain-legality rules are not here — the one rule the
+// resolve flow owns, "ended_at must be in the past", is time policy and
+// lives in Service.MatchResolve (ADR-026) so every caller passes it.
+func ValidateResolveMatch(v *validator.Validator, match Match) {
 	v.Check(match.EndedAt != nil, "ended_at", "must be provided")
-	if match.EndedAt != nil {
-		v.Check(match.EndedAt.Before(now), "ended_at", "must be in the past")
-	}
 	v.Check(match.ID > 0, "id", "must be provided")
 	v.Check(match.Score.Home != nil && match.Score.Away != nil, "score", "must contain both home and away values")
 	// The nil guard above runs first, but Check is not short-circuiting:

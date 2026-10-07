@@ -612,6 +612,33 @@ func TestService_MatchResolve(t *testing.T) {
 		return matchID, version
 	}
 
+	// closedMatch resolves a started match end-to-end so a later illegal
+	// call would hit the already-closed refusal (ErrEditConflict) if the
+	// door check did not outrank it.
+	closedMatch := func(ctx context.Context, t *testing.T, roundID, homeID, awayID int) int {
+		t.Helper()
+		matchID, version := startedMatch(ctx, t, roundID, homeID, awayID)
+		if _, err := svc.MatchResolve(ctx, matchID, resolveScore(70, 69), time.Now().Add(-2*time.Hour), version); err != nil {
+			t.Fatalf("close match: %v", err)
+		}
+		return matchID
+	}
+
+	// Time policy at the service door (ADR-026): any caller of MatchResolve
+	// — not just the HTTP handler — passes "ended_at in the past", and the
+	// refusal outranks storage conflicts (it fires before the tx opens, so
+	// an already-closed match answers 422-domain, not 409-conflict).
+	t.Run("future ended_at is refused at the door, before any conflict", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		matchID := closedMatch(ctx, t, roundID, homeID, awayID)
+
+		_, err := svc.MatchResolve(ctx, matchID, resolveScore(80, 79), time.Now().Add(2*time.Hour), 1)
+
+		if !errors.Is(err, ErrEndedAtInFuture) {
+			t.Fatalf("MatchResolve(future ended_at) = %v, want ErrEndedAtInFuture", err)
+		}
+	})
+
 	t.Run("settles every locked ride according to the scores", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		matchID, version := startedMatch(ctx, t, roundID, homeID, awayID)
