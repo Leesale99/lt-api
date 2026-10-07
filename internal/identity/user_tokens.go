@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -77,5 +78,17 @@ func (s *UserTokenStore) DeleteAllForUser(ctx context.Context, scope string, use
 		WHERE scope = $1 AND user_id = $2
 	`
 	_, err := s.pool.Exec(ctx, query, scope, userID)
+	return err
+}
+
+// DeleteAllForUserTx is DeleteAllForUser on a caller's transaction: the
+// activation use case runs it beside the activated flip so the cleanup is
+// one commit with the flag it cleans up after.
+func (s *UserTokenStore) DeleteAllForUserTx(ctx context.Context, tx pgx.Tx, scope string, userID int) error {
+	query := `
+		DELETE FROM user_tokens
+		WHERE scope = $1 AND user_id = $2
+	`
+	_, err := tx.Exec(ctx, query, scope, userID)
 	return err
 }

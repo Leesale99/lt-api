@@ -25,6 +25,7 @@ Obsidian tool for EVERYTHING on vault paths — reads, greps, listings, counts, 
 | `eval` result echo dropped | Same construct sometimes returns its value, sometimes `(eval ran; result echo was dropped by Obsidian 1.13.x)`. Never depend on the return value; verify the side effect with a `read`. To *know* a computed fact: write it to a probe note, read, delete | 10-01 |
 | eval replace acts global | A `c.replace(old, new)` on a unique anchor also flipped an unrelated checkbox in the same file. After ANY edit (eval, search, write) re-read the full region + neighbors | 09-30 |
 | `search` results stale | search (no replace) listed a phrase that existed in zero files (cross-checked on disk and by eval over all files). Treat as a hint about past state; verify load-bearing claims by re-read | 10-01 |
+| Bare-name `read` / `files` serves stale content | `read Home` (no `file=`) returned a Sept-23 version of Home.md while `read file="Home"` returned the current one; `files` listed 3 entries while the vault holds the full tree. Always read with the explicit `file=` form (with `.md`); treat bare-name output as a hint and re-verify before acting on it | 10-05 |
 | `search`/`replace` operator errors | Plain-text queries whose text before the first `: ` is not an operator error with `Operator "…" not recognized` — frontmatter lines (`status: open`) and task bullets (`- [ ] …`) both trip it. Use eval+modify for those targets | 09-23 |
 | Multi-line `replace=` not delivered | `\n`-escaped queries DO match (use that for uniqueness), but multi-line `\n` replacement through `search` reported `0 file(s)` and did nothing. Multi-line repairs: eval+modify or full write | 10-01 |
 | Parallel writes → empty files | Writes must be sequential | 09-1x |
@@ -34,6 +35,7 @@ Obsidian tool for EVERYTHING on vault paths — reads, greps, listings, counts, 
 - `write`/`create`/`move` need the explicit `.md` (`path=`/`file=` do not add it).
 - `content=` (and `search query=`/`replace=`) must be ONE double-quoted value; raw newlines silently truncate — emit `\n` escapes. Only `\"` `\n` `\t` `\r` are escapes; other backslashes pass through.
 - `delete` moves to trash (recoverable).
+- Reads: always the explicit `file=` form (with `.md`) — bare-name reads (`read Home`) and the bare `files` listing have served stale content (verified 2026-10-05, see Failure modes).
 
 ## Blast radius (`search`/`replace`)
 

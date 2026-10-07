@@ -16,15 +16,17 @@ package game
 // opens DecisionPhase (the 1-hour lead/lag constants in round_phase.go).
 //
 // Ride storage is the real rides table (migration 000006), so rides are
-// planted directly through RideStore.Insert (it stores whatever state the
-// caller supplies — the creation contract is owned by ride.Create, not
-// Insert — and the state gate is a BEFORE UPDATE trigger, so INSERTs are
-// outside its reach). Cleanup cascades through the FK graph to the rides
+// planted through RideStore.Insert plus a gated walk to the requested
+// state (plantRide below) — since 000012 the INSERT gate admits locked
+// only, so every other state is reached through the same transition rules
+// any writer faces. Cleanup cascades through the FK graph to the rides
 // table, so ride rows vanish with the rest of the fixture; tests still
 // capture IDs from return values rather than hard-code them.
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -67,6 +69,23 @@ func insertFutureMatch(ctx context.Context, t *testing.T, seasonID, roundID, hom
 	return id
 }
 
+// scoreStartedMatch flips a planted future match in_progress with a two-
+// goal home win. The walk inside plantRide needs the ride's match to carry
+// scores agreeing with the planted state (000011), and created matches
+// cannot carry scores (matches_status_score_check), so phase-rejection
+// fixtures that plant won_pending rides call this first. The in_progress
+// status leaves ended_at nil — the round's phase window that Phase derives
+// from is untouched, the tests' intended phase stays intact.
+func scoreStartedMatch(ctx context.Context, t *testing.T, matchID int) {
+	t.Helper()
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE matches SET status = 'in_progress', home_score = 70, away_score = 69 WHERE id = $1
+	`, matchID); err != nil {
+		t.Fatalf("score match %d: %v", matchID, err)
+	}
+}
+
 // insertClosedMatch adds a finished match ended `agoAgo` before now
 // (started 3 hours earlier) and returns its id. Closed-with-score is the
 // only status/shape that satisfies phase derivation for DecisionPhase.
@@ -105,18 +124,29 @@ func plantPlayer(ctx context.Context, t *testing.T, teamID int) int {
 	return playerID
 }
 
-// plantRide stores a ride directly through the store with the given
-// state/acc/streak, returning the stored row (with its assigned id).
-// The ride needs a player row to satisfy the rides_player_id_fkey
-// (rides RESTRICT-reference players, ADR-018).
+// plantRide stores a ride in the given state/acc/streak, returning the
+// stored row (with its assigned id). The ride needs a player row to
+// satisfy the rides_player_id_fkey (rides RESTRICT-reference players,
+// ADR-018).
+//
+// Since 000012 the INSERT gate admits locked only, so the walk plants
+// locked and transitions to the requested state through the same UPDATE
+// gate every writer faces: locked → won_pending|lost directly,
+// burned|unlocked via the won_pending intermediate (check 3). The
+// result-agreement check (000011) applies to the walk — planting a state
+// the fixture's scores disagree with fails loudly, which is the gate
+// doing its job. The walk's own transitions are incidental to what tests
+// arrange, so the final UPDATE resets version to 1: version assertions
+// count from the planted state, not from the walk.
 func plantRide(ctx context.Context, t *testing.T, matchID, teamID int, state RideState, acc decimal.Decimal, streak int) Ride {
 	t.Helper()
 
-	ride, err := NewStore(pool).Rides.Insert(ctx, Ride{
+	rs := NewStore(pool).Rides
+	ride, err := rs.Insert(ctx, Ride{
 		PlayerID:     plantPlayer(ctx, t, teamID),
 		TeamID:       teamID,
 		MatchID:      matchID,
-		State:        state,
+		State:        RideLocked,
 		TokensLocked: decimal.NewFromInt(100),
 		BaseAtLock:   decimal.NewFromInt(100),
 		Acc:          acc,
@@ -124,6 +154,28 @@ func plantRide(ctx context.Context, t *testing.T, matchID, teamID int, state Rid
 	})
 	if err != nil {
 		t.Fatalf("plant ride: %v", err)
+	}
+
+	if state != RideLocked {
+		// burned/unlocked arrive only via won_pending (gate check 3).
+		if state == RideBurned || state == RideUnlocked {
+			if _, err := pool.Exec(ctx, `UPDATE rides SET state = 'won_pending' WHERE id = $1`, ride.ID); err != nil {
+				t.Fatalf("plant ride walk (locked → won_pending): %v", err)
+			}
+		}
+
+		// The arrival writes state and acc in one statement: the gate's
+		// money-state coupling (check 4) reads NEW.bonus_acc on the
+		// lost/unlocked arrivals.
+		if _, err := pool.Exec(ctx, `
+			UPDATE rides SET state = $2, bonus_acc = $3, version = 1 WHERE id = $1
+		`, ride.ID, state, acc); err != nil {
+			t.Fatalf("plant ride walk (→ %s): %v", state, err)
+		}
+
+		ride.State = state
+		ride.Acc = acc
+		ride.Version = 1
 	}
 
 	return ride
@@ -155,10 +207,16 @@ func TestService_RideCreate(t *testing.T) {
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		playerID := plantPlayer(ctx, t, homeID)
 
-		got, err := NewService(NewStore(pool)).RideCreate(ctx, newRide(playerID, matchID, homeID))
+		res, err := NewService(NewStore(pool)).RideCreate(ctx, newRide(playerID, matchID, homeID), rideToken("create-happy", "POST /v1/rides"), idempotentMarshal)
 
 		if err != nil {
 			t.Fatalf("RideCreate() = %v, want nil", err)
+		}
+		// The stored presentation is the marshaled ride: decode it before
+		// asserting the stored columns.
+		var got Ride
+		if err := json.Unmarshal(res.Body, &got); err != nil {
+			t.Fatalf("decode stored ride: %v", err)
 		}
 		if got.ID == 0 {
 			t.Fatal("id = 0, want assigned")
@@ -201,7 +259,7 @@ func TestService_RideCreate(t *testing.T) {
 			t.Fatalf("close round: %v", err)
 		}
 
-		_, err := NewService(NewStore(pool)).RideCreate(ctx, newRide(playerID, matchID, homeID))
+		_, err := NewService(NewStore(pool)).RideCreate(ctx, newRide(playerID, matchID, homeID), rideToken("create-closed", "POST /v1/rides"), idempotentMarshal)
 
 		if !errors.Is(err, ErrRoundNotOpen) {
 			t.Fatalf("RideCreate() = %v, want ErrRoundNotOpen", err)
@@ -213,6 +271,7 @@ func TestService_RideLock(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
+	svc := NewService(NewStore(pool))
 
 	t.Run("in decision phase continues onto the team's next match", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
@@ -230,23 +289,29 @@ func TestService_RideLock(t *testing.T) {
 		}
 		nextMatch := insertFutureMatch(ctx, t, 1, 2, homeID, awayID, "7 days")
 
-		got, err := NewService(NewStore(pool)).RideLock(ctx, ride.ID)
-
+		_, err := svc.RideLock(ctx, ride.ID, rideToken("svc-lock-continues", "POST /v1/rides/:id/lock"), idempotentMarshal)
 		if err != nil {
 			t.Fatalf("RideLock() = %v, want nil", err)
 		}
-		if got.State != RideLocked {
-			t.Fatalf("state = %q, want %q", got.State, RideLocked)
+
+		// The command's return value is the stored response; the assertions
+		// read the persisted row — the effect the command must have.
+		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		if err != nil {
+			t.Fatalf("Get() = %v, want nil", err)
 		}
-		if got.MatchID != nextMatch {
-			t.Fatalf("match_id = %d, want %d (continuation re-points one FK)", got.MatchID, nextMatch)
+		if persisted.State != RideLocked {
+			t.Fatalf("state = %q, want %q", persisted.State, RideLocked)
 		}
-		if got.Streak != 3 {
-			t.Fatalf("streak = %d, want 3", got.Streak)
+		if persisted.MatchID != nextMatch {
+			t.Fatalf("match_id = %d, want %d (continuation re-points one FK)", persisted.MatchID, nextMatch)
+		}
+		if persisted.Streak != 3 {
+			t.Fatalf("streak = %d, want 3", persisted.Streak)
 		}
 		// Lock is not a payout: acc survives into the next match.
-		if !got.Acc.Equal(decimal.NewFromInt(90)) {
-			t.Fatalf("acc = %s, want unchanged 90", got.Acc)
+		if !persisted.Acc.Equal(decimal.NewFromInt(90)) {
+			t.Fatalf("acc = %s, want unchanged 90", persisted.Acc)
 		}
 	})
 
@@ -255,7 +320,7 @@ func TestService_RideLock(t *testing.T) {
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
 		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-		_, err := NewService(NewStore(pool)).RideLock(ctx, ride.ID)
+		_, err := svc.RideLock(ctx, ride.ID, rideToken("svc-lock-no-next", "POST /v1/rides/:id/lock"), idempotentMarshal)
 
 		if !errors.Is(err, ErrNoNextMatch) {
 			t.Fatalf("RideLock() = %v, want ErrNoNextMatch", err)
@@ -267,23 +332,55 @@ func TestService_RideBurn(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
+	svc := NewService(NewStore(pool))
 
 	t.Run("in decision phase burns and keeps acc", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
 		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-		got, err := NewService(NewStore(pool)).RideBurn(ctx, ride.ID)
-
+		_, err := svc.RideBurn(ctx, ride.ID, rideToken("svc-burn", "POST /v1/rides/:id/burn"), idempotentMarshal)
 		if err != nil {
 			t.Fatalf("RideBurn() = %v, want nil", err)
 		}
-		if got.State != RideBurned {
-			t.Fatalf("state = %q, want %q", got.State, RideBurned)
+
+		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		if err != nil {
+			t.Fatalf("Get() = %v, want nil", err)
+		}
+		if persisted.State != RideBurned {
+			t.Fatalf("state = %q, want %q", persisted.State, RideBurned)
 		}
 		// Payout is not the ride's concern; Burn leaves acc untouched.
-		if !got.Acc.Equal(decimal.NewFromInt(90)) {
-			t.Fatalf("acc = %s, want unchanged 90", got.Acc)
+		if !persisted.Acc.Equal(decimal.NewFromInt(90)) {
+			t.Fatalf("acc = %s, want unchanged 90", persisted.Acc)
+		}
+	})
+
+	t.Run("retry with the same key replays without re-executing", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
+		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+
+		token := rideToken("svc-burn-replay", "POST /v1/rides/:id/burn")
+		first, err := svc.RideBurn(ctx, ride.ID, token, idempotentMarshal)
+		if err != nil {
+			t.Fatalf("first RideBurn() error = %v", err)
+		}
+		second, err := svc.RideBurn(ctx, ride.ID, token, idempotentMarshal)
+		if err != nil {
+			t.Fatalf("replayed RideBurn() error = %v", err)
+		}
+		if !bytes.Equal(first.Body, second.Body) {
+			t.Errorf("replayed body differs:\nfirst:  %s\nsecond: %s", first.Body, second.Body)
+		}
+
+		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		if err != nil {
+			t.Fatalf("read ride: %v", err)
+		}
+		if persisted.Version != ride.Version+1 {
+			t.Errorf("version = %d, want %d (one transition total)", persisted.Version, ride.Version+1)
 		}
 	})
 }
@@ -292,22 +389,54 @@ func TestService_RideUnlock(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
+	svc := NewService(NewStore(pool))
 
 	t.Run("in decision phase unlocks and forfeits acc", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
 		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-		got, err := NewService(NewStore(pool)).RideUnlock(ctx, ride.ID)
-
+		_, err := svc.RideUnlock(ctx, ride.ID, rideToken("svc-unlock", "POST /v1/rides/:id/unlock"), idempotentMarshal)
 		if err != nil {
 			t.Fatalf("RideUnlock() = %v, want nil", err)
 		}
-		if got.State != RideUnlocked {
-			t.Fatalf("state = %q, want %q", got.State, RideUnlocked)
+
+		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		if err != nil {
+			t.Fatalf("Get() = %v, want nil", err)
 		}
-		if !got.Acc.IsZero() {
-			t.Fatalf("acc = %s, want 0 (unlock forfeits acc)", got.Acc)
+		if persisted.State != RideUnlocked {
+			t.Fatalf("state = %q, want %q", persisted.State, RideUnlocked)
+		}
+		if !persisted.Acc.IsZero() {
+			t.Fatalf("acc = %s, want 0 (unlock forfeits acc)", persisted.Acc)
+		}
+	})
+
+	t.Run("retry with the same key replays without re-executing", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
+		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+
+		token := rideToken("svc-unlock-replay", "POST /v1/rides/:id/unlock")
+		first, err := svc.RideUnlock(ctx, ride.ID, token, idempotentMarshal)
+		if err != nil {
+			t.Fatalf("first RideUnlock() error = %v", err)
+		}
+		second, err := svc.RideUnlock(ctx, ride.ID, token, idempotentMarshal)
+		if err != nil {
+			t.Fatalf("replayed RideUnlock() error = %v", err)
+		}
+		if !bytes.Equal(first.Body, second.Body) {
+			t.Errorf("replayed body differs:\nfirst:  %s\nsecond: %s", first.Body, second.Body)
+		}
+
+		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		if err != nil {
+			t.Fatalf("read ride: %v", err)
+		}
+		if persisted.Version != ride.Version+1 {
+			t.Errorf("version = %d, want %d (one transition total)", persisted.Version, ride.Version+1)
 		}
 	})
 }
@@ -331,7 +460,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 			MatchID:      999, // no such match
 			TokensLocked: decimal.NewFromInt(100),
 			BaseAtLock:   decimal.NewFromInt(95),
-		})
+		}, rideToken("create-unknown-match", "POST /v1/rides"), idempotentMarshal)
 
 		if !errors.Is(err, store.ErrRecordNotFound) {
 			t.Fatalf("RideCreate() = %v, want ErrRecordNotFound", err)
@@ -348,7 +477,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 			MatchID:      matchID,
 			TokensLocked: decimal.NewFromInt(100),
 			BaseAtLock:   decimal.NewFromInt(95),
-		})
+		}, rideToken("create-unknown-player", "POST /v1/rides"), idempotentMarshal)
 
 		if !errors.Is(err, store.ErrRecordNotFound) {
 			t.Fatalf("RideCreate() = %v, want ErrRecordNotFound", err)
@@ -366,7 +495,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 			MatchID:      matchID,
 			TokensLocked: decimal.NewFromInt(100),
 			BaseAtLock:   decimal.NewFromInt(95),
-		})
+		}, rideToken("create-unknown-team", "POST /v1/rides"), idempotentMarshal)
 
 		if !errors.Is(err, store.ErrRecordNotFound) {
 			t.Fatalf("RideCreate() = %v, want ErrRecordNotFound", err)
@@ -394,7 +523,7 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 			MatchID:      matchID,
 			TokensLocked: decimal.NewFromInt(100),
 			BaseAtLock:   decimal.NewFromInt(95),
-		})
+		}, rideToken("create-match-phase", "POST /v1/rides"), idempotentMarshal)
 
 		if !errors.Is(err, ErrInvalidRoundPhase) {
 			t.Fatalf("RideCreate() = %v, want ErrInvalidRoundPhase", err)
@@ -405,9 +534,10 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		// A match starting far outside the action lead keeps the round in ActionPhase.
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
+		scoreStartedMatch(ctx, t, matchID)
 		ride := plantRide(ctx, t, matchID, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-		_, err := NewService(NewStore(pool)).RideLock(ctx, ride.ID)
+		_, err := NewService(NewStore(pool)).RideLock(ctx, ride.ID, rideToken("svc-lock-action", "POST /v1/rides/:id/lock"), idempotentMarshal)
 
 		if !errors.Is(err, ErrInvalidRoundPhase) {
 			t.Fatalf("RideLock() = %v, want ErrInvalidRoundPhase", err)
@@ -416,10 +546,13 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 
 	t.Run("burn during match phase", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
-		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 minutes")
+		// Negative lead: ResolveTx requires starts_at < now() — the match
+		// must already be running, not merely in_progress.
+		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "-30 minutes")
+		scoreStartedMatch(ctx, t, matchID)
 		ride := plantRide(ctx, t, matchID, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-		_, err := NewService(NewStore(pool)).RideBurn(ctx, ride.ID)
+		_, err := NewService(NewStore(pool)).RideBurn(ctx, ride.ID, rideToken("svc-burn-match-phase", "POST /v1/rides/:id/burn"), idempotentMarshal)
 
 		if !errors.Is(err, ErrInvalidRoundPhase) {
 			t.Fatalf("RideBurn() = %v, want ErrInvalidRoundPhase", err)
@@ -428,13 +561,148 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 
 	t.Run("unlock during match phase", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
-		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 minutes")
+		// Negative lead: ResolveTx requires starts_at < now() — the match
+		// must already be running, not merely in_progress.
+		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "-30 minutes")
+		scoreStartedMatch(ctx, t, matchID)
 		ride := plantRide(ctx, t, matchID, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-		_, err := NewService(NewStore(pool)).RideUnlock(ctx, ride.ID)
+		_, err := NewService(NewStore(pool)).RideUnlock(ctx, ride.ID, rideToken("svc-unlock-match-phase", "POST /v1/rides/:id/unlock"), idempotentMarshal)
 
 		if !errors.Is(err, ErrInvalidRoundPhase) {
 			t.Fatalf("RideUnlock() = %v, want ErrInvalidRoundPhase", err)
+		}
+	})
+}
+
+// resolveScore builds the Score pointer pair the resolver takes; a helper
+// keeps the call sites on one line.
+func resolveScore(home, away int) Score {
+	return Score{Home: &home, Away: &away}
+}
+
+// TestService_MatchResolve pins ResolveMatch end-to-end (Phase 04): the
+// match half (ResolveTx's guarded score write) and the ride half (the
+// set-based UpdateAllForMatchTx) in one transaction, with
+// rides_state_gate's result agreement (000011) enforcing every settled
+// ride. The ride fixture is locked-only: the walk in plantRide needs no
+// scores here, the service's own score write comes first in its tx — the
+// exact sequencing the gate's read depends on.
+func TestService_MatchResolve(t *testing.T) {
+	requireDB(t)
+
+	ctx := context.Background()
+	svc := NewService(NewStore(pool))
+
+	// startedMatch flips the fixture match to in_progress so ResolveTx's
+	// status predicate (in_progress) holds, and returns (matchID, version):
+	// the flip bumps version, and ResolveTx's version guard needs the
+	// fresh one.
+	startedMatch := func(ctx context.Context, t *testing.T, roundID, homeID, awayID int) (int, int) {
+		t.Helper()
+		// Negative lead: ResolveTx requires starts_at < now() — the match
+		// must already be running, not merely in_progress.
+		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "-30 minutes")
+		scoreStartedMatch(ctx, t, matchID)
+
+		var version int
+		if err := pool.QueryRow(ctx, `SELECT version FROM matches WHERE id = $1`, matchID).Scan(&version); err != nil {
+			t.Fatalf("read match version: %v", err)
+		}
+		return matchID, version
+	}
+
+	t.Run("settles every locked ride according to the scores", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		matchID, version := startedMatch(ctx, t, roundID, homeID, awayID)
+		r1 := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
+		r2 := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.NewFromInt(40), 1)
+		r3 := plantRide(ctx, t, matchID, awayID, RideLocked, decimal.Zero, 0)
+
+		_, err := svc.MatchResolve(ctx, matchID, resolveScore(70, 69), time.Now().Add(-2*time.Hour), version)
+		if err != nil {
+			t.Fatalf("MatchResolve() = %v, want nil", err)
+		}
+
+		// Home won 70:69: home rides won_pending, away rides lost; every
+		// settled ride moved exactly one version (the "settles exactly
+		// once" contract: a second settlement would be 0 rows, version
+		// would stay here).
+		for _, tc := range []struct {
+			ride  Ride
+			state RideState
+		}{
+			{r1, RideWonPending},
+			{r2, RideWonPending},
+			{r3, RideLost},
+		} {
+			got, err := svc.Store.Rides.Get(ctx, tc.ride.ID)
+			if err != nil {
+				t.Fatalf("Get(%d): %v", tc.ride.ID, err)
+			}
+			if got.State != tc.state {
+				t.Errorf("ride %d (team %d) state = %q, want %q", tc.ride.ID, tc.ride.TeamID, got.State, tc.state)
+			}
+			if got.Version != 2 {
+				t.Errorf("ride %d version = %d, want 2", got.ID, got.Version)
+			}
+		}
+	})
+
+	t.Run("a draw writes every ride lost, none won_pending", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		matchID, version := startedMatch(ctx, t, roundID, homeID, awayID)
+		r1 := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
+		r2 := plantRide(ctx, t, matchID, awayID, RideLocked, decimal.Zero, 0)
+
+		_, err := svc.MatchResolve(ctx, matchID, resolveScore(70, 70), time.Now().Add(-2*time.Hour), version)
+		if err != nil {
+			t.Fatalf("MatchResolve() = %v, want nil (draw resolves as all-lost)", err)
+		}
+
+		for _, ride := range []Ride{r1, r2} {
+			got, err := svc.Store.Rides.Get(ctx, ride.ID)
+			if err != nil {
+				t.Fatalf("Get(%d): %v", ride.ID, err)
+			}
+			if got.State != RideLost {
+				t.Errorf("ride %d state = %q, want lost (a draw crowns no winner)", got.ID, got.State)
+			}
+		}
+	})
+
+	t.Run("re-resolution is a clean IdempotencyConflict, nothing flips twice", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		matchID, version := startedMatch(ctx, t, roundID, homeID, awayID)
+		ride := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
+
+		first, err := svc.MatchResolve(ctx, matchID, resolveScore(70, 69), time.Now().Add(-2*time.Hour), version)
+		if err != nil {
+			t.Fatalf("first MatchResolve() = %v, want nil", err)
+		}
+		if first.Status != MatchClosed {
+			t.Fatalf("first resolve status = %q, want closed", first.Status)
+		}
+		_, err = svc.MatchResolve(ctx, matchID, resolveScore(70, 69), time.Now().Add(-2*time.Hour), version)
+		if !errors.Is(err, store.ErrEditConflict) {
+			t.Fatalf("second MatchResolve() = %v, want ErrEditConflict (already-closed match)", err)
+		}
+
+		got, err := svc.Store.Rides.Get(ctx, ride.ID)
+		if err != nil {
+			t.Fatalf("Get(%d): %v", ride.ID, err)
+		}
+		if got.State != RideWonPending || got.Version != 2 {
+			t.Errorf("persisted state/version = %q/%d, want won_pending/2 (exactly-once)", got.State, got.Version)
+		}
+	})
+
+	t.Run("missing match is ErrRecordNotFound", func(t *testing.T) {
+		_, _, _ = seedFixture(ctx, t)
+
+		_, err := svc.MatchResolve(ctx, 999, resolveScore(1, 0), time.Now().Add(-2*time.Hour), 1)
+		if !errors.Is(err, store.ErrRecordNotFound) {
+			t.Fatalf("MatchResolve(999) = %v, want ErrRecordNotFound", err)
 		}
 	})
 }

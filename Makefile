@@ -97,12 +97,17 @@ tidy:
 	go fix ./...
 	go fmt ./...
 
+# GOFMT: use the one shipped with the active toolchain, not PATH's — a
+# system gofmt older than the toolchain cannot parse newer language
+# features and misreports them as errors (e.g. generic methods in go1.27).
+GOFMT := $(shell go env GOROOT)/bin/gofmt
+
 ## audit: run quality control checks (fails on any unformatted file)
 .PHONY: audit
 audit:
 	go mod tidy -diff
 	go mod verify
-	@test -z "$$(gofmt -l $$(git ls-files '*.go' | grep -v '^vendor/'))" || (gofmt -l $$(git ls-files '*.go' | grep -v '^vendor/'); exit 1)
+	@test -z "$$( $(GOFMT) -l $$(git ls-files '*.go' | grep -v '^vendor/') )" || ( $(GOFMT) -l $$(git ls-files '*.go' | grep -v '^vendor/'); exit 1)
 	go vet ./...
 	go tool staticcheck ./...
 	go test -race -vet=off ./...

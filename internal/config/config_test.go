@@ -201,7 +201,11 @@ func TestParse(t *testing.T) {
 		wantErr string // substring; empty means must pass
 	}{
 		{
+			// LT_API_DSN is pinned to "" (not just absent): .envrc feeds a
+			// real DSN into every make recipe, so relying on the ambient
+			// environment makes this case environment-dependent.
 			name:    "no env, no args: DSN validation still fires inside Parse",
+			env:     map[string]string{"LT_API_DSN": ""},
 			wantErr: "LT_API_DSN",
 		},
 		{

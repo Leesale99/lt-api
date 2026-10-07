@@ -37,6 +37,15 @@ var migFiles = []string{
 	// participates in the mid-transaction-failure case (it fires on the
 	// status flip after the ride resolution, making the whole tx abort).
 	"../../migrations/000008_add_round_lifecycle_gates.up.sql",
+	// Idempotency keys (000010): the idempotent lock service tests claim
+	// and replay through the real table.
+	"../../migrations/000010_add_idempotency_keys_table.up.sql",
+	// Result agreement (000011): the ResolveMatch tests run the set-based
+	// ride update under the extended rides_state_gate.
+	"../../migrations/000011_add_rides_result_agreement_gate.up.sql",
+	// INSERT state gate (000012): rides are born locked only — the plant
+	// helpers walk to other states through the UPDATE gate.
+	"../../migrations/000012_add_rides_insert_state_gate.up.sql",
 }
 
 // PostgreSQL error codes (see pgerrcode; inlined to avoid the extra dependency).

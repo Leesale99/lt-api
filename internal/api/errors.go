@@ -45,6 +45,14 @@ func (app *Application) badRequestResponse(w http.ResponseWriter, r *http.Reques
 	app.writeError(w, r, http.StatusBadRequest, err.Error())
 }
 
+// requestTooLargeResponse answers a body that exceeded maxBodyBytes at
+// intake (413): the read was cut short before anything was decoded or
+// hashed, so nothing is claimed and a retry with a normal body re-executes.
+func (app *Application) requestTooLargeResponse(w http.ResponseWriter, r *http.Request, limit int64) {
+	message := fmt.Sprintf("body must not be larger than %d bytes", limit)
+	app.writeError(w, r, http.StatusRequestEntityTooLarge, message)
+}
+
 func (app *Application) failedValidationResponse(w http.ResponseWriter, r *http.Request, errors map[string]string) {
 	app.writeError(w, r, http.StatusUnprocessableEntity, errors)
 }
@@ -137,5 +145,13 @@ func (app *Application) invalidPhaseResponse(w http.ResponseWriter, r *http.Requ
 
 func (app *Application) invalidStateTransitionResponse(w http.ResponseWriter, r *http.Request) {
 	message := "this action is not allowed for a ride in current state"
+	app.writeError(w, r, http.StatusConflict, message)
+}
+
+// idempotencyConflictResponse refuses a request whose Idempotency-Key was
+// already used with a different request (ADR-024) — key misuse, not a retry:
+// a retry re-sends the identical request and gets the stored response.
+func (app *Application) idempotencyConflictResponse(w http.ResponseWriter, r *http.Request) {
+	message := "this idempotency key was already used with a different request"
 	app.writeError(w, r, http.StatusConflict, message)
 }
