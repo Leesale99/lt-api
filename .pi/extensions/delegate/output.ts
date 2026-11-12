@@ -8,7 +8,7 @@
  */
 
 import type { Message } from "@earendil-works/pi-ai";
-import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { JsonAgentSessionEvent, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
 
 /** Output cap per job/task result — keeps parent context small (~50 KB). */
 export const PER_TASK_OUTPUT_CAP = 50 * 1024;
@@ -41,9 +41,12 @@ export interface ChildStreamParser extends ParsedChildStream {
 }
 
 /**
- * Incremental parser for a child's JSON event stream (`pi --mode json` stdout).
+ * Incremental parser for a child's JSON event stream (`pi --mode json` stdout)
+ * and for pi session files (written by interactive children under
+ * `--session-dir`). Both carry the same Message payload: json streams wrap it
+ * in `message_end`, session files in `message`.
  *
- * Mirrors the phase-1/2 inline logic: only `message_end` events for
+ * Mirrors the phase-1/2 inline logic: only `message_end`/`message` events for
  * user/assistant/toolResult messages are kept; assistant messages accumulate
  * usage and carry model/stopReason/errorMessage.
  */
@@ -56,13 +59,15 @@ export function createChildStreamParser(): ChildStreamParser {
 		errorMessage: undefined,
 		processLine(line: string): boolean {
 			if (!line.trim()) return false;
-			let event: JsonAgentSessionEvent;
+			let event: JsonAgentSessionEvent | SessionMessageEntry;
 			try {
-				event = JSON.parse(line) as JsonAgentSessionEvent;
+				event = JSON.parse(line) as JsonAgentSessionEvent | SessionMessageEntry;
 			} catch {
 				return false;
 			}
-			if (event.type !== "message_end") return false;
+			// json stdout streams wrap the Message in `message_end`; pi session
+			// files (interactive children, --session-dir) use `message`.
+			if (event.type !== "message_end" && event.type !== "message") return false;
 			const eventMessage = (event as { message?: unknown }).message;
 			if (!eventMessage || typeof eventMessage !== "object") return false;
 			const role = (eventMessage as { role?: unknown }).role;

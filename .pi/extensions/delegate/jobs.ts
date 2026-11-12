@@ -4,9 +4,12 @@
  * Artifacts per job live in `.pi/jobs/` (gitignored):
  *   <id>.task    — full child prompt (file-based so arbitrary quoting is safe;
  *                  NEVER inline the task text into a shell string)
- *   <id>.jsonl   — child's `pi --mode json` stdout event stream
+ *   <id>.jsonl   — headless-fallback child's `pi --mode json` stdout stream
+ *                  (tmux jobs stream into the child's pi session file
+ *                  `<ISO>_<session-id>.jsonl` in this dir instead)
  *   <id>.err     — child stderr
  *   <id>.exit    — exit code written by the runner script when the child ends
+ *                  (tmux interactive jobs get one only when pi is quit)
  *   <id>.json    — registry entry (atomic write: temp + rename)
  *   <id>.sys.md  — agent system prompt for --append-system-prompt (kept as artifact)
  *   <id>.sh      — per-job runner script
@@ -19,11 +22,23 @@
  * `pi-<id>` is passed as tmux session name AND --session-id; tmux creates
  * dotted names but then cannot address them (has-session/attach fail).
  * Background children run `--session-id pi-<id>` (resumable later), NOT
- * `--no-session`; foreground stays `--no-session`.
+ * `--no-session`; foreground stays `--no-session`. All children also pass
+ * `--session-dir <jobsDir>`, pinning their pi session file here so status and
+ * result readers find it deterministically.
  *
- * If tmux is unavailable (or the new-session call fails), the job falls back to
- * a detached child (`sh <runner>`, setsid-style via Node's detached option) and
- * records `runner: "fallback"` + pid in the registry (no attach support).
+ * tmux jobs run pi INTERACTIVELY in the pane (no --mode json/-p): attach to
+ * `pi-<id>` to watch the TUI live or take the conversation over. Since stdout
+ * is the screen, completion/results are read from the child's session file —
+ * same event vocabulary as `--mode json`, `message` envelope instead of
+ * `message_end`. The agent round is complete when the session's last message
+ * is an assistant message with no pending tool calls; the tmux session then
+ * stays alive (pi idles waiting for input) until the user quits it.
+ *
+ * If tmux is unavailable (or the new-session call fails), the runner script is
+ * rewritten as the headless variant (`pi --mode json -p`, stdout redirected
+ * into <id>.jsonl) and the job falls back to a detached child (`sh <runner>`,
+ * setsid-style via Node's detached option), recording `runner: "fallback"` +
+ * pid in the registry (no attach support).
  */
 
 import { randomInt } from "node:crypto";
@@ -192,6 +207,43 @@ async function tmuxSessionAlive(session: string): Promise<boolean> {
   }
 }
 
+/**
+ * The child's pi session file inside dir — pi names it
+ * `<ISO-timestamp>_<session-id>.jsonl`, so match on the id suffix. Children
+ * pass `--session-dir` pointed at the jobs dir to make this deterministic.
+ */
+function findSessionFile(dir: string, id: string): string | null {
+  try {
+    const hit = fs.readdirSync(dir).find((name) => name.endsWith("_" + id + ".jsonl"));
+    return hit ? path.join(dir, hit) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Interactive (tmux) jobs write no .exit until pi is quit, so completion is
+ * detected from the child's session file: the agent round is over when the
+ * last message is an assistant message WITHOUT pending tool calls (any
+ * toolCall part means tool results are still owed). Mid-round the last
+ * message is a user/toolResult message or an assistant carrying toolCalls.
+ */
+function sessionRoundComplete(dir: string, id: string): boolean {
+  const sessionFile = findSessionFile(dir, id);
+  if (!sessionFile) return false;
+  let text: string;
+  try {
+    text = fs.readFileSync(sessionFile, "utf8");
+  } catch {
+    return false;
+  }
+  const messages = parseChildJsonl(text).messages;
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "assistant") return false;
+  if (!Array.isArray(last.content)) return true;
+  return !last.content.some((part) => part.type === "toolCall");
+}
+
 /** Read `<id>.exit` if present; null when missing/unparsable. */
 async function readExitCode(dir: string, id: string): Promise<number | null> {
   try {
@@ -216,9 +268,11 @@ export interface StartJobOptions {
 
 /**
  * Launch a detached background job and register it. Returns the registry entry
- * (status "running"). Throws on local setup errors (mkdir/write) and on a
- * persistent id collision (two ids in a row both had their `.task` artifact
- * already taken) — it never launches with another job's task content.
+ * (status "running"). tmux-backed jobs run pi's TUI interactively in the pane
+ * (attach to pi-<id> to watch or take over); the headless fallback runs json
+ * mode with redirected output. Throws on local setup errors (mkdir/write) and
+ * on a persistent id collision (two ids in a row both had their `.task`
+ * artifact already taken) — it never launches with another job's task content.
  */
 export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntry> {
   const dir = jobsDirFor(opts.cwd);
@@ -251,30 +305,44 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
 
   // Build the runner script. The task text goes through the task file —
   // "$(cat task)" is the only way it enters a shell string, by design.
-  const lines: string[] = [];
-  lines.push("#!/bin/sh");
-  lines.push("# pi delegate background job " + id);
-  // Scrub pi's session env (the same five keys the foreground spawn deletes in
-  // index.ts) so background children start clean: the runner inherits the full
-  // parent env via tmux/detached spawn, including pi's bash-tool exports.
-  lines.push("unset PI_SESSION_ID PI_SESSION_FILE PI_PROVIDER PI_MODEL PI_REASONING_LEVEL");
-  lines.push("cd " + shq(opts.cwd) + " || exit 1");
-  let cmd = "PI_DELEGATE_CHILD=1 " + piBin + " --mode json -p --session-id " + shq(tmuxSession);
-  if (opts.model) cmd += " --model " + shq(opts.model);
-  if (opts.thinking) cmd += " --thinking " + shq(opts.thinking);
-  if (opts.agent.tools && opts.agent.tools.length > 0) {
-    cmd += " --tools " + shq(opts.agent.tools.join(","));
-  }
-  if (hasSystemPrompt) cmd += " --append-system-prompt " + shq(sysPath);
-  // Double-quoted "$(cat ...)": no word splitting / globbing — the prompt reaches
-  // the child as ONE argv element, byte-identical to what was written to disk.
-  cmd += " \"$(cat " + shq(taskPath) + ")\"";
-  cmd += " > " + shq(jsonlPath) + " 2> " + shq(errPath);
-  lines.push(cmd);
-  lines.push('code=$?');
-  lines.push('echo "$code" > ' + shq(exitPath));
+  // Two variants: interactive (tmux pane shows pi's TUI; stdout IS the screen)
+  // and headless (json mode with redirected stdout for the no-tmux fallback).
+  const buildScript = (interactive: boolean): string => {
+    const lines: string[] = [];
+    lines.push("#!/bin/sh");
+    lines.push("# pi delegate background job " + id + (interactive ? " (interactive TUI in tmux pane)" : " (headless fallback)"));
+    // Scrub pi's session env (the same five keys the foreground spawn deletes in
+    // index.ts) so background children start clean: the runner inherits the full
+    // parent env via tmux/detached spawn, including pi's bash-tool exports.
+    lines.push("unset PI_SESSION_ID PI_SESSION_FILE PI_PROVIDER PI_MODEL PI_REASONING_LEVEL");
+    lines.push("cd " + shq(opts.cwd) + " || exit 1");
+    // --session-dir pins the child's pi session file into the jobs dir so
+    // refreshStatus/readJsonl can find it deterministically (both variants).
+    let cmd = "PI_DELEGATE_CHILD=1 " + piBin + " --session-dir " + shq(dir) + " --session-id " + shq(tmuxSession);
+    if (!interactive) cmd += " --mode json -p";
+    if (opts.model) cmd += " --model " + shq(opts.model);
+    if (opts.thinking) cmd += " --thinking " + shq(opts.thinking);
+    if (opts.agent.tools && opts.agent.tools.length > 0) {
+      cmd += " --tools " + shq(opts.agent.tools.join(","));
+    }
+    if (hasSystemPrompt) cmd += " --append-system-prompt " + shq(sysPath);
+    // Double-quoted "$(cat ...)": no word splitting / globbing — the prompt reaches
+    // the child as ONE argv element, byte-identical to what was written to disk.
+    cmd += " \"$(cat " + shq(taskPath) + ")\"";
+    if (interactive) {
+      // stdout stays on the tmux pane (the TUI draws there); only stderr —
+      // warnings — goes to the artifact.
+      cmd += " 2> " + shq(errPath);
+    } else {
+      cmd += " > " + shq(jsonlPath) + " 2> " + shq(errPath);
+    }
+    lines.push(cmd);
+    lines.push("code=$?");
+    lines.push('echo "$code" > ' + shq(exitPath));
+    return lines.join("\n") + "\n";
+  };
 
-  await fs.promises.writeFile(runnerPath, lines.join("\n") + "\n", "utf8");
+  await fs.promises.writeFile(runnerPath, buildScript(true), "utf8");
   await fs.promises.chmod(runnerPath, 0o755);
 
   let entry: JobEntry;
@@ -282,6 +350,10 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
     await execFileP("tmux", ["new-session", "-d", "-s", tmuxSession, "sh " + shq(runnerPath)]);
     entry = { id, agent: opts.agent.name, task: opts.task, startedAt: new Date().toISOString(), runner: "tmux", tmuxSession, status: "running" };
   } catch {
+    // Headless fallback: no TTY to draw the TUI on. Rewrite the runner as the
+    // json-mode variant (stdout streams events into <id>.jsonl) and detach.
+    // Safe because a failed new-session means the interactive script never ran.
+    await fs.promises.writeFile(runnerPath, buildScript(false), "utf8");
     const child = spawn("sh", [runnerPath], { cwd: opts.cwd, detached: true, stdio: "ignore" });
     child.unref();
     entry = { id, agent: opts.agent.name, task: opts.task, startedAt: new Date().toISOString(), runner: "fallback", pid: child.pid, status: "running" };
@@ -292,7 +364,9 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
 
 /**
  * Re-read the entry and advance its status from on-disk evidence:
- * exit file → done/failed; runner gone without an exit file → aborted.
+ * exit file → done/failed; child session file's round complete → done
+ * (interactive jobs, which write no .exit until pi is quit); runner gone
+ * without an exit file → aborted.
  * Persisted (atomically) whenever the status changes.
  */
 async function refreshStatus(dir: string, entry: JobEntry): Promise<JobEntry> {
@@ -313,6 +387,17 @@ async function refreshStatus(dir: string, entry: JobEntry): Promise<JobEntry> {
   const exitCode = await readExitCode(dir, entry.id);
   if (exitCode !== null) {
     entry.status = exitCode === 0 ? "done" : "failed";
+    entry.finishedAt = new Date().toISOString();
+    await persistEntry(dir, entry);
+    return entry;
+  }
+
+  // Interactive (tmux) jobs write no .exit until pi is quit; completion is
+  // detected from the child's session file instead (see sessionRoundComplete).
+  // For headless jobs this mostly short-circuits the alive probe by a few ms —
+  // harmless either way.
+  if (sessionRoundComplete(dir, entry.id)) {
+    entry.status = "done";
     entry.finishedAt = new Date().toISOString();
     await persistEntry(dir, entry);
     return entry;
@@ -436,12 +521,22 @@ function tailOf(text: string, max: number): string {
   return "[...] " + trimmed.slice(-max);
 }
 
-/** Read a job's jsonl stream; returns null when the file is missing/unreadable. */
+/**
+ * Read a job's event stream: the `<id>.jsonl` artifact (headless jobs), or —
+ * when that is missing, i.e. tmux interactive jobs whose stdout is the pane —
+ * the child's pi session file. Null when neither exists/is readable.
+ */
 function readJsonl(dir: string, id: string): string | null {
   try {
     return fs.readFileSync(path.join(dir, id + ".jsonl"), "utf8");
   } catch {
-    return null;
+    const sessionFile = findSessionFile(dir, id);
+    if (!sessionFile) return null;
+    try {
+      return fs.readFileSync(sessionFile, "utf8");
+    } catch {
+      return null;
+    }
   }
 }
 

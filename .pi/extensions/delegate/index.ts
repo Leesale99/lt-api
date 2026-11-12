@@ -811,6 +811,9 @@ async function startBackgroundRun(
     "Background job started: " + entry.id +
     "\nagent: " + entry.agent +
     "\nrunner: " + entry.runner + (entry.tmuxSession ? " (tmux session: " + entry.tmuxSession + ")" : "") +
+    (entry.runner === "tmux"
+      ? "\nWatch live: tmux attach -t " + entry.tmuxSession + " (pi runs interactively; quit pi in the pane when done)"
+      : "") +
     "\nThe task runs detached; retrieve results with the job_status tool using id \"" + entry.id + "\"." +
     "\nArtifacts are in .pi/jobs/ (" + entry.id + ".task/.jsonl/.err/.exit/.json).";
   return {
