@@ -639,10 +639,11 @@ const ChainItem = Type.Object({
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 });
 
-// Typebox-native so the static type resolves to the "user"|"project"|"both" union
-// (pi-ai's StringEnum wraps pi-schema Schema, which Type.Optional reduces to {}).
+// Typebox-native so the static type resolves to the AgentScope union from
+// ./agents.ts (pi-ai's StringEnum wraps pi-schema Schema, which Type.Optional
+// reduces to {}).
 // Keeps the same runtime JSON schema { type: "string", enum: [...] } — provider-compatible.
-const AgentScopeSchema = Type.Unsafe<"user" | "project" | "both">({
+const AgentScopeSchema = Type.Unsafe<AgentScope>({
   type: "string",
   enum: ["user", "project", "both"],
   description: 'Which agent directories to use. Default: "both" — project-local agents (.pi/agents) override user agents with the same name.',
@@ -2045,7 +2046,7 @@ export default function (pi: ExtensionAPI) {
           }
         }
         const report = await formatJobDetail(entry, jobsDirFor(ctx.cwd));
-        return { content: [{ type: "text", text: report }], details: cardDataOf(entry) };
+        return { content: [{ type: "text", text: report }], details: { jobs: [cardDataOf(entry)] } };
       }
       const entries = await listJobEntries(ctx.cwd);
       if (entries.length === 0) {
