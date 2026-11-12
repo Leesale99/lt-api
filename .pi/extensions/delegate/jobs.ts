@@ -11,7 +11,13 @@
  *   <id>.sys.md  — agent system prompt for --append-system-prompt (kept as artifact)
  *   <id>.sh      — per-job runner script
  *
- * Job ids: `<agent>-<yyyymmdd-hhmmss>` with the agent part sanitized.
+ * Job ids: `<agent>-<yyyymmdd-hhmmss>-<6 random base36 chars>`, agent part
+ * sanitized. The random suffix adds sub-second entropy: the second-granularity
+ * timestamp alone collided when two jobs launched in the same second (shared
+ * id → shared `.task` tmp path → ENOENT on rename + the surviving job executed
+ * the other's task). Ids are also tmux-session-safe (no dots/colons):
+ * `pi-<id>` is passed as tmux session name AND --session-id; tmux creates
+ * dotted names but then cannot address them (has-session/attach fail).
  * Background children run `--session-id pi-<id>` (resumable later), NOT
  * `--no-session`; foreground stays `--no-session`.
  *
@@ -20,6 +26,7 @@
  * records `runner: "fallback"` + pid in the registry (no attach support).
  */
 
+import { randomInt } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -55,8 +62,10 @@ function shq(text: string): string {
   return "'" + text.replace(/'/g, "'\\''") + "'";
 }
 
+// tmux session-name safe: no dots/colons (tmux creates such session names but
+// then cannot address them — has-session/attach/kill all fail to match).
 function sanitizeIdPart(name: string): string {
-  const cleaned = name.replace(/[^\w.-]+/g, "_").slice(0, 40).replace(/^_+|_+$/g, "");
+  const cleaned = name.replace(/[^\w-]+/g, "_").slice(0, 40).replace(/^_+|_+$/g, "");
   return cleaned || "agent";
 }
 
@@ -87,13 +96,91 @@ async function persistEntry(dir: string, entry: JobEntry): Promise<void> {
   await writeAtomic(path.join(dir, entry.id + ".json"), JSON.stringify(entry, null, 2) + "\n");
 }
 
-async function uniqueJobId(dir: string, agentName: string): Promise<string> {
+/** Length of the random base36 id suffix — sub-second entropy (36^6 ≈ 2·10⁹). */
+const ID_RANDOM_LEN = 6;
+
+const BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz";
+
+function randomBase36(len: number): string {
+  let out = "";
+  for (let i = 0; i < len; i++) out += BASE36[randomInt(36)];
+  return out;
+}
+
+/**
+ * Best-effort id generation. The registry (.json) pre-check is only a cheap
+ * filter — it is written last and cannot arbitrate a same-second race; the
+ * airtight guard is the exclusive `<id>.task` create in reserveJobId.
+ * `drawSuffix` is injectable so collision paths can be smoke-tested.
+ */
+async function uniqueJobId(
+  dir: string,
+  agentName: string,
+  drawSuffix: (len: number) => string = randomBase36,
+): Promise<string> {
   const base = sanitizeIdPart(agentName) + "-" + timestamp(new Date());
-  let id = base;
-  for (let n = 2; fs.existsSync(path.join(dir, id + ".json")); n++) {
-    id = base + "-" + n;
+  let id = base + "-" + drawSuffix(ID_RANDOM_LEN);
+  while (fs.existsSync(path.join(dir, id + ".json"))) {
+    id = base + "-" + drawSuffix(ID_RANDOM_LEN);
   }
   return id;
+}
+
+/** Node fs error code, or null for non-fs errors. */
+function fsErrorCode(error: unknown): string | null {
+  if (typeof error !== "object" || error === null) return null;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : null;
+}
+
+/**
+ * Create `<id>.task` exclusively (O_EXCL) and write the prompt into it.
+ * Returns true when this job owns the id; false when the file already exists —
+ * i.e. another job grabbed the id. A tmp+rename cannot detect that case:
+ * POSIX rename silently replaces an existing target (and a shared fixed-name
+ * tmp vanishes under the second renamer with ENOENT), which is how two
+ * same-second jobs used to corrupt each other's task files.
+ */
+async function reserveTaskArtifact(taskPath: string, prompt: string): Promise<boolean> {
+  try {
+    const handle = await fs.promises.open(taskPath, "wx", 0o644);
+    try {
+      await handle.writeFile(prompt, "utf8");
+    } finally {
+      await handle.close();
+    }
+    return true;
+  } catch (error) {
+    if (fsErrorCode(error) === "EEXIST") return false;
+    throw error; // real setup error (permissions, missing directory, …)
+  }
+}
+
+/**
+ * Allocate a fresh job id and take exclusive ownership of it by creating its
+ * `<id>.task` artifact (the reservation token). On a collision — another job
+ * already owns the id — regenerate the id and retry once; a second collision
+ * fails cleanly rather than launching a job that would execute another job's
+ * task content. `drawSuffix` is injectable so collision paths can be
+ * smoke-tested deterministically.
+ */
+export async function reserveJobId(
+  dir: string,
+  agentName: string,
+  prompt: string,
+  drawSuffix: (len: number) => string = randomBase36,
+): Promise<string> {
+  let id = await uniqueJobId(dir, agentName, drawSuffix);
+  for (let attempt = 0; ; attempt++) {
+    if (await reserveTaskArtifact(path.join(dir, id + ".task"), prompt)) return id;
+    if (attempt > 0) {
+      throw new Error(
+        "background job id collision: '" + id + ".task' already exists again after regenerating the id; " +
+        "refusing to launch a job that would execute another job's task content",
+      );
+    }
+    id = await uniqueJobId(dir, agentName, drawSuffix);
+  }
 }
 
 async function tmuxSessionAlive(session: string): Promise<boolean> {
@@ -129,12 +216,16 @@ export interface StartJobOptions {
 
 /**
  * Launch a detached background job and register it. Returns the registry entry
- * (status "running"). Throws only on local setup errors (mkdir/write).
+ * (status "running"). Throws on local setup errors (mkdir/write) and on a
+ * persistent id collision (two ids in a row both had their `.task` artifact
+ * already taken) — it never launches with another job's task content.
  */
 export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntry> {
   const dir = jobsDirFor(opts.cwd);
   await fs.promises.mkdir(dir, { recursive: true });
-  const id = await uniqueJobId(dir, opts.agent.name);
+  // Claim the id by exclusively creating `<id>.task` — the registry (.json) is
+  // written last and cannot arbitrate a race; see reserveJobId.
+  const id = await reserveJobId(dir, opts.agent.name, opts.prompt);
   const base = path.join(dir, id);
   const taskPath = base + ".task";
   const sysPath = base + ".sys.md";
@@ -144,7 +235,6 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
   const runnerPath = base + ".sh";
   const tmuxSession = "pi-" + id;
 
-  await writeAtomic(taskPath, opts.prompt);
   const hasSystemPrompt = Boolean(opts.agent.systemPrompt && opts.agent.systemPrompt.trim());
   if (hasSystemPrompt) await writeAtomic(sysPath, opts.agent.systemPrompt);
 
