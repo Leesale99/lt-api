@@ -73,6 +73,7 @@ func main() {
 
 	gameStore := game.NewStore(pool)
 	gameService := game.NewService(gameStore)
+	identityStore := identity.NewStore(pool)
 
 	app := &api.Application{
 		Version:        cfg.Version,
@@ -83,7 +84,7 @@ func main() {
 		Logger:         logger,
 		RootCtx:        root,
 		Game:           gameService,
-		Identity:       identity.NewStore(pool),
+		Identity:       identityStore,
 		Mailer:         mailer,
 	}
 
