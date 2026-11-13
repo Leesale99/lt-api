@@ -1,7 +1,7 @@
 # Delegate workflow — master plan
 
-Updated: 2026-11-12
-Status: phases 1–7 done (two-tier delegation, decided 2026-11-12)
+Updated: 2026-11-13
+Status: phases 1–7 done (two-tier delegation, worktree handoff, approval UX; decided 2026-11-12/13); phase 8 planned (non-blocking parent, brainstorm 2026-11-13)
 
 ## Goal
 
@@ -97,6 +97,7 @@ pi --session-id delegate-phase-N
 - Phase 5 — two-tier delegation roles & routing: background spawning code-gated to the child orchestrator (`background: true` frontmatter); all five current agents become foreground-only workers (parallel `tasks[]`, narrow scopes); `PI_DELEGATE_ROLE=orchestrator|worker` env gating (workers get no subagent tool; orchestrator-role refuses background — one level deep, main session is the recursion point)
 - Phase 6 — worktree handoff: the child orchestrator commits/merges final work itself in `../lt-api-wt-<job-id>` on branch `delegate/<job-id>` (workers implement inside the worktree); `HANDOFF=auto|confirm`; confirm mode = `AWAITING_APPROVAL` block + user approval by typing in the orchestrator's pane
 - Phase 7 — approval UX: parent-relayed approval (`job_approve` via `tmux send-keys -l`) so the main session can approve without attaching; first-class `awaiting_approval` registry status (icon/cards/settle ripples)
+- Phase 8 — non-blocking parent: post-spawn standing rule; job_status poll cooldown (canned refusal, PI_DELEGATE_POLL_COOLDOWN_MS, refused polls never mark surfacedJobIds); idle-completion injection at round start (or record "no suitable hook in pi 1.5.2"); tool descriptions as contracts; end-turn convention. No wait param, ever. Decisions 2026-11-13.
 
 Locked decisions behind phases 5–7 (brainstorm 2026-11-12): background jobs only for long, multi-step, complex tasks; only the child orchestrator may run in background and only it delegates further (workers: foreground, parallel, narrow; `general` stays the default narrow builder); one level deep — multiple flat child orchestrators over recursion (rationale in phase-5.md); handoff = orchestrator commits/merges in a separate worktree; approval in the orchestrator's pane for phase 6, parent-relayed in phase 7.
 
