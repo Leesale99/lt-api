@@ -1,7 +1,7 @@
 # Delegate workflow — master plan
 
 Updated: 2026-11-12
-Status: all phases (1–4) done
+Status: phases 1–4 done; phases 5–7 planned (two-tier delegation, decided 2026-11-12)
 
 ## Goal
 
@@ -12,7 +12,7 @@ The main pi session in this repo becomes an **orchestrator**: it does no task wo
 - Project-local extension: `.pi/extensions/delegate/` (`index.ts`, `agents.ts`, `jobs.ts` in phase 3, `output.ts`)
 - Agent configs: `.pi/agents/*.md` — YAML frontmatter + system prompt body, committed to the repo
 - Discovery runs per tool invocation → adding an agent `.md` later needs no reload
-- Job artifacts (phase 3): `.pi/jobs/` (gitignored)
+- Job artifacts (phase 3, reworked in the 2026-11-12 polish — commit `ecca403`): tmux jobs run pi **interactively in the pane** (attach to watch/take over); completion and results are read from the child's pi session file (`--session-dir <jobsDir>`, same event vocabulary as `--mode json`); headless fallback keeps the json redirection. `.pi/jobs/` is gitignored.
 
 ## Reference implementation — fork this, do not invent
 
@@ -92,6 +92,11 @@ pi --session-id delegate-phase-N
 - Phase 2 — orchestrator guard (env-gated injection + edit/write confirm gate), slim AGENTS.md
 - Phase 3 — background mode (tmux runner, `.pi/jobs/` registry, `job_status` tool)
 - Phase 4 — workflow prompt templates (`/implement` etc.), routing tune-up, dogfood a real Phase-05 task through the roster
+- Phase 5 — two-tier delegation roles & routing: background spawning code-gated to the child orchestrator (`background: true` frontmatter); all five current agents become foreground-only workers (parallel `tasks[]`, narrow scopes); `PI_DELEGATE_ROLE=orchestrator|worker` env gating (workers get no subagent tool; orchestrator-role refuses background — one level deep, main session is the recursion point)
+- Phase 6 — worktree handoff: the child orchestrator commits/merges final work itself in `../lt-api-wt-<job-id>` on branch `delegate/<job-id>` (workers implement inside the worktree); `HANDOFF=auto|confirm`; confirm mode = `AWAITING_APPROVAL` block + user approval by typing in the orchestrator's pane
+- Phase 7 — approval UX: parent-relayed approval (`job_approve` via `tmux send-keys -l`) so the main session can approve without attaching; first-class `awaiting_approval` registry status (icon/cards/settle ripples)
+
+Locked decisions behind phases 5–7 (brainstorm 2026-11-12): background jobs only for long, multi-step, complex tasks; only the child orchestrator may run in background and only it delegates further (workers: foreground, parallel, narrow; `general` stays the default narrow builder); one level deep — multiple flat child orchestrators over recursion (rationale in phase-5.md); handoff = orchestrator commits/merges in a separate worktree; approval in the orchestrator's pane for phase 6, parent-relayed in phase 7.
 
 Rule: **decisions live in these docs, not in chat history.** Append session-specific findings to the phase doc's "Notes from execution" and cross-phase learnings to `## Learnings` below.
 
