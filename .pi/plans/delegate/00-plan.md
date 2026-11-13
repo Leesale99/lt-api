@@ -13,6 +13,7 @@ The main pi session in this repo becomes an **orchestrator**: it does no task wo
 - Agent configs: `.pi/agents/*.md` — YAML frontmatter + system prompt body, committed to the repo
 - Discovery runs per tool invocation → adding an agent `.md` later needs no reload
 - Job artifacts (phase 3, reworked in the 2026-11-12 polish — commit `ecca403`): tmux jobs run pi **interactively in the pane** (attach to watch/take over); completion and results are read from the child's pi session file (`--session-dir <jobsDir>`, same event vocabulary as `--mode json`); headless fallback keeps the json redirection. `.pi/jobs/` is gitignored.
+- Phase 6 handoff: background orchestrators deliver in a dedicated git worktree `../lt-api-wt-<job-id>` on branch `delegate/<job-id>` created from HEAD (workers implement inside the worktree; the parent checkout's working tree is untouched). Merge-back = `git merge "$BASE"` inside the worktree, then a fast-forward-only merge in the parent checkout; mode comes from the task text (`HANDOFF=auto|confirm`, omitted → confirm). Confirm mode stops at an `AWAITING_APPROVAL` block; approval/rejection is typed in the orchestrator's pane (phase 7 will add parent-relayed approval). Conflicts → `HANDOFF_BLOCKED`, worktree + branch preserved, never force-resolved.
 
 ## Reference implementation — fork this, do not invent
 
@@ -38,6 +39,7 @@ Docs when needed (same install tree): `docs/extensions.md`, `docs/cli.md`, `docs
 | `researcher` | web_search, source_check, fetch_content, get_search_content, resolve-library-id, query-docs, read | inherit | web research + library docs (context7) |
 | `go-worker` | read, bash, edit, write, grep, find, ls | `opencode-go/glm-5.3-flash`, thinking high | implements Go tasks, runs tests, reports |
 | `general` | read, bash, edit, write, grep, find, ls | inherit | catch-all builder for anything not matching a specialist |
+| `orchestrator` | subagent, read, bash, grep, find, ls | inherit + `thinking: max` | background child orchestrator — the only agent with `background: true`; decomposes long tasks, drives parallel foreground workers inside a dedicated git worktree, verifies, delivers via the phase-6 handoff (HANDOFF=auto merge-back or HANDOFF=confirm approval gate) |
 
 Verified tool names (installed packages): context7 → `resolve-library-id`, `query-docs`; pi-web-access → `web_search`, `source_check`, `fetch_content`, `get_search_content` (direct exposure); pi-obsidian → single `obsidian` tool, **deferred exposure** — must be named in the `--tools` allowlist to be declared, plus `tool_search` as safety net.
 
