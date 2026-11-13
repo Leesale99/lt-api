@@ -687,6 +687,14 @@ const SubagentParams = Type.Object({
         "Single mode only: true forces the detached background path (tmux-backed job, results via job_status), false forces foreground. Omit to let the agent config's background frontmatter decide. Rejected together with tasks or chain.",
     }),
   ),
+  handoff: Type.Optional(
+    Type.Unsafe<"auto" | "confirm">({
+      type: "string",
+      enum: ["auto", "confirm"],
+      description:
+        'Handoff mode for a single-mode background job (the orchestrator): forwarded into the task prompt as HANDOFF=..., overriding any HANDOFF mention in the task text. Omitted → the task-text convention applies (no mention = confirm). Rejected with tasks/chain and with foreground runs.',
+    }),
+  ),
 });
 
 const JobStatusParams = Type.Object({
@@ -766,17 +774,31 @@ function loadOrchestratorPrompt(cwd: string): string {
  * + footer status line) when the job finishes. Results reach the session as
  * delegate-job-result context messages: explicitly via job_status (pickup) and
  * automatically at the settle boundary for jobs finished this session.
+ *
+ * Phase 7: the optional `handoff` param ("auto" | "confirm", single-mode
+ * background jobs only) is appended to the prompt as a HANDOFF=... line AFTER
+ * the task text, overriding any HANDOFF mention there; omitted keeps the
+ * task-text convention (no mention = confirm).
  */
 async function startBackgroundRun(
   dispatchDefaults: DispatchDefaults,
   agent: AgentConfig,
   task: string,
   ctx: ExtensionContext,
+  handoff?: "auto" | "confirm",
 ): Promise<AgentToolResult<AnyToolDetails>> {
   const model = agent.model ?? dispatchDefaults.model;
   let thinking: string | undefined;
   if (agent.thinking) thinking = agent.thinking;
   else if (!agent.model && dispatchDefaults.thinkingLevel) thinking = dispatchDefaults.thinkingLevel;
+
+  let prompt = buildTaskPrompt(agent, task);
+  if (handoff) {
+    // Phase 7: the handoff param is first-class now; it is appended AFTER the
+    // task text so it wins over any HANDOFF mention there (the orchestrator
+    // protocol reads the mode from the task text; omitted there → confirm).
+    prompt += "\n\nHANDOFF=" + handoff + " (handoff mode parameter; overrides any earlier HANDOFF mention in the task text above)";
+  }
 
   let entry: JobEntry;
   try {
@@ -784,7 +806,7 @@ async function startBackgroundRun(
       cwd: ctx.cwd,
       agent,
       task,
-      prompt: buildTaskPrompt(agent, task),
+      prompt,
       model,
       thinking,
     });
@@ -1394,6 +1416,7 @@ export default function (pi: ExtensionAPI) {
       "Agent discovery always runs in the invoking session's cwd; a per-call cwd only sets the worker's process cwd (e.g. a git worktree) — the resolved roster is identical for every cwd.",
       "Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
       "Single mode: background=true forces the detached tmux-backed job (results via job_status), background=false forces foreground, omitted = the agent config's background frontmatter decides; rejected with tasks/chain.",
+      "Handoff (single background mode): handoff:\"auto\"|\"confirm\" is forwarded into the orchestrator task prompt as HANDOFF=..., overriding a HANDOFF mention in the task text; omitted keeps the task-text convention (no mention = confirm). Rejected with tasks/chain and foreground runs.",
       `Default agent scope is "both": project-local agents (${CONFIG_DIR_NAME}/agents) override user agents (${path.join(getAgentDir(), "agents")}) with the same name.`,
       `Set agentScope: "user" to ignore project-local agents.`,
     ].join(" "),
@@ -1442,6 +1465,19 @@ export default function (pi: ExtensionAPI) {
             {
               type: "text",
               text: "Invalid parameters. background applies to single mode only.\nAvailable agents: " + available,
+            },
+          ],
+          details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single", true)([]),
+        };
+      }
+
+      if (params.handoff !== undefined && (hasChain || hasTasks)) {
+        const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Invalid parameters. handoff applies to single mode only.\nAvailable agents: " + available,
             },
           ],
           details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single", true)([]),
@@ -1652,6 +1688,17 @@ export default function (pi: ExtensionAPI) {
         // explicitly. One level deep: a child orchestrator (role env) cannot
         // background-spawn either; the main session is the recursion point.
         const singleAgent = resolvedSingle.agent;
+        if (params.handoff !== undefined && !(singleAgent && (params.background ?? singleAgent.background))) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "Invalid parameters. handoff applies to single-mode background jobs only (the orchestrator agent, background: true).",
+              },
+            ],
+            details: makeDetails("single", true)([]),
+          };
+        }
         if (singleAgent && (params.background ?? singleAgent.background)) {
           if (!singleAgent.background) {
             const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
@@ -1682,7 +1729,7 @@ export default function (pi: ExtensionAPI) {
               details: makeDetails("single", true)([]),
             };
           }
-          return await startBackgroundRun(dispatchDefaults, singleAgent, params.task, ctx);
+          return await startBackgroundRun(dispatchDefaults, singleAgent, params.task, ctx, params.handoff);
         }
         const result = await runSingleAgent(
           dispatchDefaults,
