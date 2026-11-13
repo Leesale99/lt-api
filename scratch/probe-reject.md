@@ -1,1 +1,1 @@
-reject content v1
+reject content v2
