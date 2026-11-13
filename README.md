@@ -82,3 +82,21 @@ GRANT schedule_app, game_app, identity_app TO lt_test WITH ADMIN OPTION;
 After that the second role can run the migration against its own databases
 (it owns the tables it creates there, so the per-schema GRANTs always work;
 the membership grant makes `SET ROLE` possible).
+
+### Bounded contexts: who owns what (Phase 05, as built)
+
+The schema split above mirrors the module split. **Schedule** owns teams,
+seasons, rounds and matches, mints their ids, and is the ACL for the upstream
+feed; it publishes `MatchResultRecorded` and `RoundCompleted` on the
+in-process eventbus (transactional outbox deferred to Phase 08). **Game**
+owns rides and players, drives the ride state transitions and settlement, and
+reaches schedule only through the `SchedulePort` and ledger only through the
+extracted `Ledger` interface (`LockTokens` / `Burn` money intents) — never
+through schedule's or ledger's tables. **Ledger** owns balances and is thin:
+money intents in, it writes its own tables. **Identity** is the generic
+supporting context. `api` is the HTTP gateway, not a context; `cmd/server` is
+the composition root.
+
+The import edges between these packages are pinned in code by
+`internal/arch/arch_test.go`; the data-flow view lives in
+`docs/designs/bounded-contexts-dependency-map.mmd`.
