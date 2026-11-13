@@ -883,7 +883,11 @@ async function startBackgroundRun(
       ? "\nWatch live: tmux attach -t " + entry.tmuxSession + " (pi runs interactively; quit pi in the pane when done)"
       : "") +
     "\nThe task runs detached; retrieve results with the job_status tool using id \"" + entry.id + "\"." +
-    "\nArtifacts are in .pi/jobs/ (" + entry.id + ".task/.jsonl/.err/.exit/.json).";
+    "\nArtifacts are in .pi/jobs/ (" + entry.id + ".task/.jsonl/.err/.exit/.json)." +
+    // Phase 8 standing rule, part of the guaranteed-read tool result text: the
+    // parent must never wait on the job. Plain string concatenation (extension
+    // loader rejects nested quoting in template literals).
+    "\nJob `" + entry.id + "` runs detached: do NOT poll or wait. End your turn or pick up other work; completion is surfaced automatically (refuse-to-wait enforced by cooldown on job_status).";
   return {
     content: [{ type: "text", text }],
     details: { mode: "background", job: entry },
