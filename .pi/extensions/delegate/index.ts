@@ -83,6 +83,7 @@ import {
   listJobIdsSync,
   listJobs,
   peekJobEntry,
+  relayApprovalDecision,
   startBackgroundJob,
   taskPreview,
 } from "./jobs.ts";
@@ -690,6 +691,11 @@ const SubagentParams = Type.Object({
 
 const JobStatusParams = Type.Object({
   id: Type.Optional(Type.String({ description: "Job id to inspect. Omit to list all background jobs." })),
+});
+
+const JobApproveParams = Type.Object({
+  id: Type.String({ description: "Job id of the awaiting_approval background job" }),
+  message: Type.String({ description: 'Decision forwarded verbatim into the orchestrator pane: "approved [note]" approves the pending handoff; "rejected: <reason>" sends the orchestrator back to iterate. Single line.' }),
 });
 
 /**
@@ -2173,6 +2179,43 @@ export default function (pi: ExtensionAPI) {
       return new Text(theme.fg("toolTitle", theme.bold("job_status ")) + target, 0, 0);
     },
     renderResult(result, _extended, theme, _context) {
+      const text = result.content[0];
+      return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
+    },
+  });
+
+  // Phase 7: parent-relayed approval. A confirm-handoff job idles in its pane
+  // after emitting AWAITING_APPROVAL; this tool types the decision into that
+  // pane from the MAIN session (tmux send-keys -l + Enter), so nobody has to
+  // attach. Preconditions and refusal messages live in jobs.ts
+  // (relayApprovalDecision); duplicates are never sent automatically — the
+  // user decides, and a duplicate delivery is harmless but confusing.
+  pi.registerTool({
+    name: "job_approve",
+    label: "Job approve",
+    description:
+      "Relay an approval decision to a background orchestrator job that is waiting in confirm handoff mode (status awaiting_approval). " +
+      "The message is typed verbatim into the job's idle tmux pane (tmux send-keys -l + Enter), exactly as if the user typed it there. " +
+      'message "approved [note]" → the orchestrator performs its merge-back and reports HANDOFF_COMPLETE (the job then advances to done); "rejected: <reason>" → it iterates and emits a fresh approval request. ' +
+      "Refuses: unknown id, non-tmux job, dead tmux session, mid-round job, or a job whose last message carries no approval request. " +
+      "After delivery, follow up with job_status on the same id to watch the continuation.",
+    parameters: JobApproveParams,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      void refreshJobWidget(ctx);
+      const outcome = await relayApprovalDecision(ctx.cwd, params.id, params.message);
+      if (!outcome.ok) {
+        return { content: [{ type: "text", text: "Refused: " + (outcome.reason ?? "unknown reason") }], details: { delivered: false, id: params.id } };
+      }
+      const text =
+        "Delivered to tmux session " + outcome.session + " (job " + params.id + "): \"" + params.message + "\"." +
+        "\nThe orchestrator pane received your decision; follow up with job_status id \"" + params.id + "\" to watch it advance (approval → HANDOFF_COMPLETE, job done; rejection → a fresh approval request).";
+      return { content: [{ type: "text", text }], details: { delivered: true, id: params.id, session: outcome.session } };
+    },
+    renderCall(args, theme, _context) {
+      const preview = args.message ? String(args.message).slice(0, 40) : "...";
+      return new Text(theme.fg("toolTitle", theme.bold("job_approve ")) + theme.fg("accent", args.id) + theme.fg("muted", " · " + preview), 0, 0);
+    },
+    renderResult(result, _expanded, theme, _context) {
       const text = result.content[0];
       return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
     },

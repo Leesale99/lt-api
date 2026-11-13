@@ -218,7 +218,7 @@ export async function reserveJobId(
   }
 }
 
-async function tmuxSessionAlive(session: string): Promise<boolean> {
+export async function tmuxSessionAlive(session: string): Promise<boolean> {
   try {
     await execFileP("tmux", ["has-session", "-t", session]);
     return true;
@@ -631,6 +631,53 @@ export function formatJobList(entries: JobEntry[]): string {
   }
   lines.push("Use job_status with id = the job id for the full output.");
   return lines.join("\n");
+}
+
+export interface ApprovalRelayOutcome {
+  ok: boolean;
+  /** Refusal reason when ok is false. */
+  reason?: string;
+  /** tmux session the message was delivered to when ok is true. */
+  session?: string;
+}
+
+/**
+ * Phase 7: relay an approval decision into a confirm-handoff job's idle tmux
+ * pane so the parent session can approve without attaching. The message is
+ * forwarded VERBATIM (typed literally via tmux send-keys -l, then Enter) —
+ * exactly what a user typing in the pane does. Delivery is always
+ * user-initiated; never resend automatically (a duplicate is harmless to pi
+ * but confusing). Every refusal is a clean, actionable message.
+ */
+export async function relayApprovalDecision(cwd: string, id: string, message: string): Promise<ApprovalRelayOutcome> {
+  const dir = jobsDirFor(cwd);
+  const entry = await getJob(cwd, id);
+  if (!entry) {
+    const known = listJobIdsSync(cwd).join(", ") || "none";
+    return { ok: false, reason: "No job with id " + id + ". Known jobs: " + known };
+  }
+  if (entry.runner !== "tmux" || !entry.tmuxSession) {
+    return { ok: false, reason: "Job " + id + " has no tmux pane (runner: " + entry.runner + ") — approval relay needs an interactive pane." };
+  }
+  if (!(await tmuxSessionAlive(entry.tmuxSession))) {
+    return { ok: false, reason: "tmux session " + entry.tmuxSession + " is not alive — the orchestrator process is gone; check job_status for artifacts." };
+  }
+  const state = sessionRoundState(dir, entry.id);
+  if (!state.complete) {
+    return { ok: false, reason: "Job " + id + " is mid-round (its pi session has an unfinished turn) — wait for the round to end, then retry (job_status shows the tail)." };
+  }
+  if (!state.awaitingApproval) {
+    return { ok: false, reason: "Job " + id + " is not awaiting approval — its last message carries no " + APPROVAL_MARKER + " marker (nothing to approve; job_status id " + id + " shows the tail)." };
+  }
+  if (!message.trim()) {
+    return { ok: false, reason: "Empty approval message — pass \"approved [note]\" or \"rejected: <reason>\"." };
+  }
+  if (/\r|\n/.test(message)) {
+    return { ok: false, reason: "Approval message must be a single line — a newline would submit the pane's editor early and split the decision from its note." };
+  }
+  await execFileP("tmux", ["send-keys", "-t", entry.tmuxSession, "-l", message]);
+  await execFileP("tmux", ["send-keys", "-t", entry.tmuxSession, "Enter"]);
+  return { ok: true, session: entry.tmuxSession };
 }
 
 /**
