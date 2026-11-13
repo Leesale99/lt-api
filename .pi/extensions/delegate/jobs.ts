@@ -214,7 +214,12 @@ async function tmuxSessionAlive(session: string): Promise<boolean> {
  */
 function findSessionFile(dir: string, id: string): string | null {
   try {
-    const hit = fs.readdirSync(dir).find((name) => name.endsWith("_" + id + ".jsonl"));
+    // Background children run `--session-id pi-<id>` (both runner variants), so
+    // their session files are `<ts>_pi-<id>.jsonl` — the `pi-` prefix is part
+    // of the session id and must be in the search suffix. (Latent bug found by
+    // the first real tmux background job in phase 5: all earlier e2e completions
+    // were fallback jobs, whose `<id>.jsonl` redirect bypasses this finder.)
+    const hit = fs.readdirSync(dir).find((name) => name.endsWith("_pi-" + id + ".jsonl"));
     return hit ? path.join(dir, hit) : null;
   } catch {
     return null;
