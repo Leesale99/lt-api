@@ -1322,7 +1322,14 @@ export default function (pi: ExtensionAPI) {
     if (details?.isError) return { isError: true };
   });
 
-  pi.registerTool({
+  // Phase 5 two-tier: workers cannot recurse — skip the subagent tool
+  // registration entirely in a worker child's process (PI_DELEGATE_ROLE=worker
+  // is set on every foreground spawn), so a worker has neither the tool nor
+  // the temptation, and its child context stays smaller. Main sessions and
+  // child orchestrators keep it. job_status and the UI surfaces stay
+  // registered (inert for workers: job_status is in no worker's tools list,
+  // the rest is hasUI-gated).
+  if (process.env.PI_DELEGATE_ROLE !== "worker") pi.registerTool({
     name: "subagent",
     label: "Subagent",
     description: [
@@ -1583,8 +1590,44 @@ export default function (pi: ExtensionAPI) {
         // the per-call `background` param (true = force background, false =
         // force foreground) or the agent's `background: true` frontmatter asks
         // for it (parallel/chain stay foreground by decision).
-        if (resolvedSingle.agent && (params.background ?? resolvedSingle.agent.background)) {
-          return await startBackgroundRun(dispatchDefaults, resolvedSingle.agent, params.task, ctx);
+        // Phase 5 two-tier: background spawning is a code-enforced privilege of
+        // agents with `background: true` frontmatter (roster-wise: the child
+        // orchestrator) — a background request on any other agent is refused
+        // with routing guidance, even when the parent passes background:true
+        // explicitly. One level deep: a child orchestrator (role env) cannot
+        // background-spawn either; the main session is the recursion point.
+        const singleAgent = resolvedSingle.agent;
+        if (singleAgent && (params.background ?? singleAgent.background)) {
+          if (!singleAgent.background) {
+            const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
+            return {
+              content: [
+                {
+                  type: "text",
+                  text:
+                    "Refused: background jobs are reserved for agents with 'background: true' frontmatter (roster-wise: the orchestrator). " +
+                    singleAgent.name + " is a foreground worker — delegate narrow tasks via foreground subagent calls (single, or independent items together in ONE parallel tasks[] call). " +
+                    "Background is only for long, multi-step, multi-file work that will take minutes; route those to the orchestrator agent." +
+                    "\nAvailable agents: " + available,
+                },
+              ],
+              details: makeDetails("single", true)([]),
+            };
+          }
+          if (process.env.PI_DELEGATE_ROLE === "orchestrator") {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text:
+                    "Refused: one level deep — a child orchestrator cannot start background jobs. " +
+                    "Delegate via foreground subagent calls (parallel tasks[] for independent work) instead; background spawning happens only in the main session, which is the recursion point.",
+                },
+              ],
+              details: makeDetails("single", true)([]),
+            };
+          }
+          return await startBackgroundRun(dispatchDefaults, singleAgent, params.task, ctx);
         }
         const result = await runSingleAgent(
           dispatchDefaults,
