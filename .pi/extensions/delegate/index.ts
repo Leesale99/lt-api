@@ -1285,6 +1285,8 @@ export default function (pi: ExtensionAPI) {
   // appended to the system prompt; children (PI_DELEGATE_CHILD set) get nothing.
   pi.on("before_agent_start", (event, ctx) => {
     if (process.env.PI_DELEGATE_CHILD) return;
+    // Opt-in delegate-only mode: PI_DELEGATE_ONLY set in the main session leaves subagent as its only callable tool.
+    if (process.env.PI_DELEGATE_ONLY) pi.setActiveTools(["subagent"]);
     return { systemPrompt: event.systemPrompt + loadOrchestratorPrompt(ctx.cwd) };
   });
 
