@@ -32,3 +32,53 @@ cmd/server/        Entry point: config flags, logger, server bootstrap
 internal/api/      HTTP layer: application struct, routes, handlers
 docs/              Learning-oriented implementation plan (phases 0–8)
 ```
+
+## Database: schemas, roles and configuration (Phase D)
+
+The Postgres layout mirrors the bounded contexts (ADR-028), and the
+boundary is enforced by Postgres itself (migrations 000015–000018):
+
+- `schedule` — teams, seasons, rounds, matches (+ their internal gates)
+- `game` — rides, players, idempotency_keys
+- `identity` — users, user_tokens, roles, permissions, roles_permissions
+
+One NOLOGIN role per context — `schedule_app`, `game_app`, `identity_app` —
+holds exactly its own schema's CRUD; `game_app` can additionally EXECUTE
+schedule's two SECURITY DEFINER round guards (the write-instant gates ride
+commands need inside their own transaction) and nothing else on schedule.
+The server opens one pool per context and runs `SET ROLE <context_role>` +
+`SET search_path` on every connection, so a cross-context query fails on
+permission even when the name is resolvable.
+
+### Configuration surface
+
+| Variable | Meaning |
+| --- | --- |
+| `LT_API_DSN` | Base DSN; all three context pools derive from it |
+| `LT_API_DSN_SCHEDULE` | Optional override: schedule pool only |
+| `LT_API_DSN_GAME` | Optional override: game pool only |
+| `LT_API_DSN_IDENTITY` | Optional override: identity pool only |
+| `LT_API_DB_MAX_CONNS` | Max connections PER context pool (the budget is per pool) |
+
+The per-context DSN overrides are for deployments that split the contexts
+onto separate databases or login roles; each override pool still runs the
+same `SET ROLE` hook, so the login role it connects as must hold that
+context's membership.
+
+### Role requirements for the migration runner
+
+`migrate` (and `cmd/seed`, which runs as the same owner connection) must
+run as a role with `CREATEDB` **and** `CREATEROLE`: migration 000018
+creates the context roles, `ALTER ROLE`s their search_path and grants them
+membership to the runner. Roles are cluster-global, so every database that
+runs this migration chain should be migrated by the SAME runner role; if a
+second runner role needs the chain (e.g. a test role while the dev role
+created the roles), an admin hands over membership + admin once:
+
+```sql
+GRANT schedule_app, game_app, identity_app TO lt_test WITH ADMIN OPTION;
+```
+
+After that the second role can run the migration against its own databases
+(it owns the tables it creates there, so the per-schema GRANTs always work;
+the membership grant makes `SET ROLE` possible).
