@@ -310,16 +310,24 @@ func TestRoundStore_Close(t *testing.T) {
 
 	t.Run("the season's last round publishes IsFinal", func(t *testing.T) {
 		seasonID, roundID, homeID, awayID := seedFixture(ctx, t)
-		if _, err := pool.Exec(ctx, `UPDATE rounds SET number = 38 WHERE id = $1`, roundID); err != nil {
-			t.Fatalf("renumber round to 38: %v", err)
-		}
+		renumberRoundForFixture(ctx, t, roundID, 38)
 		insertFutureMatch(ctx, t, seasonID, roundID, homeID, awayID, "3 days")
 		settleRound(ctx, t, roundID)
 
+		// A live round 38 needs 37 closed rounds (the unbroken-sequence
+		// gate); no realistic fixture builds that, so the close itself runs
+		// with the progress gate suspended — the IsFinal predicate under
+		// test is the app-side last-round check, not the sequence.
+		if _, err := pool.Exec(ctx, `ALTER TABLE rounds DISABLE TRIGGER rounds_progress_gate`); err != nil {
+			t.Fatalf("suspend progress gate: %v", err)
+		}
 		svc, received := closeService(t)
 
 		if _, err := svc.Rounds.Close(ctx, closeableRound(ctx, t, roundID)); err != nil {
 			t.Fatalf("Close() = %v, want nil", err)
+		}
+		if _, err := pool.Exec(ctx, `ALTER TABLE rounds ENABLE TRIGGER rounds_progress_gate`); err != nil {
+			t.Fatalf("restore progress gate: %v", err)
 		}
 
 		if len(*received) != 1 || !(*received)[0].IsFinal {
@@ -379,6 +387,25 @@ func TestRoundStore_Close(t *testing.T) {
 			t.Errorf("round status = %q, want open", round.Status)
 		}
 	})
+}
+
+// renumberRoundForFixture moves a live round to another number with the
+// progress gate suspended: rounds_progress_gate requires an unbroken
+// closed sequence (37 closed rounds before a live 38), which no realistic
+// fixture builds. Fixture tooling only — production renumbering stays
+// gated.
+func renumberRoundForFixture(ctx context.Context, t *testing.T, roundID, number int) {
+	t.Helper()
+
+	if _, err := pool.Exec(ctx, `ALTER TABLE rounds DISABLE TRIGGER rounds_progress_gate`); err != nil {
+		t.Fatalf("suspend progress gate: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE rounds SET number = $2 WHERE id = $1`, roundID, number); err != nil {
+		t.Fatalf("renumber round: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `ALTER TABLE rounds ENABLE TRIGGER rounds_progress_gate`); err != nil {
+		t.Fatalf("restore progress gate: %v", err)
+	}
 }
 
 // TestRoundStore_Close_MidTxFailureLeavesNoTrace is the phase done-when:

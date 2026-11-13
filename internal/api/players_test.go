@@ -31,9 +31,19 @@ import (
 func newTestApplication() *Application {
 	bus := eventbus.New()
 	scheduleStore := schedule.NewStore(testPool)
+	gameService := game.NewService(game.NewStore(testPool), scheduleStore, ledger.NewStore())
+	// The event seam wired like the composition root: resolve/close publish
+	// post-commit, the game handlers settle from the payloads in-process.
+	eventbus.Subscribe(bus, func(ctx context.Context, event schedule.MatchResultRecorded) error {
+		return gameService.OnMatchResultRecorded(ctx, event)
+	})
+	eventbus.Subscribe(bus, func(ctx context.Context, event schedule.RoundCompleted) error {
+		return gameService.OnRoundCompleted(ctx, event)
+	})
+
 	return &Application{
 		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
-		Game:     game.NewService(game.NewStore(testPool), scheduleStore, ledger.NewStore()),
+		Game:     gameService,
 		Schedule: schedule.NewService(scheduleStore, bus, slog.New(slog.NewTextHandler(os.Stderr, nil))),
 		Identity: identity.NewStore(testPool),
 		Mailer:   nopMailer{},

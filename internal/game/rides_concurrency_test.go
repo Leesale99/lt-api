@@ -32,7 +32,6 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/store"
 
 	"lt-api.aleksrdvn.com/internal/schedule"
@@ -47,7 +46,7 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
+	svc, scheduleSvc := newTestService()
 
 	for i := 0; i < raceIterations; i++ {
 		t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
@@ -92,13 +91,14 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 			}()
 			go func() {
 				defer wg.Done()
-				_, closeErr = schedule.NewStore(pool).Rounds.Close(ctx, round)
+				_, closeErr = scheduleSvc.Rounds.Close(ctx, round)
 			}()
 			wg.Wait()
 
 			// Nothing in either fixture or schedule refuses the close: its
 			// only match is closed, and undecided rides no longer block it
-			// (the gate half relaxed in 000014 — settlement is eventual).
+			// (the gate half relaxed in 000014 — the settlement is the
+			// wired handler's, right after the flip commits).
 			if closeErr != nil {
 				t.Fatalf("Close() = %v, want nil", closeErr)
 			}
@@ -119,11 +119,11 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 			case errors.Is(lockErr, ErrRoundNotOpen):
 				// The close committed first: the continuation's round gate
 				// re-read the committed row and refused it. The undecided
-				// ride stays where it is in this commit's world — the
-				// RoundCompleted settlement is a separate, later transaction
-				// (Phase C eventual close).
-				if got.State != RideWonPending {
-					t.Errorf("close won but state = %q, want won_pending until the settlement runs", got.State)
+				// ride settled right after, from the RoundCompleted payload
+				// (the settlement runs synchronously inside Close's
+				// post-commit publish — Phase C eventual, but in-process).
+				if got.State != RideUnlocked {
+					t.Errorf("close won but state = %q, want unlocked (settled from the event)", got.State)
 				}
 			default:
 				t.Fatalf("RideLock() = %v, want nil or ErrRoundNotOpen", lockErr)
@@ -196,7 +196,7 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
+	svc, scheduleSvc := newTestService()
 
 	t.Run("close wins the write instant: the guarded insert is refused", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
@@ -294,9 +294,11 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 			t.Fatal("created id = 0, want assigned")
 		}
 
-		// The close commits after the create: the ride is locked, outside
-		// the close's auto-resolution set (won_pending only), and the close
-		// gates see no undecided rides — the round closes around it.
+		// The close commits after the create: the ride is locked on the
+		// round's settled match, so the RoundCompleted settlement settles
+		// it from the payload result (the backstop) and then sweeps it with
+		// the undecided ones — the same settle-then-force-resolve the old
+		// close transaction performed in one tx.
 		var round schedule.Round
 		if err := pool.QueryRow(ctx, `
 			SELECT id, season_id, number, status, version
@@ -305,7 +307,7 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 			t.Fatalf("read round: %v", err)
 		}
 		round.Status = schedule.RoundClosed
-		if _, err := schedule.NewStore(pool).Rounds.Close(ctx, round); err != nil {
+		if _, err := scheduleSvc.Rounds.Close(ctx, round); err != nil {
 			t.Fatalf("Close() = %v, want nil", err)
 		}
 
@@ -313,8 +315,10 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Get() = %v, want nil", err)
 		}
-		if got.State != RideLocked {
-			t.Errorf("state = %q, want locked (the create committed first — legal order)", got.State)
+		// The created ride is version 1: settled (+1) then swept (+1).
+		if got.State != RideUnlocked || got.Version != 3 {
+			t.Errorf("state/version = %q/%d, want unlocked/3 (settled from the result, then swept)",
+				got.State, got.Version)
 		}
 	})
 }
@@ -323,7 +327,7 @@ func TestService_RideBurnRacesExactlyOnce(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
+	svc, _ := newTestService()
 
 	for i := 0; i < raceIterations; i++ {
 		t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
@@ -401,7 +405,7 @@ func TestService_RideCommandsRaceOnOneRide(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
+	svc, _ := newTestService()
 
 	for i := 0; i < raceIterations; i++ {
 		t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
@@ -467,29 +471,30 @@ func TestService_RideCommandsRaceOnOneRide(t *testing.T) {
 	}
 }
 
-// TestService_MatchResolveRaces pins ResolveMatch's two Phase 04 races
-// (the deferred note's excursion: "two concurrent resolutions ... idempotent
-// or a clean conflict"):
+// TestService_MatchResolveRaces pins the resolve script's two Phase 04
+// races (the deferred note's excursion: "two concurrent resolutions ...
+// idempotent or a clean conflict"):
 //
 //	two resolutions:  the version guard inside ResolveTx serializes them —
-//	                  exactly one settles match and rides, the loser reads
-//	                  0 rows and reports the clean ErrEditConflict (not the
-//	                  ambiguous ErrRecordNotFound);
+//	                  exactly one settles match and rides (the winner's
+//	                  post-commit publish), the loser reads 0 rows and
+//	                  reports the clean ErrEditConflict (not the ambiguous
+//	                  ErrRecordNotFound);
 //	resolve vs close: the close can only pass rounds_close_gate
 //	                  (round_close_has_unclosed_matches) after the
-//	                  resolution committed — the match flip and the ride
-//	                  settlement are one commit, so a committed close and
-//	                  an unresolved ride cannot coexist. The outcome set is
-//	                  (resolve nil, close nil) or (resolve nil, close
-//	                  ErrRecordInUse); resolve never loses.
+//	                  resolution committed; whichever publishes first
+//	                  settles the ride, and the other handler is a no-op —
+//	                  the outcome set is (resolve nil, close nil) or
+//	                  (resolve nil, close ErrRecordInUse); resolve never
+//	                  loses.
 //
 // As everywhere in this file: both legal outcomes are accepted, no
 // interleaving order is pinned, and the assertions hold under either.
-func TestService_MatchResolveRaces(t *testing.T) {
+func TestResolveMatchRaces(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
+	svc, scheduleSvc := newTestService()
 
 	// startedMatch builds the resolve fixture: the match must satisfy
 	// ResolveTx's contended facts honestly (in_progress, started in the
@@ -524,7 +529,7 @@ func TestService_MatchResolveRaces(t *testing.T) {
 				for j := range errs {
 					go func() {
 						defer wg.Done()
-						_, errs[j] = svc.MatchResolve(ctx, matchID, resolveScore(70, 69), time.Now().Add(-2*time.Hour), version)
+						_, errs[j] = scheduleSvc.ResolveMatch(ctx, matchID, resolveScore(70, 69), time.Now().Add(-2*time.Hour), version)
 					}()
 				}
 				wg.Wait()
@@ -540,7 +545,7 @@ func TestService_MatchResolveRaces(t *testing.T) {
 						// EvalPlanQual re-check refused the stale version, and
 						// classifyResolveRefusal named it a clean 409.
 					default:
-						t.Fatalf("MatchResolve() = %v, want nil or ErrEditConflict", err)
+						t.Fatalf("ResolveMatch() = %v, want nil or ErrEditConflict", err)
 					}
 				}
 				if winners != 1 {
@@ -604,11 +609,11 @@ func TestService_MatchResolveRaces(t *testing.T) {
 				wg.Add(2)
 				go func() {
 					defer wg.Done()
-					_, resolveErr = svc.MatchResolve(ctx, matchID, resolveScore(70, 69), time.Now().Add(-2*time.Hour), 1)
+					_, resolveErr = scheduleSvc.ResolveMatch(ctx, matchID, resolveScore(70, 69), time.Now().Add(-2*time.Hour), 1)
 				}()
 				go func() {
 					defer wg.Done()
-					_, closeErr = schedule.NewStore(pool).Rounds.Close(ctx, round)
+					_, closeErr = scheduleSvc.Rounds.Close(ctx, round)
 				}()
 				wg.Wait()
 
@@ -618,17 +623,23 @@ func TestService_MatchResolveRaces(t *testing.T) {
 				// ride settlement. Close loses to the gate (ErrRecordInUse)
 				// or runs after.
 				if resolveErr != nil {
-					t.Fatalf("MatchResolve() = %v, want nil", resolveErr)
+					t.Fatalf("ResolveMatch() = %v, want nil", resolveErr)
 				}
-				// Both interleavings leave the ride where the resolve put it:
-				// a won ride settles TO won_pending — it is undecided until
-				// the player claims or burns it, and since the Phase C event
-				// seam the close no longer auto-resolves it (settlement is
-				// eventual, behind RoundCompleted).
-				wantState, wantVersion := RideWonPending, 2
+				// The two legal interleavings also differ in the ride's final
+				// state: a won ride settles TO won_pending (undecided until
+				// the player claims or burns it). When the close wins the
+				// flip, its RoundCompleted settlement force-resolves the
+				// undecided ride (unlock) — synchronously, inside Close's
+				// post-commit publish. When the close loses the gate
+				// (unclosed match at its flip), the player keeps the
+				// decision and the ride stays where the resolve left it.
+				var wantState RideState
+				var wantVersion int
 				switch {
 				case closeErr == nil:
+					wantState, wantVersion = RideUnlocked, 3
 				case errors.Is(closeErr, store.ErrRecordInUse):
+					wantState, wantVersion = RideWonPending, 2
 				default:
 					t.Fatalf("Close() = %v, want nil or ErrRecordInUse", closeErr)
 				}
@@ -649,18 +660,17 @@ func TestService_MatchResolveRaces(t *testing.T) {
 					t.Errorf("ride state/version = %q/%d, want %q/%d", got.State, got.Version, wantState, wantVersion)
 				}
 
-				// The forbidden shape (still forbidden): a closed round with a
-				// LOCKED ride — its match is settled, so the settlement event
-				// has already carried the outcome; a locked ride in a closed
-				// round means the resolve's ride half never ran. Undecided
-				// (won_pending) rides in a closed round are the designed
-				// eventual-settlement intermediate state (000014).
+				// The forbidden shape: a closed round that still owns an
+				// unresolved (locked or undecided) ride. Both handlers run
+				// synchronously inside their publishers' post-commit
+				// publishes, so by the time both goroutines return, a
+				// committed close has settled everything its payload named.
 				var violations int
 				if err := pool.QueryRow(ctx, `
 					SELECT count(*)
 					FROM rides rd
 					JOIN matches m ON m.id = rd.match_id
-					WHERE m.round_id = $1 AND rd.state = 'locked'
+					WHERE m.round_id = $1 AND rd.state IN ('locked', 'won_pending')
 				`, roundID).Scan(&violations); err != nil {
 					t.Fatalf("count unresolved rides: %v", err)
 				}
@@ -669,7 +679,7 @@ func TestService_MatchResolveRaces(t *testing.T) {
 					t.Fatalf("read round status: %v", err)
 				}
 				if roundStatus == "closed" && violations > 0 {
-					t.Errorf("round closed with %d locked rides (the forbidden shape)", violations)
+					t.Errorf("round closed with %d unresolved rides (the third shape)", violations)
 				}
 			})
 		}

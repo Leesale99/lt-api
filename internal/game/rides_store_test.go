@@ -554,11 +554,14 @@ func TestRideStore_Update(t *testing.T) {
 	})
 }
 
-// guardedWrite runs UpdateGuardedTx on its own transaction — the store-level
-// equivalent of a ride command's write step (the idempotency claim lives one
-// level up, in the service). Errors roll the tx back and surface to the
-// caller's assertions.
-func guardedWrite(ctx context.Context, t *testing.T, rs *RideStore, ride Ride, destination int) (Ride, error) {
+// decisionWrite runs the ride command's write step on its own transaction —
+// the service shape without the idempotency claim (one level up): the
+// SchedulePort gates first (own round + destination when continuation), the
+// rides-row-only decision write second. ownMatchID is the ride's round
+// anchor — the ORIGINAL match before the domain command re-pointed
+// ride.MatchID for continuations. Errors roll the tx back and surface to
+// the caller's assertions.
+func decisionWrite(ctx context.Context, t *testing.T, svc *Service, ride Ride, ownMatchID, destinationMatchID int) (Ride, error) {
 	t.Helper()
 
 	tx, err := pool.Begin(ctx)
@@ -566,7 +569,18 @@ func guardedWrite(ctx context.Context, t *testing.T, rs *RideStore, ride Ride, d
 		t.Fatalf("begin: %v", err)
 	}
 
-	got, err := rs.UpdateGuardedTx(ctx, tx, ride, destination)
+	if err := svc.roundOpenTx(ctx, tx, ownMatchID); err != nil {
+		_ = tx.Rollback(context.Background())
+		return Ride{}, err
+	}
+	if destinationMatchID > 0 {
+		if err := svc.destinationOpenTx(ctx, tx, destinationMatchID); err != nil {
+			_ = tx.Rollback(context.Background())
+			return Ride{}, err
+		}
+	}
+
+	got, err := svc.Store.Rides.DecisionGuardedTx(ctx, tx, ride)
 	if err != nil {
 		_ = tx.Rollback(context.Background())
 		return Ride{}, err
@@ -579,25 +593,24 @@ func guardedWrite(ctx context.Context, t *testing.T, rs *RideStore, ride Ride, d
 	return got, nil
 }
 
-// TestRideStore_UpdateGuardedTx covers the DecisionPhase commands' guarded
-// write (Phase 04 TOCTOU sweep): one UPDATE whose WHERE re-checks every
-// fact the advisory pipeline relied on, so a concurrent round close or
-// match end cannot land between check and write. Two deliberate choices
-// the cases pin:
+// TestRideStore_DecisionGuardedTx covers the DecisionPhase commands'
+// guarded write (Phase 04 TOCTOU sweep) in its Phase C shape: the round
+// facts are the SchedulePort gates (run here through decisionWrite), the
+// rides-row-only UPDATE re-checks the row's own facts (state, version) at
+// the write instant. Three deliberate choices the cases pin:
 //
-//   - any 0-rows outcome is ErrRoundNotOpen, the round-refusal 409 the
-//     advisory path already answers — including a stale version, which
-//     plain Update reports as ErrEditConflict. A won_pending ride whose
-//     row moved was almost always moved by the round-close transaction
-//     (ADR-022 auto-unlock), so the round is the truthful client-facing
-//     reason; ErrEditConflict would name the wrong conflict.
+//   - a closed own round or a dead destination is the round-refusal 409 —
+//     the port gates answer it before the write runs;
+//   - a CAS lost to a concurrent ride command is ErrInvalidTransition,
+//     the invalid-state 409 (classifyDecisionRefusal names it);
 //   - a rides_state_gate P0001 stays ErrInvalidTransition, exactly like
 //     Update — the trigger remains the transition graph's DB authority.
-func TestRideStore_UpdateGuardedTx(t *testing.T) {
+func TestRideStore_DecisionGuardedTx(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	rs := &NewStore(pool).Rides
+	svc, _ := newTestService()
+	rs := svc.Store.Rides
 
 	t.Run("continuation re-points onto the destination under the guard", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
@@ -616,9 +629,9 @@ func TestRideStore_UpdateGuardedTx(t *testing.T) {
 		ride.MatchID = destination
 		ride.Streak++
 
-		got, err := guardedWrite(ctx, t, rs, ride, destination)
+		got, err := decisionWrite(ctx, t, svc, ride, closedMatch, destination)
 		if err != nil {
-			t.Fatalf("UpdateGuardedTx() = %v, want nil", err)
+			t.Fatalf("DecisionGuardedTx() = %v, want nil", err)
 		}
 		if got.Version != ride.Version+1 {
 			t.Errorf("version = %d, want %d", got.Version, ride.Version+1)
@@ -646,8 +659,8 @@ func TestRideStore_UpdateGuardedTx(t *testing.T) {
 
 		ride.State = RideBurned
 
-		if _, err := guardedWrite(ctx, t, rs, ride, 0); err != nil {
-			t.Fatalf("UpdateGuardedTx() = %v, want nil", err)
+		if _, err := decisionWrite(ctx, t, svc, ride, closedMatch, 0); err != nil {
+			t.Fatalf("DecisionGuardedTx() = %v, want nil", err)
 		}
 
 		persisted, err := rs.Get(ctx, ride.ID)
@@ -669,20 +682,20 @@ func TestRideStore_UpdateGuardedTx(t *testing.T) {
 
 		// Bump the version without moving state (a state-preserving
 		// rewrite is legal to the gate): the version predicate alone now
-		// refuses the guarded write, and classifyUpdateRefusal names the
-		// cause — the claimed pre-state no longer exists on the row, so
-		// the CAS lost: ErrInvalidTransition (the invalid-state 409,
+		// refuses the decision write, and classifyDecisionRefusal names
+		// the cause — the claimed pre-state no longer exists on the row,
+		// so the CAS lost: ErrInvalidTransition (the invalid-state 409,
 		// ADR-020), still not ErrEditConflict. The round-refusal 409 is
 		// reserved for an actually closed round, checked first.
-		if _, err := pool.Exec(ctx, `UPDATE rides SET bonus_acc = bonus_acc + 0.0001, version = version + 1 WHERE id = $1`, ride.ID); err != nil {
+		if _, err := pool.Exec(ctx, `UPDATE rides SET version = version + 1 WHERE id = $1`, ride.ID); err != nil {
 			t.Fatalf("bump version: %v", err)
 		}
 
 		ride.State = RideBurned
-		_, err := guardedWrite(ctx, t, rs, ride, 0)
+		_, err := decisionWrite(ctx, t, svc, ride, closedMatch, 0)
 
 		if !errors.Is(err, ErrInvalidTransition) {
-			t.Fatalf("UpdateGuardedTx() = %v, want ErrInvalidTransition", err)
+			t.Fatalf("DecisionGuardedTx() = %v, want ErrInvalidTransition", err)
 		}
 	})
 
@@ -693,8 +706,8 @@ func TestRideStore_UpdateGuardedTx(t *testing.T) {
 
 		first := ride
 		first.State = RideBurned
-		if _, err := guardedWrite(ctx, t, rs, first, 0); err != nil {
-			t.Fatalf("first UpdateGuardedTx() = %v, want nil", err)
+		if _, err := decisionWrite(ctx, t, svc, first, closedMatch, 0); err != nil {
+			t.Fatalf("first DecisionGuardedTx() = %v, want nil", err)
 		}
 
 		// A second player command (or a retry) holding the pre-decision
@@ -703,10 +716,10 @@ func TestRideStore_UpdateGuardedTx(t *testing.T) {
 		// round is still open, so classifyUpdateRefusal reads the moved
 		// row and names the CAS loss: ErrInvalidTransition, the same
 		// answer the domain read side gives this race.
-		_, err := guardedWrite(ctx, t, rs, ride, 0)
+		_, err := decisionWrite(ctx, t, svc, ride, closedMatch, 0)
 
 		if !errors.Is(err, ErrInvalidTransition) {
-			t.Fatalf("UpdateGuardedTx() = %v, want ErrInvalidTransition", err)
+			t.Fatalf("DecisionGuardedTx() = %v, want ErrInvalidTransition", err)
 		}
 	})
 
@@ -727,10 +740,10 @@ func TestRideStore_UpdateGuardedTx(t *testing.T) {
 		// version-checked UPDATE would write here, leaving a live decision
 		// inside a closed round — the exact defect the sweep fixes.
 		ride.State = RideBurned
-		_, err := guardedWrite(ctx, t, rs, ride, 0)
+		_, err := decisionWrite(ctx, t, svc, ride, closedMatch, 0)
 
 		if !errors.Is(err, ErrRoundNotOpen) {
-			t.Fatalf("UpdateGuardedTx() = %v, want ErrRoundNotOpen", err)
+			t.Fatalf("DecisionGuardedTx() = %v, want ErrRoundNotOpen", err)
 		}
 
 		persisted, err := rs.Get(ctx, ride.ID)
@@ -774,10 +787,10 @@ func TestRideStore_UpdateGuardedTx(t *testing.T) {
 		ride.State = RideLocked
 		ride.MatchID = destination
 		ride.Streak++
-		_, err := guardedWrite(ctx, t, rs, ride, destination)
+		_, err := decisionWrite(ctx, t, svc, ride, closedMatch, destination)
 
 		if !errors.Is(err, ErrRoundNotOpen) {
-			t.Fatalf("UpdateGuardedTx() = %v, want ErrRoundNotOpen", err)
+			t.Fatalf("DecisionGuardedTx() = %v, want ErrRoundNotOpen", err)
 		}
 
 		persisted, err := rs.Get(ctx, ride.ID)
@@ -799,12 +812,12 @@ func TestRideStore_UpdateGuardedTx(t *testing.T) {
 		ride.MatchID = 424242
 		ride.Streak++
 
-		_, err := guardedWrite(ctx, t, rs, ride, 424242)
+		_, err := decisionWrite(ctx, t, svc, ride, closedMatch, 424242)
 
 		// The destination EXISTS fails first, so the row is never written
 		// and the FK never fires: one refusal shape for every stale pick.
 		if !errors.Is(err, ErrRoundNotOpen) {
-			t.Fatalf("UpdateGuardedTx() = %v, want ErrRoundNotOpen", err)
+			t.Fatalf("DecisionGuardedTx() = %v, want ErrRoundNotOpen", err)
 		}
 	})
 
@@ -817,10 +830,10 @@ func TestRideStore_UpdateGuardedTx(t *testing.T) {
 		// the transition graph (ADR-016): the DB gate refuses and the
 		// mapping stays ErrInvalidTransition, as with Update.
 		ride.State = RideLost
-		_, err := guardedWrite(ctx, t, rs, ride, 0)
+		_, err := decisionWrite(ctx, t, svc, ride, closedMatch, 0)
 
 		if !errors.Is(err, ErrInvalidTransition) {
-			t.Fatalf("UpdateGuardedTx() = %v, want ErrInvalidTransition", err)
+			t.Fatalf("DecisionGuardedTx() = %v, want ErrInvalidTransition", err)
 		}
 	})
 }

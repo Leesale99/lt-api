@@ -14,8 +14,8 @@ import (
 	"lt-api.aleksrdvn.com/internal/config"
 	"lt-api.aleksrdvn.com/internal/eventbus"
 	"lt-api.aleksrdvn.com/internal/game"
-	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/identity"
+	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/logging"
 	"lt-api.aleksrdvn.com/internal/mailer"
 	"lt-api.aleksrdvn.com/internal/schedule"
@@ -92,6 +92,17 @@ func main() {
 	ledgerStore := ledger.NewStore()
 	gameService := game.NewService(gameStore, scheduleStore, ledgerStore)
 	identityStore := identity.NewStore(pool)
+
+	// The event seam (ADR-027): schedule publishes post-commit, game
+	// settles from the payloads. *schedule.Store satisfies game's
+	// SchedulePort structurally, so the wiring above passes the concrete
+	// store as the port.
+	eventbus.Subscribe(eventBus, func(ctx context.Context, event schedule.MatchResultRecorded) error {
+		return gameService.OnMatchResultRecorded(ctx, event)
+	})
+	eventbus.Subscribe(eventBus, func(ctx context.Context, event schedule.RoundCompleted) error {
+		return gameService.OnRoundCompleted(ctx, event)
+	})
 
 	app := &api.Application{
 		Version:        cfg.Version,

@@ -7,21 +7,23 @@ package game
 //
 // The three encodings:
 //
-//  1. schedule.Match.Winner (internal/schedule/matches.go) — the Go derivation.
-//  2. The CASE in RideStore.UpdateAllForMatchTx (internal/game/rides.go) —
-//     the SQL computation.
+//  1. schedule.Match.Winner (internal/schedule/matches.go) — the publisher's
+//     derivation, carried in the event payload.
+//  2. The payload→destination derivation in game's settlement handler
+//     (internal/game/events.go, settleRideFromResult) — the consumer's copy.
 //  3. Check 5 of rides_block_illegal_transition
 //     (migrations/000011_add_rides_result_agreement_gate.up.sql) — the SQL
 //     enforcement home: the database is where the invariant lives, so no
 //     writer (app, script, future refactor) can disagree with the scores.
 //
 // Both tests below read the same scoreStateRule vectors: the unit side
-// asserts the Winner→state mapping, the DB side runs the set-based
-// resolution (CASE computes, the gate agrees silently) and then probes the
-// gate's refusals directly — the destination the fixture names must be
-// admitted, its opposite refused. A rule change must fail exactly one site
-// first; the change-detector comments at the three sites lead from any
-// failure to the other two within a minute.
+// asserts the Winner→state mapping, the DB side runs the settlement
+// handler against a planted closed match (the payload derives, the gate
+// agrees silently) and then probes the gate's refusals directly — the
+// destination the fixture names must be admitted, its opposite refused. A
+// rule change must fail exactly one site first; the change-detector
+// comments at the three sites lead from any failure to the other two
+// within a minute.
 
 import (
 	"context"
@@ -102,9 +104,10 @@ func TestWinnerScoreStateRule(t *testing.T) {
 }
 
 // TestScoreStateRuleDB runs the fixture against the database: per vector,
-// the set-based resolution must land both rides on the states the fixture
-// names, and the gate must refuse the contradicting destination for each
-// side (P0001 — the code the store maps to ErrInvalidTransition).
+// the settlement handler must land both rides on the states the fixture
+// names (from the payload, through the DB gate), and the gate must refuse
+// the contradicting destination for each side (P0001 — the code the store
+// maps to ErrInvalidTransition).
 func TestScoreStateRuleDB(t *testing.T) {
 	requireDB(t)
 
@@ -126,24 +129,34 @@ func TestScoreStateRuleDB(t *testing.T) {
 			homeRide := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
 			awayRide := plantRide(ctx, t, matchID, awayID, RideLocked, decimal.Zero, 0)
 
-			tx, err := pool.Begin(ctx)
-			if err != nil {
-				t.Fatalf("begin: %v", err)
+			// The settlement, driven by the payload the publisher would
+			// send (the winner derived the way schedule.Match.Winner does).
+			event := schedule.MatchResultRecorded{
+				EventID:      "evt-" + tt.name,
+				MatchID:      matchID,
+				RoundID:      roundID,
+				SeasonID:     seasonID,
+				HomeTeamID:   homeID,
+				AwayTeamID:   awayID,
+				Score:        resolveScore(tt.home, tt.away),
+				Odds:         schedule.Odds{Home: 1.75, Away: 2.20},
+				WinnerTeamID: winnerOf(tt.home, tt.away, homeID, awayID),
 			}
-			results, err := NewStore(pool).Rides.UpdateAllForMatchTx(ctx, tx, matchID)
-			if err != nil {
-				t.Fatalf("UpdateAllForMatchTx: %v", err)
-			}
-			if err := tx.Commit(ctx); err != nil {
-				t.Fatalf("commit: %v", err)
+			svc, _ := newTestService()
+			if err := svc.OnMatchResultRecorded(ctx, event); err != nil {
+				t.Fatalf("OnMatchResultRecorded: %v", err)
 			}
 
-			if len(results) != 2 {
-				t.Fatalf("UpdateAllForMatchTx returned %d results, want 2", len(results))
-			}
-			states := make(map[int]RideState, len(results))
-			for _, r := range results {
-				states[r.ID] = r.State
+			states := make(map[int]RideState, 2)
+			for _, ride := range []Ride{homeRide, awayRide} {
+				got, err := svc.Store.Rides.Get(ctx, ride.ID)
+				if err != nil {
+					t.Fatalf("Get(%d): %v", ride.ID, err)
+				}
+				states[got.ID] = got.State
+				if got.Version != 2 {
+					t.Errorf("ride %d version = %d, want 2 (one transition)", got.ID, got.Version)
+				}
 			}
 			if states[homeRide.ID] != tt.wantHome {
 				t.Errorf("home ride: landed %s, want %s", states[homeRide.ID], tt.wantHome)
@@ -158,7 +171,7 @@ func TestScoreStateRuleDB(t *testing.T) {
 			probeHome := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
 			probeAway := plantRide(ctx, t, matchID, awayID, RideLocked, decimal.Zero, 0)
 
-			_, err = pool.Exec(ctx, `UPDATE rides SET state = $2 WHERE id = $1`, probeHome.ID, opposite(tt.wantHome))
+			_, err := pool.Exec(ctx, `UPDATE rides SET state = $2 WHERE id = $1`, probeHome.ID, opposite(tt.wantHome))
 			assertCode(t, constraintCase{name: tt.name + " (home side, contradicting destination refused)", wantCode: "P0001"}, err)
 
 			_, err = pool.Exec(ctx, `UPDATE rides SET state = $2 WHERE id = $1`, probeAway.ID, opposite(tt.wantAway))

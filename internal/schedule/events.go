@@ -44,8 +44,8 @@ type MatchResultRecorded struct {
 	HomeTeamID   int // which side's odds/teams the ride outcomes hang off
 	AwayTeamID   int
 	Score        Score
-	Odds         Odds  // fat payload: bonus accrual needs the ride's team odds
-	WinnerTeamID *int  // nil = draw: every locked ride lands lost
+	Odds         Odds // fat payload: bonus accrual needs the ride's team odds
+	WinnerTeamID *int // nil = draw: every locked ride lands lost
 	EndedAt      time.Time
 }
 

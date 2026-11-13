@@ -121,7 +121,7 @@ func ValidateNewMatch(v *validator.Validator, match Match, now time.Time) {
 // field presence and score arithmetic, the checks a handler runs on whatever
 // bytes arrived. Domain-legality rules are not here — the one rule the
 // resolve flow owns, "ended_at must be in the past", is time policy and
-// lives in Service.MatchResolve (ADR-026) so every caller passes it.
+// lives in Service.ResolveMatch (ADR-026) so every caller passes it.
 func ValidateResolveMatch(v *validator.Validator, match Match) {
 	v.Check(match.EndedAt != nil, "ended_at", "must be provided")
 	v.Check(match.ID > 0, "id", "must be provided")
@@ -472,7 +472,7 @@ func (s *MatchStore) ResolveTx(ctx context.Context, tx pgx.Tx, matchID int, scor
 			SELECT 1
 			FROM rounds r
 			WHERE r.id = matches.round_id AND r.status = 'open')
-		RETURNING created_at, starts_at, season_id, round_id, status, home_odds, away_odds, version
+		RETURNING created_at, starts_at, season_id, round_id, status, home_team_id, away_team_id, home_odds, away_odds, version
 	`
 	args := []any{score.Home, score.Away, endedAt, matchID, version}
 
@@ -488,6 +488,8 @@ func (s *MatchStore) ResolveTx(ctx context.Context, tx pgx.Tx, matchID int, scor
 		&match.SeasonID,
 		&match.RoundID,
 		&match.Status,
+		&match.HomeTeamID,
+		&match.AwayTeamID,
 		&match.Odds.Home,
 		&match.Odds.Away,
 		&match.Version,

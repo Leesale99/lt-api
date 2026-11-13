@@ -1,11 +1,12 @@
 package game
 
-// TODO(Phase C): rides.go SQL joins matches/rounds (schedule's tables) in
-// several places — the guarded insert/update round-status guards, the
-// classify*Refusal reads and UpdateAllForMatchTx's score join. These are
-// the temporary cross-context reads of the Phase B split, removed once
-// ride-outcome splits at the MatchResultRecorded event seam (or the round
-// status reaches game through a narrow schedule operation).
+// rides.go persists the ride rows and ONLY the ride rows: since the Phase C
+// split every schedule fact reaches game through the SchedulePort (round
+// guards) or the event payloads (results), so there is no SQL left here
+// touching matches or rounds. The money columns (tokens_locked, bonus_acc)
+// are the Ledger's — this file writes state, continuation and streak; the
+// birth INSERT is the one exception (a ride is born carrying its locked
+// tokens — see the insert statements).
 
 import (
 	"context"
@@ -69,29 +70,36 @@ type RideStore struct {
 	pool *pgxpool.Pool
 }
 
+// Insert admits locked only: rides are created locked (ADR-019), and
+// since 000012 the rides_state_insert_gate refuses every other state —
+// all other states must be reached through a gated UPDATE. The domain's
+// ride.Create (the only production caller) stamps RideLocked before
+// this runs.
 func (s *RideStore) Insert(ctx context.Context, ride Ride) (Ride, error) {
-	// Insert admits locked only: rides are created locked (ADR-019), and
-	// since 000012 the rides_state_insert_gate refuses every other state —
-	// all other states must be reached through a gated UPDATE. The domain's
-	// ride.Create (the only production caller) stamps RideLocked before
-	// this runs.
-	query := `
+	return insert(ctx, s.pool, ride)
+}
+
+// insertSQL is the ride's birth statement: one row, born locked with its
+// initial money columns (tokens_locked, base_at_lock, bonus_acc) — the
+// rides_tokens_locked_check admits no zero-token birth (ADR-019: no
+// DEFAULT, the initial-state contract is ride.Create's), so the lock and
+// the row are one statement. The round-open fact that used to live in this
+// statement's SELECT (the FOR SHARE guard) is the SchedulePort's
+// RoundOpenTx gate now: the service pins the round row inside the command
+// transaction before this INSERT runs.
+const insertSQL = `
 		INSERT INTO rides (player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, created_at, version
 	`
-	args := []any{
-		ride.PlayerID,
-		ride.TeamID,
-		ride.MatchID,
-		ride.State,
-		ride.TokensLocked,
-		ride.BaseAtLock,
-		ride.Acc,
-		ride.Streak,
-	}
 
-	err := s.pool.QueryRow(ctx, query, args...).Scan(&ride.ID, &ride.CreatedAt, &ride.Version)
+// insert runs the birth statement on any querier — the pool (Insert, the
+// test-planter path) or the caller's transaction (InsertTx, the idempotent
+// command path).
+func insert(ctx context.Context, q store.Querier, ride Ride) (Ride, error) {
+	args := []any{ride.PlayerID, ride.TeamID, ride.MatchID, ride.State, ride.TokensLocked, ride.BaseAtLock, ride.Acc, ride.Streak}
+
+	err := q.QueryRow(ctx, insertSQL, args...).Scan(&ride.ID, &ride.CreatedAt, &ride.Version)
 	if err != nil {
 		switch {
 		case store.IsFKViolation(err):
@@ -111,95 +119,98 @@ func (s *RideStore) Insert(ctx context.Context, ride Ride) (Ride, error) {
 	return ride, nil
 }
 
-// guardedInsertSQL is RideCreate's guarded write (Phase 04 TOCTOU sweep,
-// ADR-024): an INSERT has no prior row, so there is no version column to
-// piggyback on — the guard moves onto the source SELECT, and the ride is
-// written only if its match's round is still open at the write instant.
-//
-// The SELECT takes FOR SHARE on the round row. Under READ COMMITTED a
-// statement's snapshot is taken once at its start, so a bare
-// INSERT ... SELECT would still let a concurrent close commit after that
-// snapshot and land a live ride inside a closed round — the exact defect
-// this sweep removes. The row lock makes the close's guarded flip on the
-// round row and this INSERT serialize in either order: if the close holds
-// the lock, this SELECT waits, then re-reads the newest committed row and
-// re-evaluates the WHERE (EvalPlanQual — the same mechanism
-// guardedUpdateSQL rides from the write side) and the flip to closed
-// rejects the insert with 0 rows. Create has exactly one contended fact
-// (round status), so "pins only one of three facts" does not apply.
-//
-// With the idempotency claim (ADR-024) the insert shares the command
-// transaction, so the SHARE lock is held until the claim tx commits — not
-// merely for the statement. The tx's other writes (the claim, the stored
-// response) touch only idempotency_keys, never rounds: the serialization
-// against the close stays exactly what the guard promises.
-const guardedInsertSQL = `
-		INSERT INTO rides (player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak)
-		SELECT $1, $2, $3, $4, $5, $6, $7, $8
-		FROM matches m
-		INNER JOIN rounds r ON r.id = m.round_id
-		WHERE m.id = $3 AND r.status = 'open'
-		FOR SHARE OF r
-		RETURNING id, created_at, version
-	`
-
-// InsertGuardedTx writes the created ride under the guardedInsertSQL guard,
-// on the caller's transaction — RideCreate is idempotent (ADR-024), so the
-// write shares the claim's transaction. The ride arrives post-Create —
-// state, acc and streak are the domain command's (ADR-019) — and the
-// round-open fact is re-checked in the same statement:
-//   - 0 rows is the race lost (the round closed under us) ->
-//     ErrRoundNotOpen, the round-refusal 409; the rowcount also covers an
-//     unknown match, which is classified with one follow-up read
-//   - unknown player/team still surface as the FK 23503 ->
-//     ErrRecordNotFound, same mapping as Insert
-func (s *RideStore) InsertGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride) (Ride, error) {
-	args := []any{ride.PlayerID, ride.TeamID, ride.MatchID, ride.State, ride.TokensLocked, ride.BaseAtLock, ride.Acc, ride.Streak}
-
-	err := tx.QueryRow(ctx, guardedInsertSQL, args...).Scan(&ride.ID, &ride.CreatedAt, &ride.Version)
-	if err != nil {
-		switch {
-		case errors.Is(err, pgx.ErrNoRows):
-			return Ride{}, s.classifyInsertRefusal(ctx, ride.MatchID)
-		case store.IsFKViolation(err):
-			return Ride{}, store.ErrRecordNotFound
-		default:
-			return Ride{}, err
-		}
-	}
-
-	return ride, nil
+// InsertTx writes the created ride on the caller's transaction —
+// RideCreate is idempotent (ADR-024), so the write shares the claim's
+// transaction. The ride arrives post-Create — state, acc and streak are
+// the domain command's (ADR-019) — and the ride's round-open fact was
+// pinned by the service through SchedulePort.RoundOpenTx BEFORE this runs
+// (the FOR SHARE lock is held until the command tx commits, the same
+// serialization the old in-statement guard provided):
+//   - unknown player/team surface as the FK 23503 -> ErrRecordNotFound,
+//     same mapping as Insert
+//   - a non-locked state is the 000012 insert gate -> ErrInvalidTransition
+func (s *RideStore) InsertTx(ctx context.Context, tx pgx.Tx, ride Ride) (Ride, error) {
+	return insert(ctx, tx, ride)
 }
 
-// classifyInsertRefusal distinguishes the two 0-row causes of the guarded
-// insert: an unknown match (ErrRecordNotFound, the FK mapping Insert gives)
-// and a round that is not open (ErrRoundNotOpen, the round-refusal 409).
-// Both facts are settled by the time this runs — the write already did not
-// happen — so this read classifies the refusal, it does not gate anything.
-// It deliberately reads on the pool beside the tx (per-statement snapshot):
-// the refusal already happened, the read only names the reason.
-func (s *RideStore) classifyInsertRefusal(ctx context.Context, matchID int) error {
-	query := `
-		SELECT r.status
-		FROM matches m
-		INNER JOIN rounds r ON r.id = m.round_id
-		WHERE m.id = $1
-	`
-	var status schedule.RoundStatus
-
-	err := s.pool.QueryRow(ctx, query, matchID).Scan(&status)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return store.ErrRecordNotFound
-	case err != nil:
-		return err
-	case status != schedule.RoundOpen:
-		return ErrRoundNotOpen
-	default:
-		// Unreachable through the gates (a round cannot re-open), but a
-		// refusal without a cause must not pass as success.
-		return fmt.Errorf("ride insert refused while match %d round open", matchID)
+// LockedForMatchTx reads the locked rides of one match, on the caller's
+// transaction — the settlement handlers' scan. The match id comes from the
+// event payload; no join: rides owns the match_id column (ADR-018).
+func (s *RideStore) LockedForMatchTx(ctx context.Context, tx pgx.Tx, matchID int) ([]Ride, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT id, player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak, created_at, version
+		FROM rides
+		WHERE match_id = $1 AND state = 'locked'
+		ORDER BY id
+	`, matchID)
+	if err != nil {
+		return nil, err
 	}
+	defer rows.Close()
+
+	rides := []Ride{}
+	for rows.Next() {
+		var ride Ride
+		if err := rows.Scan(
+			&ride.ID,
+			&ride.PlayerID,
+			&ride.TeamID,
+			&ride.MatchID,
+			&ride.State,
+			&ride.TokensLocked,
+			&ride.BaseAtLock,
+			&ride.Acc,
+			&ride.Streak,
+			&ride.CreatedAt,
+			&ride.Version,
+		); err != nil {
+			return nil, err
+		}
+		rides = append(rides, ride)
+	}
+	return rides, rows.Err()
+}
+
+// UndecidedForMatchesTx reads the undecided (won_pending) rides of the
+// given matches, on the caller's transaction — the round settlement's
+// sweep. The match ids come from the RoundCompleted payload; no join.
+func (s *RideStore) UndecidedForMatchesTx(ctx context.Context, tx pgx.Tx, matchIDs []int) ([]Ride, error) {
+	if len(matchIDs) == 0 {
+		return nil, nil
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT id, player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak, created_at, version
+		FROM rides
+		WHERE match_id = ANY($1) AND state = 'won_pending'
+		ORDER BY id
+	`, matchIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	rides := []Ride{}
+	for rows.Next() {
+		var ride Ride
+		if err := rows.Scan(
+			&ride.ID,
+			&ride.PlayerID,
+			&ride.TeamID,
+			&ride.MatchID,
+			&ride.State,
+			&ride.TokensLocked,
+			&ride.BaseAtLock,
+			&ride.Acc,
+			&ride.Streak,
+			&ride.CreatedAt,
+			&ride.Version,
+		); err != nil {
+			return nil, err
+		}
+		rides = append(rides, ride)
+	}
+	return rides, rows.Err()
 }
 
 func (s *RideStore) Get(ctx context.Context, id int) (Ride, error) {
@@ -314,93 +325,106 @@ func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID in
 	return rides, metadata, nil
 }
 
-type Result struct {
-	ID    int
-	State RideState
+// arrivalUpdateSQL is the settlement handlers' arrival write (Phase C,
+// behind the MatchResultRecorded/RoundCompleted events): a single-ride
+// state flip whose WHERE re-checks the contended facts at the write
+// instant — the ride's version and its from-state — so a concurrent writer
+// (a player decision that landed first, a settlement replay) turns the
+// second write into a 0-row no-op. No match join: the destination is
+// derived from the event payload, and rides_state_gate's result agreement
+// (000011, check 5) re-checks it against the committed match row on every
+// locked→result arrival — the DB stays the enforcement home.
+//
+// Money columns are deliberately absent from the SET clause: the release
+// of the accrued bonus (unlocked|lost arrivals) and the accrual (won
+// arrivals) are the Ledger's writes, ordered before/after this flip inside
+// the same transaction (rides_money_state_coupling (000013) couples the
+// unlocked|lost arrivals to zero acc, so the release must precede the
+// flip).
+const arrivalUpdateSQL = `
+		UPDATE rides
+		SET state = $2, version = version + 1
+		WHERE id = $1 AND version = $3 AND state = $4
+		RETURNING id, player_id, team_id, created_at, state, tokens_locked,
+			base_at_lock, bonus_acc, streak, version
+	`
+
+// ArriveTx writes one settlement arrival (from-state → to-state) on the
+// caller's transaction. 0 rows is classified after the fact
+// (classifyArrivalRefusal): a ride gone mid-tx is ErrRecordNotFound, a
+// moved row is ErrInvalidTransition — in the single-settlement world of
+// the claimed event, both are bug-shaped.
+func (s *RideStore) ArriveTx(ctx context.Context, tx pgx.Tx, rideID int, from, to RideState, claimedVersion int) (Ride, error) {
+	var ride Ride
+
+	err := tx.QueryRow(ctx, arrivalUpdateSQL, rideID, to, claimedVersion, from).Scan(
+		&ride.ID,
+		&ride.PlayerID,
+		&ride.TeamID,
+		&ride.CreatedAt,
+		&ride.State,
+		&ride.TokensLocked,
+		&ride.BaseAtLock,
+		&ride.Acc,
+		&ride.Streak,
+		&ride.Version,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Ride{}, s.classifyArrivalRefusal(ctx, rideID, claimedVersion)
+		case store.IsTriggerViolation(err):
+			// rides_state_gate (ADR-020): the DB refused the arrival — e.g.
+			// the result-agreement check on a locked→result arrival.
+			return Ride{}, ErrInvalidTransition
+		case store.IsCheckViolation(err, ridesMoneyStateCoupling):
+			return Ride{}, ErrInvalidTransition
+		default:
+			return Ride{}, err
+		}
+	}
+
+	return ride, nil
 }
 
-// UpdateAllForMatchTx is ResolveMatch's ride half: one set-based statement
-// moving every locked ride of the match to its score-derived state. The
-// destination is a function of (match scores, ride.team_id) — computed in
-// SQL from the source of truth (ADR-018), not shipped per-ride from Go: the
-// UPDATE rides the join to matches, so one statement is one pass over the
-// (match_id, state = 'locked') index range. A draw crowns no winner (the
-// rule Match.Winner encodes in Go), so the CASE's ELSE lands every ride of
-// a drawn match lost.
-//
-// It runs on the caller's transaction, AFTER MatchStore.ResolveTx has
-// written the scores: rides_state_gate's result-agreement check reads the
-// match row in this same tx and refuses (P0001 → ErrInvalidTransition) any
-// ride whose destination disagrees with the scores — the gate enforces what
-// the CASE merely computes. The state = 'locked' filter makes a
-// re-resolution a 0-row no-op, which is the idempotency half of
-// ResolveMatch's Phase 04 contract.
-// Score→state rule site 2 of 3 (the SQL computation): check 5 of
-// rides_state_gate (migrations/000011_add_rides_result_agreement_gate.up.sql)
-// is the enforcement home, Match.Winner (internal/schedule/matches.go) the
-// Go copy; all three are tied by the shared fixture in
-// internal/game/score_state_rule_test.go — change one, change all three.
-func (s *RideStore) UpdateAllForMatchTx(ctx context.Context, tx pgx.Tx, matchID int) ([]Result, error) {
-	query := `
-		UPDATE rides r
-		SET state = CASE
-			WHEN m.home_score > m.away_score AND r.team_id = m.home_team_id THEN 'won_pending'
-			WHEN m.home_score < m.away_score AND r.team_id = m.away_team_id THEN 'won_pending'
-			ELSE 'lost'
-		END,
-		version = r.version + 1
-		FROM matches m
-		WHERE m.id = $1 AND r.match_id = $1 AND r.state = 'locked'
-		RETURNING r.id, r.state
-	`
-	rows, err := tx.Query(ctx, query, matchID)
-	if err != nil {
-		return nil, err
+// classifyArrivalRefusal names the 0-row causes of ArriveTx: the ride gone
+// (ErrRecordNotFound) or the row moved since the snapshot (the CAS lost —
+// ErrInvalidTransition). Rides-only read: no cross-table facts are left to
+// name at this point — the round guard is the port's, checked before the
+// write; the arrival facts are state and version.
+func (s *RideStore) classifyArrivalRefusal(ctx context.Context, rideID, claimedVersion int) error {
+	var (
+		state   RideState
+		version int
+	)
+
+	err := s.pool.QueryRow(ctx, `SELECT state, version FROM rides WHERE id = $1`, rideID).Scan(&state, &version)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return store.ErrRecordNotFound
+	case err != nil:
+		return err
+	case version != claimedVersion:
+		return ErrInvalidTransition
+	default:
+		// A snapshot-before-commit read (same as classifyUpdateRefusal
+		// saw): a refusal without a cause must not pass as a named one.
+		return fmt.Errorf("ride arrival refused while ride %d at version %d", rideID, claimedVersion)
 	}
-
-	defer rows.Close()
-
-	var results []Result
-	for rows.Next() {
-		var result Result
-
-		err := rows.Scan(&result.ID, &result.State)
-		if err != nil {
-			return nil, err
-		}
-
-		results = append(results, result)
-	}
-
-	// Refusals surface here, not at Query: the statement fails while
-	// the rows are being streamed, so a gate refusal arrives via rows.Err.
-	if err := rows.Err(); err != nil {
-		switch {
-		case store.IsTriggerViolation(err):
-			// rides_state_gate result agreement: some ride's destination
-			// disagreed with the match's scores (ADR-020). The tx rolls back
-			// upstream — scores and rides together.
-			return nil, ErrInvalidTransition
-		case store.IsCheckViolation(err, ridesMoneyStateCoupling):
-			// rides_money_state_coupling (000013): the declarative check
-			// that took trigger check 4's job — unlocked|lost arrivals
-			// carry no acc. Same 409 surface the P0001 refusal produced.
-			return nil, ErrInvalidTransition
-		}
-		return nil, err
-	}
-
-	return results, nil
 }
 
 func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
+	// bonus_acc is deliberately absent from the SET clause: the money
+	// columns are the Ledger's since Phase C — this statement moves state,
+	// continuation and streak; the ledger moves money (and the money-state
+	// coupling still checks the row as a whole).
 	query := `
 		UPDATE rides
-		SET match_id = $1, state = $2, bonus_acc = $3, streak = $4, version = version + 1
-		WHERE id = $5 AND version = $6
+		SET match_id = $1, state = $2, streak = $3, version = version + 1
+		WHERE id = $4 AND version = $5
 		RETURNING id, player_id, team_id, version
 	`
-	args := []any{ride.MatchID, ride.State, ride.Acc, ride.Streak, ride.ID, ride.Version}
+	args := []any{ride.MatchID, ride.State, ride.Streak, ride.ID, ride.Version}
 
 	err := s.pool.QueryRow(ctx, query, args...).Scan(
 		&ride.ID,
@@ -439,63 +463,56 @@ func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
 // trigger whenever the constraint can express the rule. The store maps it
 // by name, not by bare SQLSTATE: the rides table carries five other
 // CHECKs that must keep falling through unhandled. Change-detector: the
-// domain copies live in ride.Unlock/ride.Lost and the persistence copy in
-// rideAutoUnlockSQL (internal/schedule/rounds.go); the DB probe is
+// domain copies live in ride.Unlock/ride.Lost, the intent copies in the
+// Ledger (ReleaseBonus before every unlocked|lost arrival — the player
+// command and both settlement handlers); the DB probe is
 // TestRideMoneyStateCoupling (internal/game/constraints_test.go).
 const ridesMoneyStateCoupling = "rides_money_state_coupling"
 
-// guardedUpdateSQL is the ride commands' guarded write (Phase 04, ADR-024):
-// the full-column shape of Update plus the contended facts in the WHERE, so
-// check and write are one statement under READ COMMITTED:
+// decisionUpdateSQL is the ride commands' guarded decision write (Phase 04,
+// ADR-024): the contended facts of the RIDE ROW in the WHERE, so check and
+// write are one statement under READ COMMITTED:
 //   - state = 'won_pending' — Lock/Burn/Unlock's only source state (ADR-016)
-//   - the ride's own round is still open — cross-row (rides -> matches ->
-//     rounds), not the version column alone
-//   - for continuations ($7 = destinationMatchID > 0): destination match
-//     un-ended, its round not closed — the predicate NextForTeam filters on
+//   - the version the command read (the CAS against a concurrent ride
+//     command)
 //
-// A blocked UPDATE re-reads the newest committed row when the lock frees and
-// re-evaluates this WHERE (EvalPlanQual — the round-close auto-unlock rides
-// the same mechanism from the other side). 0 rows is the race lost, not a bug.
-const guardedUpdateSQL = `
+// The ROUND facts that used to be two EXISTS predicates here (own round
+// still open; destination live for continuations) are the SchedulePort's
+// gates now (RoundOpenTx / DestinationOpenTx): schedule's own FOR SHARE
+// statements run inside the command transaction BEFORE this write, which
+// gives the same write-instant serialization the in-statement EXISTS gave —
+// the port's lock-taking re-reads the newest committed rows after any
+// concurrent close/resolve commits, and the write runs only if the gates
+// passed. The rides row alone is touched by this statement.
+//
+// Money columns are absent from the SET clause since the ledger seam: the
+// state machine moves state, continuation and streak; the ledger moves
+// money (ReleaseBonus runs before the unlocked arrival, in the same tx).
+// rides_money_state_coupling (000013) still couples the arrivals to zero
+// acc at the row — on whatever the ledger wrote.
+const decisionUpdateSQL = `
 		UPDATE rides
-		SET match_id = $1, state = $2, bonus_acc = $3, streak = $4, version = version + 1
-		WHERE id = $5 AND version = $6
-			AND state = 'won_pending'
-			AND EXISTS (
-				SELECT 1
-				FROM matches om
-				INNER JOIN rounds o ON o.id = om.round_id
-				WHERE om.id = rides.match_id AND o.status = 'open'
-			)
-			AND (
-				$7 = 0
-				OR EXISTS (
-					SELECT 1
-					FROM matches nm
-					INNER JOIN rounds n ON n.id = nm.round_id
-					WHERE nm.id = $7 AND nm.ended_at IS NULL AND n.status <> 'closed'
-				)
-			)
+		SET match_id = $1, state = $2, streak = $3, version = version + 1
+		WHERE id = $4 AND version = $5 AND state = 'won_pending'
 		RETURNING id, player_id, team_id, created_at, state, tokens_locked,
 			base_at_lock, bonus_acc, streak, version
 	`
 
-// UpdateGuardedTx writes a ride decision (Lock, Burn, Unlock) under the
-// guardedUpdateSQL guard, on the caller's transaction — every ride command
+// DecisionGuardedTx writes a ride decision (Lock, Burn, Unlock) under the
+// decisionUpdateSQL guard, on the caller's transaction — every ride command
 // is idempotent (ADR-024), so the write shares the claim's transaction:
-//   - the ride arrives post-mutation; the WHERE re-verifies pre-mutation facts
-//   - destinationMatchID is the continuation's match, or 0 for Burn/Unlock
-//   - 0 rows is a refusal with more than one cause, so it is classified
-//     after the fact (classifyUpdateRefusal): a closed own round answers
-//     ErrRoundNotOpen (the round-refusal 409), a CAS lost to a concurrent
-//     ride command answers ErrInvalidTransition (ADR-020), a destination
-//     stopped between the pick and the write answers ErrRoundNotOpen;
-//     rides_state_gate P0001 and rides_money_state_coupling 23514 ->
-//     ErrInvalidTransition; destination deleted mid-flight ->
-//     ErrRecordNotFound
-func (s *RideStore) UpdateGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride, destinationMatchID int) (Ride, error) {
-	err := tx.QueryRow(ctx, guardedUpdateSQL,
-		ride.MatchID, ride.State, ride.Acc, ride.Streak, ride.ID, ride.Version, destinationMatchID,
+//   - the ride arrives post-mutation (Lock already re-pointed MatchID and
+//     bumped the streak); the WHERE re-verifies the pre-mutation facts
+//   - the round/destination gates are the service's, run before this call
+//   - 0 rows is the CAS lost to a concurrent ride command (the claimed
+//     pre-state no longer exists on the row) — classified after the fact
+//     by classifyDecisionRefusal; rides_state_gate P0001 and
+//     rides_money_state_coupling 23514 -> ErrInvalidTransition; a
+//     destination deleted between the port gate and this write surfaces as
+//     the FK 23503 -> ErrRecordNotFound
+func (s *RideStore) DecisionGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride) (Ride, error) {
+	err := tx.QueryRow(ctx, decisionUpdateSQL,
+		ride.MatchID, ride.State, ride.Streak, ride.ID, ride.Version,
 	).Scan(
 		&ride.ID,
 		&ride.PlayerID,
@@ -511,7 +528,7 @@ func (s *RideStore) UpdateGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride, d
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Ride{}, s.classifyUpdateRefusal(ctx, ride.ID, ride.Version, destinationMatchID)
+			return Ride{}, s.classifyDecisionRefusal(ctx, ride.ID, ride.Version)
 		case store.IsTriggerViolation(err):
 			return Ride{}, ErrInvalidTransition
 		case store.IsCheckViolation(err, ridesMoneyStateCoupling):
@@ -520,8 +537,9 @@ func (s *RideStore) UpdateGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride, d
 			// carry no acc. Same 409 surface the P0001 refusal produced.
 			return Ride{}, ErrInvalidTransition
 		case store.IsFKViolation(err):
-			// The destination match was deleted between NextForTeam's pick
-			// and this write — same parent-gone mapping as Insert.
+			// The destination match was deleted between the port's
+			// destination gate and this write — same parent-gone mapping as
+			// Insert.
 			return Ride{}, store.ErrRecordNotFound
 		default:
 			return Ride{}, err
@@ -531,35 +549,24 @@ func (s *RideStore) UpdateGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride, d
 	return ride, nil
 }
 
-// classifyUpdateRefusal distinguishes the 0-row causes of the guarded
-// update: the CAS lost to a concurrent ride command (ErrInvalidTransition,
-// the invalid-state 409 — the claimed pre-state no longer exists on the
-// row) and the round-refusal (ErrRoundNotOpen — the ride's own round
-// closed, or the continuation destination's round stopped accepting).
-// The round check comes first on purpose: the close's auto-unlock both
-// bumps the version and closes the round, so the close-wins interleaving
-// must answer the round-refusal, not read as a decision race. Both facts
-// are settled by the time this runs — the write already did not happen —
-// so this read classifies the refusal, it does not gate anything. It
-// deliberately reads on the pool beside the tx (per-statement snapshot):
-// the refusal already happened, the read only names the reason, and it may
-// legally see a snapshot from before the winner's commit — the default
-// branch catches that no-cause read instead of passing it as a named one.
-func (s *RideStore) classifyUpdateRefusal(ctx context.Context, rideID, claimedVersion, destinationMatchID int) error {
-	query := `
-		SELECT r.state, r.version, o.status
-		FROM rides r
-		INNER JOIN matches m ON m.id = r.match_id
-		INNER JOIN rounds o ON o.id = m.round_id
-		WHERE r.id = $1
-	`
+// classifyDecisionRefusal names the 0-row causes of the decision write:
+// the ride gone mid-flight (ErrRecordNotFound, the parent-gone mapping)
+// and the CAS lost to a concurrent ride command (ErrInvalidTransition,
+// the invalid-state 409 — the claimed won_pending/version pre-state no
+// longer exists on the row). Rides-only read: the round facts were the
+// port's gates, checked before the write, so a refusal here cannot be the
+// round's. The read runs on the pool beside the tx (per-statement
+// snapshot): the refusal already happened, the read only names the reason,
+// and it may legally see a snapshot from before the concurrent commit —
+// the default branch catches that no-cause read instead of passing it as
+// a named one.
+func (s *RideStore) classifyDecisionRefusal(ctx context.Context, rideID, claimedVersion int) error {
 	var (
 		state   RideState
 		version int
-		status  schedule.RoundStatus
 	)
 
-	err := s.pool.QueryRow(ctx, query, rideID).Scan(&state, &version, &status)
+	err := s.pool.QueryRow(ctx, `SELECT state, version FROM rides WHERE id = $1`, rideID).Scan(&state, &version)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		// The ride itself is gone mid-flight: same parent-gone mapping
@@ -567,26 +574,18 @@ func (s *RideStore) classifyUpdateRefusal(ctx context.Context, rideID, claimedVe
 		return store.ErrRecordNotFound
 	case err != nil:
 		return err
-	case status != schedule.RoundOpen:
-		return ErrRoundNotOpen
 	case version != claimedVersion || state != RideWonPending:
 		// The CAS lost: a concurrent ride command moved the row — the
 		// caller's won_pending claim no longer exists on it. The state
 		// half is belt-and-braces (every ride command bumps the version),
 		// but a state flip without a version bump is a defect either way.
 		return ErrInvalidTransition
-	case destinationMatchID > 0:
-		// The only remaining predicate is the destination guard: the
-		// continuation's match ended or its round closed between
-		// NextForTeam's pick and the write — a round-refusal on the
-		// destination, same 409 shape.
-		return ErrRoundNotOpen
 	default:
-		// A 0-row write with destination 0 and every checked predicate
-		// passing: only reachable when this read saw a snapshot from
-		// before the concurrent commit (see above). A refusal without
-		// a cause must not pass as a named one.
-		return fmt.Errorf("ride update refused while ride %d round open at version %d", rideID, claimedVersion)
+		// A 0-row write with every checked predicate passing on this
+		// read: only reachable when the read saw a snapshot from before
+		// the concurrent commit (see above). A refusal without a cause
+		// must not pass as a named one.
+		return fmt.Errorf("ride decision refused while ride %d at version %d", rideID, claimedVersion)
 	}
 }
 
@@ -713,11 +712,17 @@ func (r *Ride) Unlock(phase schedule.RoundPhase) error {
 // before changing this constant.
 var streakRate = decimal.NewFromFloat(0.20)
 
-func calculateBonus(matchOdds, tokensLocked, acc decimal.Decimal, streak int) decimal.Decimal {
+// bonusDelta is the accrued amount of one won match: the increment the
+// Ledger's AccrueBonus applies (the settlement handler's input). Kept
+// separate from calculateBonus so the accrual total and its delta share
+// one formula.
+func bonusDelta(matchOdds, tokensLocked decimal.Decimal, streak int) decimal.Decimal {
 	s := decimal.NewFromInt(int64(streak))
 	one := decimal.NewFromInt(1)
 
-	accDelta := tokensLocked.Mul(matchOdds.Sub(one).Mul(s.Mul(streakRate).Add(one)))
+	return tokensLocked.Mul(matchOdds.Sub(one).Mul(s.Mul(streakRate).Add(one)))
+}
 
-	return acc.Add(accDelta)
+func calculateBonus(matchOdds, tokensLocked, acc decimal.Decimal, streak int) decimal.Decimal {
+	return acc.Add(bonusDelta(matchOdds, tokensLocked, streak))
 }

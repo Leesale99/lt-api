@@ -9,6 +9,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"lt-api.aleksrdvn.com/internal/idempotency"
 	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/schedule"
@@ -18,11 +20,6 @@ import (
 var (
 	ErrRoundNotOpen = errors.New("round is not open")
 	ErrNoNextMatch  = errors.New("team has no upcoming match")
-	// ErrEndedAtInFuture reports a resolve whose ended_at lies at or after
-	// the current time. This is time policy, not request shape: it lives at
-	// the service door (ADR-026) so every MatchResolve caller — not only
-	// the HTTP handler — passes the same rule.
-	ErrEndedAtInFuture = errors.New("ended_at must be in the past")
 	// ErrInvalidRoundPhase rejects a ride command issued in the wrong round
 	// phase (e.g. Burn during MatchPhase). Distinct from ErrInvalidTransition
 	// so handlers can map the two to different client-facing errors. The
@@ -32,26 +29,61 @@ var (
 	ErrInvalidRoundPhase = errors.New("command not allowed in this round phase")
 )
 
+// (ErrEndedAtInFuture moved to schedule in Phase C, with the resolve
+// script it belongs to — the api maps it to the same 422 from there.)
+
 // Service is the ride domain's entry point. It owns the game context's
-// stores, receives the schedule store for the calendar lookups its
-// operations need (the phase window behind every ride command and the
-// next-match pick behind RideLock — the guarded score write left with the
-// resolve script in Phase C), and the Ledger for every money mutation
-// (game sends intents; the ledger owns the writes — phase-05/06).
+// stores, consumes the schedule context through the SchedulePort (the
+// calendar facts its commands need: phase window, round-open guards,
+// next-match pick — the resolve score write is schedule's script since
+// Phase C), and the Ledger for every money mutation (game sends intents;
+// the ledger owns the writes — phase-05/06). The event handlers settle
+// rides from schedule's MatchResultRecorded/RoundCompleted payloads.
 // game → schedule and game → ledger are the only legal import directions
 // (ADR-028).
 type Service struct {
 	Store    *Store
-	Schedule *schedule.Store
+	Schedule SchedulePort
 	Ledger   ledger.Ledger
 }
 
-func NewService(store *Store, scheduleStore *schedule.Store, led ledger.Ledger) *Service {
+func NewService(store *Store, sched SchedulePort, led ledger.Ledger) *Service {
 	return &Service{
 		Store:    store,
-		Schedule: scheduleStore,
+		Schedule: sched,
 		Ledger:   led,
 	}
+}
+
+// roundOpenTx pins the ride's own round OPEN at the write instant, inside
+// the command's transaction, through the port (the FOR SHARE gate). The
+// error mapping is the Phase 04 contract: unknown match →
+// ErrRecordNotFound, found-but-not-open → ErrRoundNotOpen (the
+// round-refusal 409).
+func (s *Service) roundOpenTx(ctx context.Context, tx pgx.Tx, matchID int) error {
+	status, err := s.Schedule.RoundOpenTx(ctx, tx, matchID)
+	switch {
+	case errors.Is(err, store.ErrRecordNotFound):
+		return store.ErrRecordNotFound
+	case err != nil:
+		return err
+	case status != schedule.RoundOpen:
+		return ErrRoundNotOpen
+	default:
+		return nil
+	}
+}
+
+// destinationOpenTx pins a continuation destination LIVE at the write
+// instant, through the port. Every refusal cause (unknown, ended, round
+// closed) is the round-refusal 409 — the Phase 04 contract for a stale
+// pick, including the unknown-destination case (no FK hit needed).
+func (s *Service) destinationOpenTx(ctx context.Context, tx pgx.Tx, matchID int) error {
+	err := s.Schedule.DestinationOpenTx(ctx, tx, matchID)
+	if errors.Is(err, store.ErrRecordNotFound) {
+		return ErrRoundNotOpen
+	}
+	return err
 }
 
 // RideMarshal is the presentation callback a ride command hands its result
@@ -73,7 +105,7 @@ func rideResponse(ride Ride, marshal RideMarshal) (idempotency.IdempotentRespons
 }
 
 func (s *Service) RidePhase(ctx context.Context, ride Ride) (schedule.RoundPhase, error) {
-	status, firstStartsAt, lastEndedAt, err := s.Schedule.Matches.PhaseForMatch(ctx, ride.MatchID)
+	status, firstStartsAt, lastEndedAt, err := s.Schedule.PhaseForMatch(ctx, ride.MatchID)
 	if err != nil {
 		return "", err
 	}
@@ -91,13 +123,15 @@ func (s *Service) RidePhase(ctx context.Context, ride Ride) (schedule.RoundPhase
 // only (ADR-019: the initial-state contract is ride.Create's — caller-supplied
 // state/acc/streak is discarded). The RidePhase read is the phase gate; it is
 // advisory like every other ride-command read (ADR-024) — the round-status
-// fact is re-checked at the write instant by InsertGuardedTx, 0 rows being
-// the race lost (ErrRoundNotOpen, the round-refusal 409).
+// fact is re-checked at the write instant by the port's RoundOpenTx gate,
+// whose FOR SHARE on the round row serializes the command against a
+// concurrent close (ErrRoundNotOpen, the round-refusal 409, is the race
+// lost).
 //
 // Every ride command is idempotent (ADR-024), so create executes in the
-// RideLock shape (claim-first, one tx): the key claim, the guarded insert
-// and the stored response share one transaction — any failure rolls the
-// claim back (failures are never cached), and a duplicate replays the
+// RideLock shape (claim-first, one tx): the key claim, the round gate, the
+// insert and the stored response share one transaction — any failure rolls
+// the claim back (failures are never cached), and a duplicate replays the
 // stored response byte-identical instead of creating a second ride.
 // The handler validates the ride before the call, so a 422 never claims.
 func (s *Service) RideCreate(ctx context.Context, ride Ride, token idempotency.IdempotencyToken, marshal RideMarshal) (idempotency.IdempotentResponse, error) {
@@ -123,7 +157,14 @@ func (s *Service) RideCreate(ctx context.Context, ride Ride, token idempotency.I
 		return idempotency.IdempotentResponse{}, err
 	}
 
-	ride, err = s.Store.Rides.InsertGuardedTx(ctx, tx, ride)
+	// The round gate at the write instant: the port's FOR SHARE on the
+	// ride's round row (see RideCreate's doc — the serialization the old
+	// in-statement guard provided, on schedule's side of the seam).
+	if err := s.roundOpenTx(ctx, tx, ride.MatchID); err != nil {
+		return idempotency.IdempotentResponse{}, err
+	}
+
+	ride, err = s.Store.Rides.InsertTx(ctx, tx, ride)
 	if err != nil {
 		return idempotency.IdempotentResponse{}, err
 	}
@@ -193,7 +234,7 @@ func (s *Service) RideLock(ctx context.Context, rideID int, token idempotency.Id
 	// The continuation pick is load-bearing: NextForTeam chooses the
 	// destination match, and the schedule's not-found is the domain's
 	// ErrNoNextMatch (a schedule conflict, not a missing ride).
-	nextMatch, err := s.Schedule.Matches.NextForTeam(ctx, ride.TeamID)
+	nextMatch, err := s.Schedule.NextForTeam(ctx, ride.TeamID)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrRecordNotFound):
@@ -203,11 +244,26 @@ func (s *Service) RideLock(ctx context.Context, rideID int, token idempotency.Id
 		}
 	}
 
+	origMatchID := ride.MatchID
+
 	if err := ride.Lock(phase, nextMatch.ID); err != nil {
 		return idempotency.IdempotentResponse{}, err
 	}
 
-	ride, err = s.Store.Rides.UpdateGuardedTx(ctx, tx, ride, nextMatch.ID)
+	// The write-instant round gates, through the port: the ride's own round
+	// still open (the ride.Lock mutation happened on the in-memory copy —
+	// the gate pins the original match's round), and the destination
+	// live. Both take FOR SHARE locks inside this tx, so a concurrent
+	// close/resolve serializes before the decision write — the same
+	// write-instant facts the old in-statement EXISTS predicates checked.
+	if err := s.roundOpenTx(ctx, tx, origMatchID); err != nil {
+		return idempotency.IdempotentResponse{}, err
+	}
+	if err := s.destinationOpenTx(ctx, tx, nextMatch.ID); err != nil {
+		return idempotency.IdempotentResponse{}, err
+	}
+
+	ride, err = s.Store.Rides.DecisionGuardedTx(ctx, tx, ride)
 	if err != nil {
 		return idempotency.IdempotentResponse{}, err
 	}
@@ -259,8 +315,13 @@ func (s *Service) RideBurn(ctx context.Context, rideID int, token idempotency.Id
 		return idempotency.IdempotentResponse{}, err
 	}
 
-	// 0 = no continuation destination: Burn ends the ride on its match.
-	ride, err = s.Store.Rides.UpdateGuardedTx(ctx, tx, ride, 0)
+	// The ride's own round gate at the write instant (no destination:
+	// Burn ends the ride on its match).
+	if err := s.roundOpenTx(ctx, tx, ride.MatchID); err != nil {
+		return idempotency.IdempotentResponse{}, err
+	}
+
+	ride, err = s.Store.Rides.DecisionGuardedTx(ctx, tx, ride)
 	if err != nil {
 		return idempotency.IdempotentResponse{}, err
 	}
@@ -320,6 +381,12 @@ func (s *Service) RideUnlock(ctx context.Context, rideID int, token idempotency.
 		return idempotency.IdempotentResponse{}, err
 	}
 
+	// The ride's own round gate at the write instant (no destination:
+	// Unlock ends the ride on its match).
+	if err := s.roundOpenTx(ctx, tx, ride.MatchID); err != nil {
+		return idempotency.IdempotentResponse{}, err
+	}
+
 	// The forfeit intent BEFORE the arrival write: the unlocked arrival
 	// must carry no acc (ride.Unlock's domain rule and the
 	// rides_money_state_coupling CHECK agree), so the money release lands
@@ -329,8 +396,7 @@ func (s *Service) RideUnlock(ctx context.Context, rideID int, token idempotency.
 		return idempotency.IdempotentResponse{}, err
 	}
 
-	// 0 = no continuation destination: Unlock ends the ride on its match.
-	ride, err = s.Store.Rides.UpdateGuardedTx(ctx, tx, ride, 0)
+	ride, err = s.Store.Rides.DecisionGuardedTx(ctx, tx, ride)
 	if err != nil {
 		return idempotency.IdempotentResponse{}, err
 	}
@@ -348,46 +414,4 @@ func (s *Service) RideUnlock(ctx context.Context, rideID int, token idempotency.
 	}
 
 	return res, nil
-}
-
-// MatchResolve closes a match and settles every ride on it in one
-// transaction (phase-03): the guarded score write on the schedule's matches
-// table, then the set-based ride outcome update on game's rides table. It
-// stays in game for Phase B — moving it to schedule would force a
-// schedule → game import; the ride-outcome half splits at the
-// MatchResultRecorded event seam instead.
-//
-// TODO(Phase C): move the resolve entry point to schedule; split the
-// ride-outcome half at the MatchResultRecorded event seam.
-func (s *Service) MatchResolve(ctx context.Context, matchID int, score schedule.Score, endedAt time.Time, version int) (schedule.Match, error) {
-	// Time policy at the door (ADR-026), before the tx: never open a
-	// transaction just to fail cheaply, and never let a legality answer be
-	// outranked by a storage conflict (e.g. a closed match would turn this
-	// into a 409 if the check ran after ResolveTx).
-	if !endedAt.Before(time.Now()) {
-		return schedule.Match{}, ErrEndedAtInFuture
-	}
-
-	tx, err := s.Store.Pool.Begin(ctx)
-	if err != nil {
-		return schedule.Match{}, err
-	}
-
-	defer func() { _ = tx.Rollback(context.Background()) }()
-
-	match, err := s.Schedule.Matches.ResolveTx(ctx, tx, matchID, score, endedAt, version)
-	if err != nil {
-		return schedule.Match{}, err
-	}
-
-	_, err = s.Store.Rides.UpdateAllForMatchTx(ctx, tx, match.ID)
-	if err != nil {
-		return schedule.Match{}, err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return schedule.Match{}, err
-	}
-
-	return match, nil
 }
