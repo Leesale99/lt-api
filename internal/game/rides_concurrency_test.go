@@ -32,6 +32,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/store"
 
 	"lt-api.aleksrdvn.com/internal/schedule"
@@ -46,7 +47,7 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
 
 	for i := 0; i < raceIterations; i++ {
 		t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
@@ -195,7 +196,7 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
 
 	t.Run("close wins the write instant: the guarded insert is refused", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
@@ -322,7 +323,7 @@ func TestService_RideBurnRacesExactlyOnce(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
 
 	for i := 0; i < raceIterations; i++ {
 		t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
@@ -400,7 +401,7 @@ func TestService_RideCommandsRaceOnOneRide(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
 
 	for i := 0; i < raceIterations; i++ {
 		t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
@@ -488,7 +489,7 @@ func TestService_MatchResolveRaces(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
 
 	// startedMatch builds the resolve fixture: the match must satisfy
 	// ResolveTx's contended facts honestly (in_progress, started in the

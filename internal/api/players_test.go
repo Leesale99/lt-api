@@ -15,6 +15,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/eventbus"
 	"lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/identity"
+	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/schedule"
 )
 
@@ -32,7 +33,7 @@ func newTestApplication() *Application {
 	scheduleStore := schedule.NewStore(testPool)
 	return &Application{
 		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
-		Game:     game.NewService(game.NewStore(testPool), scheduleStore),
+		Game:     game.NewService(game.NewStore(testPool), scheduleStore, ledger.NewStore()),
 		Schedule: schedule.NewService(scheduleStore, bus, slog.New(slog.NewTextHandler(os.Stderr, nil))),
 		Identity: identity.NewStore(testPool),
 		Mailer:   nopMailer{},

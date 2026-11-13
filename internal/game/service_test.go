@@ -33,6 +33,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/schedule"
 	"lt-api.aleksrdvn.com/internal/store"
 )
@@ -209,7 +210,7 @@ func TestService_RideCreate(t *testing.T) {
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		playerID := plantPlayer(ctx, t, homeID)
 
-		res, err := NewService(NewStore(pool), schedule.NewStore(pool)).RideCreate(ctx, newRide(playerID, matchID, homeID), rideToken("create-happy", "POST /v1/rides"), idempotentMarshal)
+		res, err := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore()).RideCreate(ctx, newRide(playerID, matchID, homeID), rideToken("create-happy", "POST /v1/rides"), idempotentMarshal)
 
 		if err != nil {
 			t.Fatalf("RideCreate() = %v, want nil", err)
@@ -261,7 +262,7 @@ func TestService_RideCreate(t *testing.T) {
 			t.Fatalf("close round: %v", err)
 		}
 
-		_, err := NewService(NewStore(pool), schedule.NewStore(pool)).RideCreate(ctx, newRide(playerID, matchID, homeID), rideToken("create-closed", "POST /v1/rides"), idempotentMarshal)
+		_, err := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore()).RideCreate(ctx, newRide(playerID, matchID, homeID), rideToken("create-closed", "POST /v1/rides"), idempotentMarshal)
 
 		if !errors.Is(err, ErrRoundNotOpen) {
 			t.Fatalf("RideCreate() = %v, want ErrRoundNotOpen", err)
@@ -273,7 +274,7 @@ func TestService_RideLock(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
 
 	t.Run("in decision phase continues onto the team's next match", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
@@ -334,7 +335,7 @@ func TestService_RideBurn(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
 
 	t.Run("in decision phase burns and keeps acc", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
@@ -391,7 +392,7 @@ func TestService_RideUnlock(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
 
 	t.Run("in decision phase unlocks and forfeits acc", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
@@ -456,7 +457,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 		seedFixture(ctx, t)
 		playerID := plantPlayer(ctx, t, 1)
 
-		_, err := NewService(NewStore(pool), schedule.NewStore(pool)).RideCreate(ctx, Ride{
+		_, err := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore()).RideCreate(ctx, Ride{
 			PlayerID:     playerID,
 			TeamID:       1,
 			MatchID:      999, // no such match
@@ -473,7 +474,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 
-		_, err := NewService(NewStore(pool), schedule.NewStore(pool)).RideCreate(ctx, Ride{
+		_, err := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore()).RideCreate(ctx, Ride{
 			PlayerID:     999, // no such player
 			TeamID:       homeID,
 			MatchID:      matchID,
@@ -491,7 +492,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		playerID := plantPlayer(ctx, t, homeID)
 
-		_, err := NewService(NewStore(pool), schedule.NewStore(pool)).RideCreate(ctx, Ride{
+		_, err := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore()).RideCreate(ctx, Ride{
 			PlayerID:     playerID,
 			TeamID:       999, // no such team
 			MatchID:      matchID,
@@ -519,7 +520,7 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 		// A match starting inside the 1-hour action lead puts the round in MatchPhase.
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 minutes")
 
-		_, err := NewService(NewStore(pool), schedule.NewStore(pool)).RideCreate(ctx, Ride{
+		_, err := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore()).RideCreate(ctx, Ride{
 			PlayerID:     7,
 			TeamID:       homeID,
 			MatchID:      matchID,
@@ -539,7 +540,7 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 		scoreStartedMatch(ctx, t, matchID)
 		ride := plantRide(ctx, t, matchID, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-		_, err := NewService(NewStore(pool), schedule.NewStore(pool)).RideLock(ctx, ride.ID, rideToken("svc-lock-action", "POST /v1/rides/:id/lock"), idempotentMarshal)
+		_, err := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore()).RideLock(ctx, ride.ID, rideToken("svc-lock-action", "POST /v1/rides/:id/lock"), idempotentMarshal)
 
 		if !errors.Is(err, ErrInvalidRoundPhase) {
 			t.Fatalf("RideLock() = %v, want ErrInvalidRoundPhase", err)
@@ -554,7 +555,7 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 		scoreStartedMatch(ctx, t, matchID)
 		ride := plantRide(ctx, t, matchID, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-		_, err := NewService(NewStore(pool), schedule.NewStore(pool)).RideBurn(ctx, ride.ID, rideToken("svc-burn-match-phase", "POST /v1/rides/:id/burn"), idempotentMarshal)
+		_, err := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore()).RideBurn(ctx, ride.ID, rideToken("svc-burn-match-phase", "POST /v1/rides/:id/burn"), idempotentMarshal)
 
 		if !errors.Is(err, ErrInvalidRoundPhase) {
 			t.Fatalf("RideBurn() = %v, want ErrInvalidRoundPhase", err)
@@ -569,7 +570,7 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 		scoreStartedMatch(ctx, t, matchID)
 		ride := plantRide(ctx, t, matchID, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-		_, err := NewService(NewStore(pool), schedule.NewStore(pool)).RideUnlock(ctx, ride.ID, rideToken("svc-unlock-match-phase", "POST /v1/rides/:id/unlock"), idempotentMarshal)
+		_, err := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore()).RideUnlock(ctx, ride.ID, rideToken("svc-unlock-match-phase", "POST /v1/rides/:id/unlock"), idempotentMarshal)
 
 		if !errors.Is(err, ErrInvalidRoundPhase) {
 			t.Fatalf("RideUnlock() = %v, want ErrInvalidRoundPhase", err)
@@ -594,7 +595,7 @@ func TestService_MatchResolve(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
 
 	// startedMatch flips the fixture match to in_progress so ResolveTx's
 	// status predicate (in_progress) holds, and returns (matchID, version):

@@ -14,6 +14,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/config"
 	"lt-api.aleksrdvn.com/internal/eventbus"
 	"lt-api.aleksrdvn.com/internal/game"
+	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/logging"
 	"lt-api.aleksrdvn.com/internal/mailer"
@@ -84,7 +85,12 @@ func main() {
 	scheduleStore := schedule.NewStore(pool)
 	scheduleService := schedule.NewService(scheduleStore, eventBus, logger)
 	gameStore := game.NewStore(pool)
-	gameService := game.NewService(gameStore, scheduleStore)
+	// The ledger is the money authority (phase-05/06): every money mutation
+	// the ride commands and settlement handlers need runs as an intent on
+	// it, inside the caller's transaction. Phase 06 swaps the
+	// implementation to real balances/journal behind the same interface.
+	ledgerStore := ledger.NewStore()
+	gameService := game.NewService(gameStore, scheduleStore, ledgerStore)
 	identityStore := identity.NewStore(pool)
 
 	app := &api.Application{

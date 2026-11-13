@@ -1,6 +1,7 @@
 // Package game owns the ride gameplay domain: the ride state machines and
-// their commands, the persistence of rides and players, and the MatchResolve
-// orchestration (see store.go for the Phase B split note).
+// their commands, the persistence of rides and players, and the event
+// handlers that settle rides from schedule's MatchResultRecorded/
+// RoundCompleted payloads (see store.go for the split notes).
 package game
 
 import (
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"lt-api.aleksrdvn.com/internal/idempotency"
+	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/schedule"
 	"lt-api.aleksrdvn.com/internal/store"
 )
@@ -31,20 +33,24 @@ var (
 )
 
 // Service is the ride domain's entry point. It owns the game context's
-// stores and receives the schedule store for the calendar lookups its
-// operations need (the phase window behind every ride command, the
-// next-match pick behind RideLock, and the guarded score write inside
-// MatchResolve). game → schedule is the only legal import direction between
-// the two contexts (ADR-028).
+// stores, receives the schedule store for the calendar lookups its
+// operations need (the phase window behind every ride command and the
+// next-match pick behind RideLock — the guarded score write left with the
+// resolve script in Phase C), and the Ledger for every money mutation
+// (game sends intents; the ledger owns the writes — phase-05/06).
+// game → schedule and game → ledger are the only legal import directions
+// (ADR-028).
 type Service struct {
 	Store    *Store
 	Schedule *schedule.Store
+	Ledger   ledger.Ledger
 }
 
-func NewService(store *Store, scheduleStore *schedule.Store) *Service {
+func NewService(store *Store, scheduleStore *schedule.Store, led ledger.Ledger) *Service {
 	return &Service{
 		Store:    store,
 		Schedule: scheduleStore,
+		Ledger:   led,
 	}
 }
 
@@ -119,6 +125,14 @@ func (s *Service) RideCreate(ctx context.Context, ride Ride, token idempotency.I
 
 	ride, err = s.Store.Rides.InsertGuardedTx(ctx, tx, ride)
 	if err != nil {
+		return idempotency.IdempotentResponse{}, err
+	}
+
+	// The lock intent (phase-05/06): the ride row was born carrying the
+	// locked tokens (see ledger.Store for why the lock and the birth are
+	// one statement today); the ledger seam is in the flow so the Phase 06
+	// balance swap changes no call shape.
+	if err := s.Ledger.LockTokens(ctx, tx, ride.PlayerID, ride.TeamID, ride.ID, ride.TokensLocked, ride.BaseAtLock); err != nil {
 		return idempotency.IdempotentResponse{}, err
 	}
 
@@ -251,6 +265,14 @@ func (s *Service) RideBurn(ctx context.Context, rideID int, token idempotency.Id
 		return idempotency.IdempotentResponse{}, err
 	}
 
+	// The payout intent (phase-05/06): the ride's locked tokens are
+	// fulfilled as TB. There is no TB balance to write yet (Phase 06), and
+	// the rides row keeps its money columns on a burned arrival — the
+	// intent is in the flow so the Phase 06 swap changes no call shape.
+	if err := s.Ledger.Burn(ctx, tx, ride.ID, ride.TokensLocked); err != nil {
+		return idempotency.IdempotentResponse{}, err
+	}
+
 	res, err := rideResponse(ride, marshal)
 	if err != nil {
 		return idempotency.IdempotentResponse{}, err
@@ -295,6 +317,15 @@ func (s *Service) RideUnlock(ctx context.Context, rideID int, token idempotency.
 	}
 
 	if err := ride.Unlock(phase); err != nil {
+		return idempotency.IdempotentResponse{}, err
+	}
+
+	// The forfeit intent BEFORE the arrival write: the unlocked arrival
+	// must carry no acc (ride.Unlock's domain rule and the
+	// rides_money_state_coupling CHECK agree), so the money release lands
+	// first, inside the same tx. The ledger owns the write (phase-05/06);
+	// a failed arrival write rolls the release back with it.
+	if err := s.Ledger.ReleaseBonus(ctx, tx, ride.ID); err != nil {
 		return idempotency.IdempotentResponse{}, err
 	}
 

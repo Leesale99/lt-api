@@ -17,6 +17,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"lt-api.aleksrdvn.com/internal/idempotency"
+	"lt-api.aleksrdvn.com/internal/ledger"
 
 	"lt-api.aleksrdvn.com/internal/schedule"
 )
@@ -56,7 +57,7 @@ func TestService_RideLockIdempotency(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
 
 	t.Run("retry with the same key replays and re-executes nothing", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
@@ -203,7 +204,7 @@ func TestService_RideCreateIdempotent(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
 
 	newRide := func(playerID, matchID, teamID int) Ride {
 		return Ride{
