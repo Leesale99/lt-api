@@ -363,12 +363,17 @@ interface ResolvedAgent {
 }
 
 function resolveAgent(defaultCwd: string, scope: AgentScope, name: string, cwd?: string): ResolvedAgent {
-  const effectiveCwd = path.resolve(defaultCwd, cwd ?? ".");
-  const discovery = discoverAgents(effectiveCwd, scope);
+  // Phase 6: agent discovery runs in the INVOKING session's cwd (defaultCwd),
+  // never in the per-call run cwd — a worker spawned into a git worktree
+  // (../lt-api-wt-<job-id>) must resolve the same roster as its orchestrator,
+  // and the trusted-project realpath check must compare one and the same
+  // discovery dir (a run-cwded discovery mismatches it and would raise a
+  // spurious project-agent confirm dialog in the orchestrator's pane mid-run).
+  const discovery = discoverAgents(defaultCwd, scope);
   return {
     agent: discovery.agents.find((candidate) => candidate.name === name),
     available: discovery.agents,
-    cwd: effectiveCwd,
+    cwd: path.resolve(defaultCwd, cwd ?? "."),
   };
 }
 
@@ -1346,6 +1351,7 @@ export default function (pi: ExtensionAPI) {
       // background decision point below — this text is what the model reads up front).
       "Routing (deterministic, first match wins): trivial or answerable from context → no delegation or one foreground worker; ≤1 file scope and ≤2 steps → ONE foreground worker; ≥2 independent subtasks each passing that narrow gate → FOREGROUND parallel tasks[] in one call; background child orchestrator (decomposes into foreground workers itself) ONLY if a written plan exists (plan/phase file with ≥3 steps, or explicit multi-commit/multi-phase framing), ≥3 file scopes (or ≥2 clearly disjoint areas), the tree helps (≥2 sequential stages, at least one fanning out to ≥2 workers), and no mid-flight human decision is needed — ALL must hold. Any gate-3 fail or unknown → foreground parallel; when in doubt, foreground. Before spawning background, state the verdict: routing: plan=<file or none/N steps> files=<n> tree=<yes/no> human=<yes/no> → <background|foreground>.",
       "Worker agents cannot delegate and cannot run in background.",
+      "Agent discovery always runs in the invoking session's cwd; a per-call cwd only sets the worker's process cwd (e.g. a git worktree) — the resolved roster is identical for every cwd.",
       "Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
       "Single mode: background=true forces the detached tmux-backed job (results via job_status), background=false forces foreground, omitted = the agent config's background frontmatter decides; rejected with tasks/chain.",
       `Default agent scope is "both": project-local agents (${CONFIG_DIR_NAME}/agents) override user agents (${path.join(getAgentDir(), "agents")}) with the same name.`,
