@@ -926,6 +926,15 @@ async function startBackgroundRun(
 const SESSION_START_MS = Date.now();
 /** Job ids whose result was already injected as a delegate-job-result context message. */
 const surfacedJobIds = new Set<string>();
+/** Job ids whose pickup injection is currently being built (phase 8 fix): the
+ * check-and-mark of the pickup path spans an await (buildJobResultInjection),
+ * and pi may execute two tool calls of one assistant message IN PARALLEL —
+ * observed live: two same-turn job_status calls both passed the
+ * surfacedJobIds check and injected the result twice. The guard is taken
+ * synchronously before the first await, so parallel callers see it; it is
+ * released on failure so a retry stays possible (mark-AFTER-delivery intact:
+ * a throw leaves the id unmarked). */
+const pickupsInFlight = new Set<string>();
 /** Keys (id|status) of delegate-job cards already emitted — one card per transition. */
 const emittedCardKeys = new Set<string>();
 /** Set by the extension factory; card emission needs pi.appendEntry. */
@@ -2310,7 +2319,16 @@ export default function (pi: ExtensionAPI) {
         if (before && before.status === "running" && entry.status !== "running") {
           emitJobCard(ctx, entry);
         }
-        if (entry.status !== "running" && !process.env.PI_DELEGATE_CHILD && !surfacedJobIds.has(entry.id)) {
+        if (
+          entry.status !== "running" &&
+          !process.env.PI_DELEGATE_CHILD &&
+          !surfacedJobIds.has(entry.id) &&
+          !pickupsInFlight.has(entry.id)
+        ) {
+          // Synchronous guard FIRST (before any await): parallel same-turn
+          // job_status calls for the same id must not both inject (phase 8
+          // probe caught exactly that double delivery).
+          pickupsInFlight.add(entry.id);
           try {
             const injection = await buildJobResultInjection(ctx.cwd, entry);
             // No options: when idle this only stores the message; while this
@@ -2333,6 +2351,8 @@ export default function (pi: ExtensionAPI) {
               error,
             );
             /* pickup is best effort; the tool report below still returns */
+          } finally {
+            pickupsInFlight.delete(entry.id);
           }
         }
         const report = await formatJobDetail(entry, jobsDirFor(ctx.cwd));
