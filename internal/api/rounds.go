@@ -213,9 +213,12 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 	if current.Status == schedule.RoundCreated && round.Status == schedule.RoundOpen {
 		round, err = app.Schedule.Rounds.Open(ctx, round)
 	} else if current.Status == schedule.RoundOpen && round.Status == schedule.RoundClosed {
-		// ADR-022: closing resolves undecided rides (auto-unlock; auto-burn on
-		// the season's last round) and may close the season — one tx, so it
-		// bypasses Update like the open transition does.
+		// ADR-022, Phase C: closing flips the round (and the season, on the
+		// last round) and publishes RoundCompleted post-commit — the game
+		// context settles the undecided rides from the event payload
+		// (auto-unlock rounds 1-37, auto-burn round 38). Ride settlement is
+		// no longer this transaction's business, so the PATCH stays one tx
+		// like the open transition.
 		round, err = app.Schedule.Rounds.Close(ctx, round)
 	} else {
 		round, err = app.Schedule.Rounds.Update(ctx, round)
@@ -229,16 +232,10 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 		case errors.Is(err, store.ErrRecordInUse):
 			// A DB gate refused: rounds_freeze_gate (the update tried to
 			// regress a round with started matches, ADR-008) or
-			// rounds_close_gate (close over unresolved rides, ADR-022).
+			// rounds_close_gate (close over unsettled matches, ADR-022).
+			// (The unresolved-rides half of the gate was relaxed in 000014 —
+			// ride settlement is eventual now, behind RoundCompleted.)
 			app.recordFrozenResponse(w, r)
-		case errors.Is(err, schedule.ErrRidesGateRefused):
-			// RoundStore.Close's ride resolution was refused by a rides gate
-			// (ADR-020). Both arrivals there (auto-unlock, auto-burn) are
-			// legal transitions the players can also take, so a refusal means
-			// the app and the DB disagree — a bug, not client input. A 409
-			// would blame the caller for our inconsistency; this case is
-			// deliberately a 500 and should be unreachable in practice.
-			app.serverErrorResponse(w, r, err)
 		default:
 			app.serverErrorResponse(w, r, err)
 		}

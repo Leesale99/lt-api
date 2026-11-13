@@ -10,6 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"log/slog"
+
+	"lt-api.aleksrdvn.com/internal/eventbus"
 	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -76,6 +79,12 @@ func ValidateRoundUpdate(v *validator.Validator, old, new Round) {
 
 type RoundStore struct {
 	pool *pgxpool.Pool
+
+	// bus/log carry the process event exchange and its logger into Close's
+	// post-commit publish. Both are nil-safe (a bare store publishes
+	// nothing) and set by schedule.NewService — the composition point.
+	bus *eventbus.Bus
+	log *slog.Logger
 }
 
 func (s *RoundStore) Get(ctx context.Context, id int) (Round, error) {
@@ -208,50 +217,6 @@ func (s *RoundStore) Open(ctx context.Context, round Round) (Round, error) {
 	return round, nil
 }
 
-// ErrRidesGateRefused reports that the round-close transaction's ride
-// auto-resolution was refused by a rides gate (rides_state_gate,
-// rides_money_state_coupling — ADR-020). Both arrivals there (auto-unlock,
-// auto-burn) are legal transitions the players can also take, so a refusal
-// means the app and the DB disagree — a bug, not client input. Callers map
-// it to a 500, deliberately: it is schedule writing game's table, the
-// temporary cross-context write removed at the RoundCompleted event seam.
-//
-// TODO(Phase C): split the ride auto-unlock/burn out of Close at the
-// RoundCompleted event; this error and the rides-table SQL in this file go
-// with it.
-var ErrRidesGateRefused = errors.New("round close ride resolution refused by a rides gate")
-
-// rideAutoUnlockSQL resolves every undecided won_pending ride of a closing
-// round to unlocked. Rides carry no round_id (ADR-018), so the round comes
-// from the join through matches. The state filter is the concurrency guard:
-// a player decision that lands first re-evaluates the WHERE and the row is
-// skipped — the single statement is the whole read-modify-write, no
-// SELECT ... FOR UPDATE. bonus_acc = 0 because rides_state_gate refuses a
-// non-zero acc on the unlocked arrival — the same rule ride.Unlock obeys,
-// inherited from one place by both arrival paths.
-const rideAutoUnlockSQL = `
-		UPDATE rides
-		SET state = 'unlocked', bonus_acc = 0, version = rides.version + 1
-		FROM matches
-		WHERE rides.match_id = matches.id
-		  AND matches.round_id = $1
-		  AND rides.state = 'won_pending'
-	`
-
-// rideAutoBurnSQL is the season-end counterpart of rideAutoUnlockSQL
-// (ADR-022): the last round's undecided rides are force-resolved to burned
-// instead — the chase option is unrepresentable once the season is over,
-// and the forfeited tokens move to TB. bonus_acc is deliberately left as
-// accrued: the gate couples acc to zero only on unlocked/lost arrivals.
-const rideAutoBurnSQL = `
-		UPDATE rides
-		SET state = 'burned', version = rides.version + 1
-		FROM matches
-		WHERE rides.match_id = matches.id
-		  AND matches.round_id = $1
-		  AND rides.state = 'won_pending'
-	`
-
 // seasonInProgressToClosedSQL closes the season. Conditional on
 // status = 'in_progress', so aiming it at a season that is not live updates
 // nothing — the same no-op shape as Open's season flip.
@@ -261,19 +226,29 @@ const seasonInProgressToClosedSQL = `
 		WHERE id = $1 AND status = 'in_progress'
 	`
 
-// Close transitions a round open → closed and, in the same transaction,
-// resolves every undecided won_pending ride of the round and — when the
-// round is the season's last — closes the season. Statement order is
-// load-bearing: the ride resolution runs first, because rounds_close_gate
-// refuses to close a round that still owns unresolved rides and evaluates
-// at the status flip — resolving after the flip would abort the tx. The
-// season flip runs last (the mirror of Open, which flips the season before
-// the round): the season must still be live while its round closes, and
+// Close transitions a round open → closed and — when the round is the
+// season's last — closes the season, then publishes RoundCompleted
+// post-commit (ADR-027): the ride settlement is game's, driven by this
+// event.
+//
+// Since Phase C the close is EVENTUAL about rides (documented decision):
+// the undecided won_pending rides of the round are NOT resolved here.
+// Schedule closes on feed completion; the game context settles the round's
+// rides (auto-unlock rounds 1-37, auto-burn round 38) inside its own
+// transaction, from the event payload. The old rides backstop of
+// rounds_close_gate was relaxed accordingly (migration 000014): undecided
+// rides in a closed round are the designed intermediate state, not a
+// corruption signal. The gap window (close committed, settlement not yet
+// run) is the accepted Phase C crash gap — the settlement handler is
+// idempotent, and the Phase 07 sweep / Phase 08 outbox close it.
+//
+// Statement order is still load-bearing: the season flip runs after the
+// round flip (the mirror of Open, which flips the season before the
+// round) — the season must still be live while its round closes, and
 // rounds_progress_gate would refuse a round closing under an already-closed
-// season. The ride resolution is a single conditional UPDATE whose WHERE
-// clause is the concurrency guard, so no row locks are taken up front.
-// Callers must have verified the transition is open → closed; the version
-// check inside updateRound still guards against a concurrent change.
+// season. Callers must have verified the transition is open → closed; the
+// version check inside updateRound still guards against a concurrent
+// change.
 func (s *RoundStore) Close(ctx context.Context, round Round) (Round, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -282,23 +257,8 @@ func (s *RoundStore) Close(ctx context.Context, round Round) (Round, error) {
 
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Auto-resolution (ADR-022): rounds 1-37 unlock undecided rides; the
-	// season's last round burns them. System-initiated, but both arrivals
-	// ride the same legal transitions the players use, so a P0001 here is
-	// an app/DB disagreement and maps like RideStore does.
-	resolutionSQL := rideAutoUnlockSQL
-	if round.Number == roundsPerSeason {
-		resolutionSQL = rideAutoBurnSQL
-	}
-	if _, err := tx.Exec(ctx, resolutionSQL, round.ID); err != nil {
-		if store.IsTriggerViolation(err) {
-			return Round{}, ErrRidesGateRefused
-		}
-		return Round{}, err
-	}
-
 	// The status flip: updateRound carries the version check against
-	// concurrent writers and is where both rounds gates land
+	// concurrent writers and is where the rounds gates land
 	// (P0001 → ErrRecordInUse). The season is still live here.
 	round, err = s.updateRound(ctx, tx, round)
 	if err != nil {
@@ -318,7 +278,41 @@ func (s *RoundStore) Close(ctx context.Context, round Round) (Round, error) {
 		return Round{}, err
 	}
 
+	// Post-commit publish (ADR-027). Fat payload: the round's full result
+	// set rides in the event, so game's settlement never joins back into
+	// schedule's tables.
+	if s.bus != nil {
+		results, err := resultsForRound(ctx, s.pool, round.ID)
+		if err != nil {
+			s.logCloseGap(ctx, round, "results read", err)
+			return round, nil
+		}
+		event := RoundCompleted{
+			EventID:  NewEventID(),
+			RoundID:  round.ID,
+			SeasonID: round.SeasonID,
+			IsFinal:  round.Number == roundsPerSeason,
+			Results:  results,
+		}
+		if err := s.bus.Publish(context.WithoutCancel(ctx), event); err != nil && s.log != nil {
+			// Crash gap: the close is committed; a failed settlement is the
+			// Phase C gap the Phase 07 sweep will close. The request must not
+			// fail — its write is already durable.
+			s.log.Warn("event handler failed after commit; awaiting the Phase 07 sweep",
+				"event_type", "schedule.RoundCompleted", "round_id", round.ID, "error", err)
+		}
+	}
+
 	return round, nil
+}
+
+// logCloseGap reports a dropped post-commit event at the close site.
+func (s *RoundStore) logCloseGap(ctx context.Context, round Round, stage string, err error) {
+	if s.log == nil {
+		return
+	}
+	s.log.Warn("RoundCompleted event dropped after commit; awaiting the Phase 07 sweep",
+		"stage", stage, "round_id", round.ID, "error", err)
 }
 
 func (s *RoundStore) GetAll(ctx context.Context, seasonID int, status RoundStatus, filters store.Filters) ([]Round, store.Metadata, error) {

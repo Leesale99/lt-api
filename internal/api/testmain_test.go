@@ -47,6 +47,10 @@ func TestMain(m *testing.M) {
 		// handler tests exercise the full gate surface.
 		"../../migrations/000011_add_rides_result_agreement_gate.up.sql",
 		"../../migrations/000012_add_rides_insert_state_gate.up.sql",
+		// Relaxed close gate (000014): the Phase C event seam moved the ride
+		// settlement behind RoundCompleted, so undecided rides no longer
+		// refuse a round close.
+		"../../migrations/000014_relax_rounds_close_gate.up.sql",
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "test database setup: %v\n", err)

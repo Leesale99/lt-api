@@ -53,11 +53,12 @@ type Match struct {
 
 // Winner is site 1 of 3 for the score→state rule: a closed match's final
 // scores decide a ride's destination, a draw crowns no winner. The other
-// two encodings: the CASE in RideStore.UpdateAllForMatchTx
-// (internal/game/rides.go) and check 5 of rides_block_illegal_transition
+// two encodings: the payload derivation in game's MatchResultRecorded
+// settlement handler (internal/game/events.go — the event consumer of
+// Phase C) and check 5 of rides_block_illegal_transition
 // (migrations/000011_add_rides_result_agreement_gate.up.sql). The
-// database is the enforcement home (ADR-018/ADR-020); Winner and the CASE
-// are derived copies tied to it by the shared fixture in
+// database is the enforcement home (ADR-018/ADR-020); Winner and the
+// handler are derived copies tied to it by the shared fixture in
 // internal/game/score_state_rule_test.go — change one, change all three.
 func (m Match) Winner() *int {
 	switch {
@@ -526,4 +527,61 @@ func (s *MatchStore) classifyResolveRefusal(ctx context.Context, matchID int) er
 	default:
 		return store.ErrEditConflict
 	}
+}
+
+// ResultsForRound builds the MatchResult payload set for a closing round —
+// the fat body of the RoundCompleted event (ADR-027). The round-close gate
+// guarantees every match of the round is closed with scores and ended_at;
+// the status filter keeps the scan shape honest rather than trusting the
+// gate. The winner is derived from the scores here (the same rule
+// Match.Winner encodes — a draw crowns no winner), so the event carries
+// the outcome, not just raw numbers.
+func (s *MatchStore) ResultsForRound(ctx context.Context, roundID int) ([]MatchResult, error) {
+	return resultsForRound(ctx, s.pool, roundID)
+}
+
+func resultsForRound(ctx context.Context, pool *pgxpool.Pool, roundID int) ([]MatchResult, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT id, season_id, round_id, home_team_id, away_team_id,
+		       home_odds, away_odds, home_score, away_score, ended_at
+		FROM matches
+		WHERE round_id = $1 AND status = 'closed'
+		ORDER BY id
+	`, roundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := []MatchResult{}
+	for rows.Next() {
+		var r MatchResult
+		var homeScore, awayScore int
+		if err := rows.Scan(
+			&r.MatchID,
+			&r.SeasonID,
+			&r.RoundID,
+			&r.HomeTeamID,
+			&r.AwayTeamID,
+			&r.Odds.Home,
+			&r.Odds.Away,
+			&homeScore,
+			&awayScore,
+			&r.EndedAt,
+		); err != nil {
+			return nil, err
+		}
+		r.Score = Score{Home: &homeScore, Away: &awayScore}
+		switch {
+		case homeScore > awayScore:
+			r.WinnerTeamID = &r.HomeTeamID
+		case awayScore > homeScore:
+			r.WinnerTeamID = &r.AwayTeamID
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }

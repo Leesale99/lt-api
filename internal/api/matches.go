@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"lt-api.aleksrdvn.com/internal/constants"
-	game "lt-api.aleksrdvn.com/internal/game"
 	schedule "lt-api.aleksrdvn.com/internal/schedule"
 	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
@@ -17,9 +16,9 @@ import (
 
 // createMatchHandler is schedule's route (ADR-027): match creation is
 // calendar bookkeeping — shape validation plus season/round/team existence
-// checks — with no ride rules involved. MatchResolve (the one match
-// operation that touches game state) is the deliberate exception: it stays
-// wired to the game service below.
+// checks — with no ride rules involved. The resolve PATCH below is the one
+// match operation with a rule of its own (time policy), and it is
+// schedule's script since Phase C.
 func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		RoundID    int            `json:"round_id"`
@@ -369,14 +368,12 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-// resolveMatchHandler is still game's route: MatchResolve must remain a
-// single transactional operation (phase-03) and moving the entry to
-// schedule now would force a schedule → game import. The match types are
-// schedule's (the row belongs to the calendar); the orchestration is
-// game's.
-//
-// TODO(Phase C): move resolve entry to schedule; split ride-outcome at the
-// MatchResultRecorded event seam.
+// resolveMatchHandler is schedule's route (Phase C of the Game/Schedule
+// split): the resolve script commits the result in schedule's own
+// transaction and publishes MatchResultRecorded post-commit — game settles
+// the rides from the event payload, not in this request's transaction.
+// The match types are schedule's (the row belongs to the calendar); the
+// ride half lives behind the event seam.
 func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Request) {
 	matchID, err := app.readIDParam(r, "match_id")
 	if err != nil {
@@ -406,7 +403,7 @@ func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Reque
 	v := validator.New()
 
 	// Request shape only (ADR-026): the domain-legality rule (ended_at in
-	// the past) runs inside Service.MatchResolve, mapped to the same 422
+	// the past) runs inside Service.ResolveMatch, mapped to the same 422
 	// below.
 	if schedule.ValidateResolveMatch(v, match); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
@@ -416,9 +413,9 @@ func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	match, err = app.Game.MatchResolve(ctx, match.ID, match.Score, *match.EndedAt, match.Version)
+	match, err = app.Schedule.ResolveMatch(ctx, match.ID, match.Score, *match.EndedAt, match.Version)
 	if err != nil {
-		if errors.Is(err, game.ErrEndedAtInFuture) {
+		if errors.Is(err, schedule.ErrEndedAtInFuture) {
 			// Time policy refusal from the service door (ADR-026), checked
 			// before any transaction; the 422 body is the message the
 			// handler used to produce itself.
@@ -428,9 +425,9 @@ func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Reque
 		}
 		// gameErrorResponse maps the full domain surface this flow can
 		// produce: ErrRecordNotFound (unknown match), ErrEditConflict (lost
-		// race or already-closed match, classified by the store),
-		// ErrInvalidTransition (rides_state_gate result agreement), canceled
-		// context.
+		// race or already-closed match, classified by the store), canceled
+		// context. (The ride-half refusals left this surface in Phase C:
+		// settlement is post-commit, behind the event seam.)
 		app.gameErrorResponse(w, r, err)
 		return
 	}

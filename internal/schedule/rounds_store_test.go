@@ -1,41 +1,35 @@
 package schedule
 
-// RoundStore.Close integration tests: the round-close transaction's two
-// halves — the auto-resolution of undecided won_pending rides and the
-// status flip — plus the gates that referee them (000008), and the
-// RESTRICT FK the rides table points at matches with (ADR-018).
+// RoundStore.Close integration tests: the close transaction's status flip,
+// its gates (000008), and the RoundCompleted event seam (Phase C).
 //
-// The ride side is read and planted through raw SQL, deliberately: Close
-// writing game's rides table is the temporary cross-context write of the
-// Phase B split (see ErrRidesGateRefused in rounds.go), and schedule must
-// not import game — the assertions go to the table itself instead of
-// game's stores. The ride-side service-level coverage of the same
-// transaction lives in internal/game (the ride domain's tests).
-//
-// Close's statement order is load-bearing and the tests mirror it:
-// resolution runs first, the flip is where the rounds gates evaluate, and
-// a failure after the resolution must leave zero committed changes — that
-// is the phase's done-when (spec: "A failure injected halfway through any
-// major operation leaves the database exactly as it was before the
-// operation started").
+// Since the Phase C split the close no longer resolves rides: Schedule
+// closes on feed completion and publishes RoundCompleted post-commit; the
+// game context settles the undecided rides from the event payload. The
+// ride side is still planted/read through raw SQL, deliberately: schedule
+// must not import game, so the assertions go to the tables themselves.
+// The ride-side settlement coverage (what used to be the auto-unlock/burn
+// half of this transaction) lives in internal/game's event-handler tests.
 
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 
+	"lt-api.aleksrdvn.com/internal/eventbus"
 	"lt-api.aleksrdvn.com/internal/store"
 )
 
 // closeRoundSQL is the direct-writer close statement the gate-backstop
-// test probes with. RoundStore.Close runs its resolution before the flip,
-// so the gate refusal requires a writer that skips it.
+// test probes with. The unclosed-matches half of rounds_close_gate holds
+// for any writer.
 const closeRoundSQL = `UPDATE rounds SET status = 'closed' WHERE id = $1`
 
-// rideRow is the raw read of a ride row the close touches: state, acc and
-// version, exactly the columns the ride-side assertions check.
+// rideRow is the raw read of a ride row the close-side assertions check:
+// state, acc and version — the columns a settlement would move.
 type rideRow struct {
 	state   string
 	acc     string // numeric read as text, scale-trimmed to "0"/"90" shape
@@ -207,6 +201,29 @@ func TestMatchDeleteRestricted(t *testing.T) {
 	}
 }
 
+// closeService builds the wired stack the close-side tests run against:
+// the schedule service publishing on a capture bus, so the RoundCompleted
+// payload can be asserted end-to-end (the reverse-pyramid top for the
+// event seam is the api harness; this pins the store-level publish).
+func closeService(t *testing.T) (*Service, *[]RoundCompleted) {
+	t.Helper()
+
+	bus := eventbus.New()
+	var received []RoundCompleted
+	eventbus.Subscribe(bus, func(ctx context.Context, e RoundCompleted) error {
+		received = append(received, e)
+		return nil
+	})
+
+	svc := NewService(NewStore(pool), bus, slog.New(slog.NewTextHandler(testWriter{}, nil)))
+	return svc, &received
+}
+
+// testWriter adapts io.Writer from os.Stderr without another import.
+type testWriter struct{}
+
+func (testWriter) Write(p []byte) (int, error) { return len(p), nil }
+
 // seedClosedRound hands back an open round whose matches are all settled
 // (rounds_close_gate's precondition) with one undecided won_pending ride
 // planted on its match, and the ride's owning player.
@@ -250,10 +267,14 @@ func TestRoundStore_Close(t *testing.T) {
 
 	ctx := context.Background()
 
-	t.Run("auto-unlocks undecided rides and closes the round (ADR-022)", func(t *testing.T) {
-		_, roundID, rideID := seedClosedRound(ctx, t)
+	t.Run("closes and publishes RoundCompleted with the round's results", func(t *testing.T) {
+		seasonID, roundID, homeID, awayID := seedFixture(ctx, t)
+		matchID := insertFutureMatch(ctx, t, seasonID, roundID, homeID, awayID, "3 days")
+		settleRound(ctx, t, roundID)
 
-		got, err := NewStore(pool).Rounds.Close(ctx, closeableRound(ctx, t, roundID))
+		svc, received := closeService(t)
+
+		got, err := svc.Rounds.Close(ctx, closeableRound(ctx, t, roundID))
 		if err != nil {
 			t.Fatalf("Close() = %v, want nil", err)
 		}
@@ -261,64 +282,89 @@ func TestRoundStore_Close(t *testing.T) {
 			t.Errorf("status = %q, want closed", got.Status)
 		}
 
-		persisted := getRideRow(ctx, t, rideID)
-		if persisted.state != "unlocked" {
-			t.Errorf("state = %q, want unlocked (auto-unlock)", persisted.state)
+		if len(*received) != 1 {
+			t.Fatalf("RoundCompleted events = %d, want 1", len(*received))
 		}
-		// rides_state_gate refuses non-zero acc on the unlocked arrival, so
-		// a close that left acc set would have aborted the transaction here.
-		if persisted.acc != "0" {
-			t.Errorf("acc = %s, want zero", persisted.acc)
+		event := (*received)[0]
+		if event.RoundID != roundID || event.SeasonID != seasonID {
+			t.Errorf("event ids = (%d, %d), want (%d, %d)", event.RoundID, event.SeasonID, roundID, seasonID)
 		}
-		if persisted.version != 2 {
-			t.Errorf("version = %d, want 2 (one transition from the planted v1)", persisted.version)
+		if event.IsFinal {
+			t.Error("IsFinal = true, want false (round 1 of 38)")
+		}
+		if event.EventID == "" {
+			t.Error("EventID empty, want a dedup identity")
+		}
+		if len(event.Results) != 1 {
+			t.Fatalf("results = %d, want 1 (the round's only match)", len(event.Results))
+		}
+		result := event.Results[0]
+		if result.MatchID != matchID {
+			t.Errorf("result match = %d, want %d", result.MatchID, matchID)
+		}
+		// The fixture settles 2:1 home — the winner rides in the payload.
+		if result.WinnerTeamID == nil || *result.WinnerTeamID != homeID {
+			t.Errorf("winner = %v, want home team %d", result.WinnerTeamID, homeID)
 		}
 	})
 
-	t.Run("player decision before the close survives it (concurrent-writer case)", func(t *testing.T) {
-		seasonID, roundID, rideID := seedClosedRound(ctx, t)
-		_ = seasonID
-
-		// A player who decided to burn before the close: the close must not
-		// clobber that decision — the close's conditional UPDATE carries
-		// state = 'won_pending' in its WHERE, so a row that has already moved
-		// on is simply skipped: the player decision lands first, the close
-		// re-evaluates the WHERE under READ COMMITTED and skips it. The
-		// decision lands through a guarded version UPDATE (the store-half
-		// shape of the ride commands; the service layer would re-derive
-		// DecisionPhase — not what this case exercises).
-		if _, err := pool.Exec(ctx, `
-			UPDATE rides SET state = 'burned', version = version + 1
-			WHERE id = $1 AND version = 1 AND state = 'won_pending'
-		`, rideID); err != nil {
-			t.Fatalf("player burn before close: %v", err)
+	t.Run("the season's last round publishes IsFinal", func(t *testing.T) {
+		seasonID, roundID, homeID, awayID := seedFixture(ctx, t)
+		if _, err := pool.Exec(ctx, `UPDATE rounds SET number = 38 WHERE id = $1`, roundID); err != nil {
+			t.Fatalf("renumber round to 38: %v", err)
 		}
+		insertFutureMatch(ctx, t, seasonID, roundID, homeID, awayID, "3 days")
+		settleRound(ctx, t, roundID)
 
-		if n := countRidesInState(ctx, t, roundID, "burned"); n != 1 {
-			t.Fatalf("burned rides = %d, want 1", n)
-		}
+		svc, received := closeService(t)
 
-		if _, err := NewStore(pool).Rounds.Close(ctx, closeableRound(ctx, t, roundID)); err != nil {
+		if _, err := svc.Rounds.Close(ctx, closeableRound(ctx, t, roundID)); err != nil {
 			t.Fatalf("Close() = %v, want nil", err)
 		}
 
-		wonPending := countRidesInState(ctx, t, roundID, "won_pending")
-		unlocked := countRidesInState(ctx, t, roundID, "unlocked")
-		if wonPending != 0 || unlocked != 0 {
-			t.Errorf("rides after close: won_pending=%d unlocked=%d, want 0/0 (the burned ride must stay burned)",
-				wonPending, unlocked)
+		if len(*received) != 1 || !(*received)[0].IsFinal {
+			t.Fatalf("RoundCompleted events = %+v, want exactly one with IsFinal", *received)
+		}
+		// The close also flipped the season: the mirror of Open's flip.
+		var status string
+		if err := pool.QueryRow(ctx, `SELECT status FROM seasons WHERE id = $1`, seasonID).Scan(&status); err != nil {
+			t.Fatalf("read season: %v", err)
+		}
+		if status != "closed" {
+			t.Errorf("season status = %q, want closed", status)
 		}
 	})
 
-	t.Run("gate refuses a direct-writer close over unresolved rides", func(t *testing.T) {
-		_, roundID, _ := seedClosedRound(ctx, t)
+	t.Run("close over undecided rides commits — settlement is eventual (000014)", func(t *testing.T) {
+		_, roundID, rideID := seedClosedRound(ctx, t)
 
-		// The writer that skips the resolution step: rounds_close_gate
-		// (000008) is the backstop for exactly this — P0001, not a silent
-		// close over won_pending rides.
+		// The relaxed rounds_close_gate (000014): undecided won_pending
+		// rides no longer refuse the close. The close publishes the round's
+		// results; the game context settles the ride afterwards, in its own
+		// transaction. Here (no subscriber wired beyond the capture bus,
+		// which settles nothing) the ride must be untouched by the close:
+		// the transaction no longer writes game's table.
+		if _, err := NewStore(pool).Rounds.Close(ctx, closeableRound(ctx, t, roundID)); err != nil {
+			t.Fatalf("Close() = %v, want nil (the undecided-rides gate is relaxed)", err)
+		}
+
+		persisted := getRideRow(ctx, t, rideID)
+		if persisted.state != "won_pending" || persisted.version != 1 || persisted.acc != "90" {
+			t.Errorf("ride after close = %+v, want untouched won_pending/1/90 (the close owns no ride writes)", persisted)
+		}
+	})
+
+	t.Run("gate refuses a direct-writer close over unclosed matches", func(t *testing.T) {
+		seasonID, roundID, homeID, awayID := seedFixture(ctx, t)
+		_ = seasonID
+		insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "3 days")
+
+		// The writer that skips the settle step: rounds_close_gate's
+		// unclosed-matches half (000008, kept in 000014) is the backstop —
+		// P0001, not a silent close over live schedule.
 		_, err := pool.Exec(ctx, closeRoundSQL, roundID)
 		if err == nil {
-			t.Fatal("direct close over won_pending rides = nil, want refusal")
+			t.Fatal("direct close over unclosed matches = nil, want refusal")
 		}
 		if !store.IsTriggerViolation(err) {
 			t.Fatalf("direct close = %v, want the rounds_close_gate P0001", err)
@@ -336,15 +382,13 @@ func TestRoundStore_Close(t *testing.T) {
 }
 
 // TestRoundStore_Close_MidTxFailureLeavesNoTrace is the phase done-when:
-// the status flip fails after the ride resolution succeeded, and nothing
-// of the transaction survives — ride state, acc and version all read back
-// as if the close never ran.
+// the season flip fails after the round flip succeeded, and nothing of the
+// transaction survives.
 //
 // The failure is not injected by hacking the store: the fixture aims the
-// close at a round whose parent season is created, so the ride resolution
-// succeeds and then rounds_progress_gate refuses the status flip
-// (round_progress_season_not_live) — the last statement fails, exactly the
-// halfway-failure shape the spec asks to test.
+// close at a round whose parent season is closed, so rounds_progress_gate
+// refuses the round flip (round_progress_season_not_live) — the first
+// statement fails.
 func TestRoundStore_Close_MidTxFailureLeavesNoTrace(t *testing.T) {
 	requireDB(t)
 
@@ -371,16 +415,17 @@ func TestRoundStore_Close_MidTxFailureLeavesNoTrace(t *testing.T) {
 	}
 
 	// The ride is untouched: state, acc and version all read back as
-	// planted. Any committed resolution would show up here.
+	// planted. (The close owns no ride writes since Phase C — this pins
+	// that the refusal left the whole world as it was.)
 	persisted := getRideRow(ctx, t, rideID)
 	if persisted.state != "won_pending" {
 		t.Errorf("state = %q, want won_pending (transaction rolled back)", persisted.state)
 	}
 	if persisted.acc != "90" {
-		t.Errorf("acc = %s, want the planted 90 (rollback restored it)", persisted.acc)
+		t.Errorf("acc = %s, want the planted 90", persisted.acc)
 	}
 	if persisted.version != 1 {
-		t.Errorf("version = %d, want 1 (no bump — the resolution rolled back)", persisted.version)
+		t.Errorf("version = %d, want 1 (no bump)", persisted.version)
 	}
 
 	// And the round is still open.
@@ -393,13 +438,11 @@ func TestRoundStore_Close_MidTxFailureLeavesNoTrace(t *testing.T) {
 	}
 }
 
-// TestRoundStore_Close_ProvesPostgresRollsBack runs Close's exact
-// statement sequence inside a manual transaction that fails at the flip,
-// purely to pin the DB-level mechanism the store's shape relies on: the
-// resolution UPDATE is visible inside its own transaction before the flip
-// fails, and vanishes with the rollback. Unlike the mid-tx-failure test
-// above (which exercises RoundStore itself), this one is the raw
-// Postgres-semantics probe behind the pattern.
+// TestRoundStore_Close_ProvesPostgresRollsBack runs Close's statement
+// sequence inside a manual transaction that fails at the flip, purely to
+// pin the DB-level mechanism the store's shape relies on: a write inside
+// the transaction is visible on the connection's own snapshot before the
+// flip fails, and vanishes with the rollback.
 func TestRoundStore_Close_ProvesPostgresRollsBack(t *testing.T) {
 	requireDB(t)
 
@@ -417,11 +460,11 @@ func TestRoundStore_Close_ProvesPostgresRollsBack(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx, rideAutoUnlockSQL, roundID); err != nil {
-		t.Fatalf("resolution exec inside manual tx: %v", err)
+	if _, err := tx.Exec(ctx, `UPDATE rides SET state = 'unlocked', bonus_acc = 0, version = version + 1 WHERE id = $1`, rideID); err != nil {
+		t.Fatalf("ride write inside manual tx: %v", err)
 	}
 
-	// Observable within the tx: the resolution has taken effect on the
+	// Observable within the tx: the write has taken effect on the
 	// connection's own snapshot.
 	if n := countRidesInStateInTx(ctx, t, tx, roundID, "unlocked"); n != 1 {
 		t.Fatalf("in-tx unlocked count = %d, want 1", n)

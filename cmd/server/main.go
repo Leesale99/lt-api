@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/tracelog"
 	"lt-api.aleksrdvn.com/internal/api"
 	"lt-api.aleksrdvn.com/internal/config"
+	"lt-api.aleksrdvn.com/internal/eventbus"
 	"lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/logging"
@@ -72,12 +73,16 @@ func main() {
 		cfg.Limiter.Enabled,
 	)
 
-	// Composition root (Phase B split): the schedule store is the calendar
-	// context's dependency; the game service receives it for the calendar
-	// lookups its operations perform (phase windows, next-match pick,
-	// resolve's guarded score write). game → schedule is the only legal
-	// import direction between the two contexts (ADR-028).
+	// Composition root (Phase B/C split): the schedule store is the calendar
+	// context's dependency; the game service consumes it for the calendar
+	// lookups its operations perform (phase windows, next-match pick).
+	// game → schedule is the only legal import direction between the two
+	// contexts (ADR-028); the reverse handoff (ride settlement) is events:
+	// schedule's ResolveMatch/Close publish MatchResultRecorded/
+	// RoundCompleted post-commit on the process bus, game subscribes.
+	eventBus := eventbus.New()
 	scheduleStore := schedule.NewStore(pool)
+	scheduleService := schedule.NewService(scheduleStore, eventBus, logger)
 	gameStore := game.NewStore(pool)
 	gameService := game.NewService(gameStore, scheduleStore)
 	identityStore := identity.NewStore(pool)
@@ -91,7 +96,7 @@ func main() {
 		Logger:         logger,
 		RootCtx:        root,
 		Game:           gameService,
-		Schedule:       scheduleStore,
+		Schedule:       scheduleService,
 		Identity:       identityStore,
 		Mailer:         mailer,
 	}

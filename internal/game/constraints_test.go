@@ -52,6 +52,10 @@ var migFiles = []string{
 	// trigger check 4's job — unlocked|lost arrivals carry no acc. The
 	// UPDATE gate body runs without check 4 from here on.
 	"../../migrations/000013_add_rides_money_state_coupling.up.sql",
+	// Relaxed close gate (000014): since the Phase C event seam the round
+	// close publishes RoundCompleted and the ride settlement is the game
+	// context's own transaction — undecided rides no longer refuse a close.
+	"../../migrations/000014_relax_rounds_close_gate.up.sql",
 }
 
 // PostgreSQL error codes (see pgerrcode; inlined to avoid the extra dependency).

@@ -37,17 +37,19 @@ type Application struct {
 	// never mutated — a dependency like Logger, not ambient mutable state.
 	RootCtx context.Context
 
-	// Game is the ride domain's service: the entry point to ride commands
-	// and MatchResolve. Handlers call domain operations on it; ride/player
-	// CRUD that carries no rules goes through Game.Store.
+	// Game is the ride domain's service: the entry point to ride commands.
+	// Handlers call domain operations on it; ride/player CRUD that carries
+	// no rules goes through Game.Store.
 	//
-	// Schedule is the calendar context's store (Phase B of the
+	// Schedule is the calendar context's service (Phase C of the
 	// Game/Schedule split): the seasons/rounds/matches/teams handlers drive
-	// it directly (ADR-028 — schedule CRUD carries no rules beyond its
-	// validators, so there is no schedule service yet), and the player
-	// handlers read it for the season/team existence checks.
+	// its stores directly (ADR-028 — schedule CRUD carries no rules beyond
+	// its validators), the player handlers read it for the season/team
+	// existence checks, and the resolve PATCH runs its ResolveMatch script,
+	// which commits the result and hands it to game as a
+	// MatchResultRecorded event.
 	Game     *game.Service
-	Schedule *schedule.Store
+	Schedule *schedule.Service
 	Identity *identity.Store
 	Mailer   MailSender
 	wg       sync.WaitGroup

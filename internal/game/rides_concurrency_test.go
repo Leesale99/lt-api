@@ -5,11 +5,12 @@ package game
 // asserting that only the two legal interleavings exist and that they land
 // on exactly the states the design map allows:
 //
-//	close wins:  the ride is auto-unlocked, the continuation is refused
-//	             with ErrRoundNotOpen (the round-refusal 409);
-//	lock wins:   the ride is locked onto the destination, and the close's
-//	             auto-unlock re-checks its own WHERE against the committed
-//	             row and drops it — the ride continues into the next round.
+//	close wins:  the round closes, the continuation is refused with
+//	             ErrRoundNotOpen (the round-refusal 409); the undecided
+//	             ride settles later, behind RoundCompleted (Phase C).
+//	lock wins:   the ride is locked onto the destination, and the close
+//	             finds no undecided ride of its own to settle — the ride
+//	             continues into the next round.
 //
 // Nothing here pins an interleaving order: both orders are legal, and the
 // assertions hold under either. What must never appear is a third shape —
@@ -95,8 +96,8 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 			wg.Wait()
 
 			// Nothing in either fixture or schedule refuses the close: its
-			// only match is closed, and any ride it still sees as
-			// won_pending is auto-unlocked by its own first statement.
+			// only match is closed, and undecided rides no longer block it
+			// (the gate half relaxed in 000014 — settlement is eventual).
 			if closeErr != nil {
 				t.Fatalf("Close() = %v, want nil", closeErr)
 			}
@@ -109,16 +110,19 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 			switch {
 			case lockErr == nil:
 				// The continuation committed before the close: the ride is
-				// locked on the destination, already outside the closing
-				// round's auto-unlock set.
+				// locked on the destination, outside the closing round's
+				// settlement set (which is keyed on the round's own matches).
 				if got.State != RideLocked || got.MatchID != destination {
 					t.Errorf("lock won but state/match = %q/%d, want locked/%d", got.State, got.MatchID, destination)
 				}
 			case errors.Is(lockErr, ErrRoundNotOpen):
-				// The close committed first: the ride was auto-unlocked and
-				// the continuation's guarded write refused it.
-				if got.State != RideUnlocked {
-					t.Errorf("close won but state = %q, want unlocked", got.State)
+				// The close committed first: the continuation's round gate
+				// re-read the committed row and refused it. The undecided
+				// ride stays where it is in this commit's world — the
+				// RoundCompleted settlement is a separate, later transaction
+				// (Phase C eventual close).
+				if got.State != RideWonPending {
+					t.Errorf("close won but state = %q, want won_pending until the settlement runs", got.State)
 				}
 			default:
 				t.Fatalf("RideLock() = %v, want nil or ErrRoundNotOpen", lockErr)
@@ -160,10 +164,12 @@ func insertSettledFutureMatch(ctx context.Context, t *testing.T, seasonID, round
 }
 
 // waitUntilInsertBlocked polls pg_stat_activity until the given goroutine's
-// ride insert is actually waiting on the round row's lock. The scripted
+// ride command is actually waiting on the round row's lock. The scripted
 // close-first race relies on this ordering: without the wait, a slow
 // goroutine could see the committed close and be refused for the mundane
-// reason, proving nothing about the lock.
+// reason, proving nothing about the lock. The blocked statement is the
+// SchedulePort's round gate (SELECT ... FOR SHARE OF r) — the ride write
+// runs only after the gate returns.
 func waitUntilInsertBlocked(ctx context.Context, t *testing.T) {
 	t.Helper()
 
@@ -172,7 +178,7 @@ func waitUntilInsertBlocked(ctx context.Context, t *testing.T) {
 		err := pool.QueryRow(ctx, `
 			SELECT count(*)
 			FROM pg_stat_activity
-			WHERE wait_event_type = 'Lock' AND query LIKE '%INSERT INTO rides%'
+			WHERE wait_event_type = 'Lock' AND query LIKE '%FOR SHARE OF r%'
 		`).Scan(&waiting)
 		if err != nil {
 			t.Fatalf("poll pg_stat_activity: %v", err)
@@ -613,25 +619,15 @@ func TestService_MatchResolveRaces(t *testing.T) {
 				if resolveErr != nil {
 					t.Fatalf("MatchResolve() = %v, want nil", resolveErr)
 				}
-				// The two legal interleavings also differ in the ride's final
-				// state (ADR-022): whatever is still won_pending when the
-				// round closes is auto-resolved by the close tx itself.
-				var wantState RideState
-				var wantVersion int
+				// Both interleavings leave the ride where the resolve put it:
+				// a won ride settles TO won_pending — it is undecided until
+				// the player claims or burns it, and since the Phase C event
+				// seam the close no longer auto-resolves it (settlement is
+				// eventual, behind RoundCompleted).
+				wantState, wantVersion := RideWonPending, 2
 				switch {
 				case closeErr == nil:
-					// The close committed after the resolution: its gate saw
-					// the closed match, and its auto-resolution found the ride
-					// still won_pending (a won ride settles TO won_pending —
-					// it is undecided until the player claims or burns it) and
-					// unlocked it: unlocked/3.
-					wantState, wantVersion = RideUnlocked, 3
 				case errors.Is(closeErr, store.ErrRecordInUse):
-					// The close's flip evaluated before the resolution
-					// committed: rounds_close_gate refused the unclosed match.
-					// Nothing auto-resolves, the player keeps the decision: the
-					// ride stays where the resolve left it.
-					wantState, wantVersion = RideWonPending, 2
 				default:
 					t.Fatalf("Close() = %v, want nil or ErrRecordInUse", closeErr)
 				}
@@ -652,15 +648,18 @@ func TestService_MatchResolveRaces(t *testing.T) {
 					t.Errorf("ride state/version = %q/%d, want %q/%d", got.State, got.Version, wantState, wantVersion)
 				}
 
-				// The forbidden third shape: a closed round that owns an
-				// unresolved ride. Both outcomes must agree with the gate's
-				// own backstop.
+				// The forbidden shape (still forbidden): a closed round with a
+				// LOCKED ride — its match is settled, so the settlement event
+				// has already carried the outcome; a locked ride in a closed
+				// round means the resolve's ride half never ran. Undecided
+				// (won_pending) rides in a closed round are the designed
+				// eventual-settlement intermediate state (000014).
 				var violations int
 				if err := pool.QueryRow(ctx, `
 					SELECT count(*)
 					FROM rides rd
 					JOIN matches m ON m.id = rd.match_id
-					WHERE m.round_id = $1 AND rd.state IN ('locked', 'won_pending')
+					WHERE m.round_id = $1 AND rd.state = 'locked'
 				`, roundID).Scan(&violations); err != nil {
 					t.Fatalf("count unresolved rides: %v", err)
 				}
@@ -669,7 +668,7 @@ func TestService_MatchResolveRaces(t *testing.T) {
 					t.Fatalf("read round status: %v", err)
 				}
 				if roundStatus == "closed" && violations > 0 {
-					t.Errorf("round closed with %d unresolved rides (the third shape)", violations)
+					t.Errorf("round closed with %d locked rides (the forbidden shape)", violations)
 				}
 			})
 		}

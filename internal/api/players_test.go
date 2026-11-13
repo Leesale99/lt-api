@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"lt-api.aleksrdvn.com/internal/eventbus"
 	"lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/schedule"
@@ -22,12 +23,17 @@ import (
 // {request -> want code + body fragments}.
 //
 // newTestApplication wires the real test-database pool set up by TestMain.
+// The schedule service publishes on an in-process bus (the same shape the
+// composition root wires); subscribers attach to it in the tests that
+// exercise the event seam.
 
 func newTestApplication() *Application {
+	bus := eventbus.New()
+	scheduleStore := schedule.NewStore(testPool)
 	return &Application{
 		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
-		Game:     game.NewService(game.NewStore(testPool), schedule.NewStore(testPool)),
-		Schedule: schedule.NewStore(testPool),
+		Game:     game.NewService(game.NewStore(testPool), scheduleStore),
+		Schedule: schedule.NewService(scheduleStore, bus, slog.New(slog.NewTextHandler(os.Stderr, nil))),
 		Identity: identity.NewStore(testPool),
 		Mailer:   nopMailer{},
 	}

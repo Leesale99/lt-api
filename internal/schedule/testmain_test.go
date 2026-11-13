@@ -26,11 +26,10 @@ import (
 // migFile lists all migrations the schedule tests need. The base calendar
 // hierarchy is 000001; 000005 adds matches.ended_at (the close/resolve
 // paths read it). The rides migrations (000006/11/12/13) are here because
-// RoundStore.Close still auto-resolves undecided rides — the temporary
-// cross-context write of the Phase B split (see rounds.go) — and the ride
-// planting helpers walk through the same UPDATE gates every writer faces.
-// They leave at the RoundCompleted event seam in Phase C, together with
-// that write.
+// the RESTRICT FK tests plant rides, and the planting helpers walk through
+// the same UPDATE gates every writer faces. 000014 relaxes the unresolved-
+// rides half of rounds_close_gate — since the Phase C event seam the ride
+// settlement is the game context's, behind RoundCompleted.
 var migFiles = []string{
 	"../../migrations/000001_create_initial_game_models.up.sql",
 	"../../migrations/000005_add_matches_ended_at.up.sql",
@@ -39,6 +38,7 @@ var migFiles = []string{
 	"../../migrations/000011_add_rides_result_agreement_gate.up.sql",
 	"../../migrations/000012_add_rides_insert_state_gate.up.sql",
 	"../../migrations/000013_add_rides_money_state_coupling.up.sql",
+	"../../migrations/000014_relax_rounds_close_gate.up.sql",
 }
 
 // PostgreSQL error codes (see pgerrcode; inlined to avoid the extra dependency).

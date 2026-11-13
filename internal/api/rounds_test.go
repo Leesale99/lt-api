@@ -199,7 +199,8 @@ func TestUpdateRoundHandler(t *testing.T) {
 			// refuses a close over unsettled matches, so the fixture settles
 			// them first: starts_at moves into the past (the score constraints
 			// and the freeze gate key on it); the close transition stamps
-			// ended_at. The rides side of the gate is empty in this fixture.
+			// ended_at. (Since 000014 the gate's undecided-rides half is
+			// relaxed: ride settlement is eventual, behind RoundCompleted.)
 			setup: func(t *testing.T) {
 				if _, err := testPool.Exec(context.Background(),
 					`UPDATE matches SET starts_at = now() - interval '3 hours',
