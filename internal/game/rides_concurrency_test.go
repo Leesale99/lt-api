@@ -369,6 +369,89 @@ func TestService_RideBurnRacesExactlyOnce(t *testing.T) {
 	}
 }
 
+// TestService_RideCommandsRaceOnOneRide pins the loser's error when two
+// *different* commands race from one shared snapshot (the classify task's
+// mechanism, Phase 04.1): both commands Get the same won_pending row and
+// pass their domain check — DecisionPhase, won_pending burns and unlocks —
+// then serialize on the guarded write. The loser's CAS re-evaluates against
+// the winner's commit and matches 0 rows on the version/state predicates.
+//
+// That cause must answer ErrInvalidTransition (the invalid-state 409: the
+// claimed pre-state no longer exists), never ErrRoundNotOpen — the round is
+// open for the whole fixture, so a round-refusal here would be a lie that
+// sends the client away from a retryable conflict. The domain read side of
+// this same race (Get landing after the winner's commit) already answers
+// ErrInvalidTransition via canTransition; the write side now agrees.
+func TestService_RideCommandsRaceOnOneRide(t *testing.T) {
+	requireDB(t)
+
+	ctx := context.Background()
+	svc := NewService(NewStore(pool))
+
+	for i := 0; i < raceIterations; i++ {
+		t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
+			roundID, homeID, awayID := seedFixture(ctx, t)
+			closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
+			ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+
+			// Two independent requests (distinct keys), one snapshot: the
+			// loser must never land its write, and must lose with the
+			// invalid-transition 409, not the round-refusal 409.
+			var (
+				wg   sync.WaitGroup
+				errs = make([]error, 2)
+			)
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				_, errs[0] = svc.RideBurn(ctx, ride.ID, rideToken(fmt.Sprintf("race-burn-vs-unlock-a-%d", i), "POST /v1/rides/:id/burn"), idempotentMarshal)
+			}()
+			go func() {
+				defer wg.Done()
+				_, errs[1] = svc.RideUnlock(ctx, ride.ID, rideToken(fmt.Sprintf("race-burn-vs-unlock-b-%d", i), "POST /v1/rides/:id/unlock"), idempotentMarshal)
+			}()
+			wg.Wait()
+
+			winners := 0
+			for _, err := range errs {
+				switch {
+				case err == nil:
+					winners++
+				case errors.Is(err, ErrInvalidTransition):
+					// The loser: either its domain read saw the winner's
+					// commit (burned/unlocked is outside won_pending's
+					// transitions) or its guarded write lost the CAS and
+					// classifyUpdateRefusal named the cause.
+				default:
+					t.Fatalf("ride command = %v, want nil or ErrInvalidTransition", err)
+				}
+			}
+			if winners != 1 {
+				t.Fatalf("winners = %d (errs: %v), want exactly 1", winners, errs)
+			}
+
+			// The settled state: exactly one decision landed — burned or
+			// unlocked, at exactly one version bump. A loser that wrote
+			// anything shows up here as a double bump.
+			got, err := NewStore(pool).Rides.Get(ctx, ride.ID)
+			if err != nil {
+				t.Fatalf("Get() = %v, want nil", err)
+			}
+			switch got.State {
+			case RideBurned, RideUnlocked:
+			default:
+				t.Errorf("state = %q, want burned or unlocked", got.State)
+			}
+			if got.Version != ride.Version+1 {
+				t.Errorf("version = %d, want %d (exactly one write landed)", got.Version, ride.Version+1)
+			}
+			if got.MatchID != closedMatch {
+				t.Errorf("match = %d, want %d (neither command re-points)", got.MatchID, closedMatch)
+			}
+		})
+	}
+}
+
 // TestService_MatchResolveRaces pins ResolveMatch's two Phase 04 races
 // (the deferred note's excursion: "two concurrent resolutions ... idempotent
 // or a clean conflict"):

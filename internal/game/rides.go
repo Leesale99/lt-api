@@ -327,6 +327,11 @@ type Result struct {
 // the CASE merely computes. The state = 'locked' filter makes a
 // re-resolution a 0-row no-op, which is the idempotency half of
 // ResolveMatch's Phase 04 contract.
+// Score→state rule site 2 of 3 (the SQL computation): check 5 of
+// rides_state_gate (migrations/000011_add_rides_result_agreement_gate.up.sql)
+// is the enforcement home, Match.Winner (internal/game/matches.go) the Go
+// copy; all three are tied by the shared fixture in
+// internal/game/score_state_rule_test.go — change one, change all three.
 func (s *RideStore) UpdateAllForMatchTx(ctx context.Context, tx pgx.Tx, matchID int) ([]Result, error) {
 	query := `
 		UPDATE rides r
@@ -359,13 +364,19 @@ func (s *RideStore) UpdateAllForMatchTx(ctx context.Context, tx pgx.Tx, matchID 
 		results = append(results, result)
 	}
 
-	// Trigger refusals surface here, not at Query: the statement fails while
-	// the rows are being streamed, so the gate's P0001 arrives via rows.Err.
+	// Refusals surface here, not at Query: the statement fails while
+	// the rows are being streamed, so a gate refusal arrives via rows.Err.
 	if err := rows.Err(); err != nil {
-		if store.IsTriggerViolation(err) {
+		switch {
+		case store.IsTriggerViolation(err):
 			// rides_state_gate result agreement: some ride's destination
 			// disagreed with the match's scores (ADR-020). The tx rolls back
 			// upstream — scores and rides together.
+			return nil, ErrInvalidTransition
+		case store.IsCheckViolation(err, ridesMoneyStateCoupling):
+			// rides_money_state_coupling (000013): the declarative check
+			// that took trigger check 4's job — unlocked|lost arrivals
+			// carry no acc. Same 409 surface the P0001 refusal produced.
 			return nil, ErrInvalidTransition
 		}
 		return nil, err
@@ -399,6 +410,11 @@ func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
 			// NOT ErrRecordInUse: the row is not referenced by anything,
 			// its state machine rejected the write.
 			return Ride{}, ErrInvalidTransition
+		case store.IsCheckViolation(err, ridesMoneyStateCoupling):
+			// rides_money_state_coupling (000013): the declarative check
+			// that took trigger check 4's job — unlocked|lost arrivals
+			// carry no acc. Same 409 surface the P0001 refusal produced.
+			return Ride{}, ErrInvalidTransition
 		default:
 			return Ride{}, err
 		}
@@ -406,6 +422,19 @@ func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
 
 	return ride, nil
 }
+
+// ridesMoneyStateCoupling is the declarative money-state-coupling gate
+// (000013): unlocked|lost arrivals carry no accumulated bonus_acc — the
+// predicate ride.Unlock and ride.Lost obey in the domain. It is row-local
+// (references only NEW), so a CHECK constraint owns it instead of trigger
+// check 4, per the Postgres hierarchy: declarative constraint above
+// trigger whenever the constraint can express the rule. The store maps it
+// by name, not by bare SQLSTATE: the rides table carries five other
+// CHECKs that must keep falling through unhandled. Change-detector: the
+// domain copies live in ride.Unlock/ride.Lost and the persistence copy in
+// rideAutoUnlockSQL (internal/game/rounds.go); the DB probe is
+// TestRideMoneyStateCoupling (internal/game/constraints_test.go).
+const ridesMoneyStateCoupling = "rides_money_state_coupling"
 
 // guardedUpdateSQL is the ride commands' guarded write (Phase 04, ADR-024):
 // the full-column shape of Update plus the contended facts in the WHERE, so
@@ -448,9 +477,14 @@ const guardedUpdateSQL = `
 // is idempotent (ADR-024), so the write shares the claim's transaction:
 //   - the ride arrives post-mutation; the WHERE re-verifies pre-mutation facts
 //   - destinationMatchID is the continuation's match, or 0 for Burn/Unlock
-//   - 0 rows -> ErrRoundNotOpen (the round-refusal 409); rides_state_gate
-//     P0001 -> ErrInvalidTransition (ADR-020); destination deleted
-//     mid-flight -> ErrRecordNotFound
+//   - 0 rows is a refusal with more than one cause, so it is classified
+//     after the fact (classifyUpdateRefusal): a closed own round answers
+//     ErrRoundNotOpen (the round-refusal 409), a CAS lost to a concurrent
+//     ride command answers ErrInvalidTransition (ADR-020), a destination
+//     stopped between the pick and the write answers ErrRoundNotOpen;
+//     rides_state_gate P0001 and rides_money_state_coupling 23514 ->
+//     ErrInvalidTransition; destination deleted mid-flight ->
+//     ErrRecordNotFound
 func (s *RideStore) UpdateGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride, destinationMatchID int) (Ride, error) {
 	err := tx.QueryRow(ctx, guardedUpdateSQL,
 		ride.MatchID, ride.State, ride.Acc, ride.Streak, ride.ID, ride.Version, destinationMatchID,
@@ -469,8 +503,13 @@ func (s *RideStore) UpdateGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride, d
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Ride{}, ErrRoundNotOpen
+			return Ride{}, s.classifyUpdateRefusal(ctx, ride.ID, ride.Version, destinationMatchID)
 		case store.IsTriggerViolation(err):
+			return Ride{}, ErrInvalidTransition
+		case store.IsCheckViolation(err, ridesMoneyStateCoupling):
+			// rides_money_state_coupling (000013): the declarative check
+			// that took trigger check 4's job — unlocked|lost arrivals
+			// carry no acc. Same 409 surface the P0001 refusal produced.
 			return Ride{}, ErrInvalidTransition
 		case store.IsFKViolation(err):
 			// The destination match was deleted between NextForTeam's pick
@@ -482,6 +521,65 @@ func (s *RideStore) UpdateGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride, d
 	}
 
 	return ride, nil
+}
+
+// classifyUpdateRefusal distinguishes the 0-row causes of the guarded
+// update: the CAS lost to a concurrent ride command (ErrInvalidTransition,
+// the invalid-state 409 — the claimed pre-state no longer exists on the
+// row) and the round-refusal (ErrRoundNotOpen — the ride's own round
+// closed, or the continuation destination's round stopped accepting).
+// The round check comes first on purpose: the close's auto-unlock both
+// bumps the version and closes the round, so the close-wins interleaving
+// must answer the round-refusal, not read as a decision race. Both facts
+// are settled by the time this runs — the write already did not happen —
+// so this read classifies the refusal, it does not gate anything. It
+// deliberately reads on the pool beside the tx (per-statement snapshot):
+// the refusal already happened, the read only names the reason, and it may
+// legally see a snapshot from before the winner's commit — the default
+// branch catches that no-cause read instead of passing it as a named one.
+func (s *RideStore) classifyUpdateRefusal(ctx context.Context, rideID, claimedVersion, destinationMatchID int) error {
+	query := `
+		SELECT r.state, r.version, o.status
+		FROM rides r
+		INNER JOIN matches m ON m.id = r.match_id
+		INNER JOIN rounds o ON o.id = m.round_id
+		WHERE r.id = $1
+	`
+	var (
+		state   RideState
+		version int
+		status  RoundStatus
+	)
+
+	err := s.pool.QueryRow(ctx, query, rideID).Scan(&state, &version, &status)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// The ride itself is gone mid-flight: same parent-gone mapping
+		// the FK refusals use.
+		return store.ErrRecordNotFound
+	case err != nil:
+		return err
+	case status != RoundOpen:
+		return ErrRoundNotOpen
+	case version != claimedVersion || state != RideWonPending:
+		// The CAS lost: a concurrent ride command moved the row — the
+		// caller's won_pending claim no longer exists on it. The state
+		// half is belt-and-braces (every ride command bumps the version),
+		// but a state flip without a version bump is a defect either way.
+		return ErrInvalidTransition
+	case destinationMatchID > 0:
+		// The only remaining predicate is the destination guard: the
+		// continuation's match ended or its round closed between
+		// NextForTeam's pick and the write — a round-refusal on the
+		// destination, same 409 shape.
+		return ErrRoundNotOpen
+	default:
+		// A 0-row write with destination 0 and every checked predicate
+		// passing: only reachable when this read saw a snapshot from
+		// before the concurrent commit (see above). A refusal without
+		// a cause must not pass as a named one.
+		return fmt.Errorf("ride update refused while ride %d round open at version %d", rideID, claimedVersion)
+	}
 }
 
 var transitions = map[RideState]map[RoundPhase][]RideState{

@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
 
 	"lt-api.aleksrdvn.com/internal/testdb"
 )
@@ -46,6 +47,10 @@ var migFiles = []string{
 	// INSERT state gate (000012): rides are born locked only — the plant
 	// helpers walk to other states through the UPDATE gate.
 	"../../migrations/000012_add_rides_insert_state_gate.up.sql",
+	// Money-state coupling (000013): the declarative CHECK that took
+	// trigger check 4's job — unlocked|lost arrivals carry no acc. The
+	// UPDATE gate body runs without check 4 from here on.
+	"../../migrations/000013_add_rides_money_state_coupling.up.sql",
 }
 
 // PostgreSQL error codes (see pgerrcode; inlined to avoid the extra dependency).
@@ -407,6 +412,83 @@ func TestRoundAndSeasonConstraints(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := pool.Exec(ctx, c.query, c.args...)
 			assertCode(t, c, err)
+		})
+	}
+}
+
+// TestRideMoneyStateCoupling probes the declarative gate that took
+// trigger check 4's job (000013): unlocked|lost arrivals must carry no
+// accumulated bonus_acc, burned keeps the value it accrued (what ride.Burn
+// banks on). Direct SQL probes, not the domain: the rule's enforcement
+// home is the constraint itself. The refusals must name
+// rides_money_state_coupling — that is the name the store maps to
+// ErrInvalidTransition, and hard-coding it here keeps the test, the
+// constraint and ridesMoneyStateCoupling (internal/game/rides.go) in
+// lockstep.
+func TestRideMoneyStateCoupling(t *testing.T) {
+	requireDB(t)
+
+	ctx := context.Background()
+	seasonID, roundID, homeID, awayID := seed(ctx, t)
+	defer cleanup(ctx, t)
+
+	constraintName := "rides_money_state_coupling"
+
+	matchID := insertClosedMatchScored(ctx, t, seasonID, roundID, homeID, awayID, 2, 1)
+
+	cases := []struct {
+		name     string
+		state    string
+		acc      string
+		wantCode string
+	}{
+		{"lost arrival with acc = 0 passes", "lost", "0", ""},
+		{"unlocked arrival with acc = 0 passes", "unlocked", "0", ""},
+		{"burned keeps the acc it accrued (not a money-state arrival)", "burned", "100", ""},
+		{"lost arrival carrying acc refused", "lost", "100", errCheckViolation},
+		{"unlocked arrival carrying acc refused", "unlocked", "100", errCheckViolation},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			// unlocked|burned arrive from won_pending only (UPDATE gate
+			// check 3), and locked → won_pending requires the ride's team
+			// to have won (check 5) — so the probing ride departs home-side
+			// through the walk, while lost is reached from locked away-side
+			// (the home team won 2–1). Locked rides may carry acc (only
+			// unlocked|lost arrivals are coupled to zero), so the probe
+			// plants one holding 100 and attempts the arrival in one
+			// statement — the same shape plantRide's walk
+			// (internal/game/service_test.go) and rideAutoUnlockSQL
+			// (internal/game/rounds.go) use.
+			team := awayID
+			if tt.state != "lost" {
+				team = homeID
+			}
+			ride := plantRide(ctx, t, matchID, team, RideLocked, decimal.NewFromInt(100), 0)
+
+			if tt.state != "lost" {
+				if _, err := pool.Exec(ctx, `UPDATE rides SET state = 'won_pending' WHERE id = $1`, ride.ID); err != nil {
+					t.Fatalf("walk locked → won_pending: %v", err)
+				}
+			}
+
+			_, err := pool.Exec(ctx,
+				`UPDATE rides SET state = $2, bonus_acc = $3 WHERE id = $1`,
+				ride.ID, tt.state, tt.acc)
+			assertCode(t, constraintCase{name: tt.name, wantCode: tt.wantCode}, err)
+
+			if tt.wantCode == "" {
+				return
+			}
+
+			// The refusal must be the money-state constraint by name, not
+			// just any 23514: the rides table carries five other CHECKs and
+			// the store maps only this one to ErrInvalidTransition.
+			var pgErr *pgconn.PgError
+			if errorsAs(err, &pgErr) && pgErr.ConstraintName != constraintName {
+				t.Errorf("refusal named constraint %q, want %q", pgErr.ConstraintName, constraintName)
+			}
 		})
 	}
 }

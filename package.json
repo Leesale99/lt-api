@@ -1,0 +1,7 @@
+{
+  "name": "lt-api",
+  "private": true,
+  "scripts": {
+    "typecheck": "npx -y -p typescript tsc --noEmit -p .pi/extensions/delegate/tsconfig.json"
+  }
+}

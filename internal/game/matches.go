@@ -51,6 +51,14 @@ type Match struct {
 	Version    int         `json:"version"`
 }
 
+// Winner is site 1 of 3 for the score→state rule: a closed match's final
+// scores decide a ride's destination, a draw crowns no winner. The other
+// two encodings: the CASE in RideStore.UpdateAllForMatchTx
+// (internal/game/rides.go) and check 5 of rides_block_illegal_transition
+// (migrations/000011_add_rides_result_agreement_gate.up.sql). The
+// database is the enforcement home (ADR-018/ADR-020); Winner and the CASE
+// are derived copies tied to it by the shared fixture in
+// internal/game/score_state_rule_test.go — change one, change all three.
 func (m Match) Winner() *int {
 	switch {
 	case m.Status != MatchClosed:
@@ -108,11 +116,13 @@ func ValidateNewMatch(v *validator.Validator, match Match, now time.Time) {
 	v.Check(match.Status == "created", "status", "new matches can only have status created")
 }
 
-func ValidateResolveMatch(v *validator.Validator, match Match, now time.Time) {
+// ValidateResolveMatch validates the request shape of a resolve payload:
+// field presence and score arithmetic, the checks a handler runs on whatever
+// bytes arrived. Domain-legality rules are not here — the one rule the
+// resolve flow owns, "ended_at must be in the past", is time policy and
+// lives in Service.MatchResolve (ADR-026) so every caller passes it.
+func ValidateResolveMatch(v *validator.Validator, match Match) {
 	v.Check(match.EndedAt != nil, "ended_at", "must be provided")
-	if match.EndedAt != nil {
-		v.Check(match.EndedAt.Before(now), "ended_at", "must be in the past")
-	}
 	v.Check(match.ID > 0, "id", "must be provided")
 	v.Check(match.Score.Home != nil && match.Score.Away != nil, "score", "must contain both home and away values")
 	// The nil guard above runs first, but Check is not short-circuiting:

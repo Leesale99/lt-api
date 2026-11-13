@@ -15,6 +15,11 @@ import (
 var (
 	ErrRoundNotOpen = errors.New("round is not open")
 	ErrNoNextMatch  = errors.New("team has no upcoming match")
+	// ErrEndedAtInFuture reports a resolve whose ended_at lies at or after
+	// the current time. This is time policy, not request shape: it lives at
+	// the service door (ADR-026) so every MatchResolve caller — not only
+	// the HTTP handler — passes the same rule.
+	ErrEndedAtInFuture = errors.New("ended_at must be in the past")
 )
 
 type Service struct {
@@ -293,6 +298,14 @@ func (s *Service) RideUnlock(ctx context.Context, rideID int, token IdempotencyT
 }
 
 func (s *Service) MatchResolve(ctx context.Context, matchID int, score Score, endedAt time.Time, version int) (Match, error) {
+	// Time policy at the door (ADR-026), before the tx: never open a
+	// transaction just to fail cheaply, and never let a legality answer be
+	// outranked by a storage conflict (e.g. a closed match would turn this
+	// into a 409 if the check ran after ResolveTx).
+	if !endedAt.Before(time.Now()) {
+		return Match{}, ErrEndedAtInFuture
+	}
+
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
 		return Match{}, err

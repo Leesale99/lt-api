@@ -78,6 +78,12 @@ BEGIN
   -- the match row in the same tx as the resolution, so it sees the scores
   -- ResolveMatch wrote earlier in the transaction — and refuses when they
   -- are not there. NEW.team_id needs no re-read of the ride.
+  --
+  -- Score→state rule site 3 of 3 (the enforcement home): the Go copy is
+  -- Match.Winner (internal/game/matches.go), the computation copy is the
+  -- CASE in RideStore.UpdateAllForMatchTx (internal/game/rides.go); tied
+  -- by the shared fixture in internal/game/score_state_rule_test.go —
+  -- change one, change all three.
   IF OLD.state = 'locked' AND NEW.state IN ('won_pending', 'lost') THEN
     SELECT m.home_score, m.away_score, m.home_team_id, m.away_team_id
       INTO v_home_score, v_away_score, v_home_team_id, v_away_team_id

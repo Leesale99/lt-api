@@ -391,7 +391,10 @@ func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Reque
 
 	v := validator.New()
 
-	if game.ValidateResolveMatch(v, match, time.Now()); !v.Valid() {
+	// Request shape only (ADR-026): the domain-legality rule (ended_at in
+	// the past) runs inside Service.MatchResolve, mapped to the same 422
+	// below.
+	if game.ValidateResolveMatch(v, match); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
@@ -401,6 +404,14 @@ func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Reque
 
 	match, err = app.Game.MatchResolve(ctx, match.ID, match.Score, *match.EndedAt, match.Version)
 	if err != nil {
+		if errors.Is(err, game.ErrEndedAtInFuture) {
+			// Time policy refusal from the service door (ADR-026), checked
+			// before any transaction; the 422 body is the message the
+			// handler used to produce itself.
+			v.AddError("ended_at", "must be in the past")
+			app.failedValidationResponse(w, r, v.Errors)
+			return
+		}
 		// gameErrorResponse maps the full domain surface this flow can
 		// produce: ErrRecordNotFound (unknown match), ErrEditConflict (lost
 		// race or already-closed match, classified by the store),

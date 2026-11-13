@@ -1,0 +1,29 @@
+// Typecheck-only config for the pi delegate extension (.pi/extensions/delegate/*.ts).
+//
+// MACHINE-SPECIFIC PATHS: the absolute paths below point at this machine's pi
+// install (release 1.5.2, ~/.pi/agent/install/releases/1.5.2/node_modules).
+// When pi updates to a new release, update every path here (typeRoots and
+// both paths entries) to the new release's node_modules.
+//
+// noEmit is required: allowImportingTsExtensions (needed for the extension's
+// "./x.ts" style imports) only works in no-emit mode.
+//
+// Run the check with:  npm run typecheck
+{
+  "compilerOptions": {
+    "noEmit": true,
+    "strict": true,
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "typeRoots": ["/Users/aleksrdvn/.pi/agent/install/releases/1.5.2/node_modules/@types"],
+    "paths": {
+      "@earendil-works/*": ["/Users/aleksrdvn/.pi/agent/install/releases/1.5.2/node_modules/@earendil-works/*"],
+      "typebox": ["/Users/aleksrdvn/.pi/agent/install/releases/1.5.2/node_modules/typebox"]
+    }
+  },
+  "include": ["**/*.ts"]
+}

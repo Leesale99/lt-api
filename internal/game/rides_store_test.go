@@ -662,15 +662,18 @@ func TestRideStore_UpdateGuardedTx(t *testing.T) {
 		}
 	})
 
-	t.Run("stale version is the round-refusal 409, not an edit conflict", func(t *testing.T) {
+	t.Run("a stale version loses the CAS to the invalid-state 409, not an edit conflict", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
 		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
 		// Bump the version without moving state (a state-preserving
 		// rewrite is legal to the gate): the version predicate alone now
-		// refuses the guarded write, and the mapped error must be the
-		// round sentinel Update maps to ErrEditConflict.
+		// refuses the guarded write, and classifyUpdateRefusal names the
+		// cause — the claimed pre-state no longer exists on the row, so
+		// the CAS lost: ErrInvalidTransition (the invalid-state 409,
+		// ADR-020), still not ErrEditConflict. The round-refusal 409 is
+		// reserved for an actually closed round, checked first.
 		if _, err := pool.Exec(ctx, `UPDATE rides SET bonus_acc = bonus_acc + 0.0001, version = version + 1 WHERE id = $1`, ride.ID); err != nil {
 			t.Fatalf("bump version: %v", err)
 		}
@@ -678,8 +681,8 @@ func TestRideStore_UpdateGuardedTx(t *testing.T) {
 		ride.State = RideBurned
 		_, err := guardedWrite(ctx, t, rs, ride, 0)
 
-		if !errors.Is(err, ErrRoundNotOpen) {
-			t.Fatalf("UpdateGuardedTx() = %v, want ErrRoundNotOpen", err)
+		if !errors.Is(err, ErrInvalidTransition) {
+			t.Fatalf("UpdateGuardedTx() = %v, want ErrInvalidTransition", err)
 		}
 	})
 
@@ -696,11 +699,14 @@ func TestRideStore_UpdateGuardedTx(t *testing.T) {
 
 		// A second player command (or a retry) holding the pre-decision
 		// snapshot: the state predicate refuses it — the decision is
-		// re-checked at the write instant, not only in the domain.
+		// re-checked at the write instant, not only in the domain. The
+		// round is still open, so classifyUpdateRefusal reads the moved
+		// row and names the CAS loss: ErrInvalidTransition, the same
+		// answer the domain read side gives this race.
 		_, err := guardedWrite(ctx, t, rs, ride, 0)
 
-		if !errors.Is(err, ErrRoundNotOpen) {
-			t.Fatalf("UpdateGuardedTx() = %v, want ErrRoundNotOpen", err)
+		if !errors.Is(err, ErrInvalidTransition) {
+			t.Fatalf("UpdateGuardedTx() = %v, want ErrInvalidTransition", err)
 		}
 	})
 
