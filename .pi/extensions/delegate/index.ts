@@ -1486,6 +1486,7 @@ export default function (pi: ExtensionAPI) {
       "Agent discovery always runs in the invoking session's cwd; a per-call cwd only sets the worker's process cwd (e.g. a git worktree) — the resolved roster is identical for every cwd.",
       "Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
       "Single mode: background=true forces the detached tmux-backed job (results via job_status), background=false forces foreground, omitted = the agent config's background frontmatter decides; rejected with tasks/chain.",
+      "Batching norm: several independent delegations → spawn all in one turn (parallel tasks[] for foreground work, one background spawn for the long orchestrator task); sequential spawn-then-wait is blocking with extra steps.",
       "Handoff (single background mode): handoff:\"auto\"|\"confirm\" is forwarded into the orchestrator task prompt as HANDOFF=..., overriding a HANDOFF mention in the task text; omitted keeps the task-text convention (no mention = confirm). Rejected with tasks/chain and foreground runs.",
       `Default agent scope is "both": project-local agents (${CONFIG_DIR_NAME}/agents) override user agents (${path.join(getAgentDir(), "agents")}) with the same name.`,
       `Set agentScope: "user" to ignore project-local agents.`,
@@ -2233,7 +2234,8 @@ export default function (pi: ExtensionAPI) {
     description:
       "Inspect background subagent jobs (artifacts in .pi/jobs/). " +
       "Omit id to list all jobs (id, status, agent, task preview, elapsed). " +
-      "With id: for done jobs returns the final assistant output; for failed jobs exit code + stderr + last events; for running jobs current activity; for awaiting_approval jobs (confirm handoff) returns the orchestrator's approval request — decide via job_approve.",
+      "With id: for done jobs returns the final assistant output; for failed jobs exit code + stderr + last events; for running jobs current activity; for awaiting_approval jobs (confirm handoff) returns the orchestrator's approval request — decide via job_approve. " +
+      "On-demand only: for when the user asks or you need one data point — never loop-wait on a job. A repeat poll of the same unchanged running job is refused by a cooldown (doubling on consecutive refusals), and completion arrives automatically as an injected message at the next turn boundary.",
     parameters: JobStatusParams,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       // Every inspection also refreshes the jobs widget (fire-and-forget; no-op
