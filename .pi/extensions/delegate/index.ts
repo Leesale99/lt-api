@@ -104,6 +104,29 @@ const SETTLE_WAIT_MS_MAX = 10 * 60_000;
 const SETTLE_WAIT_POLL_MS = 1_000;
 /** Result lines shown by the collapsed delegate-job-result card. */
 const JOB_RESULT_PREVIEW_LINES = 12;
+/** Default job_status poll cooldown (ms) per running job id (phase 8). */
+const POLL_COOLDOWN_MS_DEFAULT = 60_000;
+/** Consecutive-refusal doublings cap: cooldown at most 32x base (~32 min at default) so a
+ * genuinely stuck job stays inspectable via /jobs and the artifacts; polling itself stays awkward. */
+const POLL_COOLDOWN_MAX_DOUBLINGS = 5;
+
+/** How long a job_status poll cooldown lasts: env override, 0 disables, invalid/negative → default. */
+function pollCooldownMs(): number {
+  const raw = Number(process.env.PI_DELEGATE_POLL_COOLDOWN_MS);
+  if (!Number.isFinite(raw) || raw < 0) return POLL_COOLDOWN_MS_DEFAULT;
+  return raw;
+}
+
+/** Last job_status poll of one job id: when, what the registry read, consecutive refusals. */
+interface PollRecord {
+  at: number;
+  status: JobStatus;
+  finishedAt?: string;
+  refusals: number;
+}
+/** Per-job-id poll history for the cooldown (phase 8). Small session-scale map — entries are
+ * deleted as soon as a poll observes a non-running status, so no pruning is needed. */
+const pollRecords = new Map<string, PollRecord>();
 
 function formatTokens(count: number): string {
   if (count < 1000) return count.toString();
@@ -2187,6 +2210,54 @@ export default function (pi: ExtensionAPI) {
             content: [{ type: "text", text: "No job with id " + requested + ". Known jobs: " + known }],
             details: { jobs: all.map(cardDataOf) },
           };
+        }
+        // Phase 8 poll cooldown: a repeat job_status poll of the SAME unchanged
+        // running job within the cooldown window gets a canned refusal instead
+        // of data — make waiting structurally awkward, don't just forbid it.
+        // Cooldown never applies to terminal or awaiting_approval jobs: their
+        // pickups (and the approval flow) must keep working.
+        // A refused poll is NOT a pickup: it returns before the
+        // result-injection branch below, so it never touches surfacedJobIds,
+        // never consumes the exactly-once completion surfacing, and does not
+        // count as delivery in any mark-AFTER-delivery path. It also skips the
+        // card transition below (status is unchanged, so nothing transitioned).
+        if (entry.status === "running") {
+          const base = pollCooldownMs();
+          if (base > 0) {
+            const prev = pollRecords.get(entry.id);
+            const now = Date.now();
+            const unchanged =
+              prev !== undefined && prev.status === entry.status && prev.finishedAt === entry.finishedAt;
+            // Escalation: refusal #1 keeps the base window; the window DOUBLES
+            // from the 2nd consecutive refusal on (and again per further
+            // consecutive refusal, capped), so hammering job_status meets
+            // progressively longer silences. An allowed poll resets the count.
+            const multiplier = prev
+              ? Math.pow(2, Math.min(Math.max(prev.refusals - 1, 0), POLL_COOLDOWN_MAX_DOUBLINGS))
+              : 1;
+            if (unchanged && prev && now - prev.at < base * multiplier) {
+              prev.refusals += 1;
+              prev.at = now;
+              const elapsed = formatElapsed(entry.startedAt);
+              const text = prev.refusals === 1
+                ? "Still running (elapsed " + elapsed + "). You will be surfaced on completion — stop polling."
+                : "Refused again. Job " + entry.id + " is unchanged since your last poll (elapsed " + elapsed + "). Completion is surfaced automatically at the next turn boundary — further polls are refused with a doubling cooldown. Pick up other work or end your turn.";
+              return {
+                content: [{ type: "text", text }],
+                details: { jobs: [cardDataOf(entry)], refused: true },
+              };
+            }
+            pollRecords.set(entry.id, {
+              at: now,
+              status: entry.status,
+              finishedAt: entry.finishedAt,
+              refusals: 0,
+            });
+          }
+        } else {
+          // Cooldown bookkeeping ends with the running state; terminal and
+          // awaiting_approval polls are always allowed (and drop the record).
+          pollRecords.delete(entry.id);
         }
         if (before && before.status === "running" && entry.status !== "running") {
           emitJobCard(ctx, entry);
