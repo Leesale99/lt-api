@@ -689,3 +689,105 @@ func TestResolveMatchRaces(t *testing.T) {
 		}
 	})
 }
+
+// TestSettlementHandlersSerializeOnTheRound pins the settlement handlers'
+// serialization (the per-round advisory lock in runEvent) at the exact
+// interleaving that used to strand a ride: a resolve's and a close's
+// publishes firing at the same moment, the RoundCompleted settlement
+// reading the ride still locked and losing the locked→won_pending CAS to
+// the MatchResultRecorded settlement running beside it. The loser rolled
+// back WITH its idempotency claim, the bus dropped the failed delivery,
+// and the ride stayed won_pending under a closed round — the third shape
+// — with no redelivery until Phase 07.
+//
+// The resolve settlement is emulated on a manually held transaction (the
+// handler itself cannot be paused mid-flight): the same advisory lock and
+// the same guarded arrival its tx performs at the contended instant. The
+// delivery must wait behind it and converge on the committed result —
+// sweep the freshly won_pending ride unlocked — whichever order the two
+// settlements run in. Under the serialization the ride lands unlocked/3
+// regardless of timing; without it, the delivery loses the CAS and
+// surfaces ErrInvalidTransition (the stranded shape).
+func TestSettlementHandlersSerializeOnTheRound(t *testing.T) {
+	requireDB(t)
+
+	ctx := context.Background()
+	svc, _ := newTestService()
+
+	roundID, homeID, awayID := seedFixture(ctx, t)
+	matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "-30 minutes")
+	scoreStartedMatch(ctx, t, matchID)
+	ride := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
+
+	// The resolve settlement, held mid-flight on its own transaction:
+	// its serialization and its guarded arrival, nothing committed yet.
+	txResolve, err := gamePool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the resolve settlement tx: %v", err)
+	}
+	defer func() { _ = txResolve.Rollback(context.Background()) }()
+
+	if _, err := txResolve.Exec(ctx, settlementLockSQL, settlementLockClass, roundID); err != nil {
+		t.Fatalf("settlement lock: %v", err)
+	}
+	if _, err := svc.Store.Rides.ArriveTx(ctx, txResolve, ride.ID, RideLocked, RideWonPending, ride.Version); err != nil {
+		t.Fatalf("held resolve arrival: %v", err)
+	}
+
+	// The close's RoundCompleted delivery, while the resolve settlement
+	// is uncommitted: with the serialization it claims its event and
+	// blocks on the round lock; without it, it reads the ride still
+	// locked and races the held arrival.
+	event := schedule.RoundCompleted{
+		EventID:  fmt.Sprintf("evt-settle-serialize-%d", time.Now().UnixNano()),
+		RoundID:  roundID,
+		SeasonID: 1,
+		IsFinal:  false,
+		Results: []schedule.MatchResult{
+			{
+				MatchID:      matchID,
+				SeasonID:     1,
+				RoundID:      roundID,
+				HomeTeamID:   homeID,
+				AwayTeamID:   awayID,
+				Score:        resolveScore(70, 69),
+				Odds:         schedule.Odds{Home: 1.75, Away: 2.20},
+				WinnerTeamID: winnerOf(70, 69, homeID, awayID),
+				EndedAt:      time.Now().Add(-2 * time.Hour),
+			},
+		},
+	}
+	delivered := make(chan error, 1)
+	go func() { delivered <- svc.OnRoundCompleted(ctx, event) }()
+
+	// Let the delivery reach its lock (or, unserialized, its contended
+	// read) before the held settlement commits: the overlap this test
+	// pins. The convergence assertion below holds under any timing with
+	// the serialization — the sleep only keeps the unfixed shape
+	// reproducible.
+	time.Sleep(100 * time.Millisecond)
+
+	if err := txResolve.Commit(ctx); err != nil {
+		t.Fatalf("commit the resolve settlement: %v", err)
+	}
+
+	select {
+	case err := <-delivered:
+		if err != nil {
+			t.Fatalf("OnRoundCompleted() = %v, want nil (the delivery must wait, not lose the CAS)", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("OnRoundCompleted did not return; still blocked behind the held settlement?")
+	}
+
+	got, err := svc.Store.Rides.Get(ctx, ride.ID)
+	if err != nil {
+		t.Fatalf("Get() = %v, want nil", err)
+	}
+	if got.State != RideUnlocked || got.Version != 3 {
+		t.Errorf("ride state/version = %q/%d, want %q/3 (settled by the resolve, force-resolved by the close)", got.State, got.Version, RideUnlocked)
+	}
+	if !got.Acc.IsZero() {
+		t.Errorf("acc = %s, want 0 (the force-resolve releases the bonus)", got.Acc)
+	}
+}

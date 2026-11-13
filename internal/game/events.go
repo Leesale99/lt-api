@@ -34,6 +34,20 @@ package game
 // committed, settlement not yet run, or settlement failed — is the
 // accepted Phase C crash gap: the rides simply keep waiting (no money is
 // lost), and the Phase 07 sweep closes it.
+//
+// The two settlement transactions serialize on the settled round
+// (pg_advisory_xact_lock below): a resolve and a close publishing at the
+// same moment run their handlers back to back, so the second one reads
+// the first one's committed transitions instead of racing them. Without
+// the lock the RoundCompleted settlement could lose the locked→won_pending
+// CAS to the MatchResultRecorded settlement running beside it, roll back
+// WITH its idempotency claim (an unprocessed event), and be dropped by
+// the synchronous bus — a round closed with a ride stranded won_pending,
+// the third shape, with no redelivery until Phase 07. Serialized, both
+// orders converge: close-first settles the locked rides and sweeps its
+// own won_pending in one tx; resolve-first finds no locked rides and
+// sweeps the freshly won_pending ones. The lock is taken INSIDE the tx,
+// after the idempotency claim: a replayed event never reaches it.
 
 import (
 	"context"
@@ -54,13 +68,22 @@ const (
 	roundCompleteEndpoint = "event:schedule.RoundCompleted"
 )
 
+// The settlement handlers' serialization: a transaction-scoped advisory
+// lock per settled round, taken inside the handler's own transaction.
+// Class id namespaces game's advisory-lock keyspace (the only user — the
+// second key is the round id); the value itself is arbitrary.
+const (
+	settlementLockClass = 1
+	settlementLockSQL   = `SELECT pg_advisory_xact_lock($1, $2)`
+)
+
 // OnMatchResultRecorded settles the locked rides of one resolved match,
 // from the payload: winner == ride.team → won_pending (the bonus accrues,
 // the rule ride.WonPending encodes), otherwise lost (the accrued bonus is
 // released — the Phase B set-based path skipped both money halves; this
 // handler does them through the Ledger).
 func (s *Service) OnMatchResultRecorded(ctx context.Context, event schedule.MatchResultRecorded) error {
-	return s.runEvent(ctx, matchResultEndpoint, event.EventID, event, func(tx pgx.Tx) error {
+	return s.runEvent(ctx, matchResultEndpoint, event.EventID, event, event.RoundID, func(tx pgx.Tx) error {
 		rides, err := s.Store.Rides.LockedForMatchTx(ctx, tx, event.MatchID)
 		if err != nil {
 			return err
@@ -89,7 +112,7 @@ func (s *Service) OnMatchResultRecorded(ctx context.Context, event schedule.Matc
 // the undecided sweep — a ride the backstop just settled to won_pending is
 // swept by the same transaction, the old close-transaction semantics.
 func (s *Service) OnRoundCompleted(ctx context.Context, event schedule.RoundCompleted) error {
-	return s.runEvent(ctx, roundCompleteEndpoint, event.EventID, event, func(tx pgx.Tx) error {
+	return s.runEvent(ctx, roundCompleteEndpoint, event.EventID, event, event.RoundID, func(tx pgx.Tx) error {
 		for _, result := range event.Results {
 			rides, err := s.Store.Rides.LockedForMatchTx(ctx, tx, result.MatchID)
 			if err != nil {
@@ -240,9 +263,11 @@ func teamOdds(teamID, homeTeamID, awayTeamID int, odds schedule.Odds) (decimal.D
 // runEvent is the handlers' shared execution shape: claim the EventID
 // first (inside the handler's transaction — a failed handler rolls its
 // claim back, so an unprocessed event can be re-delivered; a replay is a
-// no-op success), then the settlement work, then the stored response, one
-// commit.
-func (s *Service) runEvent(ctx context.Context, endpoint, eventID string, payload any, exec func(pgx.Tx) error) error {
+// no-op success), then the per-round settlement lock (see the package
+// comment: the two settlement handlers of one round run back to back,
+// never beside each other — a replay skips the lock with its no-op),
+// then the settlement work, then the stored response, one commit.
+func (s *Service) runEvent(ctx context.Context, endpoint, eventID string, payload any, roundID int, exec func(pgx.Tx) error) error {
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -266,6 +291,14 @@ func (s *Service) runEvent(ctx context.Context, endpoint, eventID string, payloa
 		// Replay: the event already ran, byte-identical delivery is a
 		// no-op success.
 		return nil
+	}
+
+	// The per-round settlement lock, before any ride is read: the other
+	// settlement handler of this round (a resolve's and a close's
+	// publishes overlap when they fire at the same moment) commits its
+	// transitions first, so this transaction's snapshot carries them.
+	if _, err := tx.Exec(ctx, settlementLockSQL, settlementLockClass, roundID); err != nil {
+		return err
 	}
 
 	if err := exec(tx); err != nil {
