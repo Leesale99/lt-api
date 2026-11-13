@@ -318,7 +318,11 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
     lines.push("cd " + shq(opts.cwd) + " || exit 1");
     // --session-dir pins the child's pi session file into the jobs dir so
     // refreshStatus/readJsonl can find it deterministically (both variants).
-    let cmd = "PI_DELEGATE_CHILD=1 " + piBin + " --session-dir " + shq(dir) + " --session-id " + shq(tmuxSession);
+    // Phase 5: PI_DELEGATE_ROLE=orchestrator — background is the child
+    // orchestrator's privilege, so every background child runs in the
+    // orchestrator role (both the tmux and the headless-fallback variant;
+    // the assignment prefix also overrides any inherited role value).
+    let cmd = "PI_DELEGATE_CHILD=1 PI_DELEGATE_ROLE=orchestrator " + piBin + " --session-dir " + shq(dir) + " --session-id " + shq(tmuxSession);
     if (!interactive) cmd += " --mode json -p";
     if (opts.model) cmd += " --model " + shq(opts.model);
     if (opts.thinking) cmd += " --thinking " + shq(opts.thinking);

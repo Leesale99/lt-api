@@ -533,7 +533,16 @@ async function runSingleAgent(
       // pi's bash tool exports PI_SESSION_ID / PI_SESSION_FILE / PI_PROVIDER /
       // PI_MODEL / PI_REASONING_LEVEL into tool subprocesses; scrub them so the
       // parent's session identity never leaks into a subagent's env.
-      const childEnv: NodeJS.ProcessEnv = { ...process.env, PI_DELEGATE_CHILD: "1" };
+      // Phase 5: every foreground spawn is a worker — including the child
+      // orchestrator's own spawns, whose inherited PI_DELEGATE_ROLE is
+      // overridden here so worker children of a child orchestrator get the
+      // role uniformly. (Background children are role=orchestrator via the
+      // runner script in jobs.ts.)
+      const childEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        PI_DELEGATE_CHILD: "1",
+        PI_DELEGATE_ROLE: "worker",
+      };
       delete childEnv.PI_SESSION_ID;
       delete childEnv.PI_SESSION_FILE;
       delete childEnv.PI_PROVIDER;
