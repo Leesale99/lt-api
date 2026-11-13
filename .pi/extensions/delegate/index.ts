@@ -22,6 +22,12 @@
  * injected on explicit job_status pickup of a finished job, and auto-surfacing
  * of finished jobs at the agent_before_settle boundary (continue:true only when
  * something new was surfaced — loop-guarded).
+ *
+ * Phase 7 adds the `job_approve` tool (parent-relayed approval into a
+ * confirm-handoff job's idle pane) and the first-class `awaiting_approval`
+ * registry status (refreshStatus in jobs.ts detects the AWAITING_APPROVAL
+ * marker; the UI surfaces and the settle injection phrase it as
+ * waiting-for-approval).
  */
 
 import { spawn } from "node:child_process";
@@ -816,10 +822,18 @@ async function startBackgroundRun(
         if (!current || current.status === "running" || settled) return;
         settled = true;
         clearInterval(pollTimer);
-        let kind: "info" | "error" = "info";
-        if (current.status !== "done") kind = "error";
+        let kind: "info" | "warning" | "error" = "info";
+        let statusLine: string = current.status;
+        if (current.status === "awaiting_approval") {
+          // Phase 7: the wait for the user's decision is its own status —
+          // notify with approval-oriented phrasing, warning-colored.
+          kind = "warning";
+          statusLine = "awaiting_approval — approve via job_approve (or in the pane)";
+        } else if (current.status !== "done") {
+          kind = "error";
+        }
         try {
-          ctx.ui.notify("Background job " + entry.id + " " + current.status, kind);
+          ctx.ui.notify("Background job " + entry.id + " " + statusLine, kind);
           ctx.ui.setStatus("delegate-jobs", "bg job " + entry.id + ": " + current.status);
         } catch {
           /* UI may be gone; best effort */
@@ -921,7 +935,10 @@ function truncateJobResultText(text: string): { text: string; truncated: boolean
 /**
  * Build the delegate-job-result injection — shared by the job_status pickup and
  * the settle auto-surface: `content` is what the LLM reads, `details` feeds the
- * TUI message renderer (header + body).
+ * TUI message renderer (header + body). Phase 7: two phrasings — terminal
+ * done/failed/aborted jobs read "finished with status ...", while
+ * awaiting_approval jobs read "is awaiting_approval ... waiting for your
+ * decision" with job_approve decision guidance.
  */
 async function buildJobResultInjection(
   cwd: string,
@@ -936,14 +953,25 @@ async function buildJobResultInjection(
   let text = cut.text;
   if (cut.truncated) text += JOB_RESULT_TRUNCATION_MARKER;
   const details: JobResultDetails = { ...cardDataOf(entry), text };
-  let content =
-    "Background job " + details.id + " (agent " + details.agent + ") finished with status " + details.status + ". Result";
-  if (cut.truncated) content += " (truncated to ~8 KB)";
-  content += ": " + text + "\nFull text: job_status id " + details.id + ".";
+  let content: string;
+  if (entry.status === "awaiting_approval") {
+    // Phase 7: awaiting jobs surface with approval-oriented phrasing — the
+    // parent must read "your decision is needed", not "finished".
+    content =
+      "Background job " + details.id + " (agent " + details.agent + ") is awaiting_approval: it ended its round with a confirm-handoff approval request and is waiting for your decision." +
+      (cut.truncated ? " Approval request (truncated to ~8 KB)" : " Approval request") + ": " + text +
+      "\nDecide with job_approve (id: \"" + details.id + "\", message: \"approved [note]\" or \"rejected: <reason>\").";
+  } else {
+    content = "Background job " + details.id + " (agent " + details.agent + ") finished with status " + details.status + ". Result";
+    if (cut.truncated) content += " (truncated to ~8 KB)";
+    content += ": " + text + "\nFull text: job_status id " + details.id + ".";
+  }
   return { content, details };
 }
 
-/** A job is surfacable when terminal, finished after extension load, and not yet surfaced. */
+/** A job is surfacable when terminal, finished after extension load, and not yet surfaced.
+ * Awaiting_approval jobs MUST surface too — the parent needs to know a decision is
+ * pending (with approval-oriented phrasing from buildJobResultInjection). */
 function isSurfacableFinish(entry: JobEntry): boolean {
   if (entry.status === "running") return false;
   if (surfacedJobIds.has(entry.id)) return false;
@@ -997,6 +1025,8 @@ const VIEWER_ROWS = 16;
 
 function jobStatusIcon(status: JobStatus): string {
   switch (status) {
+    case "awaiting_approval":
+      return "⏸";
     case "running":
       return "⏳";
     case "done":
@@ -1131,6 +1161,10 @@ async function openJobViewer(ctx: ExtensionContext, id: string): Promise<void> {
   lines.push("runner: " + entry.runner + (entry.tmuxSession ? " (tmux session: " + entry.tmuxSession + ")" : ""));
   lines.push("task: " + taskPreview(entry.task, 200));
   lines.push("");
+  if (entry.status === "awaiting_approval") {
+    lines.push("awaiting your approval — job_approve id=" + id + " message=\"approved [note]\" or \"rejected: <reason>\" (or type it in the pane)");
+    lines.push("");
+  }
   if (resultText === null) {
     lines.push("(no .jsonl artifact found for this job)");
   } else if (resultText.trim()) {
@@ -1741,7 +1775,8 @@ export default function (pi: ExtensionAPI) {
         const body = content?.type === "text" ? content.text : "(no output)";
         const job = details.job;
         if (!job || typeof job.id !== "string") return new Text(body, 0, 0);
-        const color = job.status === "done" ? "success" : job.status === "failed" || job.status === "aborted" ? "error" : "warning";
+        // awaiting_approval + running → warning (waiting on work / on the user)
+        const color = job.status === "done" ? "success" : job.status === "failed" || job.status === "aborted" ? "error" : job.status === "awaiting_approval" ? "warning" : "warning";
         let text = theme.fg(color, jobStatusIcon(job.status)) + " " + theme.fg("accent", job.id);
         text += theme.fg("muted", " · " + job.agent + " · ") + theme.fg(color, job.status);
         text += theme.fg("dim", " · " + jobAge(job));
@@ -2075,7 +2110,7 @@ export default function (pi: ExtensionAPI) {
     description:
       "Inspect background subagent jobs (artifacts in .pi/jobs/). " +
       "Omit id to list all jobs (id, status, agent, task preview, elapsed). " +
-      "With id: for finished jobs returns the final assistant output; for failed jobs exit code + stderr + last events; for running jobs current activity.",
+      "With id: for done jobs returns the final assistant output; for failed jobs exit code + stderr + last events; for running jobs current activity; for awaiting_approval jobs (confirm handoff) returns the orchestrator's approval request — decide via job_approve.",
     parameters: JobStatusParams,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       // Every inspection also refreshes the jobs widget (fire-and-forget; no-op
@@ -2195,7 +2230,8 @@ export default function (pi: ExtensionAPI) {
   pi.registerEntryRenderer<JobCardData>("delegate-job", (entry, _options, theme) => {
     const data = entry.data;
     if (!data || typeof data.id !== "string") return new Text(theme.fg("muted", "bg job (no card data)"), 0, 0);
-    const color = data.status === "done" ? "success" : data.status === "failed" || data.status === "aborted" ? "error" : "warning";
+    // awaiting_approval + running → warning (waiting on work / on the user)
+    const color = data.status === "done" ? "success" : data.status === "failed" || data.status === "aborted" ? "error" : data.status === "awaiting_approval" ? "warning" : "warning";
     let line = theme.fg(color, jobStatusIcon(data.status)) + " " + theme.fg("accent", data.id);
     line += theme.fg("muted", " · " + data.agent + " · ") + theme.fg(color, data.status);
     line += theme.fg("dim", " · " + jobAge(data));
@@ -2210,7 +2246,8 @@ export default function (pi: ExtensionAPI) {
       box.addChild(new Text(theme.fg("muted", body), 0, 0));
       return box;
     }
-    const color = details.status === "done" ? "success" : details.status === "failed" || details.status === "aborted" ? "error" : "warning";
+    // awaiting_approval + running → warning (waiting on work / on the user)
+    const color = details.status === "done" ? "success" : details.status === "failed" || details.status === "aborted" ? "error" : details.status === "awaiting_approval" ? "warning" : "warning";
     const header =
       theme.fg(color, jobStatusIcon(details.status)) + " " + theme.fg("accent", details.id) +
       theme.fg("muted", " · " + details.agent + " · ") + theme.fg(color, details.status) +
@@ -2234,7 +2271,9 @@ export default function (pi: ExtensionAPI) {
   // safety (the endless-loop trap the docs warn about): continue is returned
   // ONLY when at least one NEW job was surfaced; surfacedJobIds marks every
   // surfaced job (after its draft is built and committed), so the next settle
-  // returns undefined and the run ends.
+  // returns undefined and the run ends. Awaiting_approval jobs surface through
+  // the same path (isSurfacableFinish passes them) with the approval-oriented
+  // phrasing from buildJobResultInjection — exactly once, surfacedJobIds guards it.
   pi.on("agent_before_settle", async (event, ctx) => {
     if (process.env.PI_DELEGATE_CHILD) return;
     if (event.outcome !== "completed") return;

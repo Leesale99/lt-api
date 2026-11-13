@@ -34,6 +34,16 @@
  * is an assistant message with no pending tool calls; the tmux session then
  * stays alive (pi idles waiting for input) until the user quits it.
  *
+ * Phase 7 — confirm-handoff wait as a first-class status: a phase-6
+ * orchestrator ends an approval-request round with an `AWAITING_APPROVAL`
+ * block and idles in its pane; the registry surfaces that wait as the
+ * `awaiting_approval` status. It advances forward only — to done/failed via
+ * the session file after the approval round, or via `<id>.exit` when the pane
+ * eventually quits. New exports: APPROVAL_MARKER (the exact approval-round
+ * token), sessionRoundState (round-complete + approval detection from the
+ * session file), tmuxSessionAlive (now public) and relayApprovalDecision
+ * (approval relay for the job_approve tool).
+ *
  * If tmux is unavailable (or the new-session call fails), the runner script is
  * rewritten as the headless variant (`pi --mode json -p`, stdout redirected
  * into <id>.jsonl) and the job falls back to a detached child (`sh <runner>`,
@@ -52,7 +62,17 @@ import { getFinalOutput, parseChildJsonl, truncateParallelOutput } from "./outpu
 
 const execFileP = promisify(execFile);
 
-export type JobStatus = "running" | "done" | "failed" | "aborted";
+export type JobStatus = "running" | "awaiting_approval" | "done" | "failed" | "aborted";
+
+/**
+ * Exact marker a confirm-handoff (phase 6) orchestrator ends its approval-request
+ * round with. Shared string between the orchestrator prompts and the registry
+ * detection below — change both or neither.
+ */
+export const APPROVAL_MARKER = "AWAITING_APPROVAL";
+/** Terminal handoff tokens; the orchestrator protocol puts them on the final line. */
+const HANDOFF_TERMINAL_TOKENS = ["HANDOFF_COMPLETE", "HANDOFF_BLOCKED"] as const;
+
 export type RunnerKind = "tmux" | "fallback";
 
 export interface JobEntry {
@@ -64,7 +84,7 @@ export interface JobEntry {
   tmuxSession?: string;
   pid?: number;
   status: JobStatus;
-  /** Set when the runner observes the transition out of "running"; older entries lack it. */
+  /** Set on every transition out of "running" or out of "awaiting_approval"; older entries lack it. */
   finishedAt?: string;
 }
 
@@ -226,27 +246,51 @@ function findSessionFile(dir: string, id: string): string | null {
   }
 }
 
+export interface SessionRoundState {
+  /** Round over: the last message is an assistant message with no pending tool calls. */
+  complete: boolean;
+  /** complete AND the last assistant text carries APPROVAL_MARKER (confirm-handoff approval request). */
+  awaitingApproval: boolean;
+}
+
 /**
- * Interactive (tmux) jobs write no .exit until pi is quit, so completion is
- * detected from the child's session file: the agent round is over when the
- * last message is an assistant message WITHOUT pending tool calls (any
- * toolCall part means tool results are still owed). Mid-round the last
- * message is a user/toolResult message or an assistant carrying toolCalls.
+ * Phase-5-era round detection, extended (phase 7) to distinguish a plain done
+ * round from one that ended with an approval request. Detection runs on the
+ * LAST assistant message only — never scan the whole session file: the task
+ * text (first user message) legitimately contains the marker too.
+ *
+ * Terminal handoff tokens win over the marker: per the orchestrator protocol
+ * they sit on the final line, and a HANDOFF_COMPLETE/BLOCKED report may mention
+ * the approval gate in passing without the job awaiting anything.
  */
-function sessionRoundComplete(dir: string, id: string): boolean {
+export function sessionRoundState(dir: string, id: string): SessionRoundState {
   const sessionFile = findSessionFile(dir, id);
-  if (!sessionFile) return false;
+  if (!sessionFile) return { complete: false, awaitingApproval: false };
   let text: string;
   try {
     text = fs.readFileSync(sessionFile, "utf8");
   } catch {
-    return false;
+    return { complete: false, awaitingApproval: false };
   }
   const messages = parseChildJsonl(text).messages;
   const last = messages[messages.length - 1];
-  if (!last || last.role !== "assistant") return false;
-  if (!Array.isArray(last.content)) return true;
-  return !last.content.some((part) => part.type === "toolCall");
+  if (!last || last.role !== "assistant") return { complete: false, awaitingApproval: false };
+  if (Array.isArray(last.content) && last.content.some((part) => part.type === "toolCall")) {
+    return { complete: false, awaitingApproval: false };
+  }
+  const assistantText = Array.isArray(last.content)
+    ? last.content
+        .filter((part) => part.type === "text")
+        .map((part) => (part as { text: string }).text)
+        .join("\n")
+    : "";
+  if (!assistantText) return { complete: true, awaitingApproval: false };
+  const nonEmpty = assistantText.split("\n").filter((line) => line.trim().length > 0);
+  const lastLine = nonEmpty[nonEmpty.length - 1] ?? "";
+  if (HANDOFF_TERMINAL_TOKENS.some((token) => lastLine.includes(token))) {
+    return { complete: true, awaitingApproval: false };
+  }
+  return { complete: true, awaitingApproval: assistantText.includes(APPROVAL_MARKER) };
 }
 
 /** Read `<id>.exit` if present; null when missing/unparsable. */
@@ -373,10 +417,11 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
 
 /**
  * Re-read the entry and advance its status from on-disk evidence:
- * exit file → done/failed; child session file's round complete → done
- * (interactive jobs, which write no .exit until pi is quit); runner gone
- * without an exit file → aborted.
- * Persisted (atomically) whenever the status changes.
+ * exit file → done/failed; child session file round-complete → done, or
+ * awaiting_approval when the last assistant text carries the approval marker
+ * (phase 7). Awaiting entries advance forward only (never back to running /
+ * done flips); pre-phase-7 registry entries never carry the new status and
+ * keep reading correctly. Persisted (atomically) whenever the status changes.
  */
 async function refreshStatus(dir: string, entry: JobEntry): Promise<JobEntry> {
   if (entry.status === "aborted") {
@@ -391,6 +436,27 @@ async function refreshStatus(dir: string, entry: JobEntry): Promise<JobEntry> {
     await persistEntry(dir, entry);
     return entry;
   }
+  if (entry.status === "awaiting_approval") {
+    // Forward-only advance (phase 7). After the relayed or typed approval the
+    // orchestrator runs its merge-back round: once the session's last message
+    // no longer carries the marker, the job is done. An .exit file still wins
+    // when the child eventually quits — a killed pane yields a nonzero code →
+    // failed; a clean quit after an approved handoff lands as done.
+    const exitCode = await readExitCode(dir, entry.id);
+    if (exitCode !== null) {
+      entry.status = exitCode === 0 ? "done" : "failed";
+      entry.finishedAt = new Date().toISOString();
+      await persistEntry(dir, entry);
+      return entry;
+    }
+    const state = sessionRoundState(dir, entry.id);
+    if (state.complete && !state.awaitingApproval) {
+      entry.status = "done";
+      entry.finishedAt = new Date().toISOString();
+      await persistEntry(dir, entry);
+    }
+    return entry;
+  }
   if (entry.status !== "running") return entry;
 
   const exitCode = await readExitCode(dir, entry.id);
@@ -402,11 +468,14 @@ async function refreshStatus(dir: string, entry: JobEntry): Promise<JobEntry> {
   }
 
   // Interactive (tmux) jobs write no .exit until pi is quit; completion is
-  // detected from the child's session file instead (see sessionRoundComplete).
+  // detected from the child's session file instead (see sessionRoundState).
   // For headless jobs this mostly short-circuits the alive probe by a few ms —
   // harmless either way.
-  if (sessionRoundComplete(dir, entry.id)) {
-    entry.status = "done";
+  const round = sessionRoundState(dir, entry.id);
+  if (round.complete) {
+    // Phase 7: a confirm-handoff orchestrator ends its round with an
+    // AWAITING_APPROVAL block — a first-class waiting status, not plain done.
+    entry.status = round.awaitingApproval ? "awaiting_approval" : "done";
     entry.finishedAt = new Date().toISOString();
     await persistEntry(dir, entry);
     return entry;
@@ -581,7 +650,8 @@ export async function getJobResultText(cwd: string, id: string): Promise<string 
 /**
  * Detailed report for one job. Finished jobs get their `<id>.jsonl` parsed via
  * the shared module; the final assistant text is capped at ~50 KB. Failures
- * surface exit code + stderr tail + last events.
+ * surface exit code + stderr tail + last events; awaiting_approval (phase 7)
+ * shows the captured approval block plus the job_approve relay hint.
  */
 export async function formatJobDetail(entry: JobEntry, dir: string): Promise<string> {
   const lines: string[] = [];
@@ -597,6 +667,14 @@ export async function formatJobDetail(entry: JobEntry, dir: string): Promise<str
     lines.push("--- recent activity ---");
     const soFar = parsed ? getFinalOutput(parsed.messages) : "";
     lines.push(soFar ? tailOf(soFar, TAIL_CAP) : "(no output yet)");
+  } else if (entry.status === "awaiting_approval") {
+    lines.push("--- awaiting approval ---");
+    const block = parsed ? truncateParallelOutput(getFinalOutput(parsed.messages) || "(no approval block captured)") : "(no approval block captured)";
+    lines.push(block);
+    lines.push(
+      "Approve or reject via the job_approve tool (id: \"" + entry.id + "\", message: \"approved [note]\" or \"rejected: <reason>\")" +
+      (entry.tmuxSession ? ", or type the same message in the pane (tmux attach -t " + entry.tmuxSession + ")" : "") + ".",
+    );
   } else if (entry.status === "done") {
     lines.push("--- final output ---");
     const finalText = parsed ? truncateParallelOutput(getFinalOutput(parsed.messages) || "(no output)") : "(no output)";
