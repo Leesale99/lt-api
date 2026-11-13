@@ -1390,6 +1390,49 @@ export default function (pi: ExtensionAPI) {
     return { systemPrompt: event.systemPrompt + loadOrchestratorPrompt(ctx.cwd) };
   });
 
+  // Phase 8: idle-completion injection at round start. before_agent_start is
+  // the round-start hook in pi 1.5.2: it fires for every run start after input
+  // handling, and messages sent while a run starts are absorbed into that run
+  // (docs: "Pi counts as busy while a run starts ... so messages sent meanwhile
+  // go into the starting run") — so a background job that finished while the
+  // parent idled is delivered in the SAME request that would otherwise miss it
+  // until the next settle. No timer-driven injection (tokens with no reader).
+  // Scope: user-started rounds only. Custom-message runs are not fresh user
+  // questions, and the settle path already covers every round end — so no
+  // re-fire loop exists here at all; surfacedJobIds is shared with pickup and
+  // settle, so a job is still injected exactly once per session no matter
+  // which path wins.
+  // Mark-AFTER-delivery (binding, 00-plan Learnings): pi.sendMessage is void —
+  // reaching the mark line means the message was handed to the session (same
+  // semantics as the job_status pickup); a throw above leaves the id unmarked.
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (process.env.PI_DELEGATE_CHILD) return;
+    if (event.messageType !== "user") return;
+    const surfaced = await collectSurfacableJobs(ctx);
+    for (const job of surfaced.finished) {
+      try {
+        const injection = await buildJobResultInjection(ctx.cwd, job);
+        pi.sendMessage({
+          customType: "delegate-job-result",
+          content: injection.content,
+          display: true,
+          details: injection.details,
+        });
+        emitJobCard(ctx, job);
+        surfacedJobIds.add(job.id);
+      } catch (error) {
+        // Same policy as the settle path: a permanently-broken payload must
+        // not retry at every round start — mark surfaced, deliver nothing.
+        console.error(
+          "[delegate] round-start surfacing: payload build failed for job " + job.id + "; marked surfaced to avoid a retry loop:",
+          error,
+        );
+        surfacedJobIds.add(job.id);
+      }
+    }
+    if (surfaced.finished.length > 0) void refreshJobWidget(ctx);
+  });
+
   // Phase 2: hard-layer gate. edit/write in a MAIN session must not run
   // unimpeded: UI present → confirm dialog, declining blocks with a routing
   // reminder, confirming allows harness/plan work. Non-UI main sessions (-p)
