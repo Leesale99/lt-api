@@ -1,0 +1,34 @@
+%% Bounded contexts — DEPENDENCY map (arrow = consumer → provider, sync calls)
+%% Data-flow arrows deliberately NOT used. Dashed = async events / future.
+%% Dual local models: Schedule and Game each own their own Season/Round/Match model
+%% (same word, different concept). Correlation is by IDs minted in Schedule;
+%% models must never converge (no distributed shared kernel).
+flowchart LR
+  external(["<b>External Data</b><br/><i>upstream system (feed)</i>"]):::external
+  schedule["<b>Schedule</b><br/>owns: teams · seasons/rounds/matches (feed-derived)<br/>— mints their ids · feed results<br/><i>ACL — translates feed into our language</i>"]:::ctx
+  game["<b>Game</b><br/>owns: seasons · rounds · rides · acc ·<br/>base price · state transitions"]:::ctx
+  ledger["<b>Ledger</b><br/>owns: currency · token · reserve balances<br/><i>born thin — rides money columns until Phase 06</i>"]:::ctx
+  rankings["<b>Rankings</b><br/>owns: player TB totals · team baskets ·<br/>leaderboard projections"]:::ctx
+  market["<b>Market</b><br/>order book · price ticks<br/><i>deferred — no code yet</i>"]:::deferred
+  identity["<b>Identity</b><br/>players · auth<br/><i>generic supporting context</i>"]:::upport
+  http["<b>HTTP</b><br/>gateway — not a bounded context"]:::gateway
+
+  %% sync dependencies
+  http -->|"auth"| identity
+  http --> game
+  http --> rankings
+  game -->|"LockTokens · Burn — sync ops"| ledger
+  game -->|"match_id · round_id — result &amp; round-complete events<br/>(push — in-proc now, outbox Phase 08)"| schedule
+  schedule -->|"feed — ACL at the edge"| external
+  market -->|"commands (sync)"| ledger
+
+  %% async / future
+  %% ledger → market balance events delivered via Phase 08 transactional outbox
+  ledger -.->|"balance events"| market
+  rankings -.->|"game events — later"| game
+
+  classDef ctx fill:#1e3a2f,stroke:#4caf7d,color:#e8f5ee
+  classDef deferred fill:#241f33,stroke:#9b7fd4,color:#e8e4f5,stroke-dasharray:5 5
+  classDef support fill:#33261a,stroke:#d4a94e,color:#f7efdf
+  classDef external fill:#12293f,stroke:#4e8fd4,color:#e3eefb
+  classDef gateway fill:#2b2b2b,stroke:#888888,color:#dddddd
