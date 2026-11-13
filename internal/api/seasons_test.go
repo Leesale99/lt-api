@@ -379,7 +379,7 @@ func TestDeleteCreatedSeasonHandler(t *testing.T) {
 	// stays created: the lifecycle gates (000008) refuse an open round under
 	// a season that is not live, and this season is freshly created.
 	if _, err := testPool.Exec(context.Background(),
-		`INSERT INTO rounds (season_id, number, status) VALUES ($1, 1, 'created')`, id); err != nil {
+		`INSERT INTO schedule.rounds (season_id, number, status) VALUES ($1, 1, 'created')`, id); err != nil {
 		t.Fatalf("seed round: %v", err)
 	}
 
@@ -397,8 +397,8 @@ func TestDeleteCreatedSeasonHandler(t *testing.T) {
 	var seasons, rounds int
 	err := testPool.QueryRow(context.Background(),
 		`SELECT
-			(SELECT count(*) FROM seasons WHERE id = $1),
-			(SELECT count(*) FROM rounds WHERE season_id = $1)`, id).Scan(&seasons, &rounds)
+			(SELECT count(*) FROM schedule.seasons WHERE id = $1),
+			(SELECT count(*) FROM schedule.rounds WHERE season_id = $1)`, id).Scan(&seasons, &rounds)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -33,7 +33,7 @@ func TestMatchConstraints(t *testing.T) {
 	defer cleanup(ctx, t)
 
 	base := fmt.Sprintf(`
-		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at%s)
+		INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at%s)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '30 days'%s)`, "%s", "%s")
 
 	valid := fmt.Sprintf(base, "", "")
@@ -113,7 +113,7 @@ func TestStatusVocabularyIsInSync(t *testing.T) {
 
 	t.Run("seasons", func(t *testing.T) {
 		for _, status := range seasonStatuses {
-			_, err := pool.Exec(ctx, `INSERT INTO seasons (status) VALUES ($1)`, status)
+			_, err := pool.Exec(ctx, `INSERT INTO schedule.seasons (status) VALUES ($1)`, status)
 			if err != nil {
 				t.Errorf("season status %q rejected by DB: %v", status, err)
 			}
@@ -128,11 +128,11 @@ func TestStatusVocabularyIsInSync(t *testing.T) {
 			// season accepts — so this is the one shape that admits every
 			// vocabulary value for a direct INSERT.
 			var sid int
-			if err := pool.QueryRow(ctx, `INSERT INTO seasons (status) VALUES ('in_progress') RETURNING id`).Scan(&sid); err != nil {
+			if err := pool.QueryRow(ctx, `INSERT INTO schedule.seasons (status) VALUES ('in_progress') RETURNING id`).Scan(&sid); err != nil {
 				t.Fatalf("seed season for round status %q: %v", status, err)
 			}
 			_, err := pool.Exec(ctx,
-				`INSERT INTO rounds (season_id, number, status) VALUES ($1, 1, $2)`,
+				`INSERT INTO schedule.rounds (season_id, number, status) VALUES ($1, 1, $2)`,
 				sid, status)
 			if err != nil {
 				t.Errorf("round status %q rejected by DB: %v", status, err)
@@ -147,7 +147,7 @@ func TestStatusVocabularyIsInSync(t *testing.T) {
 			// also requires ended_at (migration 000005, matches_ended_at_check).
 			scored := status == "in_progress" || status == "closed"
 			query, arg := `
-				INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at, home_score, away_score)
+				INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at, home_score, away_score)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '30 days', $8, $9)`, []any{seasonID, roundID, homeID, awayID, 1.5, 2.5, status, nil, nil}
 			var home, away int
 			if scored {
@@ -157,7 +157,7 @@ func TestStatusVocabularyIsInSync(t *testing.T) {
 			if status == "closed" {
 				// The ended-at trigger fires on UPDATE only; INSERT supplies it.
 				query = `
-					INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at, home_score, away_score, ended_at)
+					INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at, home_score, away_score, ended_at)
 					VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '30 days', $8, $9, now() + interval '31 days')`
 			}
 			_, err := pool.Exec(ctx, query, arg...)
@@ -179,26 +179,26 @@ func TestTeamConstraints(t *testing.T) {
 	cases := []constraintCase{
 		{
 			name:  "valid team",
-			query: `INSERT INTO teams (name, logo, description) VALUES ('Panathinaikos', 'https://x.example/l.png', 'd')`,
+			query: `INSERT INTO schedule.teams (name, logo, description) VALUES ('Panathinaikos', 'https://x.example/l.png', 'd')`,
 		},
 		{
 			name:     "empty name rejected",
-			query:    `INSERT INTO teams (name, logo, description) VALUES ('', 'https://x.example/l.png', 'd')`,
+			query:    `INSERT INTO schedule.teams (name, logo, description) VALUES ('', 'https://x.example/l.png', 'd')`,
 			wantCode: errCheckViolation,
 		},
 		{
 			name:     "name over 500 bytes rejected",
-			query:    `INSERT INTO teams (name, logo, description) VALUES (repeat('x', 501), 'https://x.example/l.png', 'd')`,
+			query:    `INSERT INTO schedule.teams (name, logo, description) VALUES (repeat('x', 501), 'https://x.example/l.png', 'd')`,
 			wantCode: errCheckViolation,
 		},
 		{
 			name:     "name at exactly 500 bytes accepted",
-			query:    `INSERT INTO teams (name, logo, description) VALUES (repeat('x', 500), 'https://x.example/l.png', 'd')`,
+			query:    `INSERT INTO schedule.teams (name, logo, description) VALUES (repeat('x', 500), 'https://x.example/l.png', 'd')`,
 			wantCode: "",
 		},
 		{
 			name:     "empty logo rejected",
-			query:    `INSERT INTO teams (name, logo, description) VALUES ('PAO', '', 'd')`,
+			query:    `INSERT INTO schedule.teams (name, logo, description) VALUES ('PAO', '', 'd')`,
 			wantCode: errCheckViolation,
 		},
 	}
@@ -224,37 +224,37 @@ func TestRoundAndSeasonConstraints(t *testing.T) {
 	cases := []constraintCase{
 		{
 			name:  "valid round",
-			query: `INSERT INTO rounds (season_id, number, status) VALUES ($1, 2, 'created')`,
+			query: `INSERT INTO schedule.rounds (season_id, number, status) VALUES ($1, 2, 'created')`,
 			args:  []any{seasonID},
 		},
 		// A second distinct (season, number) pair: the duplicate case below
 		// refuses number 2 on an already-planted round 2, not on its own insert.
 		{
 			name:  "second created round at its own number",
-			query: `INSERT INTO rounds (season_id, number, status) VALUES ($1, 3, 'created')`,
+			query: `INSERT INTO schedule.rounds (season_id, number, status) VALUES ($1, 3, 'created')`,
 			args:  []any{seasonID},
 		},
 		{
 			name:     "duplicate (season, number) rejected",
-			query:    `INSERT INTO rounds (season_id, number, status) VALUES ($1, 2, 'created')`,
+			query:    `INSERT INTO schedule.rounds (season_id, number, status) VALUES ($1, 2, 'created')`,
 			args:     []any{seasonID},
 			wantCode: errUniqueViolation,
 		},
 		{
 			name:     "round number 0 rejected",
-			query:    `INSERT INTO rounds (season_id, number, status) VALUES ($1, 0, 'created')`,
+			query:    `INSERT INTO schedule.rounds (season_id, number, status) VALUES ($1, 0, 'created')`,
 			args:     []any{seasonID},
 			wantCode: errCheckViolation,
 		},
 		{
 			name:     "round number 39 rejected",
-			query:    `INSERT INTO rounds (season_id, number, status) VALUES ($1, 39, 'created')`,
+			query:    `INSERT INTO schedule.rounds (season_id, number, status) VALUES ($1, 39, 'created')`,
 			args:     []any{seasonID},
 			wantCode: errCheckViolation,
 		},
 		{
 			name:     "round in nonexistent season rejected",
-			query:    `INSERT INTO rounds (season_id, number, status) VALUES ($1, 5, 'created')`,
+			query:    `INSERT INTO schedule.rounds (season_id, number, status) VALUES ($1, 5, 'created')`,
 			args:     []any{seasonID + 999999},
 			wantCode: errForeignKey,
 		},
@@ -276,7 +276,7 @@ func TestTeamDeleteRestricted(t *testing.T) {
 	defer cleanup(ctx, t)
 
 	_, err := pool.Exec(ctx, `
-		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at)
+		INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at)
 		VALUES ($1, $2, $3, $4, 1.5, 2.5, 'created', now() + interval '30 days')`,
 		seasonID, roundID, homeID, awayID)
 	if err != nil {
@@ -284,7 +284,7 @@ func TestTeamDeleteRestricted(t *testing.T) {
 	}
 
 	// ON DELETE RESTRICT: deleting a team with match history must fail.
-	if _, err := pool.Exec(ctx, `DELETE FROM teams WHERE id = $1`, homeID); err == nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM schedule.teams WHERE id = $1`, homeID); err == nil {
 		t.Error("team with match history was deleted; expected RESTRICT to block it")
 	} else {
 		var pgErr *pgconn.PgError

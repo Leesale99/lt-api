@@ -11,22 +11,23 @@ package game
 //     derivation, carried in the event payload.
 //  2. The payload→destination derivation in game's settlement handler
 //     (internal/game/events.go, settleRideFromResult) — the consumer's copy.
-//  3. Check 5 of rides_block_illegal_transition
-//     (migrations/000011_add_rides_result_agreement_gate.up.sql) — the SQL
-//     enforcement home: the database is where the invariant lives, so no
-//     writer (app, script, future refactor) can disagree with the scores.
+//  3. The resultAgreement check in that same handler (internal/game/
+//     events.go) — the enforcement home since migration 000017 (the old
+//     rides_state_gate check 5 read schedule's table from a game trigger,
+//     the cross-context read Phase D removed).
 //
 // Both tests below read the same scoreStateRule vectors: the unit side
 // asserts the Winner→state mapping, the DB side runs the settlement
-// handler against a planted closed match (the payload derives, the gate
-// agrees silently) and then probes the gate's refusals directly — the
-// destination the fixture names must be admitted, its opposite refused. A
-// rule change must fail exactly one site first; the change-detector
-// comments at the three sites lead from any failure to the other two
-// within a minute.
+// handler against a planted closed match and probes the enforcement — a
+// lying payload (a destination the committed scores contradict) must be
+// refused with ErrInvalidTransition and leave the rides untouched. A rule
+// change must fail exactly one site first; the change-detector comments
+// at the three sites lead from any failure to the other two within a
+// minute.
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -58,7 +59,7 @@ func insertClosedMatchScored(ctx context.Context, t *testing.T, seasonID, roundI
 
 	var id int
 	err := pool.QueryRow(ctx, `
-		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at, ended_at)
+		INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at, ended_at)
 		VALUES ($1, $2, $3, $4, 1.75, 2.20, $5, $6, 'closed', now() - interval '5 hours', now() - interval '2 hours')
 		RETURNING id
 	`, seasonID, roundID, homeID, awayID, home, away).Scan(&id)
@@ -105,19 +106,28 @@ func TestWinnerScoreStateRule(t *testing.T) {
 
 // TestScoreStateRuleDB runs the fixture against the database: per vector,
 // the settlement handler must land both rides on the states the fixture
-// names (from the payload, through the DB gate), and the gate must refuse
-// the contradicting destination for each side (P0001 — the code the store
-// maps to ErrInvalidTransition).
+// names, and the enforcement (the service's resultAgreement check —
+// migration 000017 moved it out of the trigger) must refuse a lying
+// payload: a destination the committed scores contradict is refused with
+// ErrInvalidTransition (the same error the store mapped the old trigger's
+// P0001 refusals to) and the rides stay untouched.
 func TestScoreStateRuleDB(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
 
-	opposite := func(s RideState) RideState {
-		if s == RideWonPending {
-			return RideLost
+	// lyingWinner inverts the payload's outcome for one side: when the
+	// fixture expects the side's ride to WIN (want won_pending, the
+	// committed scores crown the team), the lying payload claims the OTHER
+	// side won — derivation lands lost; when the fixture expects a loss,
+	// the lying payload crowns the ride's own team — derivation lands
+	// won_pending. Either way the derived destination contradicts the
+	// committed result and resultAgreement must refuse.
+	lyingWinner := func(want RideState, teamID, otherID int) *int {
+		if want == RideWonPending {
+			return &otherID
 		}
-		return RideWonPending
+		return &teamID
 	}
 
 	for _, tt := range scoreStateRule {
@@ -165,17 +175,39 @@ func TestScoreStateRuleDB(t *testing.T) {
 				t.Errorf("away ride: landed %s, want %s", states[awayRide.ID], tt.wantAway)
 			}
 
-			// Gate probes: fresh locked rides (the first two are out of
-			// locked now), each driven to the destination contradicting the
-			// fixture. Check 5 must refuse with P0001.
+			// Enforcement probes: fresh locked rides (the first two are out
+			// of locked now), settled with a LYING payload whose destination
+			// contradicts the committed scores. resultAgreement must refuse
+			// with ErrInvalidTransition and leave the rides locked/v1 (the
+			// whole settlement tx rolled back).
 			probeHome := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
 			probeAway := plantRide(ctx, t, matchID, awayID, RideLocked, decimal.Zero, 0)
 
-			_, err := pool.Exec(ctx, `UPDATE rides SET state = $2 WHERE id = $1`, probeHome.ID, opposite(tt.wantHome))
-			assertCode(t, constraintCase{name: tt.name + " (home side, contradicting destination refused)", wantCode: "P0001"}, err)
+			lyingHome := event
+			lyingHome.EventID = tt.name + " (home side, lying payload refused)"
+			lyingHome.WinnerTeamID = lyingWinner(tt.wantHome, homeID, awayID)
+			err := svc.OnMatchResultRecorded(ctx, lyingHome)
+			if !errors.Is(err, ErrInvalidTransition) {
+				t.Errorf("lying home payload: OnMatchResultRecorded = %v, want ErrInvalidTransition", err)
+			}
 
-			_, err = pool.Exec(ctx, `UPDATE rides SET state = $2 WHERE id = $1`, probeAway.ID, opposite(tt.wantAway))
-			assertCode(t, constraintCase{name: tt.name + " (away side, contradicting destination refused)", wantCode: "P0001"}, err)
+			lyingAway := event
+			lyingAway.EventID = tt.name + " (away side, lying payload refused)"
+			lyingAway.WinnerTeamID = lyingWinner(tt.wantAway, awayID, homeID)
+			err = svc.OnMatchResultRecorded(ctx, lyingAway)
+			if !errors.Is(err, ErrInvalidTransition) {
+				t.Errorf("lying away payload: OnMatchResultRecorded = %v, want ErrInvalidTransition", err)
+			}
+
+			for _, ride := range []Ride{probeHome, probeAway} {
+				got, err := svc.Store.Rides.Get(ctx, ride.ID)
+				if err != nil {
+					t.Fatalf("Get(%d): %v", ride.ID, err)
+				}
+				if got.State != RideLocked || got.Version != 1 {
+					t.Errorf("ride %d = %s/v%d, want untouched locked/v1 (the tx rolled back)", ride.ID, got.State, got.Version)
+				}
+			}
 		})
 	}
 }

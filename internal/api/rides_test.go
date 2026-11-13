@@ -37,7 +37,7 @@ func plantPlayerRow(t *testing.T, teamID int) int {
 
 	var id int
 	err := testPool.QueryRow(context.Background(), `
-		INSERT INTO players (season_id, favorite_team_id, name)
+		INSERT INTO game.players (season_id, favorite_team_id, name)
 		VALUES (2, $1, 'ride player')
 		RETURNING id
 	`, teamID).Scan(&id)
@@ -60,7 +60,7 @@ func plantRideRow(t *testing.T, playerID, teamID, matchID int, state, acc string
 
 	var id int
 	err := testPool.QueryRow(context.Background(), `
-		INSERT INTO rides (player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak)
+		INSERT INTO game.rides (player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak)
 		VALUES ($1, $2, $3, 'locked', 100, 95, $4, $5)
 		RETURNING id
 	`, playerID, teamID, matchID, acc, streak).Scan(&id)
@@ -71,12 +71,12 @@ func plantRideRow(t *testing.T, playerID, teamID, matchID int, state, acc string
 	if state != "locked" {
 		if state == "burned" || state == "unlocked" {
 			if _, err := testPool.Exec(context.Background(),
-				`UPDATE rides SET state = 'won_pending' WHERE id = $1`, id); err != nil {
+				`UPDATE game.rides SET state = 'won_pending' WHERE id = $1`, id); err != nil {
 				t.Fatalf("plant ride walk (locked → won_pending): %v", err)
 			}
 		}
 		if _, err := testPool.Exec(context.Background(), `
-			UPDATE rides SET state = $2, bonus_acc = $3, version = 1 WHERE id = $1
+			UPDATE game.rides SET state = $2, bonus_acc = $3, version = 1 WHERE id = $1
 		`, id, state, acc); err != nil {
 			t.Fatalf("plant ride walk (→ %s): %v", state, err)
 		}
@@ -94,7 +94,7 @@ func plantDecidedMatch(t *testing.T) int {
 
 	var id int
 	err := testPool.QueryRow(context.Background(), `
-		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at, ended_at)
+		INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at, ended_at)
 		VALUES (1, 3, 1, 2, 1.75, 2.20, 88, 79, 'closed', now() - interval '3 hours', now() - $1::interval)
 		RETURNING id
 	`, "2 hours").Scan(&id)
@@ -279,7 +279,7 @@ func TestCreateRideIdempotentHandler(t *testing.T) {
 		// only write — so the row count is the dedup evidence.
 		var rideRows, keyRows int
 		if err := testPool.QueryRow(context.Background(),
-			`SELECT count(*) FROM rides`,
+			`SELECT count(*) FROM game.rides`,
 		).Scan(&rideRows); err != nil {
 			t.Fatalf("count rides: %v", err)
 		}
@@ -287,7 +287,7 @@ func TestCreateRideIdempotentHandler(t *testing.T) {
 			t.Errorf("rides rows = %d, want 1 (no second insert)", rideRows)
 		}
 		if err := testPool.QueryRow(context.Background(),
-			`SELECT count(*) FROM idempotency_keys`,
+			`SELECT count(*) FROM game.idempotency_keys`,
 		).Scan(&keyRows); err != nil {
 			t.Fatalf("count key rows: %v", err)
 		}
@@ -315,7 +315,7 @@ func TestCreateRideIdempotentHandler(t *testing.T) {
 
 		// The refused request executed nothing: still exactly one ride.
 		var rideRows int
-		if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM rides`).Scan(&rideRows); err != nil {
+		if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM game.rides`).Scan(&rideRows); err != nil {
 			t.Fatalf("count rides: %v", err)
 		}
 		if rideRows != 1 {
@@ -333,7 +333,7 @@ func TestCreateRideIdempotentHandler(t *testing.T) {
 
 		var keyRows int
 		if err := testPool.QueryRow(context.Background(),
-			`SELECT count(*) FROM idempotency_keys`,
+			`SELECT count(*) FROM game.idempotency_keys`,
 		).Scan(&keyRows); err != nil {
 			t.Fatalf("count key rows: %v", err)
 		}
@@ -369,13 +369,13 @@ func TestCreateRideHandlerBodyTooLarge(t *testing.T) {
 
 	// The rejection fired before hash, claim and decode: no ride, no key.
 	var rideRows, keyRows int
-	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM rides`).Scan(&rideRows); err != nil {
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM game.rides`).Scan(&rideRows); err != nil {
 		t.Fatalf("count rides: %v", err)
 	}
 	if rideRows != 0 {
 		t.Errorf("rides rows = %d, want 0 (oversized body never decoded)", rideRows)
 	}
-	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM idempotency_keys`).Scan(&keyRows); err != nil {
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM game.idempotency_keys`).Scan(&keyRows); err != nil {
 		t.Fatalf("count keys: %v", err)
 	}
 	if keyRows != 0 {
@@ -788,7 +788,7 @@ func TestRideCommandHandlers(t *testing.T) {
 		// walk in plantRideRow can agree on won_pending (000011) — ended_at
 		// stays nil, so round 3's phase window is untouched.
 		reset(t)
-		if _, err := testPool.Exec(context.Background(), `UPDATE matches SET status = 'in_progress', home_score = 70, away_score = 69 WHERE id = 5`); err != nil {
+		if _, err := testPool.Exec(context.Background(), `UPDATE schedule.matches SET status = 'in_progress', home_score = 70, away_score = 69 WHERE id = 5`); err != nil {
 			t.Fatalf("score match 5: %v", err)
 		}
 		playerID := plantPlayerRow(t, 1)
@@ -811,12 +811,12 @@ func TestRideCommandHandlers(t *testing.T) {
 		// Team 3 has no other match anywhere: the ride's continuation has no
 		// destination, which is a schedule conflict, not a state conflict.
 		decidedFixture(t)
-		if _, err := testPool.Exec(context.Background(), `INSERT INTO teams (name, logo, description) VALUES ('AEK', 'https://x.example/aek.png', 'Athens')`); err != nil {
+		if _, err := testPool.Exec(context.Background(), `INSERT INTO schedule.teams (name, logo, description) VALUES ('AEK', 'https://x.example/aek.png', 'Athens')`); err != nil {
 			t.Fatalf("plant team 3: %v", err)
 		}
 		var team3Match int
 		if err := testPool.QueryRow(context.Background(), `
-			INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at, ended_at)
+			INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at, ended_at)
 			VALUES (1, 3, 3, 2, 1.75, 2.20, 70, 69, 'closed', now() - interval '3 hours', now() - interval '2 hours')
 			RETURNING id
 		`).Scan(&team3Match); err != nil {
@@ -885,7 +885,7 @@ func TestRideLockIdempotentHandler(t *testing.T) {
 		// completed.
 		var version, streak, keyRows int
 		if err := testPool.QueryRow(context.Background(),
-			`SELECT version, streak FROM rides WHERE id = $1`, rideID,
+			`SELECT version, streak FROM game.rides WHERE id = $1`, rideID,
 		).Scan(&version, &streak); err != nil {
 			t.Fatalf("read ride: %v", err)
 		}
@@ -893,7 +893,7 @@ func TestRideLockIdempotentHandler(t *testing.T) {
 			t.Errorf("ride version = %d, streak = %d; want 2 and 2 (no double transition)", version, streak)
 		}
 		if err := testPool.QueryRow(context.Background(),
-			`SELECT count(*) FROM idempotency_keys`,
+			`SELECT count(*) FROM game.idempotency_keys`,
 		).Scan(&keyRows); err != nil {
 			t.Fatalf("count key rows: %v", err)
 		}
@@ -934,7 +934,7 @@ func TestRideLockIdempotentHandler(t *testing.T) {
 		// The refused request executed nothing and cached nothing.
 		var version int
 		if err := testPool.QueryRow(context.Background(),
-			`SELECT version FROM rides WHERE id = $1`, otherRide,
+			`SELECT version FROM game.rides WHERE id = $1`, otherRide,
 		).Scan(&version); err != nil {
 			t.Fatalf("read refused ride: %v", err)
 		}
@@ -954,7 +954,7 @@ func TestRideLockIdempotentHandler(t *testing.T) {
 
 		var keyRows int
 		if err := testPool.QueryRow(context.Background(),
-			`SELECT count(*) FROM idempotency_keys`,
+			`SELECT count(*) FROM game.idempotency_keys`,
 		).Scan(&keyRows); err != nil {
 			t.Fatalf("count key rows: %v", err)
 		}

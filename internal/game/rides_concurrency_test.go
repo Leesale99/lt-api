@@ -54,7 +54,7 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 			closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
 			ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
 
-			if _, err := pool.Exec(ctx, `INSERT INTO rounds (season_id, number, status) VALUES (1, 2, 'created')`); err != nil {
+			if _, err := pool.Exec(ctx, `INSERT INTO schedule.rounds (season_id, number, status) VALUES (1, 2, 'created')`); err != nil {
 				t.Fatalf("insert round 2: %v", err)
 			}
 			destination := insertFutureMatch(ctx, t, 1, 2, homeID, awayID, "7 days")
@@ -66,7 +66,7 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 			var round schedule.Round
 			if err := pool.QueryRow(ctx, `
 				SELECT id, season_id, number, status, version
-				FROM rounds WHERE id = $1
+				FROM schedule.rounds WHERE id = $1
 			`, roundID).Scan(&round.ID, &round.SeasonID, &round.Number, &round.Status, &round.Version); err != nil {
 				t.Fatalf("read round: %v", err)
 			}
@@ -103,7 +103,7 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 				t.Fatalf("Close() = %v, want nil", closeErr)
 			}
 
-			got, err := NewStore(pool).Rides.Get(ctx, ride.ID)
+			got, err := NewStore(gamePool).Rides.Get(ctx, ride.ID)
 			if err != nil {
 				t.Fatalf("Get() = %v, want nil", err)
 			}
@@ -130,7 +130,7 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 			}
 
 			var status string
-			if err := pool.QueryRow(ctx, `SELECT status FROM rounds WHERE id = $1`, roundID).Scan(&status); err != nil {
+			if err := pool.QueryRow(ctx, `SELECT status FROM schedule.rounds WHERE id = $1`, roundID).Scan(&status); err != nil {
 				t.Fatalf("read round status: %v", err)
 			}
 			if status != "closed" {
@@ -153,7 +153,7 @@ func insertSettledFutureMatch(ctx context.Context, t *testing.T, seasonID, round
 
 	var id int
 	err := pool.QueryRow(ctx, `
-		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at, ended_at)
+		INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at, ended_at)
 		VALUES ($1, $2, $3, $4, 1.75, 2.20, 88, 79, 'closed', now() + $5::interval, now() + $5::interval + interval '2 hours')
 		RETURNING id
 	`, seasonID, roundID, homeID, awayID, lead).Scan(&id)
@@ -169,7 +169,8 @@ func insertSettledFutureMatch(ctx context.Context, t *testing.T, seasonID, round
 // close-first race relies on this ordering: without the wait, a slow
 // goroutine could see the committed close and be refused for the mundane
 // reason, proving nothing about the lock. The blocked statement is the
-// SchedulePort's round gate (SELECT ... FOR SHARE OF r) — the ride write
+// SchedulePort's round gate — schedule.round_open_guard (the FOR SHARE
+// lives inside schedule's definer function since Phase D) — the ride write
 // runs only after the gate returns.
 func waitUntilInsertBlocked(ctx context.Context, t *testing.T) {
 	t.Helper()
@@ -179,7 +180,7 @@ func waitUntilInsertBlocked(ctx context.Context, t *testing.T) {
 		err := pool.QueryRow(ctx, `
 			SELECT count(*)
 			FROM pg_stat_activity
-			WHERE wait_event_type = 'Lock' AND query LIKE '%FOR SHARE OF r%'
+			WHERE wait_event_type = 'Lock' AND query LIKE '%round_open_guard%'
 		`).Scan(&waiting)
 		if err != nil {
 			t.Fatalf("poll pg_stat_activity: %v", err)
@@ -205,8 +206,11 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 
 		// The close command's status flip, held uncommitted: updateRound
 		// takes the round row's lock exactly like Rounds.Close does. Both
-		// gates pass — the match is settled, no ride exists yet.
-		tx, err := pool.Begin(ctx)
+		// gates pass — the match is settled, no ride exists yet. (Phase D:
+		// the flip is a schedule write, so the tx runs on the schedule
+		// pool — the ride's FOR SHARE guard still blocks on this tx's row
+		// lock; same DB, same serialization.)
+		tx, err := schedulePool.Begin(ctx)
 		if err != nil {
 			t.Fatalf("begin close tx: %v", err)
 		}
@@ -215,7 +219,7 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 		var round schedule.Round
 		if err := pool.QueryRow(ctx, `
 			SELECT id, season_id, number, status, version
-			FROM rounds WHERE id = $1
+			FROM schedule.rounds WHERE id = $1
 		`, roundID).Scan(&round.ID, &round.SeasonID, &round.Number, &round.Status, &round.Version); err != nil {
 			t.Fatalf("read round: %v", err)
 		}
@@ -224,7 +228,7 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 		// runs), inline so the tx's lock-taking matches the store's write
 		// shape without reaching into schedule's unexported internals.
 		if _, err := tx.Exec(ctx, `
-			UPDATE rounds SET number = $1, status = $2, version = version + 1
+			UPDATE schedule.rounds SET number = $1, status = $2, version = version + 1
 			WHERE id = $3 AND version = $4
 		`, round.Number, round.Status, round.ID, round.Version); err != nil {
 			t.Fatalf("uncommitted close flip: %v", err)
@@ -261,7 +265,7 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 		}
 
 		var n int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM rides WHERE match_id = $1`, matchID).Scan(&n); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM game.rides WHERE match_id = $1`, matchID).Scan(&n); err != nil {
 			t.Fatalf("count rides: %v", err)
 		}
 		if n != 0 {
@@ -302,7 +306,7 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 		var round schedule.Round
 		if err := pool.QueryRow(ctx, `
 			SELECT id, season_id, number, status, version
-			FROM rounds WHERE id = $1
+			FROM schedule.rounds WHERE id = $1
 		`, roundID).Scan(&round.ID, &round.SeasonID, &round.Number, &round.Status, &round.Version); err != nil {
 			t.Fatalf("read round: %v", err)
 		}
@@ -311,7 +315,7 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 			t.Fatalf("Close() = %v, want nil", err)
 		}
 
-		got, err := NewStore(pool).Rides.Get(ctx, created.ID)
+		got, err := NewStore(gamePool).Rides.Get(ctx, created.ID)
 		if err != nil {
 			t.Fatalf("Get() = %v, want nil", err)
 		}
@@ -374,7 +378,7 @@ func TestService_RideBurnRacesExactlyOnce(t *testing.T) {
 				t.Fatalf("winners = %d (errs: %v), want exactly 1", winners, errs)
 			}
 
-			got, err := NewStore(pool).Rides.Get(ctx, ride.ID)
+			got, err := NewStore(gamePool).Rides.Get(ctx, ride.ID)
 			if err != nil {
 				t.Fatalf("Get() = %v, want nil", err)
 			}
@@ -452,7 +456,7 @@ func TestService_RideCommandsRaceOnOneRide(t *testing.T) {
 			// The settled state: exactly one decision landed — burned or
 			// unlocked, at exactly one version bump. A loser that wrote
 			// anything shows up here as a double bump.
-			got, err := NewStore(pool).Rides.Get(ctx, ride.ID)
+			got, err := NewStore(gamePool).Rides.Get(ctx, ride.ID)
 			if err != nil {
 				t.Fatalf("Get() = %v, want nil", err)
 			}
@@ -505,7 +509,7 @@ func TestResolveMatchRaces(t *testing.T) {
 		scoreStartedMatch(ctx, t, fixtureMatch)
 
 		var version int
-		if err := pool.QueryRow(ctx, `SELECT version FROM matches WHERE id = $1`, fixtureMatch).Scan(&version); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT version FROM schedule.matches WHERE id = $1`, fixtureMatch).Scan(&version); err != nil {
 			t.Fatalf("read match version: %v", err)
 		}
 		return fixtureMatch, version
@@ -569,7 +573,7 @@ func TestResolveMatchRaces(t *testing.T) {
 				}
 
 				var status string
-				if err := pool.QueryRow(ctx, `SELECT status FROM matches WHERE id = $1`, matchID).Scan(&status); err != nil {
+				if err := pool.QueryRow(ctx, `SELECT status FROM schedule.matches WHERE id = $1`, matchID).Scan(&status); err != nil {
 					t.Fatalf("read match status: %v", err)
 				}
 				if status != "closed" {
@@ -592,7 +596,7 @@ func TestResolveMatchRaces(t *testing.T) {
 				var round schedule.Round
 				if err := pool.QueryRow(ctx, `
 					SELECT id, season_id, number, status, version
-					FROM rounds WHERE id = $1
+					FROM schedule.rounds WHERE id = $1
 				`, roundID).Scan(&round.ID, &round.SeasonID, &round.Number, &round.Status, &round.Version); err != nil {
 					t.Fatalf("read round: %v", err)
 				}
@@ -645,14 +649,14 @@ func TestResolveMatchRaces(t *testing.T) {
 				}
 
 				var matchStatus string
-				if err := pool.QueryRow(ctx, `SELECT status FROM matches WHERE id = $1`, matchID).Scan(&matchStatus); err != nil {
+				if err := pool.QueryRow(ctx, `SELECT status FROM schedule.matches WHERE id = $1`, matchID).Scan(&matchStatus); err != nil {
 					t.Fatalf("read match status: %v", err)
 				}
 				if matchStatus != "closed" {
 					t.Errorf("match status = %q, want closed", matchStatus)
 				}
 
-				got, err := NewStore(pool).Rides.Get(ctx, ride.ID)
+				got, err := NewStore(gamePool).Rides.Get(ctx, ride.ID)
 				if err != nil {
 					t.Fatalf("Get() = %v, want nil", err)
 				}
@@ -668,14 +672,14 @@ func TestResolveMatchRaces(t *testing.T) {
 				var violations int
 				if err := pool.QueryRow(ctx, `
 					SELECT count(*)
-					FROM rides rd
-					JOIN matches m ON m.id = rd.match_id
+					FROM game.rides rd
+					JOIN schedule.matches m ON m.id = rd.match_id
 					WHERE m.round_id = $1 AND rd.state IN ('locked', 'won_pending')
 				`, roundID).Scan(&violations); err != nil {
 					t.Fatalf("count unresolved rides: %v", err)
 				}
 				var roundStatus string
-				if err := pool.QueryRow(ctx, `SELECT status FROM rounds WHERE id = $1`, roundID).Scan(&roundStatus); err != nil {
+				if err := pool.QueryRow(ctx, `SELECT status FROM schedule.rounds WHERE id = $1`, roundID).Scan(&roundStatus); err != nil {
 					t.Fatalf("read round status: %v", err)
 				}
 				if roundStatus == "closed" && violations > 0 {

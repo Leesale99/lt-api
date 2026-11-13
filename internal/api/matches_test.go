@@ -240,7 +240,7 @@ func TestDeleteMatchHandler(t *testing.T) {
 			// lives on rounds, so a closed match inside a still-open round is
 			// deletable. The fixture has no closed match in an open round, so
 			// one is seeded here: match 12 ends inside the open round 3.
-			seed:     `INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at, ended_at) VALUES (1, 3, 1, 2, 1.5, 2.5, 80, 78, 'closed', now() - interval '2 hours', now() - interval '30 minutes')`,
+			seed:     `INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at, ended_at) VALUES (1, 3, 1, 2, 1.5, 2.5, 80, 78, 'closed', now() - interval '2 hours', now() - interval '30 minutes')`,
 			url:      "/v1/seasons/1/matches/12",
 			wantCode: http.StatusOK,
 			wantBody: []string{"successfully deleted"},
@@ -277,6 +277,34 @@ func TestDeleteMatchHandler(t *testing.T) {
 			wantBody: []string{"could not be found"},
 		},
 	}
+
+	// ridesMatchWithRide seeds a ride on the created match 5 (the
+	// delete-with-rides case needs a game-side reference; the handler's
+	// refusal is the api-level composition since the FK is gone, Phase D).
+	ridesMatchWithRide := func(t *testing.T) {
+		t.Helper()
+		playerID := plantPlayerRow(t, 1)
+		plantRideRow(t, playerID, 1, 5, "locked", "0", 0)
+	}
+
+	t.Run("match with rides on it is refused", func(t *testing.T) {
+		reset(t)
+		ridesMatchWithRide(t)
+		app := newTestApplication()
+
+		req := httptest.NewRequest(http.MethodDelete, "/v1/seasons/1/matches/5", nil)
+		rr := httptest.NewRecorder()
+		app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("got status %d, want 409 (body: %s)", rr.Code, rr.Body.String())
+		}
+		for _, fragment := range []string{"referenced by other records"} {
+			if !strings.Contains(rr.Body.String(), fragment) {
+				t.Errorf("body missing %q (body: %s)", fragment, rr.Body.String())
+			}
+		}
+	})
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -323,7 +351,7 @@ func TestDeleteMatchRemovesRow(t *testing.T) {
 
 	var count int
 	err := testPool.QueryRow(context.Background(),
-		`SELECT count(*) FROM matches WHERE id = 1`).Scan(&count)
+		`SELECT count(*) FROM schedule.matches WHERE id = 1`).Scan(&count)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,7 +534,7 @@ func TestUpdateMatchHandler(t *testing.T) {
 			// (the advisory rank check cannot see time, so this reaches the
 			// DB gate). It lives in the open round 3.
 			url:      "/v1/seasons/1/matches/12",
-			seed:     `INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at) VALUES (1, 3, 1, 2, 1.5, 2.5, 'created', now() - interval '1 hour')`,
+			seed:     `INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at) VALUES (1, 3, 1, 2, 1.5, 2.5, 'created', now() - interval '1 hour')`,
 			body:     `{"status":"postponed"}`,
 			wantCode: http.StatusConflict,
 			wantBody: []string{"a match has already started"},
@@ -514,7 +542,7 @@ func TestUpdateMatchHandler(t *testing.T) {
 		{
 			name:     "started match cannot return to created",
 			url:      "/v1/seasons/1/matches/12",
-			seed:     `INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at) VALUES (1, 3, 1, 2, 1.5, 2.5, 50, 49, 'in_progress', now() - interval '1 hour')`,
+			seed:     `INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at) VALUES (1, 3, 1, 2, 1.5, 2.5, 50, 49, 'in_progress', now() - interval '1 hour')`,
 			body:     `{"status":"created","score":{}}`,
 			wantCode: http.StatusUnprocessableEntity,
 			wantBody: []string{"status", "earlier stage of the match lifecycle"},
@@ -570,7 +598,7 @@ func TestResolveMatchHandler(t *testing.T) {
 			// Round 3 is the fixture's open round; the seed (a started
 			// in-progress match) becomes match id 12 after reset's 11.
 			name: "resolves a started match in an open round",
-			seed: `INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at)
+			seed: `INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at)
 			       VALUES (1, 3, 1, 2, 1.5, 2.5, 70, 69, 'in_progress', now() - interval '1 hour')`,
 			url:      "/v1/seasons/1/matches/12/resolve",
 			body:     `{"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
@@ -701,7 +729,7 @@ func TestResolveMatchSettlesRowOnce(t *testing.T) {
 	app := newTestApplication()
 
 	if _, err := testPool.Exec(context.Background(),
-		`INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at)
+		`INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at)
 		 VALUES (1, 3, 1, 2, 1.5, 2.5, 70, 69, 'in_progress', now() - interval '1 hour')`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -724,7 +752,7 @@ func TestResolveMatchSettlesRowOnce(t *testing.T) {
 	var homeScore, awayScore int
 	var version int
 	err := testPool.QueryRow(context.Background(),
-		`SELECT status, home_score, away_score, version FROM matches WHERE id = 12`).Scan(&status, &homeScore, &awayScore, &version)
+		`SELECT status, home_score, away_score, version FROM schedule.matches WHERE id = 12`).Scan(&status, &homeScore, &awayScore, &version)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -739,7 +767,7 @@ func TestResolveMatchSettlesRowOnce(t *testing.T) {
 	}
 
 	err = testPool.QueryRow(context.Background(),
-		`SELECT status, home_score, away_score, version FROM matches WHERE id = 12`).Scan(&status, &homeScore, &awayScore, &version)
+		`SELECT status, home_score, away_score, version FROM schedule.matches WHERE id = 12`).Scan(&status, &homeScore, &awayScore, &version)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -757,7 +785,7 @@ func TestPostponeStartedMatchFrozen(t *testing.T) {
 	app := newTestApplication()
 
 	if _, err := testPool.Exec(context.Background(),
-		`INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at)
+		`INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at)
 		 VALUES (1, 3, 1, 2, 1.5, 2.5, 'created', now() - interval '1 hour')`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -775,7 +803,7 @@ func TestPostponeStartedMatchFrozen(t *testing.T) {
 	var homeOdds float64
 	var version int
 	err := testPool.QueryRow(context.Background(),
-		`SELECT status, home_odds, version FROM matches WHERE id = 12`).Scan(&status, &homeOdds, &version)
+		`SELECT status, home_odds, version FROM schedule.matches WHERE id = 12`).Scan(&status, &homeOdds, &version)
 	if err != nil {
 		t.Fatal(err)
 	}

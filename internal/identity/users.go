@@ -145,6 +145,45 @@ func (s *UserStore) GetByEmail(ctx context.Context, email string) (User, error) 
 	return user, nil
 }
 
+// Get returns the user by ID — the api-level user-existence check behind
+// player create (Phase D: the players_user_id_fkey is gone with the
+// cross-context FKs, migration 000016, so the api handler — which holds
+// the identity store — verifies the principal before writing the player;
+// user_id is only ever the authenticated user's ID).
+func (s *UserStore) Get(ctx context.Context, id int) (User, error) {
+	if id < 1 {
+		return User{}, store.ErrRecordNotFound
+	}
+
+	query := `
+		SELECT id, created_at, name, email, password_hash, activated, role_id, version
+		FROM users
+		WHERE id = $1
+	`
+	var user User
+
+	err := s.pool.QueryRow(ctx, query, id).Scan(
+		&user.ID,
+		&user.CreatedAt,
+		&user.Name,
+		&user.Email,
+		&user.Password.hash,
+		&user.Activated,
+		&user.RoleID,
+		&user.Version,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return User{}, store.ErrRecordNotFound
+		default:
+			return User{}, err
+		}
+	}
+
+	return user, nil
+}
+
 func (s *UserStore) Update(ctx context.Context, user User) (User, error) {
 	if user.Password.hash == nil {
 		panic("missing password hash for the user")

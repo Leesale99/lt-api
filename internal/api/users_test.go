@@ -181,7 +181,7 @@ func TestRegisterUserHandlerSuccessState(t *testing.T) {
 		version    int
 	)
 	err := testPool.QueryRow(context.Background(),
-		`SELECT password_hash, activated, version FROM users WHERE email = 'alice@example.com'`).
+		`SELECT password_hash, activated, version FROM identity.users WHERE email = 'alice@example.com'`).
 		Scan(&storedHash, &activated, &version)
 	if err != nil {
 		t.Fatalf("registered user not found in database: %v", err)

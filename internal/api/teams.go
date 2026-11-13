@@ -179,6 +179,40 @@ func (app *Application) deleteTeamHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
+	// (Phase D) The players_favorite_team_id_fkey and rides_team_id_fkey
+	// RESTRICTs are gone with the cross-context FKs (migration 000016), so
+	// the "team still referenced by the game context" refusal is composed
+	// here: api holds both stores, game answers its own references (matches
+	// RESTRICT is schedule-internal and still enforced by the DB). Same
+	// ErrRecordInUse → 409 surface the FK produced. The race — a player or
+	// ride created between the check and the delete — is the accepted
+	// api-level gap (the same window the delete-then-FK flow had between
+	// its own read and write).
+	playerRefs, err := app.Game.Store.Players.ExistsForTeam(ctx, id)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+	rideRefs, err := app.Game.Store.Rides.ExistsForTeam(ctx, id)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+	if playerRefs || rideRefs {
+		app.recordInUseResponse(w, r)
+		return
+	}
+
 	err = app.Schedule.Teams.Delete(ctx, id)
 	if err != nil {
 		switch {

@@ -20,6 +20,19 @@ import (
 // Phase C: the resolve half of the old store-level coupling (ResolveTx's
 // guarded score write) is schedule's own script now (Service.ResolveMatch);
 // game no longer needs it through the port.
+//
+// Phase D: the context privilege boundary (migration 000018) denies
+// game_app every schedule table, so the in-caller's-tx guards cannot be
+// plain SELECTs — row locking (FOR SHARE) needs UPDATE privilege, and
+// granting that would let game corrupt schedule state. The two guards
+// are schedule's own SECURITY DEFINER functions instead
+// (schedule.round_open_guard / schedule.destination_open_guard, created
+// by 000018): schedule's SQL runs as the schema owner, takes the same
+// row locks inside the caller's transaction, and returns only the fact.
+// The pool-read port methods (PhaseForMatch, NextForTeam, Match) run on
+// the schedule pool, under schedule_app, and schema-qualify their tables
+// so the statements are honest about crossing the boundary wherever they
+// happen to execute.
 
 // PhaseForMatch returns the ride-phase inputs for the round the given
 // match belongs to, in one statement: the round status (the ErrRoundNotOpen
@@ -55,23 +68,21 @@ func (s *Store) NextForTeam(ctx context.Context, teamID int) (Match, error) {
 // ErrRecordNotFound when the match is unknown; the status otherwise — the
 // caller (game) maps a non-open round to its round-refusal sentinel.
 func (s *Store) RoundOpenTx(ctx context.Context, tx pgx.Tx, matchID int) (RoundStatus, error) {
-	query := `
-		SELECT r.status
-		FROM matches m
-		INNER JOIN rounds r ON r.id = m.round_id
-		WHERE m.id = $1
-		FOR SHARE OF r
-	`
-	var status RoundStatus
+	// The guard is schedule's definer function (see the file header): same
+	// statement shape as before, executed as the schema owner. NULL means
+	// the match is unknown — the not-found mapping is unchanged.
+	var status *RoundStatus
 
-	err := tx.QueryRow(ctx, query, matchID).Scan(&status)
+	err := tx.QueryRow(ctx, `SELECT schedule.round_open_guard($1)`, matchID).Scan(&status)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", store.ErrRecordNotFound
 	case err != nil:
 		return "", err
+	case status == nil:
+		return "", store.ErrRecordNotFound
 	default:
-		return status, nil
+		return *status, nil
 	}
 }
 
@@ -86,20 +97,36 @@ func (s *Store) RoundOpenTx(ctx context.Context, tx pgx.Tx, matchID int) (RoundS
 // already ended, round closed): the caller maps them all to the
 // round-refusal, the Phase 04 contract for a stale pick.
 func (s *Store) DestinationOpenTx(ctx context.Context, tx pgx.Tx, matchID int) error {
-	query := `
-		SELECT 1
-		FROM matches m
-		INNER JOIN rounds r ON r.id = m.round_id
-		WHERE m.id = $1 AND m.ended_at IS NULL AND r.status <> 'closed'
-		FOR SHARE OF m, r
-	`
-	var one int
+	// The guard is schedule's definer function (see the file header): FALSE
+	// covers every refusal cause (unknown, ended, round closed), the same
+	// mapping the previous statement's 0 rows had.
+	var live bool
 
-	err := tx.QueryRow(ctx, query, matchID).Scan(&one)
+	err := tx.QueryRow(ctx, `SELECT schedule.destination_open_guard($1)`, matchID).Scan(&live)
 	switch {
-	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		return err
+	case !live:
 		return store.ErrRecordNotFound
 	default:
-		return err
+		return nil
 	}
+}
+
+// Match returns the committed facts of one match — the read behind game's
+// result-agreement check (the app-level translation of the old
+// rides_state_gate check 5, migration 000017): the settlement handlers
+// verify the event payload against the committed scores before arriving a
+// ride on won_pending|lost. The scores are committed by the time game
+// sees them (publish is post-commit, and ResolveMatch refuses a
+// re-resolution), so a plain pool read — schedule pool, schedule_app — is
+// the right snapshot; no in-tx read is needed.
+func (s *Store) Match(ctx context.Context, matchID int) (Match, error) {
+	return s.Matches.Get(ctx, matchID)
+}
+
+// Team returns one team — the read behind game's ride-create team
+// existence check (see the port interface comment).
+func (s *Store) Team(ctx context.Context, teamID int) (Team, error) {
+	return s.Teams.Get(ctx, teamID)
 }

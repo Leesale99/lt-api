@@ -64,6 +64,27 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Player user existence is an api-level check since Phase D: the
+	// players_user_id_fkey is gone with the cross-context FKs (migration
+	// 000016 — identity is another context), and api holds the identity
+	// store. user_id is only ever the authenticated principal's ID (the
+	// update path never writes it), so this is the one spot the check
+	// belongs. The refusal keeps the shape the FK refusal produced:
+	// store.ErrRecordNotFound → the 422 favorite_team_id validation error.
+	if _, err := app.Identity.Users.Get(ctx, authenticatedUser.ID); err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, store.ErrRecordNotFound):
+			v := validator.New()
+			v.AddError("favorite_team_id", "must reference an existing team")
+			app.failedValidationResponse(w, r, v.Errors)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+
 	player := game.Player{
 		SeasonID:       seasonID,
 		FavoriteTeamID: input.FavoriteTeamID,

@@ -212,6 +212,29 @@ func (app *Application) deleteMatchHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
+	// (Phase D) rides_match_id_fkey's RESTRICT is gone with the
+	// cross-context FKs (migration 000016), so the "match still has rides"
+	// refusal is composed here: api holds both stores, game answers its
+	// own references (ADR-018: a match with rides on it must not be
+	// deleted — the tokens would vanish with it). Same ErrRecordInUse →
+	// 409 surface the FK produced. The race — a ride locked between the
+	// check and the delete — is the accepted api-level gap (the same
+	// window the delete-then-FK flow had between its own read and write).
+	rideRefs, err := app.Game.Store.Rides.ExistsForMatch(ctx, matchID)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+	if rideRefs {
+		app.recordInUseResponse(w, r)
+		return
+	}
+
 	err = app.Schedule.Matches.Delete(ctx, matchID, seasonID)
 	if err != nil {
 		switch {

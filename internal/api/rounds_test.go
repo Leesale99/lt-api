@@ -203,7 +203,7 @@ func TestUpdateRoundHandler(t *testing.T) {
 			// relaxed: ride settlement is eventual, behind RoundCompleted.)
 			setup: func(t *testing.T) {
 				if _, err := testPool.Exec(context.Background(),
-					`UPDATE matches SET starts_at = now() - interval '3 hours',
+					`UPDATE schedule.matches SET starts_at = now() - interval '3 hours',
 						status = 'closed', home_score = 2, away_score = 1
 					 WHERE round_id = 3`); err != nil {
 					t.Fatalf("settle round 3 matches: %v", err)
@@ -283,19 +283,49 @@ func TestUpdateRoundHandler(t *testing.T) {
 			wantBody: []string{"status"},
 		},
 		{
-			name:     "duplicate number within season",
-			url:      "/v1/seasons/1/rounds/2",
-			body:     `{"number":1}`,
+			name: "duplicate number within season",
+			// The api suite runs the whole migration chain since Phase D, so
+			// the round gates (000008) are live: a legal renumber lands on
+			// the sequence's next number (max closed = 2 → 3) — and round 5
+			// (created, empty) taking 3 collides with round 3. The refusal
+			// is the unique-violation 409, the case's point.
+			url:      "/v1/seasons/1/rounds/5",
+			body:     `{"number":3}`,
 			wantCode: http.StatusConflict,
 			wantBody: []string{"unique values"},
 		},
 		{
-			name: "same number in another season is fine",
-			// Round 6 is season 2's number-1 round; 3 is free there.
+			name: "duplicate number is per-season (another season's clash)",
+			// Season 2's rounds are 6 (number 1) and 7 (number 2): setup
+			// opens the season and closes round 6, so renumbering round 6 →
+			// 2 passes the sequence gate (max closed = 1 = 2-1) and hits the
+			// per-season UNIQUE clash with round 7 — proving the uniqueness
+			// is scoped to the season, not global. (Season 2's numbers 1-2
+			// would collide with season 1's under a global rule; the old
+			// "renumber into a free number" success shape is unreachable
+			// under the sequence gate.)
+			setup: func(t *testing.T) {
+				// Season 2's round 6 carries the fixture's other-season match;
+				// the close gate refuses a close over unclosed matches, so the
+				// match goes first. Owner-pool fixture writes, Phase D-qualified.
+				_, err := testPool.Exec(context.Background(),
+					`DELETE FROM schedule.matches WHERE round_id = 6`)
+				if err != nil {
+					t.Fatalf("setup: %v", err)
+				}
+				if _, err := testPool.Exec(context.Background(),
+					`UPDATE schedule.seasons SET status = 'open' WHERE id = 2`); err != nil {
+					t.Fatalf("setup: %v", err)
+				}
+				if _, err := testPool.Exec(context.Background(),
+					`UPDATE schedule.rounds SET status = 'closed' WHERE id = 6`); err != nil {
+					t.Fatalf("setup: %v", err)
+				}
+			},
 			url:      "/v1/seasons/2/rounds/6",
-			body:     `{"number":3}`,
-			wantCode: http.StatusOK,
-			wantBody: []string{`"number": 3`},
+			body:     `{"number":2}`,
+			wantCode: http.StatusConflict,
+			wantBody: []string{"unique values"},
 		},
 		{
 			name:     "unknown round",
@@ -385,10 +415,26 @@ func TestUpdateRoundPersists(t *testing.T) {
 	reset(t)
 	app := newTestApplication()
 
-	req := httptest.NewRequest(http.MethodPatch, "/v1/seasons/1/rounds/4",
-		// Number-only: round 4 has live matches, so closing it would hit
-		// rounds_close_gate — the persistence check needs no status change.
-		strings.NewReader(`{"number":7}`))
+	// The full gate set (000008 — the api suite runs the whole migration
+	// chain since Phase D) shapes what a legal update is: the sequence gate
+	// admits a close only onto the next step after the closed rounds, and
+	// the close gate refuses closes over unsettled matches (a future match
+	// cannot even be closed directly — the ended_at stamp would predate
+	// its start). So the persistence probe builds a legal chain in season
+	// 2: drop its match, open the season, close round 6 — then round 7 is
+	// the next closable round (fixture SQL, owner pool).
+	for _, stmt := range []string{
+		`DELETE FROM schedule.matches WHERE round_id = 6`,
+		`UPDATE schedule.seasons SET status = 'open' WHERE id = 2`,
+		`UPDATE schedule.rounds SET status = 'closed' WHERE id = 6`,
+	} {
+		if _, err := testPool.Exec(context.Background(), stmt); err != nil {
+			t.Fatalf("fixture chain: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/v1/seasons/2/rounds/7",
+		strings.NewReader(`{"status":"closed"}`))
 	rr := httptest.NewRecorder()
 	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
 
@@ -400,11 +446,11 @@ func TestUpdateRoundPersists(t *testing.T) {
 	var status string
 	var version int
 	err := testPool.QueryRow(context.Background(),
-		`SELECT number, status, version FROM rounds WHERE id = 4`).Scan(&number, &status, &version)
+		`SELECT number, status, version FROM schedule.rounds WHERE id = 7`).Scan(&number, &status, &version)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if number != 7 || status != "created" || version != 2 {
+	if number != 2 || status != "closed" || version != 2 {
 		t.Fatalf("row not updated: number=%d status=%q version=%d", number, status, version)
 	}
 }
@@ -431,7 +477,7 @@ func TestDeleteRoundHandler(t *testing.T) {
 			// The fixture's open round has no started matches, so one is
 			// seeded: the gate refuses the delete because it would cascade the
 			// match away (ADR-008, same rule as the seasons delete gate).
-			seed:     `INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at) VALUES (1, 3, 1, 2, 1.5, 2.5, 'created', now() - interval '1 hour')`,
+			seed:     `INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at) VALUES (1, 3, 1, 2, 1.5, 2.5, 'created', now() - interval '1 hour')`,
 			url:      "/v1/seasons/1/rounds/3",
 			wantCode: http.StatusConflict,
 			wantBody: []string{"referenced by other records"},
@@ -508,7 +554,7 @@ func TestDeleteOpenRoundCascadesMatches(t *testing.T) {
 
 	// A match that has not started yet does not make the round durable.
 	_, err := testPool.Exec(context.Background(),
-		`INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at)
+		`INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at)
 		VALUES (1, 3, 1, 2, 1.5, 2.5, 'created', now() + interval '7 days')`)
 	if err != nil {
 		t.Fatalf("insert future match: %v", err)
@@ -525,8 +571,8 @@ func TestDeleteOpenRoundCascadesMatches(t *testing.T) {
 	var rounds, matches int
 	err = testPool.QueryRow(context.Background(),
 		`SELECT
-			(SELECT count(*) FROM rounds WHERE id = 3),
-			(SELECT count(*) FROM matches WHERE round_id = 3)`).Scan(&rounds, &matches)
+			(SELECT count(*) FROM schedule.rounds WHERE id = 3),
+			(SELECT count(*) FROM schedule.matches WHERE round_id = 3)`).Scan(&rounds, &matches)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -732,7 +778,7 @@ func TestOpenRoundStartsSeason(t *testing.T) {
 	var seasonStatus string
 	var seasonVersion int
 	err := testPool.QueryRow(context.Background(),
-		`SELECT status, version FROM seasons WHERE id = $1`, seasonID).Scan(&seasonStatus, &seasonVersion)
+		`SELECT status, version FROM schedule.seasons WHERE id = $1`, seasonID).Scan(&seasonStatus, &seasonVersion)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -797,7 +843,7 @@ func TestOpenRoundSeasonFlipIsIdempotent(t *testing.T) {
 
 	var seasonVersion int
 	err := testPool.QueryRow(context.Background(),
-		`SELECT version FROM seasons WHERE id = $1`, seasonID).Scan(&seasonVersion)
+		`SELECT version FROM schedule.seasons WHERE id = $1`, seasonID).Scan(&seasonVersion)
 	if err != nil {
 		t.Fatal(err)
 	}

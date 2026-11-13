@@ -395,7 +395,7 @@ func TestUpdateTeamHandlerPersists(t *testing.T) {
 	var name, logo, description string
 	var version int
 	err := testPool.QueryRow(context.Background(),
-		`SELECT name, logo, description, version FROM teams WHERE id = 1`,
+		`SELECT name, logo, description, version FROM schedule.teams WHERE id = 1`,
 	).Scan(&name, &logo, &description, &version)
 	if err != nil {
 		t.Fatal(err)
@@ -499,7 +499,7 @@ func TestDeleteUnreferencedTeamHandler(t *testing.T) {
 
 	var n int
 	err := testPool.QueryRow(context.Background(),
-		`SELECT count(*) FROM teams WHERE id = $1`, id).Scan(&n)
+		`SELECT count(*) FROM schedule.teams WHERE id = $1`, id).Scan(&n)
 	if err != nil {
 		t.Fatal(err)
 	}

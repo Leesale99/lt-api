@@ -26,7 +26,7 @@ import (
 // closeRoundSQL is the direct-writer close statement the gate-backstop
 // test probes with. The unclosed-matches half of rounds_close_gate holds
 // for any writer.
-const closeRoundSQL = `UPDATE rounds SET status = 'closed' WHERE id = $1`
+const closeRoundSQL = `UPDATE schedule.rounds SET status = 'closed' WHERE id = $1`
 
 // rideRow is the raw read of a ride row the close-side assertions check:
 // state, acc and version — the columns a settlement would move.
@@ -44,7 +44,7 @@ func getRideRow(ctx context.Context, t *testing.T, rideID int) rideRow {
 	var row rideRow
 	err := pool.QueryRow(ctx,
 		`SELECT state::text, trim(trailing '.' from trim(trailing '0' from bonus_acc::text)), version
-		FROM rides WHERE id = $1`, rideID).Scan(
+		FROM game.rides WHERE id = $1`, rideID).Scan(
 		&row.state, &row.acc, &row.version)
 	if err != nil {
 		t.Fatalf("read ride %d: %v", rideID, err)
@@ -61,7 +61,7 @@ func settleRound(ctx context.Context, t *testing.T, roundID int) {
 	t.Helper()
 
 	if _, err := pool.Exec(ctx, `
-		UPDATE matches SET starts_at = now() - interval '3 hours',
+		UPDATE schedule.matches SET starts_at = now() - interval '3 hours',
 			status = 'closed', home_score = 2, away_score = 1
 		WHERE round_id = $1`, roundID); err != nil {
 		t.Fatalf("settle round matches: %v", err)
@@ -75,8 +75,8 @@ func countRidesInState(ctx context.Context, t *testing.T, roundID int, state str
 
 	var n int
 	err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM rides rd
-		JOIN matches m ON m.id = rd.match_id
+		SELECT count(*) FROM game.rides rd
+		JOIN schedule.matches m ON m.id = rd.match_id
 		WHERE m.round_id = $1 AND rd.state = $2`, roundID, state).Scan(&n)
 	if err != nil {
 		t.Fatalf("count rides in state %q: %v", state, err)
@@ -93,7 +93,7 @@ func plantPlayer(ctx context.Context, t *testing.T, teamID int) int {
 
 	var playerID int
 	err := pool.QueryRow(ctx, `
-		INSERT INTO players (season_id, favorite_team_id, name)
+		INSERT INTO game.players (season_id, favorite_team_id, name)
 		VALUES (1, $1, 'ride player')
 		RETURNING id
 	`, teamID).Scan(&playerID)
@@ -118,7 +118,7 @@ func plantRide(ctx context.Context, t *testing.T, matchID, teamID int, state str
 
 	var rideID int
 	err := pool.QueryRow(ctx, `
-		INSERT INTO rides (player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak)
+		INSERT INTO game.rides (player_id, team_id, match_id, state, tokens_locked, base_at_lock, bonus_acc, streak)
 		VALUES ($1, $2, $3, 'locked', 100, 100, 0, 0)
 		RETURNING id
 	`, plantPlayer(ctx, t, teamID), teamID, matchID).Scan(&rideID)
@@ -129,7 +129,7 @@ func plantRide(ctx context.Context, t *testing.T, matchID, teamID int, state str
 	if state != "locked" {
 		// burned/unlocked arrive only via won_pending (gate check 3).
 		if state == "burned" || state == "unlocked" {
-			if _, err := pool.Exec(ctx, `UPDATE rides SET state = 'won_pending' WHERE id = $1`, rideID); err != nil {
+			if _, err := pool.Exec(ctx, `UPDATE game.rides SET state = 'won_pending' WHERE id = $1`, rideID); err != nil {
 				t.Fatalf("plant ride walk (locked → won_pending): %v", err)
 			}
 		}
@@ -138,7 +138,7 @@ func plantRide(ctx context.Context, t *testing.T, matchID, teamID int, state str
 		// state coupling reads NEW.bonus_acc on the lost/unlocked arrivals
 		// — the declarative rides_money_state_coupling CHECK (000013).
 		if _, err := pool.Exec(ctx, `
-			UPDATE rides SET state = $2, bonus_acc = $3::numeric, streak = $4, version = 1 WHERE id = $1
+			UPDATE game.rides SET state = $2, bonus_acc = $3::numeric, streak = $4, version = 1 WHERE id = $1
 		`, rideID, state, acc, streak); err != nil {
 			t.Fatalf("plant ride walk (→ %s): %v", state, err)
 		}
@@ -154,7 +154,7 @@ func insertFutureMatch(ctx context.Context, t *testing.T, seasonID, roundID, hom
 
 	var id int
 	err := pool.QueryRow(ctx, `
-		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at)
+		INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at)
 		VALUES ($1, $2, $3, $4, 1.75, 2.20, 'created', now() + $5::interval)
 		RETURNING id
 	`, seasonID, roundID, homeID, awayID, lead).Scan(&id)
@@ -176,10 +176,15 @@ func seedFixture(ctx context.Context, t *testing.T) (int, int, int, int) {
 	return seed(ctx, t)
 }
 
-// TestMatchDeleteRestricted pins the ADR-018 rule: a match with rides on
-// it must refuse deletion (RESTRICT), not cascade the rides away — the
-// ride is live player money, not decoration on the match row. The store
-// maps the refusal (23001/23503) to ErrRecordInUse, like TeamStore.Delete.
+// TestMatchDeleteRestricted pins the Phase D shape of the ADR-018 rule:
+// rides_match_id_fkey's RESTRICT is gone with the cross-context FKs
+// (migration 000016), so the store alone no longer refuses a delete over
+// rides — the "match still has rides" check is the api delete handler's,
+// an api-level composition of schedule's and game's facts (same 409; the
+// probe lives in internal/api/matches_test.go). This store-level case now
+// documents the boundary: the delete goes through (rides_player_id RESTRICT
+// is game-internal and stays, but nothing on THIS side references the
+// match anymore).
 func TestMatchDeleteRestricted(t *testing.T) {
 	requireDB(t)
 
@@ -189,15 +194,15 @@ func TestMatchDeleteRestricted(t *testing.T) {
 	matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 	plantRide(ctx, t, matchID, homeID, "locked", "0", 0)
 
-	err := NewStore(pool).Matches.Delete(ctx, matchID, 1)
+	err := NewStore(schedulePool).Matches.Delete(ctx, matchID, 1)
 
-	if !errors.Is(err, store.ErrRecordInUse) {
-		t.Fatalf("Delete() = %v, want ErrRecordInUse (RESTRICT FK, ADR-018)", err)
+	if err != nil {
+		t.Fatalf("Delete() = %v, want nil (rides RESTRICT moved to the api layer, Phase D)", err)
 	}
 
-	// The refusal actually refused: the match row survives.
-	if _, err := NewStore(pool).Matches.Get(ctx, matchID); err != nil {
-		t.Fatalf("Get() after refused delete = %v, want nil", err)
+	// The delete actually deleted: the match row is gone.
+	if _, err := NewStore(schedulePool).Matches.Get(ctx, matchID); !errors.Is(err, store.ErrRecordNotFound) {
+		t.Fatalf("Get() after delete = %v, want ErrRecordNotFound", err)
 	}
 }
 
@@ -215,7 +220,7 @@ func closeService(t *testing.T) (*Service, *[]RoundCompleted) {
 		return nil
 	})
 
-	svc := NewService(NewStore(pool), bus, slog.New(slog.NewTextHandler(testWriter{}, nil)))
+	svc := NewService(NewStore(schedulePool), bus, slog.New(slog.NewTextHandler(testWriter{}, nil)))
 	return svc, &received
 }
 
@@ -237,7 +242,7 @@ func seedClosedRound(ctx context.Context, t *testing.T) (int, int, int) {
 	settleRound(ctx, t, roundID)
 
 	var matchID int
-	if err := pool.QueryRow(ctx, `SELECT id FROM matches WHERE round_id = $1 LIMIT 1`, roundID).Scan(&matchID); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT id FROM schedule.matches WHERE round_id = $1 LIMIT 1`, roundID).Scan(&matchID); err != nil {
 		t.Fatalf("fetch match id: %v", err)
 	}
 
@@ -253,7 +258,7 @@ func seedClosedRound(ctx context.Context, t *testing.T) (int, int, int) {
 func closeableRound(ctx context.Context, t *testing.T, roundID int) Round {
 	t.Helper()
 
-	round, err := NewStore(pool).Rounds.Get(ctx, roundID)
+	round, err := NewStore(schedulePool).Rounds.Get(ctx, roundID)
 	if err != nil {
 		t.Fatalf("round Get() = %v, want nil", err)
 	}
@@ -318,7 +323,7 @@ func TestRoundStore_Close(t *testing.T) {
 		// gate); no realistic fixture builds that, so the close itself runs
 		// with the progress gate suspended — the IsFinal predicate under
 		// test is the app-side last-round check, not the sequence.
-		if _, err := pool.Exec(ctx, `ALTER TABLE rounds DISABLE TRIGGER rounds_progress_gate`); err != nil {
+		if _, err := pool.Exec(ctx, `ALTER TABLE schedule.rounds DISABLE TRIGGER rounds_progress_gate`); err != nil {
 			t.Fatalf("suspend progress gate: %v", err)
 		}
 		svc, received := closeService(t)
@@ -326,7 +331,7 @@ func TestRoundStore_Close(t *testing.T) {
 		if _, err := svc.Rounds.Close(ctx, closeableRound(ctx, t, roundID)); err != nil {
 			t.Fatalf("Close() = %v, want nil", err)
 		}
-		if _, err := pool.Exec(ctx, `ALTER TABLE rounds ENABLE TRIGGER rounds_progress_gate`); err != nil {
+		if _, err := pool.Exec(ctx, `ALTER TABLE schedule.rounds ENABLE TRIGGER rounds_progress_gate`); err != nil {
 			t.Fatalf("restore progress gate: %v", err)
 		}
 
@@ -335,7 +340,7 @@ func TestRoundStore_Close(t *testing.T) {
 		}
 		// The close also flipped the season: the mirror of Open's flip.
 		var status string
-		if err := pool.QueryRow(ctx, `SELECT status FROM seasons WHERE id = $1`, seasonID).Scan(&status); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT status FROM schedule.seasons WHERE id = $1`, seasonID).Scan(&status); err != nil {
 			t.Fatalf("read season: %v", err)
 		}
 		if status != "closed" {
@@ -352,7 +357,7 @@ func TestRoundStore_Close(t *testing.T) {
 		// transaction. Here (no subscriber wired beyond the capture bus,
 		// which settles nothing) the ride must be untouched by the close:
 		// the transaction no longer writes game's table.
-		if _, err := NewStore(pool).Rounds.Close(ctx, closeableRound(ctx, t, roundID)); err != nil {
+		if _, err := NewStore(schedulePool).Rounds.Close(ctx, closeableRound(ctx, t, roundID)); err != nil {
 			t.Fatalf("Close() = %v, want nil (the undecided-rides gate is relaxed)", err)
 		}
 
@@ -379,7 +384,7 @@ func TestRoundStore_Close(t *testing.T) {
 		}
 
 		// The refusal actually refused.
-		round, err := NewStore(pool).Rounds.Get(ctx, roundID)
+		round, err := NewStore(schedulePool).Rounds.Get(ctx, roundID)
 		if err != nil {
 			t.Fatalf("round Get() = %v, want nil", err)
 		}
@@ -397,13 +402,13 @@ func TestRoundStore_Close(t *testing.T) {
 func renumberRoundForFixture(ctx context.Context, t *testing.T, roundID, number int) {
 	t.Helper()
 
-	if _, err := pool.Exec(ctx, `ALTER TABLE rounds DISABLE TRIGGER rounds_progress_gate`); err != nil {
+	if _, err := pool.Exec(ctx, `ALTER TABLE schedule.rounds DISABLE TRIGGER rounds_progress_gate`); err != nil {
 		t.Fatalf("suspend progress gate: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE rounds SET number = $2 WHERE id = $1`, roundID, number); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE schedule.rounds SET number = $2 WHERE id = $1`, roundID, number); err != nil {
 		t.Fatalf("renumber round: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `ALTER TABLE rounds ENABLE TRIGGER rounds_progress_gate`); err != nil {
+	if _, err := pool.Exec(ctx, `ALTER TABLE schedule.rounds ENABLE TRIGGER rounds_progress_gate`); err != nil {
 		t.Fatalf("restore progress gate: %v", err)
 	}
 }
@@ -427,11 +432,11 @@ func TestRoundStore_Close_MidTxFailureLeavesNoTrace(t *testing.T) {
 	// refuses created/open regressions) — so rounds_progress_gate refuses
 	// the round's status flip: the season must be live while a round
 	// closes.
-	if _, err := pool.Exec(ctx, `UPDATE seasons SET status = 'closed' WHERE id = $1`, seasonID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE schedule.seasons SET status = 'closed' WHERE id = $1`, seasonID); err != nil {
 		t.Fatalf("deactivate season: %v", err)
 	}
 
-	_, err := NewStore(pool).Rounds.Close(ctx, closeableRound(ctx, t, roundID))
+	_, err := NewStore(schedulePool).Rounds.Close(ctx, closeableRound(ctx, t, roundID))
 	if err == nil {
 		t.Fatal("Close() = nil, want the season-not-live refusal")
 	}
@@ -456,7 +461,7 @@ func TestRoundStore_Close_MidTxFailureLeavesNoTrace(t *testing.T) {
 	}
 
 	// And the round is still open.
-	round, err := NewStore(pool).Rounds.Get(ctx, roundID)
+	round, err := NewStore(schedulePool).Rounds.Get(ctx, roundID)
 	if err != nil {
 		t.Fatalf("round Get() = %v, want nil", err)
 	}
@@ -477,7 +482,7 @@ func TestRoundStore_Close_ProvesPostgresRollsBack(t *testing.T) {
 
 	seasonID, roundID, rideID := seedClosedRound(ctx, t)
 
-	if _, err := pool.Exec(ctx, `UPDATE seasons SET status = 'closed' WHERE id = $1`, seasonID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE schedule.seasons SET status = 'closed' WHERE id = $1`, seasonID); err != nil {
 		t.Fatalf("deactivate season: %v", err)
 	}
 
@@ -487,7 +492,7 @@ func TestRoundStore_Close_ProvesPostgresRollsBack(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx, `UPDATE rides SET state = 'unlocked', bonus_acc = 0, version = version + 1 WHERE id = $1`, rideID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE game.rides SET state = 'unlocked', bonus_acc = 0, version = version + 1 WHERE id = $1`, rideID); err != nil {
 		t.Fatalf("ride write inside manual tx: %v", err)
 	}
 
@@ -498,7 +503,7 @@ func TestRoundStore_Close_ProvesPostgresRollsBack(t *testing.T) {
 	}
 
 	// The flip under a dead season aborts the statement (and the tx).
-	if _, err := tx.Exec(ctx, `UPDATE rounds SET status = 'closed', version = version + 1 WHERE id = $1 AND version = 1`, roundID); err == nil {
+	if _, err := tx.Exec(ctx, `UPDATE schedule.rounds SET status = 'closed', version = version + 1 WHERE id = $1 AND version = 1`, roundID); err == nil {
 		t.Fatal("flip in dead-season tx = nil, want the progress-gate refusal")
 	} else if !store.IsTriggerViolation(err) {
 		t.Fatalf("flip error = %v, want P0001", err)
@@ -523,8 +528,8 @@ func countRidesInStateInTx(ctx context.Context, t *testing.T, tx pgx.Tx, roundID
 
 	var n int
 	err := tx.QueryRow(ctx, `
-		SELECT count(*) FROM rides rd
-		JOIN matches m ON m.id = rd.match_id
+		SELECT count(*) FROM game.rides rd
+		JOIN schedule.matches m ON m.id = rd.match_id
 		WHERE m.round_id = $1 AND rd.state = $2`, roundID, state).Scan(&n)
 	if err != nil {
 		t.Fatalf("count rides in tx: %v", err)

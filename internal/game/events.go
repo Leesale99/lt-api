@@ -13,10 +13,12 @@ package game
 //   - one transaction: the claim, the ride transitions and the Ledger
 //     money intents share it — settlement is atomic;
 //   - payload-driven: ride outcomes are derived from the event's facts,
-//     never from a join into schedule's tables. The DB stays the
-//     enforcement home: rides_state_gate's result agreement (000011,
-//     check 5) re-checks every locked→result arrival against the
-//     committed match row, so a wrong payload cannot corrupt rides;
+//     never from a join into schedule's tables. The committed match is
+//     still the source of truth: since Phase D the result agreement (the
+//     old rides_state_gate check 5, migration 000017) is the app-level
+//     resultAgreement check below — every locked→result arrival is
+//     verified against the committed scores (via the SchedulePort), so a
+//     wrong payload cannot corrupt rides;
 //   - no phase gates: settlement is system-initiated. The Go phase checks
 //     (ride.WonPending's MatchPhase, ride.Unlock's DecisionPhase) are the
 //     PLAYER commands' guards; the transitions themselves are the DB
@@ -138,15 +140,34 @@ func (s *Service) OnRoundCompleted(ctx context.Context, event schedule.RoundComp
 }
 
 // settleRideFromResult is the payload→destination derivation for one
-// locked ride (score→state rule site 2 of 3 — the pure Go copy; check 5 of
-// rides_state_gate is the enforcement home, Match.Winner site 1, all tied
+// locked ride (score→state rule site 2 of 3 — the pure Go copy;
+// resultAgreement is the enforcement home, Match.Winner site 1, all tied
 // by score_state_rule_test.go): won iff the result crowns the ride's team,
-// lost otherwise (a draw crowns no winner). Then the transition and the
-// money intents.
+// lost otherwise (a draw crowns no winner). Then the agreement check, the
+// transition and the money intents.
 func (s *Service) settleRideFromResult(ctx context.Context, tx pgx.Tx, ride Ride, homeTeamID, awayTeamID int, winner *int, odds schedule.Odds) error {
 	destination := RideLost
 	if winner != nil && *winner == ride.TeamID {
 		destination = RideWonPending
+	}
+
+	// Result agreement (the app-level enforcement home of the old
+	// rides_state_gate check 5 — migration 000017 moved it out of the DB
+	// with the cross-context read it needed): the payload never decides
+	// alone. The committed match is re-read (see the port method) and the
+	// destination must agree with ITS scores, under the same two refusals
+	// the trigger raised: scores missing, destination disagreeing. A lying
+	// payload fails here and the whole settlement transaction rolls back —
+	// ErrInvalidTransition, the same error the store mapped the trigger's
+	// P0001 refusals to (the locked→result arrival is settlement-only, so
+	// this is the path's whole enforcement; the DB CHECK/state graph still
+	// enforces every transition shape).
+	committed, err := s.Schedule.Match(ctx, ride.MatchID)
+	if err != nil {
+		return err
+	}
+	if err := resultAgreement(ride, destination, committed); err != nil {
+		return err
 	}
 
 	if destination == RideLost {
@@ -170,6 +191,34 @@ func (s *Service) settleRideFromResult(ctx context.Context, tx pgx.Tx, ride Ride
 		if err := s.Ledger.AccrueBonus(ctx, tx, ride.ID, bonusDelta(matchOdds, ride.TokensLocked, ride.Streak)); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+// resultAgreement is the score→state rule's enforcement home (site 3 of 3;
+// Match.Winner site 1, the payload derivation site 2, all tied by
+// score_state_rule_test.go): the destination a locked ride arrives on must
+// agree with the COMMITTED match result — won_pending requires the ride's
+// team to have won, lost requires it not to have won, and scores must be
+// there. The exact translation of rides_state_gate's check 5
+// (migrations/000011, moved to this file by 000017): the refusals keep the
+// trigger's two names in their text, and both surface as
+// ErrInvalidTransition — the error the store used to map the trigger's
+// P0001 to (ADR-018: the match is the single source of truth, no writer
+// may disagree with it).
+func resultAgreement(ride Ride, destination RideState, committed schedule.Match) error {
+	if committed.Score.Home == nil || committed.Score.Away == nil {
+		return fmt.Errorf("ride %d arrival refused: match %d carries no scores (ride_result_scores_missing): %w",
+			ride.ID, committed.ID, ErrInvalidTransition)
+	}
+
+	teamWon := (ride.TeamID == committed.HomeTeamID && *committed.Score.Home > *committed.Score.Away) ||
+		(ride.TeamID == committed.AwayTeamID && *committed.Score.Away > *committed.Score.Home)
+
+	if (destination == RideWonPending) != teamWon {
+		return fmt.Errorf("ride %d arrival refused: destination %s disagrees with the committed result of match %d (ride_result_disagreement): %w",
+			ride.ID, destination, committed.ID, ErrInvalidTransition)
 	}
 
 	return nil

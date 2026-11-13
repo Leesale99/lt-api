@@ -164,6 +164,15 @@ func (s *Service) RideCreate(ctx context.Context, ride Ride, token idempotency.I
 		return idempotency.IdempotentResponse{}, err
 	}
 
+	// The team reference is checked here since Phase D (000016 dropped
+	// rides_team_id_fkey with the cross-context FKs): the port answers the
+	// calendar fact, and an unknown team is the parent-gone 404 the FK
+	// produced. Player existence stays DB-enforced (rides_player_id_fkey
+	// is game-internal); the match reference is the round gate above.
+	if _, err := s.Schedule.Team(ctx, ride.TeamID); err != nil {
+		return idempotency.IdempotentResponse{}, err
+	}
+
 	ride, err = s.Store.Rides.InsertTx(ctx, tx, ride)
 	if err != nil {
 		return idempotency.IdempotentResponse{}, err

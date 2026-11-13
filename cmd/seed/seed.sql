@@ -3,11 +3,13 @@
 -- 8 rounds x 5 matches, every team plays exactly once per round, no pairing repeats.
 -- Rounds 1-4: closed (past, fake results). Round 5: open (first upcoming). Rounds 6-8: created.
 -- IDs are deterministic via insert order + TRUNCATE ... RESTART IDENTITY in cmd/seed.
+-- Phase D: table names are schema-qualified (schedule.* / game.*) — the
+-- seed runs as the migration runner (owner) with a plain search_path.
 -- Closed matches carry ended_at = starts_at + 2h (matches_ended_at_check, migration 000005:
 -- (status='closed') = (ended_at IS NOT NULL)). Round 5 is open in ActionPhase: no match
 -- started, so ride creation works out of the box.
 
-INSERT INTO teams (name, logo, description) VALUES
+INSERT INTO schedule.teams (name, logo, description) VALUES
 	('Anadolu Efes', 'https://x.example/anadolu-efes.png', 'Istanbul, Turkey'),
 	('Barcelona', 'https://x.example/barcelona.png', 'Barcelona, Spain'),
 	('Dubai', 'https://x.example/dubai.png', 'Dubai, UAE'),
@@ -19,9 +21,9 @@ INSERT INTO teams (name, logo, description) VALUES
 	('Real Madrid', 'https://x.example/real-madrid.png', 'Madrid, Spain'),
 	('Zalgiris Kaunas', 'https://x.example/zalgiris-kaunas.png', 'Kaunas, Lithuania');
 
-INSERT INTO seasons (status) VALUES ('in_progress'); -- id 1
+INSERT INTO schedule.seasons (status) VALUES ('in_progress'); -- id 1
 
-INSERT INTO rounds (season_id, number, status) VALUES
+INSERT INTO schedule.rounds (season_id, number, status) VALUES
 	(1, 1, 'closed'),
 	(1, 2, 'closed'),
 	(1, 3, 'closed'),
@@ -31,7 +33,7 @@ INSERT INTO rounds (season_id, number, status) VALUES
 	(1, 7, 'created'),
 	(1, 8, 'created');
 
-INSERT INTO matches (
+INSERT INTO schedule.matches (
 	season_id, round_id, home_team_id, away_team_id,
 	home_odds, away_odds, home_score, away_score, status, starts_at, ended_at
 ) VALUES
@@ -77,7 +79,7 @@ INSERT INTO matches (
 	(1, 8, 7, 8, 1.51, 2.5, NULL, NULL, 'created', now() + interval '23 days 8 hours', NULL);
 
 -- 20 registered users (game players, not real athletes), 2 favorite fans per team.
-INSERT INTO players (season_id, favorite_team_id, name) VALUES
+INSERT INTO game.players (season_id, favorite_team_id, name) VALUES
 	(1, 7, 'hoops_hawk_helen'),
 	(1, 7, 'piraeus_pete'),
 	(1, 9, 'pickmaster_paula'),

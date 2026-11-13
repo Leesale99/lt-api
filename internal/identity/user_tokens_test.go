@@ -65,7 +65,7 @@ func TestGenerateUserToken(t *testing.T) {
 
 func TestNewAndGetForToken(t *testing.T) {
 	requireDB(t)
-	store := NewStore(testPool)
+	store := NewStore(identityPool)
 
 	t.Run("New persists a resolvable token", func(t *testing.T) {
 		resetUsers(t)
@@ -144,7 +144,7 @@ func TestNewAndGetForToken(t *testing.T) {
 
 func TestDeleteAllForUser(t *testing.T) {
 	requireDB(t)
-	store := NewStore(testPool)
+	store := NewStore(identityPool)
 
 	t.Run("deletes only the target scope of the target user", func(t *testing.T) {
 		resetUsers(t)
@@ -180,7 +180,7 @@ func TestDeleteAllForUser(t *testing.T) {
 
 		var count int
 		if err := testPool.QueryRow(context.Background(),
-			`SELECT count(*) FROM user_tokens WHERE user_id = $1 AND scope = $2`,
+			`SELECT count(*) FROM identity.user_tokens WHERE user_id = $1 AND scope = $2`,
 			alice.ID, ScopeAuthentication,
 		).Scan(&count); err != nil {
 			t.Fatalf("count: %v", err)
@@ -190,7 +190,7 @@ func TestDeleteAllForUser(t *testing.T) {
 		}
 
 		// Alice's activation token and Bob's auth token must survive.
-		if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM user_tokens`).Scan(&count); err != nil {
+		if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM identity.user_tokens`).Scan(&count); err != nil {
 			t.Fatalf("count all: %v", err)
 		}
 		if count != 2 {

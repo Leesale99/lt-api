@@ -48,7 +48,7 @@ func rideToken(key, endpoint string) idempotency.IdempotencyToken {
 // (same shape the round-close concurrency tests use).
 func ensureRound2(ctx context.Context, t *testing.T) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, `INSERT INTO rounds (season_id, number, status) VALUES (1, 2, 'created')`); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO schedule.rounds (season_id, number, status) VALUES (1, 2, 'created')`); err != nil {
 		t.Fatalf("insert round 2: %v", err)
 	}
 }
@@ -57,7 +57,7 @@ func TestService_RideLockIdempotency(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
+	svc := NewService(NewStore(gamePool), schedule.NewStore(schedulePool), ledger.NewStore())
 
 	t.Run("retry with the same key replays and re-executes nothing", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
@@ -184,7 +184,7 @@ func TestService_RideLockIdempotency(t *testing.T) {
 		}
 
 		var keyRows int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_keys WHERE key = $1`, "failed-key").Scan(&keyRows); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM game.idempotency_keys WHERE key = $1`, "failed-key").Scan(&keyRows); err != nil {
 			t.Fatalf("count key rows: %v", err)
 		}
 		if keyRows != 0 {
@@ -204,7 +204,7 @@ func TestService_RideCreateIdempotent(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool), schedule.NewStore(pool), ledger.NewStore())
+	svc := NewService(NewStore(gamePool), schedule.NewStore(schedulePool), ledger.NewStore())
 
 	newRide := func(playerID, matchID, teamID int) Ride {
 		return Ride{
@@ -237,13 +237,13 @@ func TestService_RideCreateIdempotent(t *testing.T) {
 		}
 
 		var rideRows, keyRows int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM rides WHERE match_id = $1`, matchID).Scan(&rideRows); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM game.rides WHERE match_id = $1`, matchID).Scan(&rideRows); err != nil {
 			t.Fatalf("count rides: %v", err)
 		}
 		if rideRows != 1 {
 			t.Errorf("rides rows = %d, want 1 (no second insert)", rideRows)
 		}
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_keys WHERE key = $1`, token.Key).Scan(&keyRows); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM game.idempotency_keys WHERE key = $1`, token.Key).Scan(&keyRows); err != nil {
 			t.Fatalf("count key rows: %v", err)
 		}
 		if keyRows != 1 {
@@ -270,7 +270,7 @@ func TestService_RideCreateIdempotent(t *testing.T) {
 		}
 
 		var rideRows int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM rides WHERE match_id = $1`, matchID).Scan(&rideRows); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM game.rides WHERE match_id = $1`, matchID).Scan(&rideRows); err != nil {
 			t.Fatalf("count rides: %v", err)
 		}
 		if rideRows != 1 {
@@ -285,12 +285,12 @@ func TestService_RideCreateIdempotent(t *testing.T) {
 
 		// Settle then close, exactly like the plain closed-round refusal in
 		// TestService_RideCreate: the close gate demands settled matches.
-		if _, err := pool.Exec(ctx, `UPDATE matches SET starts_at = now() - interval '3 hours',
+		if _, err := pool.Exec(ctx, `UPDATE schedule.matches SET starts_at = now() - interval '3 hours',
 			status = 'closed', home_score = 2, away_score = 1
 			WHERE id = $1`, matchID); err != nil {
 			t.Fatalf("settle match: %v", err)
 		}
-		if _, err := pool.Exec(ctx, `UPDATE rounds SET status = 'closed' WHERE id = $1`, roundID); err != nil {
+		if _, err := pool.Exec(ctx, `UPDATE schedule.rounds SET status = 'closed' WHERE id = $1`, roundID); err != nil {
 			t.Fatalf("close round: %v", err)
 		}
 
@@ -299,13 +299,13 @@ func TestService_RideCreateIdempotent(t *testing.T) {
 		}
 
 		var keyRows, rideRows int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM idempotency_keys WHERE key = $1`, "create-rolled").Scan(&keyRows); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM game.idempotency_keys WHERE key = $1`, "create-rolled").Scan(&keyRows); err != nil {
 			t.Fatalf("count key rows: %v", err)
 		}
 		if keyRows != 0 {
 			t.Errorf("create-rolled rows = %d, want 0 (claim rolled back)", keyRows)
 		}
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM rides WHERE match_id = $1`, matchID).Scan(&rideRows); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM game.rides WHERE match_id = $1`, matchID).Scan(&rideRows); err != nil {
 			t.Fatalf("count rides: %v", err)
 		}
 		if rideRows != 0 {

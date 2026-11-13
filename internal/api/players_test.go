@@ -29,9 +29,12 @@ import (
 // exercise the event seam.
 
 func newTestApplication() *Application {
+	// Phase D wiring: each context store on its own role-restricted pool
+	// (the composition-root shape of cmd/server). testPool (owner) exists
+	// for fixture planting only.
 	bus := eventbus.New()
-	scheduleStore := schedule.NewStore(testPool)
-	gameService := game.NewService(game.NewStore(testPool), scheduleStore, ledger.NewStore())
+	scheduleStore := schedule.NewStore(schedulePool)
+	gameService := game.NewService(game.NewStore(gamePool), scheduleStore, ledger.NewStore())
 	// The event seam wired like the composition root: resolve/close publish
 	// post-commit, the game handlers settle from the payloads in-process.
 	eventbus.Subscribe(bus, func(ctx context.Context, event schedule.MatchResultRecorded) error {
@@ -45,7 +48,7 @@ func newTestApplication() *Application {
 		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
 		Game:     gameService,
 		Schedule: schedule.NewService(scheduleStore, bus, slog.New(slog.NewTextHandler(os.Stderr, nil))),
-		Identity: identity.NewStore(testPool),
+		Identity: identity.NewStore(identityPool),
 		Mailer:   nopMailer{},
 	}
 }
@@ -630,7 +633,7 @@ func TestDeletePlayerHandler(t *testing.T) {
 			// Nothing in the error matrix may ever delete the fixture player.
 			var n int
 			err := testPool.QueryRow(context.Background(),
-				`SELECT count(*) FROM players WHERE id = 1`).Scan(&n)
+				`SELECT count(*) FROM game.players WHERE id = 1`).Scan(&n)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -663,7 +666,7 @@ func TestDeletePlayerHandlerHappyPath(t *testing.T) {
 
 	var n int
 	err := testPool.QueryRow(context.Background(),
-		`SELECT count(*) FROM players WHERE id = 1`).Scan(&n)
+		`SELECT count(*) FROM game.players WHERE id = 1`).Scan(&n)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -675,7 +678,7 @@ func TestDeletePlayerHandlerHappyPath(t *testing.T) {
 // secondPlayerSQL inserts a second fixture player for pagination cases
 // ('Nikola Milutinov' sorts after 'Sasha Vezenkov' either direction).
 const secondPlayerSQL = `
-	INSERT INTO players (season_id, favorite_team_id, name)
+	INSERT INTO game.players (season_id, favorite_team_id, name)
 	VALUES (2, 2, 'Nikola Milutinov');
 `
 

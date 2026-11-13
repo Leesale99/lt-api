@@ -33,6 +33,15 @@ type Config struct {
 		DSN         string
 		MaxConns    int
 		MaxIdleTime time.Duration
+		// Per-context DSN overrides (Phase D): each connection pool is
+		// bound to one bounded context (schedule/game/identity) and runs
+		// SET ROLE <context_role> on every connection. Derived from DSN
+		// unless the override is set (deployment splits the contexts onto
+		// separate databases/users). The names are context names, not
+		// domain logic — config stays domain-agnostic.
+		DSNSchedule string
+		DSNGame     string
+		DSNIdentity string
 	}
 	Limiter struct {
 		RPS     float64
@@ -81,7 +90,10 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&logLevelRaw, "log-level", env.logLevel, "Log level (debug|info|warn|error) (env: LOG_LEVEL)")
 
 	fs.StringVar(&cfg.DB.DSN, "db-dsn", env.dbDSN, "PostgreSQL DSN (env: LT_API_DSN)")
-	fs.IntVar(&cfg.DB.MaxConns, "db-max-conns", env.dbMaxConns, "PostgreSQL max open and idle connections (env: LT_API_DB_MAX_CONNS)")
+	fs.StringVar(&cfg.DB.DSNSchedule, "db-dsn-schedule", env.dbDSNSchedule, "Schedule-context PostgreSQL DSN override (env: LT_API_DSN_SCHEDULE)")
+	fs.StringVar(&cfg.DB.DSNGame, "db-dsn-game", env.dbDSNGame, "Game-context PostgreSQL DSN override (env: LT_API_DSN_GAME)")
+	fs.StringVar(&cfg.DB.DSNIdentity, "db-dsn-identity", env.dbDSNIdentity, "Identity-context PostgreSQL DSN override (env: LT_API_DSN_IDENTITY)")
+	fs.IntVar(&cfg.DB.MaxConns, "db-max-conns", env.dbMaxConns, "PostgreSQL max open and idle connections PER CONTEXT POOL (env: LT_API_DB_MAX_CONNS)")
 	fs.DurationVar(&cfg.DB.MaxIdleTime, "db-max-idle-time", env.dbMaxIdleTime, "PostgreSQL max connection idle time (env: LT_API_DB_MAX_IDLE_TIME)")
 
 	fs.Float64Var(&cfg.Limiter.RPS, "limiter-rps", env.limiterRPS, "Rate limiter maximum requests per second (env: LT_API_LIMITER_RPS)")
@@ -134,6 +146,9 @@ type envDefaults struct {
 	env            string
 	logLevel       string
 	dbDSN          string
+	dbDSNSchedule  string
+	dbDSNGame      string
+	dbDSNIdentity  string
 	dbMaxConns     int
 	dbMaxIdleTime  time.Duration
 	limiterRPS     float64
@@ -153,6 +168,9 @@ func readEnv() (envDefaults, error) {
 	e.env = envString("ENV", "development")
 	e.logLevel = envString("LOG_LEVEL", "info")
 	e.dbDSN = envString("LT_API_DSN", "")
+	e.dbDSNSchedule = envString("LT_API_DSN_SCHEDULE", "")
+	e.dbDSNGame = envString("LT_API_DSN_GAME", "")
+	e.dbDSNIdentity = envString("LT_API_DSN_IDENTITY", "")
 	e.smtpHost = envString("SMTP_HOST", "sandbox.smtp.mailtrap.io")
 	e.smtpUsername = envString("SMTP_USERNAME", "")
 	e.smtpPassword = envString("SMTP_PASSWORD", "")
@@ -326,6 +344,21 @@ func validate(cfg Config) error {
 	}
 	if _, err := pgxpool.ParseConfig(cfg.DB.DSN); err != nil {
 		return fmt.Errorf("invalid LT_API_DSN: %w", err)
+	}
+	// The per-context overrides must each be a DSN when present: a typo in
+	// one of them must fail at boot with the variable named, not at the
+	// first acquire.
+	for name, dsn := range map[string]string{
+		"LT_API_DSN_SCHEDULE": cfg.DB.DSNSchedule,
+		"LT_API_DSN_GAME":     cfg.DB.DSNGame,
+		"LT_API_DSN_IDENTITY": cfg.DB.DSNIdentity,
+	} {
+		if dsn == "" {
+			continue
+		}
+		if _, err := pgxpool.ParseConfig(dsn); err != nil {
+			return fmt.Errorf("invalid %s: %w", name, err)
+		}
 	}
 	if cfg.DB.MaxConns < 1 {
 		return fmt.Errorf("invalid LT_API_DB_MAX_CONNS %d: must be at least 1", cfg.DB.MaxConns)

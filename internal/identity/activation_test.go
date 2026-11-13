@@ -46,7 +46,7 @@ func assertUserState(t *testing.T, userID int) (bool, int) {
 	var activated bool
 	var version int
 	if err := testPool.QueryRow(context.Background(),
-		`SELECT activated, version FROM users WHERE id = $1`, userID).Scan(&activated, &version); err != nil {
+		`SELECT activated, version FROM identity.users WHERE id = $1`, userID).Scan(&activated, &version); err != nil {
 		t.Fatalf("read user: %v", err)
 	}
 
@@ -55,7 +55,7 @@ func assertUserState(t *testing.T, userID int) (bool, int) {
 
 func TestActivate(t *testing.T) {
 	requireDB(t)
-	store := NewStore(testPool)
+	store := NewStore(identityPool)
 
 	t.Run("happy path: flip and cleanup commit together", func(t *testing.T) {
 		resetUsers(t)
@@ -81,7 +81,7 @@ func TestActivate(t *testing.T) {
 
 		var tokens int
 		if err := testPool.QueryRow(context.Background(),
-			`SELECT count(*) FROM user_tokens WHERE user_id = $1 AND scope = $2`, user.ID, ScopeActivation).Scan(&tokens); err != nil {
+			`SELECT count(*) FROM identity.user_tokens WHERE user_id = $1 AND scope = $2`, user.ID, ScopeActivation).Scan(&tokens); err != nil {
 			t.Fatal(err)
 		}
 		if tokens != 0 {
@@ -128,11 +128,11 @@ func TestActivate(t *testing.T) {
 			t.Fatalf("create forbid function: %v", err)
 		}
 		t.Cleanup(func() {
-			_, _ = testPool.Exec(context.Background(), `DROP TRIGGER IF EXISTS test_forbid_token_delete ON user_tokens`)
+			_, _ = testPool.Exec(context.Background(), `DROP TRIGGER IF EXISTS test_forbid_token_delete ON identity.user_tokens`)
 			_, _ = testPool.Exec(context.Background(), `DROP FUNCTION IF EXISTS test_forbid_token_delete()`)
 		})
 		if _, err := testPool.Exec(context.Background(), `
-			CREATE TRIGGER test_forbid_token_delete BEFORE DELETE ON user_tokens
+			CREATE TRIGGER test_forbid_token_delete BEFORE DELETE ON identity.user_tokens
 			FOR EACH ROW EXECUTE FUNCTION test_forbid_token_delete()`); err != nil {
 			t.Fatalf("create forbid trigger: %v", err)
 		}
@@ -151,7 +151,7 @@ func TestActivate(t *testing.T) {
 
 		var tokens int
 		if err := testPool.QueryRow(context.Background(),
-			`SELECT count(*) FROM user_tokens WHERE user_id = $1 AND scope = $2`, user.ID, ScopeActivation).Scan(&tokens); err != nil {
+			`SELECT count(*) FROM identity.user_tokens WHERE user_id = $1 AND scope = $2`, user.ID, ScopeActivation).Scan(&tokens); err != nil {
 			t.Fatal(err)
 		}
 		if tokens != 1 {
@@ -162,7 +162,7 @@ func TestActivate(t *testing.T) {
 	t.Run("two concurrent activations activate exactly once", func(t *testing.T) {
 		resetUsers(t)
 
-		store := NewStore(testPool)
+		store := NewStore(identityPool)
 		user, token1 := plantActivatableUser(t, store)
 
 		// A second fresh token for the same user: two independent
@@ -213,7 +213,7 @@ func TestActivate(t *testing.T) {
 
 		var tokens int
 		if err := testPool.QueryRow(context.Background(),
-			`SELECT count(*) FROM user_tokens WHERE user_id = $1 AND scope = $2`, user.ID, ScopeActivation).Scan(&tokens); err != nil {
+			`SELECT count(*) FROM identity.user_tokens WHERE user_id = $1 AND scope = $2`, user.ID, ScopeActivation).Scan(&tokens); err != nil {
 			t.Fatal(err)
 		}
 		if tokens != 0 {

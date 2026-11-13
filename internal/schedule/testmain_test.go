@@ -23,22 +23,36 @@ import (
 	"lt-api.aleksrdvn.com/internal/testdb"
 )
 
-// migFile lists all migrations the schedule tests need. The base calendar
-// hierarchy is 000001; 000005 adds matches.ended_at (the close/resolve
-// paths read it). The rides migrations (000006/11/12/13) are here because
-// the RESTRICT FK tests plant rides, and the planting helpers walk through
-// the same UPDATE gates every writer faces. 000014 relaxes the unresolved-
-// rides half of rounds_close_gate — since the Phase C event seam the ride
-// settlement is the game context's, behind RoundCompleted.
+// migFile lists all migrations the schedule tests need — the FULL series
+// since Phase D: 000015 moves whatever tables exist (it cannot run
+// against a partial chain), 000016–000018 (FK surgery, roles) assume it,
+// and the suite runs its stores on the role-restricted pool 000018
+// creates. The calendar hierarchy is 000001; 000005 adds
+// matches.ended_at (the close/resolve paths read it). The rides
+// migrations (000006/11/12/13) are here because the ride fixtures plant
+// rides and walk through the same UPDATE gates every writer faces.
+// 000014 relaxes the unresolved-rides half of rounds_close_gate — since
+// the Phase C event seam the ride settlement is the game context's,
+// behind RoundCompleted.
 var migFiles = []string{
 	"../../migrations/000001_create_initial_game_models.up.sql",
+	"../../migrations/000002_create_users_table.up.sql",
+	"../../migrations/000003_create_user_tokens_table.up.sql",
+	"../../migrations/000004_add_permissions.up.sql",
 	"../../migrations/000005_add_matches_ended_at.up.sql",
 	"../../migrations/000006_create_rides_table.up.sql",
+	"../../migrations/000007_alter_matches_odds_precision.up.sql",
 	"../../migrations/000008_add_round_lifecycle_gates.up.sql",
+	"../../migrations/000009_add_rides_won_pending_partial_index.up.sql",
+	"../../migrations/000010_add_idempotency_keys_table.up.sql",
 	"../../migrations/000011_add_rides_result_agreement_gate.up.sql",
 	"../../migrations/000012_add_rides_insert_state_gate.up.sql",
 	"../../migrations/000013_add_rides_money_state_coupling.up.sql",
 	"../../migrations/000014_relax_rounds_close_gate.up.sql",
+	"../../migrations/000015_split_context_schemas.up.sql",
+	"../../migrations/000016_drop_cross_context_foreign_keys.up.sql",
+	"../../migrations/000017_app_level_result_agreement.up.sql",
+	"../../migrations/000018_context_roles.up.sql",
 }
 
 // PostgreSQL error codes (see pgerrcode; inlined to avoid the extra dependency).
@@ -50,6 +64,12 @@ const (
 )
 
 var pool *pgxpool.Pool
+
+// schedulePool runs as schedule_app (Phase D): the stores under test
+// exercise the real privilege regime; pool (owner) plants fixtures —
+// including cross-schema ones (rides/players are the game context's, and
+// the ride fixtures keep planting them as the composition owner).
+var schedulePool *pgxpool.Pool
 
 // TestMain always runs the full suite: unit tests in this package must run
 // on a DB-less machine too. Only the DB-backed tests skip, one by one, via
@@ -65,15 +85,15 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 
 	// Fresh database per run: the migration itself is under test.
-	var teardown func()
-	var err error
-	pool, teardown, err = testdb.Setup(ctx, dsn, "schedule", migFiles...)
+	db, teardown, err := testdb.Setup(ctx, dsn, "schedule", migFiles...)
 	if err != nil {
 		// DSN set but unusable: fail loudly rather than report a green run
 		// that tested nothing.
 		fmt.Fprintf(os.Stderr, "test database setup: %v\n", err)
 		os.Exit(1)
 	}
+	pool = db.Owner
+	schedulePool = db.Schedule
 
 	code := m.Run()
 	teardown()
@@ -94,13 +114,13 @@ func seed(ctx context.Context, t *testing.T) (seasonID, roundID, homeID, awayID 
 
 	err := pool.QueryRow(ctx, `
 		WITH t1 AS (
-			INSERT INTO teams (name, logo, description) VALUES ('Olympiacos', 'https://x.example/logo.png', 'desc') RETURNING id
+			INSERT INTO schedule.teams (name, logo, description) VALUES ('Olympiacos', 'https://x.example/logo.png', 'desc') RETURNING id
 		), t2 AS (
-			INSERT INTO teams (name, logo, description) VALUES ('Real Madrid', 'https://x.example/logo.png', 'desc') RETURNING id
+			INSERT INTO schedule.teams (name, logo, description) VALUES ('Real Madrid', 'https://x.example/logo.png', 'desc') RETURNING id
 		), s AS (
-			INSERT INTO seasons (status) VALUES ('in_progress') RETURNING id
+			INSERT INTO schedule.seasons (status) VALUES ('in_progress') RETURNING id
 		), r AS (
-			INSERT INTO rounds (season_id, number, status) SELECT s.id, 1, 'open' FROM s RETURNING id, season_id
+			INSERT INTO schedule.rounds (season_id, number, status) SELECT s.id, 1, 'open' FROM s RETURNING id, season_id
 		)
 		SELECT s.id, r.id, t1.id, t2.id FROM s, r, t1, t2
 	`).Scan(&seasonID, &roundID, &homeID, &awayID)
@@ -112,7 +132,7 @@ func seed(ctx context.Context, t *testing.T) (seasonID, roundID, homeID, awayID 
 
 func cleanup(ctx context.Context, t *testing.T) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, `TRUNCATE matches, rounds, seasons, teams RESTART IDENTITY CASCADE`); err != nil {
+	if _, err := pool.Exec(ctx, `TRUNCATE schedule.matches, game.rides, game.players, schedule.rounds, schedule.seasons, schedule.teams RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
 }

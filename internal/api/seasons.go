@@ -195,6 +195,31 @@ func (app *Application) deleteSeasonHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
+	// (Phase D) players_season_id_fkey's CASCADE is gone with the
+	// cross-context FKs (migration 000016), so the api handler replays the
+	// cascade's game half explicitly: the season's players are deleted
+	// through game BEFORE the season. The row outcome is the old
+	// cascade's, and the old refusals keep their surfaces: a ride still
+	// referencing a player trips rides_player_id_fkey (a same-context FK)
+	// → ErrRecordInUse → the 409 below, exactly what the blocked cascade
+	// produced. The accepted gap: if the season delete itself then fails,
+	// the players are already gone (the old flow deleted everything or
+	// nothing in one statement). Only deleteable seasons (no started
+	// matches — the seasons_delete_gate) reach the players step.
+	if err := app.Game.Store.Players.DeleteForSeason(ctx, id); err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return
+		case errors.Is(err, store.ErrRecordInUse):
+			app.recordInUseResponse(w, r)
+		case errors.Is(err, store.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+
 	err = app.Schedule.Seasons.Delete(ctx, id)
 	if err != nil {
 		switch {

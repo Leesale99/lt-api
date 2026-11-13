@@ -20,8 +20,10 @@ type Player struct {
 	ID        int       `json:"id"`
 	CreatedAt time.Time `json:"-"`
 	Name      string    `json:"name"`
-	// Nullable: ON DELETE SET NULL on players_user_id_fkey keeps the player
-	// row (historical seasons) when its user is deleted.
+	// Nullable: since Phase D there is no players_user_id FK (000016 —
+	// identity is another context), so a deleted user no longer nulls the
+	// column in the DB; the column stays nullable for the historical
+	// "no owner" shape.
 	UserID         *int `json:"-"`
 	SeasonID       int  `json:"season_id"`
 	FavoriteTeamID int  `json:"favorite_team_id"`
@@ -158,8 +160,10 @@ func (s *PlayerStore) Insert(ctx context.Context, player Player) (Player, error)
 			// A second registration of the same user in the same season.
 			return Player{}, store.ErrDuplicateRecord
 		case store.IsFKViolation(err):
-			// The referenced team (or season) was deleted between the
-			// handler's existence check and this write.
+			// Since Phase D there is no cross-context FK left on players
+			// (000016) — the only remaining FK is none, so this branch is
+			// currently unreachable; it stays as the generic race mapping
+			// shape for when a same-context FK reappears.
 			return Player{}, store.ErrRecordNotFound
 		default:
 			return Player{}, err
@@ -185,8 +189,8 @@ func (s *PlayerStore) Update(ctx context.Context, player Player) (Player, error)
 		case errors.Is(err, pgx.ErrNoRows):
 			return Player{}, store.ErrEditConflict
 		case store.IsFKViolation(err):
-			// Same race as in Insert: the referenced team vanished
-			// between validation and write.
+			// Since Phase D (000016) no FK is left on players; the team
+			// existence check is the api handler's, before this write.
 			return Player{}, store.ErrRecordNotFound
 		default:
 			return Player{}, err
@@ -210,5 +214,35 @@ func (s *PlayerStore) Delete(ctx context.Context, id, seasonID int) error {
 		return store.ErrRecordNotFound
 	}
 
+	return nil
+}
+
+// ExistsForTeam reports whether any player names the team as their
+// favorite — the game half of the api team-delete refusal (Phase D: the
+// players_favorite_team_id_fkey RESTRICT is gone with the cross-context
+// FKs, so the "team still referenced" check is an api-level composition
+// of schedule's and game's facts; same ErrRecordInUse → 409 surface).
+func (s *PlayerStore) ExistsForTeam(ctx context.Context, teamID int) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM players WHERE favorite_team_id = $1)`, teamID).Scan(&exists)
+	return exists, err
+}
+
+// DeleteForSeason deletes every player registered in the season — the
+// game half of the api season-delete cascade (Phase D: the FK CASCADE is
+// gone with the cross-context FKs, so the api handler deletes the
+// season's players through game before deleting the season; the row
+// outcome is the old cascade's). A ride still referencing a player trips
+// rides_player_id_fkey — a same-context FK — so a season that owns rides
+// is refused: ErrRecordInUse, the 409 the old cascade produced.
+func (s *PlayerStore) DeleteForSeason(ctx context.Context, seasonID int) error {
+	result, err := s.pool.Exec(ctx, `DELETE FROM players WHERE season_id = $1`, seasonID)
+	if err != nil {
+		if store.IsDeleteRestricted(err) {
+			return store.ErrRecordInUse
+		}
+		return err
+	}
+	_ = result
 	return nil
 }

@@ -35,6 +35,10 @@ import (
 // tested nothing is worse than a red one.
 var testPool *pgxpool.Pool
 
+// identityPool runs as identity_app (Phase D): the stores under test
+// exercise the real privilege regime; testPool (owner) plants fixtures.
+var identityPool *pgxpool.Pool
+
 func TestMain(m *testing.M) {
 	dsn := os.Getenv("LT_API_TEST_DSN")
 	if dsn == "" {
@@ -42,7 +46,12 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 
-	pool, teardown, err := testdb.Setup(
+	// The full migration series, not just the identity slice: Phase D's
+	// 000015 moves whatever tables exist, and 000016–000018 (FK surgery,
+	// roles) assume the whole preceding chain — so identity tests run the
+	// same layout the server runs, including the calendar/game tables it
+	// no longer touches.
+	db, teardown, err := testdb.Setup(
 		context.Background(),
 		dsn,
 		"identity",
@@ -50,12 +59,27 @@ func TestMain(m *testing.M) {
 		"../../migrations/000002_create_users_table.up.sql",
 		"../../migrations/000003_create_user_tokens_table.up.sql",
 		"../../migrations/000004_add_permissions.up.sql",
+		"../../migrations/000005_add_matches_ended_at.up.sql",
+		"../../migrations/000006_create_rides_table.up.sql",
+		"../../migrations/000007_alter_matches_odds_precision.up.sql",
+		"../../migrations/000008_add_round_lifecycle_gates.up.sql",
+		"../../migrations/000009_add_rides_won_pending_partial_index.up.sql",
+		"../../migrations/000010_add_idempotency_keys_table.up.sql",
+		"../../migrations/000011_add_rides_result_agreement_gate.up.sql",
+		"../../migrations/000012_add_rides_insert_state_gate.up.sql",
+		"../../migrations/000013_add_rides_money_state_coupling.up.sql",
+		"../../migrations/000014_relax_rounds_close_gate.up.sql",
+		"../../migrations/000015_split_context_schemas.up.sql",
+		"../../migrations/000016_drop_cross_context_foreign_keys.up.sql",
+		"../../migrations/000017_app_level_result_agreement.up.sql",
+		"../../migrations/000018_context_roles.up.sql",
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "test database setup: %v\n", err)
 		os.Exit(1)
 	}
-	testPool = pool
+	testPool = db.Owner
+	identityPool = db.Identity
 
 	code := m.Run()
 	teardown()
@@ -73,12 +97,13 @@ func requireDB(t *testing.T) {
 // resetUsers wipes the identity tables with identity restart, so ID-based
 // assertions (first insert → id 1) hold in every test. roles/permissions are
 // reference data from migration 000004 and stay untouched. The token store
-// references users (FK), so user_tokens goes in the same TRUNCATE; players
-// references users too (user_id, since 000004), so it must be included or
-// cascaded as well.
+// references users (FK), so user_tokens goes in the same TRUNCATE. (Phase D:
+// players is no longer identity's concern — players_user_id_fkey is gone
+// with the cross-context FKs, migration 000016 — so it leaves the
+// truncate; game.rides' RESTRICT on players would refuse it anyway.)
 func resetUsers(t *testing.T) {
 	t.Helper()
-	if _, err := testPool.Exec(context.Background(), `TRUNCATE users, user_tokens, players RESTART IDENTITY`); err != nil {
+	if _, err := testPool.Exec(context.Background(), `TRUNCATE identity.users, identity.user_tokens RESTART IDENTITY`); err != nil {
 		t.Fatalf("truncate users: %v", err)
 	}
 }
@@ -253,7 +278,7 @@ func TestPasswordHashRoundTrip(t *testing.T) {
 
 func TestInsert(t *testing.T) {
 	requireDB(t)
-	store := NewStore(testPool)
+	store := NewStore(identityPool)
 
 	t.Run("returns the persisted user with server-generated fields", func(t *testing.T) {
 		resetUsers(t)
@@ -288,7 +313,7 @@ func TestInsert(t *testing.T) {
 
 		var storedHash []byte
 		err = testPool.QueryRow(context.Background(),
-			`SELECT password_hash FROM users WHERE email = 'alice@example.com'`).Scan(&storedHash)
+			`SELECT password_hash FROM identity.users WHERE email = 'alice@example.com'`).Scan(&storedHash)
 		if err != nil {
 			t.Fatalf("row not found after insert: %v", err)
 		}
@@ -334,7 +359,7 @@ func TestInsert(t *testing.T) {
 
 func TestGetByEmail(t *testing.T) {
 	requireDB(t)
-	store := NewStore(testPool)
+	store := NewStore(identityPool)
 
 	t.Run("round-trips a stored user", func(t *testing.T) {
 		resetUsers(t)
@@ -386,7 +411,7 @@ func TestGetByEmail(t *testing.T) {
 
 func TestUpdate(t *testing.T) {
 	requireDB(t)
-	store := NewStore(testPool)
+	store := NewStore(identityPool)
 
 	seed := func(t *testing.T) User {
 		t.Helper()

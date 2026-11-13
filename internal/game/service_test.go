@@ -61,7 +61,7 @@ func insertFutureMatch(ctx context.Context, t *testing.T, seasonID, roundID, hom
 
 	var id int
 	err := pool.QueryRow(ctx, `
-		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at)
+		INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at)
 		VALUES ($1, $2, $3, $4, 1.75, 2.20, 'created', now() + $5::interval)
 		RETURNING id
 	`, seasonID, roundID, homeID, awayID, lead).Scan(&id)
@@ -83,7 +83,7 @@ func scoreStartedMatch(ctx context.Context, t *testing.T, matchID int) {
 	t.Helper()
 
 	if _, err := pool.Exec(ctx, `
-		UPDATE matches SET status = 'in_progress', home_score = 70, away_score = 69 WHERE id = $1
+		UPDATE schedule.matches SET status = 'in_progress', home_score = 70, away_score = 69 WHERE id = $1
 	`, matchID); err != nil {
 		t.Fatalf("score match %d: %v", matchID, err)
 	}
@@ -97,7 +97,7 @@ func insertClosedMatch(ctx context.Context, t *testing.T, seasonID, roundID, hom
 
 	var id int
 	err := pool.QueryRow(ctx, `
-		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at, ended_at)
+		INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at, ended_at)
 		VALUES ($1, $2, $3, $4, 1.75, 2.20, 88, 79, 'closed', now() - $5::interval - interval '3 hours', now() - $5::interval)
 		RETURNING id
 	`, seasonID, roundID, homeID, awayID, ended).Scan(&id)
@@ -116,7 +116,7 @@ func plantPlayer(ctx context.Context, t *testing.T, teamID int) int {
 
 	var playerID int
 	err := pool.QueryRow(ctx, `
-		INSERT INTO players (season_id, favorite_team_id, name)
+		INSERT INTO game.players (season_id, favorite_team_id, name)
 		VALUES (1, $1, 'ride player')
 		RETURNING id
 	`, teamID).Scan(&playerID)
@@ -144,7 +144,7 @@ func plantPlayer(ctx context.Context, t *testing.T, teamID int) int {
 func plantRide(ctx context.Context, t *testing.T, matchID, teamID int, state RideState, acc decimal.Decimal, streak int) Ride {
 	t.Helper()
 
-	rs := NewStore(pool).Rides
+	rs := NewStore(gamePool).Rides
 	ride, err := rs.Insert(ctx, Ride{
 		PlayerID:     plantPlayer(ctx, t, teamID),
 		TeamID:       teamID,
@@ -162,7 +162,7 @@ func plantRide(ctx context.Context, t *testing.T, matchID, teamID int, state Rid
 	if state != RideLocked {
 		// burned/unlocked arrive only via won_pending (gate check 3).
 		if state == RideBurned || state == RideUnlocked {
-			if _, err := pool.Exec(ctx, `UPDATE rides SET state = 'won_pending' WHERE id = $1`, ride.ID); err != nil {
+			if _, err := pool.Exec(ctx, `UPDATE game.rides SET state = 'won_pending' WHERE id = $1`, ride.ID); err != nil {
 				t.Fatalf("plant ride walk (locked → won_pending): %v", err)
 			}
 		}
@@ -172,7 +172,7 @@ func plantRide(ctx context.Context, t *testing.T, matchID, teamID int, state Rid
 		// — the declarative rides_money_state_coupling CHECK (000013) now,
 		// which took the UPDATE gate's trigger check 4 in the sweep.
 		if _, err := pool.Exec(ctx, `
-			UPDATE rides SET state = $2, bonus_acc = $3, version = 1 WHERE id = $1
+			UPDATE game.rides SET state = $2, bonus_acc = $3, version = 1 WHERE id = $1
 		`, ride.ID, state, acc); err != nil {
 			t.Fatalf("plant ride walk (→ %s): %v", state, err)
 		}
@@ -254,12 +254,12 @@ func TestService_RideCreate(t *testing.T) {
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		playerID := plantPlayer(ctx, t, homeID)
 
-		if _, err := pool.Exec(ctx, `UPDATE matches SET starts_at = now() - interval '3 hours',
+		if _, err := pool.Exec(ctx, `UPDATE schedule.matches SET starts_at = now() - interval '3 hours',
 			status = 'closed', home_score = 2, away_score = 1
 			WHERE id = $1`, matchID); err != nil {
 			t.Fatalf("settle match: %v", err)
 		}
-		if _, err := pool.Exec(ctx, `UPDATE rounds SET status = 'closed' WHERE id = $1`, roundID); err != nil {
+		if _, err := pool.Exec(ctx, `UPDATE schedule.rounds SET status = 'closed' WHERE id = $1`, roundID); err != nil {
 			t.Fatalf("close round: %v", err)
 		}
 
@@ -288,7 +288,7 @@ func TestService_RideLock(t *testing.T) {
 		// DecisionPhase, and NextForTeam filters r.status <> 'closed' — so
 		// round 2 opens only after round 1 closes (rounds_progress_gate,
 		// 000008), with the ride already re-pointed onto it.
-		if _, err := pool.Exec(ctx, `INSERT INTO rounds (season_id, number, status) VALUES (1, 2, 'created')`); err != nil {
+		if _, err := pool.Exec(ctx, `INSERT INTO schedule.rounds (season_id, number, status) VALUES (1, 2, 'created')`); err != nil {
 			t.Fatalf("insert round 2: %v", err)
 		}
 		nextMatch := insertFutureMatch(ctx, t, 1, 2, homeID, awayID, "7 days")
@@ -593,9 +593,9 @@ func resolveScore(home, away int) schedule.Score {
 // the settlement tests.
 func newTestService() (*Service, *schedule.Service) {
 	bus := eventbus.New()
-	scheduleStore := schedule.NewStore(pool)
+	scheduleStore := schedule.NewStore(schedulePool)
 	scheduleSvc := schedule.NewService(scheduleStore, bus, nil)
-	gameSvc := NewService(NewStore(pool), scheduleStore, ledger.NewStore())
+	gameSvc := NewService(NewStore(gamePool), scheduleStore, ledger.NewStore())
 	eventbus.Subscribe(bus, func(ctx context.Context, event schedule.MatchResultRecorded) error {
 		return gameSvc.OnMatchResultRecorded(ctx, event)
 	})
@@ -638,7 +638,7 @@ func settleRoundMatches(ctx context.Context, t *testing.T, roundID int) {
 	t.Helper()
 
 	if _, err := pool.Exec(ctx, `
-		UPDATE matches SET starts_at = now() - interval '3 hours',
+		UPDATE schedule.matches SET starts_at = now() - interval '3 hours',
 			status = 'closed', home_score = 2, away_score = 1
 		WHERE round_id = $1`, roundID); err != nil {
 		t.Fatalf("settle round matches: %v", err)
@@ -671,7 +671,7 @@ func TestService_OnMatchResultRecorded(t *testing.T) {
 		gameSvc, _ := newTestService()
 		matchID, roundID, seasonID := scoreClosedMatch(ctx, t, 3, 1)
 		var homeID, awayID int
-		if err := pool.QueryRow(ctx, `SELECT home_team_id, away_team_id FROM matches WHERE id = $1`, matchID).Scan(&homeID, &awayID); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT home_team_id, away_team_id FROM schedule.matches WHERE id = $1`, matchID).Scan(&homeID, &awayID); err != nil {
 			t.Fatalf("read match: %v", err)
 		}
 
@@ -714,7 +714,7 @@ func TestService_OnMatchResultRecorded(t *testing.T) {
 		gameSvc, _ := newTestService()
 		matchID, roundID, seasonID := scoreClosedMatch(ctx, t, 2, 2)
 		var homeID, awayID int
-		if err := pool.QueryRow(ctx, `SELECT home_team_id, away_team_id FROM matches WHERE id = $1`, matchID).Scan(&homeID, &awayID); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT home_team_id, away_team_id FROM schedule.matches WHERE id = $1`, matchID).Scan(&homeID, &awayID); err != nil {
 			t.Fatalf("read match: %v", err)
 		}
 
@@ -744,7 +744,7 @@ func TestService_OnMatchResultRecorded(t *testing.T) {
 		gameSvc, _ := newTestService()
 		matchID, roundID, seasonID := scoreClosedMatch(ctx, t, 3, 1)
 		var homeID, awayID int
-		if err := pool.QueryRow(ctx, `SELECT home_team_id, away_team_id FROM matches WHERE id = $1`, matchID).Scan(&homeID, &awayID); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT home_team_id, away_team_id FROM schedule.matches WHERE id = $1`, matchID).Scan(&homeID, &awayID); err != nil {
 			t.Fatalf("read match: %v", err)
 		}
 		ride := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
@@ -772,16 +772,17 @@ func TestService_OnMatchResultRecorded(t *testing.T) {
 		gameSvc, _ := newTestService()
 		matchID, roundID, seasonID := scoreClosedMatch(ctx, t, 3, 1)
 		var homeID, awayID int
-		if err := pool.QueryRow(ctx, `SELECT home_team_id, away_team_id FROM matches WHERE id = $1`, matchID).Scan(&homeID, &awayID); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT home_team_id, away_team_id FROM schedule.matches WHERE id = $1`, matchID).Scan(&homeID, &awayID); err != nil {
 			t.Fatalf("read match: %v", err)
 		}
 		awayRide := plantRide(ctx, t, matchID, awayID, RideLocked, decimal.Zero, 0)
 
 		// A lying payload (away wins while the row says 3:1 home): the
-		// derivation would land the away ride won_pending — check 5 of
-		// rides_state_gate re-derives from the committed match row and
-		// refuses. The DB is the enforcement home; the handler surfaces
-		// the refusal, it never overrides it.
+		// derivation would land the away ride won_pending — the service's
+		// resultAgreement check re-derives from the committed match row and
+		// refuses (the app-level enforcement home of the old rides_state_gate
+		// check 5 since migration 000017; the handler surfaces the refusal,
+		// it never overrides it).
 		event := eventResult("evt-lying", matchID, roundID, seasonID, homeID, awayID, 1, 3)
 		err := gameSvc.OnMatchResultRecorded(ctx, event)
 		if !errors.Is(err, ErrInvalidTransition) {
@@ -947,13 +948,13 @@ func TestService_OnRoundCompleted(t *testing.T) {
 func renumberRoundForFixture(ctx context.Context, t *testing.T, roundID, number int) {
 	t.Helper()
 
-	if _, err := pool.Exec(ctx, `ALTER TABLE rounds DISABLE TRIGGER rounds_progress_gate`); err != nil {
+	if _, err := pool.Exec(ctx, `ALTER TABLE schedule.rounds DISABLE TRIGGER rounds_progress_gate`); err != nil {
 		t.Fatalf("suspend progress gate: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE rounds SET number = $2 WHERE id = $1`, roundID, number); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE schedule.rounds SET number = $2 WHERE id = $1`, roundID, number); err != nil {
 		t.Fatalf("renumber round: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `ALTER TABLE rounds ENABLE TRIGGER rounds_progress_gate`); err != nil {
+	if _, err := pool.Exec(ctx, `ALTER TABLE schedule.rounds ENABLE TRIGGER rounds_progress_gate`); err != nil {
 		t.Fatalf("restore progress gate: %v", err)
 	}
 }

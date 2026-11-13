@@ -331,9 +331,10 @@ func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID in
 // instant — the ride's version and its from-state — so a concurrent writer
 // (a player decision that landed first, a settlement replay) turns the
 // second write into a 0-row no-op. No match join: the destination is
-// derived from the event payload, and rides_state_gate's result agreement
-// (000011, check 5) re-checks it against the committed match row on every
-// locked→result arrival — the DB stays the enforcement home.
+// derived from the event payload and verified against the committed
+// result by the service's resultAgreement check before this write (the
+// app-level enforcement home of the old rides_state_gate check 5 since
+// migration 000017 — the DB no longer reads across the boundary).
 //
 // Money columns are deliberately absent from the SET clause: the release
 // of the accrued bonus (unlocked|lost arrivals) and the accrual (won
@@ -374,8 +375,9 @@ func (s *RideStore) ArriveTx(ctx context.Context, tx pgx.Tx, rideID int, from, t
 		case errors.Is(err, pgx.ErrNoRows):
 			return Ride{}, s.classifyArrivalRefusal(ctx, rideID, claimedVersion)
 		case store.IsTriggerViolation(err):
-			// rides_state_gate (ADR-020): the DB refused the arrival — e.g.
-			// the result-agreement check on a locked→result arrival.
+			// rides_state_gate (ADR-020): the DB refused the arrival — the
+			// state graph (checks 1–3); result agreement is the service's
+			// app-level check since migration 000017.
 			return Ride{}, ErrInvalidTransition
 		case store.IsCheckViolation(err, ridesMoneyStateCoupling):
 			return Ride{}, ErrInvalidTransition
@@ -537,9 +539,9 @@ func (s *RideStore) DecisionGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride)
 			// carry no acc. Same 409 surface the P0001 refusal produced.
 			return Ride{}, ErrInvalidTransition
 		case store.IsFKViolation(err):
-			// The destination match was deleted between the port's
-			// destination gate and this write — same parent-gone mapping as
-			// Insert.
+			// Since Phase D (000016) no FK is left on rides; the port's
+			// destination gate has the match-existence check before this
+			// write. Kept as the generic FK race mapping shape.
 			return Ride{}, store.ErrRecordNotFound
 		default:
 			return Ride{}, err
@@ -587,6 +589,27 @@ func (s *RideStore) classifyDecisionRefusal(ctx context.Context, rideID, claimed
 		// must not pass as a named one.
 		return fmt.Errorf("ride decision refused while ride %d at version %d", rideID, claimedVersion)
 	}
+}
+
+// ExistsForMatch reports whether any ride sits on the match — the game
+// half of the api match-delete refusal (Phase D: rides_match_id_fkey's
+// RESTRICT is gone with the cross-context FKs, so the "match still has
+// rides" check is an api-level composition; same ErrRecordInUse → 409
+// surface the FK produced, ADR-018: a match with rides on it must not be
+// deleted, the tokens would vanish with it).
+func (s *RideStore) ExistsForMatch(ctx context.Context, matchID int) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM rides WHERE match_id = $1)`, matchID).Scan(&exists)
+	return exists, err
+}
+
+// ExistsForTeam reports whether any ride names the team — the game half
+// of the api team-delete refusal (see ExistsForMatch; the
+// rides_team_id_fkey RESTRICT is gone with the cross-context FKs).
+func (s *RideStore) ExistsForTeam(ctx context.Context, teamID int) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM rides WHERE team_id = $1)`, teamID).Scan(&exists)
+	return exists, err
 }
 
 var transitions = map[RideState]map[schedule.RoundPhase][]RideState{
