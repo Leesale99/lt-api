@@ -1,0 +1,117 @@
+# Delegate workflow — master plan
+
+Updated: 2026-11-12
+Status: all phases (1–4) done
+
+## Goal
+
+The main pi session in this repo becomes an **orchestrator**: it does no task work itself. It routes every task to a specialized subagent via a `subagent` tool (foreground, blocking, results stream back) or `job_status` (background, tmux-backed, results on disk). The main context stays minimal; each subagent runs in a fresh `pi` process with an isolated context and only the tools it needs.
+
+## Architecture
+
+- Project-local extension: `.pi/extensions/delegate/` (`index.ts`, `agents.ts`, `jobs.ts` in phase 3, `output.ts`)
+- Agent configs: `.pi/agents/*.md` — YAML frontmatter + system prompt body, committed to the repo
+- Discovery runs per tool invocation → adding an agent `.md` later needs no reload
+- Job artifacts (phase 3): `.pi/jobs/` (gitignored)
+
+## Reference implementation — fork this, do not invent
+
+pi ships a working subagent extension:
+
+```
+/Users/aleksrdvn/.pi/agent/install/releases/1.5.2/node_modules/@earendil-works/pi-coding-agent/examples/extensions/subagent/
+  index.ts     # subagent tool: single / parallel (max 8, 4 concurrent) / chain ({previous}) modes
+  agents.ts    # frontmatter discovery: name, description, tools, model
+  agents/*.md  # sample agents (scout, planner, reviewer, worker)
+```
+
+Foreground child invocation (already solved there): `pi --mode json -p --no-session [--model X] [--thinking L] [--tools a,b] [--append-system-prompt tmpfile] "Task: ..."` — parent parses JSONL events, streams progress via `onUpdate`, final assistant text becomes the tool result (~50 KB cap keeps parent context small).
+
+Docs when needed (same install tree): `docs/extensions.md`, `docs/cli.md`, `docs/skills.md`, `docs/configuration.md`, `docs/settings.md`.
+
+## Agent roster
+
+| Agent | tools | model | purpose |
+|---|---|---|---|
+| `scout` | read, grep, find, ls, bash | inherit | codebase recon; returns compressed context so nobody else reads big files |
+| `librarian` | obsidian, tool_search, read | inherit | ONLY agent allowed to touch Obsidian vaults; uses `lt-api-kb` + `obsidian-vault-discipline` skills |
+| `researcher` | web_search, source_check, fetch_content, get_search_content, resolve-library-id, query-docs, read | inherit | web research + library docs (context7) |
+| `go-worker` | read, bash, edit, write, grep, find, ls | `opencode-go/glm-5.3-flash`, thinking high | implements Go tasks, runs tests, reports |
+| `general` | read, bash, edit, write, grep, find, ls | inherit | catch-all builder for anything not matching a specialist |
+
+Verified tool names (installed packages): context7 → `resolve-library-id`, `query-docs`; pi-web-access → `web_search`, `source_check`, `fetch_content`, `get_search_content` (direct exposure); pi-obsidian → single `obsidian` tool, **deferred exposure** — must be named in the `--tools` allowlist to be declared, plus `tool_search` as safety net.
+
+Frontmatter fields: `name`, `description`, `tools`, `model`, `thinking` (phase 1), `skills` (phase 1), `background` (phase 3). `model` omitted → inherits dispatching session's model + thinking level.
+
+## Instruction split (who reads what — decisions made 2026-11-12)
+
+Every pi process in this cwd reads `AGENTS.md`. Children spawned by the delegate extension also read it. Therefore AGENTS.md must contain only **project-wide facts**; per-session behavior is injected by session type.
+
+| Content | Target |
+|---|---|
+| Sandbox facts (Docker sandbox, `host.docker.internal`, DSN overrides, `go clean -testcache`) | stays in `AGENTS.md` |
+| Docs pointer (`docs/league-tokens-learning-phases`, never preload) | stays in `AGENTS.md` |
+| Mentor role, "don't write unless asked", "hints over diffs" | orchestrator injection only (phase 2) |
+| Vault `Home.md` session-start rule | orchestrator injection only (phase 2) |
+| Vault-write → `lt-api-kb` skill rules | `librarian.md` prompt only |
+| "You implement; hint-first rule does not apply to you" | `go-worker.md` / `general.md` prompts (needed until phase 2 slims AGENTS.md) |
+
+Why: a go-worker inheriting "prefer hints over ready answers" or "don't write files unless asked" is a direct failure mode — that content must never reach builders.
+
+## Orchestrator enforcement (phase 2)
+
+Two layers:
+1. **Prompt layer** — extension `before_agent_start` injects the orchestrator system prompt (mentor role, delegate-don't-implement, `Home.md` rule, routing table) **only when `PI_DELEGATE_CHILD` is absent** from the environment. The extension sets `PI_DELEGATE_CHILD=1` in every child's spawn env. Never put orchestrator rules in AGENTS.md (children read it too).
+   - Polish (2026-11-12): the prompt text lives in `.pi/delegate/orchestrator.md` — read fresh on every `before_agent_start` (fs.readFileSync, resolved from ctx.cwd) so prompt edits apply without `/reload`; the original inline string remains as fallback when the file is missing/unreadable.
+2. **Hard layer** — `tool_call` handler gates `edit`/`write` in the main session, with two regimes by UI availability: UI present → confirm dialog ("delegate to a subagent instead?"); declining blocks with a routing reminder, confirming allows harness/plan work sessions. Non-UI main session (`-p`/json, polish 2026-11-12) → **hard block** instead of the dialog — nobody can approve a dialog there, and the old confirm-only behavior let a `-p` orchestrator implement silently. Children (`PI_DELEGATE_CHILD` set) → skip the gate entirely so delegated work runs unattended. `bash` stays ungated in all regimes (cheap orientation; prompt layer discourages it).
+
+Routing table for the orchestrator prompt: librarian → vault ops; researcher → web/docs; go-worker → Go implementation; scout → codebase recon; general → anything else.
+
+## Gotchas (all verified against pi 1.5.2 docs)
+
+1. **Project `.pi/settings.json` applies to children too.** If the main session gets a restricted `defaultTools`, children are unaffected only because every agent config lists `tools:` explicitly (frontmatter `tools` → explicit `--tools` allowlist overrides defaults). Keep that invariant: every agent `.md` names its tools.
+2. **AGENTS.md is read by every process in the cwd, including subagents.** See instruction split above.
+3. **Global packages load in children too** (context7, pi-web-access, pi-obsidian, pi-sbx) — needed for librarian/researcher tools; each child pays extension startup cost.
+4. **Children are cold starts** — no shared prompt cache with the parent. Keep tasks self-contained; that's why scout exists.
+5. **Subagent result = parent's context budget** (~50 KB cap). Every agent prompt enforces "return a summary, not a dump".
+6. **Project agents are repo-controlled prompts with user permissions** — keep `.pi/agents/` in review. `agentScope: "both"` (project overrides user); trusted project → no confirm prompt.
+7. **`obsidian` tool is deferred-exposure** — naming it in `--tools` should declare it; `tool_search` is the fallback. Verify in phase 1.
+8. Phase sessions run on the host; if sandbox tools are unavailable in a session, run `/sbx off` (happened in the planning session).
+
+## Phases
+
+Each phase runs in a **fresh session**, driven by its doc. Kickoff:
+
+```bash
+pi -n "pN: <short name>" "Read .pi/plans/delegate/phase-N.md and execute it fully. Update its Status when done."
+# resume a phase that spans sittings:
+pi --session-id delegate-phase-N
+```
+
+- Phase 1 — fork example into `.pi/extensions/delegate/`, add `thinking`/`skills` frontmatter, write the 5 agent configs, foreground end-to-end tests
+- Phase 2 — orchestrator guard (env-gated injection + edit/write confirm gate), slim AGENTS.md
+- Phase 3 — background mode (tmux runner, `.pi/jobs/` registry, `job_status` tool)
+- Phase 4 — workflow prompt templates (`/implement` etc.), routing tune-up, dogfood a real Phase-05 task through the roster
+
+Rule: **decisions live in these docs, not in chat history.** Append session-specific findings to the phase doc's "Notes from execution" and cross-phase learnings to `## Learnings` below.
+
+## Learnings (append across phases)
+
+- (phase 1, 2026-11-12) `/skill:<name>` DOES expand in `-p` mode (print mode → `session.prompt()` with `expandPromptTemplates` default true), but expansion is single-pass and only expands the LEADING command. Multi-skill agents: first skill inlined via `/skill:`, remaining skills named explicitly for the child to read from its advertised path. Implemented in `buildTaskPrompt` in `.pi/extensions/delegate/index.ts`.
+- (phase 1, 2026-11-12) **pi-sbx removed from global packages — TEMPORARILY** (user decision): its version gate (requires SBX 0.48.x, host sbx is v0.53.0) left `-p` children with no usable tools — host fallback requires interactive approval children can't grant. While building this delegate workflow, pi runs directly on the host (no sandbox). AGENTS.md's sandbox facts (Docker container, `host.docker.internal` DSN overrides) are NOT stale — they describe how project sessions will run once the workflow is done and pi runs inside the sandbox with pi-sbx again. Do not remove them in phase 2's AGENTS.md slim.
+- (phase 1, 2026-11-12) During the host-run workflow phases, children resolve `host.docker.internal` NOT — the host-side DSN that works is `postgres://lt_test:test@localhost:5432/lt_api_test?sslmode=disable` (verified: `go test ./internal/api` passes). go-worker tasks delegated now should use the localhost DSN; once project work moves back into the sandbox, AGENTS.md's DSN guidance applies again.
+- (phase 2, 2026-11-12) Extension code is loaded at session start. Edits to `.pi/extensions/delegate/index.ts` mid-session apply to child processes (they load fresh from disk) but NOT to the running parent — its spawn env and hooks stay the old version until `/reload` or restart. Test child-side changes by spawning `pi` directly with the expected env; `/reload` before dogfooding after any extension edit.
+- (phase 2, 2026-11-12) Extension-loader parser rejects `?:` ternaries with double-quoted strings inside a template literal's `${}` — keep nested quoting in extension messages trivial (concatenation).
+- (phase 1, 2026-11-12) Project-agent confirm prompt only fires when `ctx.hasUI` — `-p` children/parents skip it; interactive sessions prompt unless the project is trusted.
+- (phase 3, 2026-11-12) Runner-script lesson: command substitutions in generated shell must be double-quoted (`"$(cat '…task')"`) or word-splitting mangles multi-word input. Task-file route in phase 3 is correct; the quotes are part of the invariant, not optional.
+- (phase 4, 2026-11-12; CORRECTED same day in the polish session) **Concurrent `pi -p` parents are safe — the 'aborted' scare was a misattribution.** Transcript evidence (session …01a1d021…, events 43–48): one turn-level abort (user interrupt) killed three in-flight bash tool calls at the same instant 25.5 s in (300 s timeouts never fired; a "continue" user message followed) — not a collision between pi processes. No shared-resource collision exists: children are cold `--no-session` starts, prompt tmpfiles use unique mkdtemp dirs, auth writes are lockfile-guarded, session filenames are timestamp+uuid, web server binds an ephemeral port. Re-verified empirically: 3 concurrent parents × 1 scout child each → all exit 0, correct output; parallel subagent-tool dispatch (librarian+scout+researcher, one call) → 3/3. Both parallel tool mode (max 8 tasks / 4 concurrent) and bash-parallel parents are allowed. Diagnostic rule: synchronized "Command aborted" across in-flight calls means the TURN was interrupted, not that the children failed.
+- (phase 4, 2026-11-12) Cheap routing spot-check that works: fresh `pi -p --no-session` per phrasing + meta-instruction "reply with ONLY the agent name, do not call tools". Tests the routing decision without spawning children. 10/10 with the current descriptions — no sharpening needed; re-run this probe list after any agent roster/description change.
+- (phase 4, 2026-11-12) Project prompt templates (`.pi/prompts/*.md`) load in fresh sessions without `/reload` (per-invocation discovery, same mechanism as agents) and the leading `/implement`-style command expands in `-p` mode — consistent with the phase-1 single-pass expansion finding. Chain template + two single-agent shapes verified end-to-end.
+- (phase 4, 2026-11-12) Dogfood pattern that keeps the orchestrator honest: librarian(read phase note) → scout(survey/recon vs repo docs) → librarian(record + Home.md update). The orchestrator's only direct reads were Home.md + its own plan docs; all context flow happened via {previous} and tool-result summaries. Phase 05 task 1 completed through this route.
+- (phase 4, 2026-11-12) Obsidian CLI quirk: an extensionless file can be reported byte-identical to its `.md` twin by one agent and not-identical by another (likely an extensionless read quirk). When trashing strays, guard the exact path (librarian did) and verify the real file afterward.
+- (phase 1, 2026-11-12) All acceptance tests passed in foreground mode; `thinking` frontmatter → `--thinking` always passes (CLI clamps); agent prompts override AGENTS.md persona (go-worker wrote files + ran tests on demand); per-invocation agent discovery confirmed (mid-session `.pi/agents/_test.md` pickup).
+- (polish, 2026-11-12) Post-phase-4 polish, all in `.pi/extensions/delegate/`: (1) subagent single mode gains a per-call `background` override — `true` forces the detached tmux-backed job, `false` forces foreground, omitted → agent frontmatter decides; combined with `tasks`/`chain` it is rejected with the invalid-parameters error. (2) The orchestrator prompt is externalized to `.pi/delegate/orchestrator.md` (not `.pi/agents/` — that dir is the dispatch roster), read fresh per invocation with the inline string kept as fallback; prompt edits no longer need `/reload`. (3) The edit/write gate now HARD-BLOCKS in non-UI main sessions (`-p`) instead of silently passing — the confirm dialog is unusable there, and the hole let a `-p` orchestrator implement directly; children (`PI_DELEGATE_CHILD`) still skip the gate. (4) `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL`, `PI_REASONING_LEVEL` (exported by pi's bash tool) are scrubbed from child spawns — deleted in the foreground spawn env and via a leading `unset` in the generated tmux/fallback runner script — so the parent's session identity never reaches a child.
+- (polish, 2026-11-12) Testing gotcha when driving tests FROM a delegate child (like a polish/implement session): the child's own env has `PI_DELEGATE_CHILD=1`, and every `pi -p` it spawns via bash inherits it — so orchestrator injection and the edit/write gate are silently SKIPPED in the tested parent (behaves like the old gate hole). Symptom: routing probes answer from AGENTS.md/skills instead of the routing table; gate probes write files unimpeded; the extension itself loads fine (tools registered). Fix for tests: prefix with `env -u PI_DELEGATE_CHILD pi -p …`. Diagnostic trick of last resort: pi's live runtime is the bundled chunk (`dist/bundle/chunks/*.js`), not `dist/core/` — patching dist/core has no effect on the managed binary; temporary project extensions in `.pi/extensions/` that log to files are the reliable instrument.
+- (review, 2026-11-12) Review fixes to the delegate extension: (1) `renderResult` gained an early background branch — `BackgroundJobDetails` has no `results` array, so the old `details.results.length` guard threw and pi's fallback silently swallowed the intended branch; the branch now renders card-style header + body and keys the body color off `result.isError` (interactive rendering still unverified headless — same REMAINING INTERACTIVE-ONLY class). (2) Exactly-once delivery is now mark-AFTER-delivery: job_status pickup adds the id to `surfacedJobIds` only after `pi.sendMessage` returns (throw → unmarked, manual retry safe, no loop risk), and the settle path builds ALL drafts first with per-job try/catch — a build-failed job is marked surfaced anyway (no infinite retry on a broken payload) but contributes no draft, ids are marked only after all drafts are built, and `continue:true` is returned only when ≥1 job delivered; unexpected settle errors now propagate (pi's runner catches and reports handler errors) instead of the old blanket `catch → return undefined`. (3) The background start-failure result sets `isError: true` (`BackgroundJobDetails.isError`, tool_result hook cast widened to `AnyToolDetails`) so the model registers the failure — verified e2e: read-only `.pi/jobs` → EACCES throw → persisted toolResult has `isError: true`, model replied "The tool returned an error". (4) Plan enforcement section rewritten to the two-regime reality (UI confirm / non-UI hard block / child skip) + `output.ts` added to the Architecture list. Minor: `loadOrchestratorPrompt` now takes ctx.cwd (before_agent_start ctx); /jobs completions keep `process.cwd()` — `getArgumentCompletions` receives no ctx, documented inline; poller comment corrected (the interval DOES tick in -p, the notify/status/card/widget calls inside are no-ops); orchestrator.md "background jobs (phase 3)" → "background jobs" in both file and `DEFAULT_ORCHESTRATOR_PROMPT` (byte-identical, diff-verified).
+- (UI round 2, 2026-11-12) Session-level surfaces added to the delegate extension: (1) **Entry cards** — `delegate-job` custom entries (pi.appendEntry + registerEntryRenderer, one line: status icon · id · agent · status · relative age) emitted on job start, poller-detected finish, job_status status transition (via new `peekJobEntry` raw read), and the settle branch; deduped per (id,status) so start+finish = exactly two cards; TUI-only by design (never reach the LLM). (2) **Result pickup as context** — job_status on a SPECIFIC finished job also sends a `delegate-job-result` custom message (pi.sendMessage with NO options: stores when idle, steers mid-run → lands in the next LLM request of the same run, never triggers a turn; verified in source `agent-session.sendCustomMessage`); payload {id, agent, status, finishedAt, text} with text byte-truncated to ~8 KB + "(truncated — full text via job_status)" marker; registerMessageRenderer renders header (icon/id/agent/status/age) + body (collapsed to 12 lines, ctrl+o expands). (3) **Auto-surface at settle** — `agent_before_settle` handler lists the registry and surfaces jobs that are terminal with finishedAt AFTER extension-load time (old jobs never resurface) and not yet in the shared `surfacedJobIds` Set; for each: a `custom` draft entry (the card) + a `custom_message` draft ("Background job <id> (agent <agent>) finished with status <status>. Result …: <text>. Full text: job_status id <id>."), then `{ entries, continue: true }` returned ONLY when ≥1 new job was surfaced — otherwise undefined. **Loop-safety rule:** continue:true must be conditional on a NEW surfacing (surfacedJobIds marks every surfaced job, so the follow-up settle returns undefined); an unconditional continue would re-fire after every response forever. surfacedJobIds is shared by pickup AND settle, so a job is injected exactly once per session no matter which path wins (verified: two job_status calls → one message; settle-surface + subsequent job_status call → one message). **Loop-killed headless gotcha (the round's hard lesson):** the settle-wait sleep originally used `setTimeout(...).unref()` — in `-p` mode the event loop drains during the sleep (keep-alive sockets time out ~4s after agent_end) and the process exits cleanly mid-boundary: exit 0, EMPTY stdout, no agent_settled, boundary never commits. Fix: the settle-wait timer must be REFERENCED (never unref sleepMs; the poller's interval stays unref'd by design). Headless settle behavior: if this session's own jobs (startedAt after load) are still running at settle, the boundary waits (1s polls, cap 90s default, env `PI_DELEGATE_SETTLE_WAIT_MS`, max 10 min) so a single-shot run reports its jobs; interactive sessions never wait (later settles + poller notify cover them; esc abort still commits entries but suppresses the continuation). Also fixed a pre-existing latent bug: `taskPreview` was used by `/jobs` but never imported (ReferenceError when the list view opened with jobs present). REMAINING INTERACTIVE-ONLY (untestable headless; check after /reload): card rendering in the transcript (start card, finish card, no dupes), delegate-job-result message card rendering + collapsed/expanded body, widget refresh from the settle path, footer status + notify on poller-detected finish with the finish card, alt+j + /jobs + /agents unchanged.
+- (UI round 1, 2026-11-12) Jobs widget + `/jobs` + `/agents` + shortcut added to the delegate extension. Widget `delegate-jobs` (aboveEditor): one line per registry job, max 6 then "+N more", cleared (`setWidget(key, undefined)`) when the registry is empty; refreshed fire-and-forget (hasUI + try/catch) from startBackgroundRun, every 10s poller tick, the settle branch, and every job_status execute. New shared helpers in jobs.ts: `listJobEntries` (newest-first — job_status's list-all now uses it too), `getJobResultText` (final assistant text, same parse as job_status, ~50 KB cap), `listJobIdsSync` (for argument completion); JobEntry gains `finishedAt` on the running→terminal transition. `/jobs [id]`: id → viewer directly, no arg → SelectList (icon, id, agent, status, age, task preview) → viewer, unknown id → error notify. `/agents`: SelectList of discoverAgents("both") (source, model/thinking, tool count, description) → detail viewer (tools, skills, background flag, file path, full system prompt). Shortcut: ctrl+j is TAKEN (tui.input.newLine) → **alt+j** chosen (no builtin binding; alt+letter survives as an ESC-prefixed sequence on legacy terminals). Viewer decision: NOT the built-in ScrollView — ctx.ui.custom components render via component.render(width) WITHOUT the layout-node pass and ScrollView's viewport slicing only happens under the TUI's layout frame, so `openTextViewer` windows lines manually (scrollTop + 16-line viewport; ↑↓/pageUp/pageDown/halfPage; esc/enter closes). Registry hardening found by the e2e: a transient false "aborted" (tmux probe raced the exit write) was sticky forever — refreshStatus now reclassifies an aborted entry when a late .exit file appears (self-healed the poisoned scout-…-174154 entry). INTERACTIVE-ONLY (headless -p only proved exit-0/no-op paths) — after /reload check: widget lines appear above the editor on background start and age each tick; /jobs list + viewer scrolling; /agents list + details; alt+j opens the jobs view; footer "bg job <id>: <status>" on completion; agent starts without any job show no widget.
