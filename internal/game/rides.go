@@ -1,5 +1,12 @@
 package game
 
+// TODO(Phase C): rides.go SQL joins matches/rounds (schedule's tables) in
+// several places — the guarded insert/update round-status guards, the
+// classify*Refusal reads and UpdateAllForMatchTx's score join. These are
+// the temporary cross-context reads of the Phase B split, removed once
+// ride-outcome splits at the MatchResultRecorded event seam (or the round
+// status reaches game through a narrow schedule operation).
+
 import (
 	"context"
 	"errors"
@@ -11,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
+	"lt-api.aleksrdvn.com/internal/schedule"
 	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -177,7 +185,7 @@ func (s *RideStore) classifyInsertRefusal(ctx context.Context, matchID int) erro
 		INNER JOIN rounds r ON r.id = m.round_id
 		WHERE m.id = $1
 	`
-	var status RoundStatus
+	var status schedule.RoundStatus
 
 	err := s.pool.QueryRow(ctx, query, matchID).Scan(&status)
 	switch {
@@ -185,7 +193,7 @@ func (s *RideStore) classifyInsertRefusal(ctx context.Context, matchID int) erro
 		return store.ErrRecordNotFound
 	case err != nil:
 		return err
-	case status != RoundOpen:
+	case status != schedule.RoundOpen:
 		return ErrRoundNotOpen
 	default:
 		// Unreachable through the gates (a round cannot re-open), but a
@@ -329,8 +337,8 @@ type Result struct {
 // ResolveMatch's Phase 04 contract.
 // Score→state rule site 2 of 3 (the SQL computation): check 5 of
 // rides_state_gate (migrations/000011_add_rides_result_agreement_gate.up.sql)
-// is the enforcement home, Match.Winner (internal/game/matches.go) the Go
-// copy; all three are tied by the shared fixture in
+// is the enforcement home, Match.Winner (internal/schedule/matches.go) the
+// Go copy; all three are tied by the shared fixture in
 // internal/game/score_state_rule_test.go — change one, change all three.
 func (s *RideStore) UpdateAllForMatchTx(ctx context.Context, tx pgx.Tx, matchID int) ([]Result, error) {
 	query := `
@@ -432,7 +440,7 @@ func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
 // by name, not by bare SQLSTATE: the rides table carries five other
 // CHECKs that must keep falling through unhandled. Change-detector: the
 // domain copies live in ride.Unlock/ride.Lost and the persistence copy in
-// rideAutoUnlockSQL (internal/game/rounds.go); the DB probe is
+// rideAutoUnlockSQL (internal/schedule/rounds.go); the DB probe is
 // TestRideMoneyStateCoupling (internal/game/constraints_test.go).
 const ridesMoneyStateCoupling = "rides_money_state_coupling"
 
@@ -548,7 +556,7 @@ func (s *RideStore) classifyUpdateRefusal(ctx context.Context, rideID, claimedVe
 	var (
 		state   RideState
 		version int
-		status  RoundStatus
+		status  schedule.RoundStatus
 	)
 
 	err := s.pool.QueryRow(ctx, query, rideID).Scan(&state, &version, &status)
@@ -559,7 +567,7 @@ func (s *RideStore) classifyUpdateRefusal(ctx context.Context, rideID, claimedVe
 		return store.ErrRecordNotFound
 	case err != nil:
 		return err
-	case status != RoundOpen:
+	case status != schedule.RoundOpen:
 		return ErrRoundNotOpen
 	case version != claimedVersion || state != RideWonPending:
 		// The CAS lost: a concurrent ride command moved the row — the
@@ -582,16 +590,16 @@ func (s *RideStore) classifyUpdateRefusal(ctx context.Context, rideID, claimedVe
 	}
 }
 
-var transitions = map[RideState]map[RoundPhase][]RideState{
+var transitions = map[RideState]map[schedule.RoundPhase][]RideState{
 	RideLocked: {
-		MatchPhase: {RideWonPending, RideLost},
+		schedule.MatchPhase: {RideWonPending, RideLost},
 	},
 	RideWonPending: {
-		DecisionPhase: {RideLocked, RideBurned, RideUnlocked},
+		schedule.DecisionPhase: {RideLocked, RideBurned, RideUnlocked},
 	},
 }
 
-func canTransition(state RideState, phase RoundPhase, next RideState) bool {
+func canTransition(state RideState, phase schedule.RoundPhase, next RideState) bool {
 	allowedStates := transitions[state][phase]
 
 	return slices.Contains(allowedStates, next)
@@ -609,8 +617,8 @@ func canTransition(state RideState, phase RoundPhase, next RideState) bool {
 // invalid initial state cannot be produced through normal domain
 // operations — whatever the caller supplied is discarded. Persistence is
 // the store's job.
-func (r *Ride) Create(phase RoundPhase) error {
-	if phase != ActionPhase {
+func (r *Ride) Create(phase schedule.RoundPhase) error {
+	if phase != schedule.ActionPhase {
 		return ErrInvalidRoundPhase
 	}
 
@@ -622,8 +630,8 @@ func (r *Ride) Create(phase RoundPhase) error {
 }
 
 // WonPending records a won match. Phase: MatchPhase; call when: Match won; Ride transitions to won_pending
-func (r *Ride) WonPending(phase RoundPhase, odds decimal.Decimal) error {
-	if phase != MatchPhase {
+func (r *Ride) WonPending(phase schedule.RoundPhase, odds decimal.Decimal) error {
+	if phase != schedule.MatchPhase {
 		return ErrInvalidRoundPhase
 	}
 	if !canTransition(r.State, phase, RideWonPending) {
@@ -637,8 +645,8 @@ func (r *Ride) WonPending(phase RoundPhase, odds decimal.Decimal) error {
 }
 
 // Lost records a lost match. Phase: MatchPhase; call when: Match lost; Ride transitions to lost
-func (r *Ride) Lost(phase RoundPhase) error {
-	if phase != MatchPhase {
+func (r *Ride) Lost(phase schedule.RoundPhase) error {
+	if phase != schedule.MatchPhase {
 		return ErrInvalidRoundPhase
 	}
 	if !canTransition(r.State, phase, RideLost) {
@@ -652,8 +660,8 @@ func (r *Ride) Lost(phase RoundPhase) error {
 }
 
 // Lock continues the ride after the win. Phase: DecisionPhase; call when: Player decides to continue the ride after the win
-func (r *Ride) Lock(phase RoundPhase, nextMatchID int) error {
-	if phase != DecisionPhase {
+func (r *Ride) Lock(phase schedule.RoundPhase, nextMatchID int) error {
+	if phase != schedule.DecisionPhase {
 		return ErrInvalidRoundPhase
 	}
 	if !canTransition(r.State, phase, RideLocked) {
@@ -669,8 +677,8 @@ func (r *Ride) Lock(phase RoundPhase, nextMatchID int) error {
 
 // Burn ends a won ride: state becomes RideBurned,
 // tokens and accumulated bonus are fulfiled as TB. Phase: DecisionPhase; call when: Player decides to burn after the win
-func (r *Ride) Burn(phase RoundPhase) error {
-	if phase != DecisionPhase {
+func (r *Ride) Burn(phase schedule.RoundPhase) error {
+	if phase != schedule.DecisionPhase {
 		return ErrInvalidRoundPhase
 	}
 	if !canTransition(r.State, phase, RideBurned) {
@@ -684,8 +692,8 @@ func (r *Ride) Burn(phase RoundPhase) error {
 
 // Unlock ends a won ride: state becomes RideUnlocked and the accumulated
 // bonus is cleared. Phase: DecisionPhase; call when: Player decides to Unlock tokens after the win
-func (r *Ride) Unlock(phase RoundPhase) error {
-	if phase != DecisionPhase {
+func (r *Ride) Unlock(phase schedule.RoundPhase) error {
+	if phase != schedule.DecisionPhase {
 		return ErrInvalidRoundPhase
 	}
 	if !canTransition(r.State, phase, RideUnlocked) {

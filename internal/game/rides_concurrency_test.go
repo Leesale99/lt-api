@@ -32,6 +32,8 @@ import (
 	"github.com/shopspring/decimal"
 
 	"lt-api.aleksrdvn.com/internal/store"
+
+	"lt-api.aleksrdvn.com/internal/schedule"
 )
 
 // raceIterations is how many fresh fixtures each race test re-runs. Each
@@ -43,7 +45,7 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool))
 
 	for i := 0; i < raceIterations; i++ {
 		t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
@@ -60,17 +62,17 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 			// it: read the stored facts, and make the transition decision
 			// the handler makes after ValidateRoundUpdate — the update
 			// carries the target status, not the stored one.
-			var round Round
+			var round schedule.Round
 			if err := pool.QueryRow(ctx, `
 				SELECT id, season_id, number, status, version
 				FROM rounds WHERE id = $1
 			`, roundID).Scan(&round.ID, &round.SeasonID, &round.Number, &round.Status, &round.Version); err != nil {
 				t.Fatalf("read round: %v", err)
 			}
-			if round.Status != RoundOpen {
+			if round.Status != schedule.RoundOpen {
 				t.Fatalf("fixture round status = %q, want open", round.Status)
 			}
-			round.Status = RoundClosed
+			round.Status = schedule.RoundClosed
 
 			var (
 				wg       sync.WaitGroup
@@ -88,7 +90,7 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 			}()
 			go func() {
 				defer wg.Done()
-				_, closeErr = NewStore(pool).Rounds.Close(ctx, round)
+				_, closeErr = schedule.NewStore(pool).Rounds.Close(ctx, round)
 			}()
 			wg.Wait()
 
@@ -187,7 +189,7 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool))
 
 	t.Run("close wins the write instant: the guarded insert is refused", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
@@ -203,15 +205,21 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
 
-		var round Round
+		var round schedule.Round
 		if err := pool.QueryRow(ctx, `
 			SELECT id, season_id, number, status, version
 			FROM rounds WHERE id = $1
 		`, roundID).Scan(&round.ID, &round.SeasonID, &round.Number, &round.Status, &round.Version); err != nil {
 			t.Fatalf("read round: %v", err)
 		}
-		round.Status = RoundClosed
-		if _, err := NewStore(pool).Rounds.updateRound(ctx, tx, round); err != nil {
+		round.Status = schedule.RoundClosed
+		// The close flip itself (the guarded version UPDATE updateRound
+		// runs), inline so the tx's lock-taking matches the store's write
+		// shape without reaching into schedule's unexported internals.
+		if _, err := tx.Exec(ctx, `
+			UPDATE rounds SET number = $1, status = $2, version = version + 1
+			WHERE id = $3 AND version = $4
+		`, round.Number, round.Status, round.ID, round.Version); err != nil {
 			t.Fatalf("uncommitted close flip: %v", err)
 		}
 
@@ -282,15 +290,15 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 		// The close commits after the create: the ride is locked, outside
 		// the close's auto-resolution set (won_pending only), and the close
 		// gates see no undecided rides — the round closes around it.
-		var round Round
+		var round schedule.Round
 		if err := pool.QueryRow(ctx, `
 			SELECT id, season_id, number, status, version
 			FROM rounds WHERE id = $1
 		`, roundID).Scan(&round.ID, &round.SeasonID, &round.Number, &round.Status, &round.Version); err != nil {
 			t.Fatalf("read round: %v", err)
 		}
-		round.Status = RoundClosed
-		if _, err := NewStore(pool).Rounds.Close(ctx, round); err != nil {
+		round.Status = schedule.RoundClosed
+		if _, err := schedule.NewStore(pool).Rounds.Close(ctx, round); err != nil {
 			t.Fatalf("Close() = %v, want nil", err)
 		}
 
@@ -308,7 +316,7 @@ func TestService_RideBurnRacesExactlyOnce(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool))
 
 	for i := 0; i < raceIterations; i++ {
 		t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
@@ -386,7 +394,7 @@ func TestService_RideCommandsRaceOnOneRide(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool))
 
 	for i := 0; i < raceIterations; i++ {
 		t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
@@ -474,7 +482,7 @@ func TestService_MatchResolveRaces(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool))
 
 	// startedMatch builds the resolve fixture: the match must satisfy
 	// ResolveTx's contended facts honestly (in_progress, started in the
@@ -569,17 +577,17 @@ func TestService_MatchResolveRaces(t *testing.T) {
 				// The close command's round row, as its callers supply it:
 				// read the stored facts, carry the target status like the
 				// handler does.
-				var round Round
+				var round schedule.Round
 				if err := pool.QueryRow(ctx, `
 					SELECT id, season_id, number, status, version
 					FROM rounds WHERE id = $1
 				`, roundID).Scan(&round.ID, &round.SeasonID, &round.Number, &round.Status, &round.Version); err != nil {
 					t.Fatalf("read round: %v", err)
 				}
-				if round.Status != RoundOpen {
+				if round.Status != schedule.RoundOpen {
 					t.Fatalf("fixture round status = %q, want open", round.Status)
 				}
-				round.Status = RoundClosed
+				round.Status = schedule.RoundClosed
 
 				var (
 					wg         sync.WaitGroup
@@ -593,7 +601,7 @@ func TestService_MatchResolveRaces(t *testing.T) {
 				}()
 				go func() {
 					defer wg.Done()
-					_, closeErr = NewStore(pool).Rounds.Close(ctx, round)
+					_, closeErr = schedule.NewStore(pool).Rounds.Close(ctx, round)
 				}()
 				wg.Wait()
 

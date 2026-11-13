@@ -16,6 +16,8 @@ import (
 	"testing"
 
 	"github.com/shopspring/decimal"
+
+	"lt-api.aleksrdvn.com/internal/schedule"
 )
 
 // stubOdds is the odds the command tests pass through to the domain. The
@@ -52,7 +54,7 @@ func TestRide_WonPending(t *testing.T) {
 		r.Acc = decimal.NewFromInt(40)
 		r.Streak = 2
 
-		err := r.WonPending(MatchPhase, stubOdds)
+		err := r.WonPending(schedule.MatchPhase, stubOdds)
 
 		if err != nil {
 			t.Fatalf("WonPending() = %v, want nil", err)
@@ -70,7 +72,7 @@ func TestRide_WonPending(t *testing.T) {
 	})
 
 	t.Run("outside match phase is rejected and changes nothing", func(t *testing.T) {
-		for _, phase := range []RoundPhase{ActionPhase, DecisionPhase} {
+		for _, phase := range []schedule.RoundPhase{schedule.ActionPhase, schedule.DecisionPhase} {
 			r := lockedRide()
 
 			err := r.WonPending(phase, stubOdds)
@@ -90,7 +92,7 @@ func TestRide_Lost(t *testing.T) {
 		r := lockedRide()
 		r.Acc = decimal.NewFromInt(50)
 
-		err := r.Lost(MatchPhase)
+		err := r.Lost(schedule.MatchPhase)
 
 		if err != nil {
 			t.Fatalf("Lost() = %v, want nil", err)
@@ -106,7 +108,7 @@ func TestRide_Lost(t *testing.T) {
 	t.Run("outside match phase is rejected", func(t *testing.T) {
 		r := lockedRide()
 
-		err := r.Lost(DecisionPhase)
+		err := r.Lost(schedule.DecisionPhase)
 
 		if !errors.Is(err, ErrInvalidRoundPhase) {
 			t.Fatalf("Lost() = %v, want ErrInvalidRoundPhase", err)
@@ -122,7 +124,7 @@ func TestRide_Lock(t *testing.T) {
 		r := wonPendingRide()
 		before := r.Streak
 
-		err := r.Lock(DecisionPhase, 1)
+		err := r.Lock(schedule.DecisionPhase, 1)
 
 		if err != nil {
 			t.Fatalf("Lock() = %v, want nil", err)
@@ -140,7 +142,7 @@ func TestRide_Lock(t *testing.T) {
 	})
 
 	t.Run("outside decision phase is rejected", func(t *testing.T) {
-		for _, phase := range []RoundPhase{ActionPhase, MatchPhase} {
+		for _, phase := range []schedule.RoundPhase{schedule.ActionPhase, schedule.MatchPhase} {
 			r := wonPendingRide()
 
 			err := r.Lock(phase, 1)
@@ -160,7 +162,7 @@ func TestRide_Burn(t *testing.T) {
 		r := wonPendingRide()
 		accBefore := r.Acc
 
-		err := r.Burn(DecisionPhase)
+		err := r.Burn(schedule.DecisionPhase)
 
 		if err != nil {
 			t.Fatalf("Burn() = %v, want nil", err)
@@ -177,7 +179,7 @@ func TestRide_Burn(t *testing.T) {
 	t.Run("outside decision phase is rejected", func(t *testing.T) {
 		r := wonPendingRide()
 
-		err := r.Burn(MatchPhase)
+		err := r.Burn(schedule.MatchPhase)
 
 		if !errors.Is(err, ErrInvalidRoundPhase) {
 			t.Fatalf("Burn() = %v, want ErrInvalidRoundPhase", err)
@@ -192,7 +194,7 @@ func TestRide_Unlock(t *testing.T) {
 	t.Run("from won_pending during decision phase unlocks and forfeits acc", func(t *testing.T) {
 		r := wonPendingRide()
 
-		err := r.Unlock(DecisionPhase)
+		err := r.Unlock(schedule.DecisionPhase)
 
 		if err != nil {
 			t.Fatalf("Unlock() = %v, want nil", err)
@@ -208,7 +210,7 @@ func TestRide_Unlock(t *testing.T) {
 	t.Run("outside decision phase is rejected", func(t *testing.T) {
 		r := wonPendingRide()
 
-		err := r.Unlock(ActionPhase)
+		err := r.Unlock(schedule.ActionPhase)
 
 		if !errors.Is(err, ErrInvalidRoundPhase) {
 			t.Fatalf("Unlock() = %v, want ErrInvalidRoundPhase", err)
@@ -229,16 +231,16 @@ func TestRide_TerminalStates(t *testing.T) {
 
 	type command struct {
 		name  string
-		phase RoundPhase
+		phase schedule.RoundPhase
 		call  func(r *Ride) error
 	}
 
 	commands := []command{
-		{"won_pending", MatchPhase, func(r *Ride) error { return r.WonPending(MatchPhase, stubOdds) }},
-		{"lost", MatchPhase, func(r *Ride) error { return r.Lost(MatchPhase) }},
-		{"lock", DecisionPhase, func(r *Ride) error { return r.Lock(DecisionPhase, 1) }},
-		{"burn", DecisionPhase, func(r *Ride) error { return r.Burn(DecisionPhase) }},
-		{"unlock", DecisionPhase, func(r *Ride) error { return r.Unlock(DecisionPhase) }},
+		{"won_pending", schedule.MatchPhase, func(r *Ride) error { return r.WonPending(schedule.MatchPhase, stubOdds) }},
+		{"lost", schedule.MatchPhase, func(r *Ride) error { return r.Lost(schedule.MatchPhase) }},
+		{"lock", schedule.DecisionPhase, func(r *Ride) error { return r.Lock(schedule.DecisionPhase, 1) }},
+		{"burn", schedule.DecisionPhase, func(r *Ride) error { return r.Burn(schedule.DecisionPhase) }},
+		{"unlock", schedule.DecisionPhase, func(r *Ride) error { return r.Unlock(schedule.DecisionPhase) }},
 	}
 
 	for _, from := range terminal {
@@ -272,27 +274,27 @@ func TestRide_InvalidTransitions(t *testing.T) {
 		{
 			name: "won_pending cannot become won_pending",
 			ride: wonPendingRide(),
-			call: func(r *Ride) error { return r.WonPending(MatchPhase, stubOdds) },
+			call: func(r *Ride) error { return r.WonPending(schedule.MatchPhase, stubOdds) },
 		},
 		{
 			name: "won_pending cannot become lost",
 			ride: wonPendingRide(),
-			call: func(r *Ride) error { return r.Lost(MatchPhase) },
+			call: func(r *Ride) error { return r.Lost(schedule.MatchPhase) },
 		},
 		{
 			name: "locked cannot lock",
 			ride: lockedRide(),
-			call: func(r *Ride) error { return r.Lock(DecisionPhase, 1) },
+			call: func(r *Ride) error { return r.Lock(schedule.DecisionPhase, 1) },
 		},
 		{
 			name: "locked cannot burn",
 			ride: lockedRide(),
-			call: func(r *Ride) error { return r.Burn(DecisionPhase) },
+			call: func(r *Ride) error { return r.Burn(schedule.DecisionPhase) },
 		},
 		{
 			name: "locked cannot unlock",
 			ride: lockedRide(),
-			call: func(r *Ride) error { return r.Unlock(DecisionPhase) },
+			call: func(r *Ride) error { return r.Unlock(schedule.DecisionPhase) },
 		},
 	}
 
@@ -331,7 +333,7 @@ func TestRide_Create(t *testing.T) {
 			Streak: 7,
 		}
 
-		err := r.Create(ActionPhase)
+		err := r.Create(schedule.ActionPhase)
 
 		if err != nil {
 			t.Fatalf("Create() = %v, want nil", err)
@@ -352,7 +354,7 @@ func TestRide_Create(t *testing.T) {
 	})
 
 	t.Run("outside action phase is rejected and changes nothing", func(t *testing.T) {
-		for _, phase := range []RoundPhase{MatchPhase, DecisionPhase} {
+		for _, phase := range []schedule.RoundPhase{schedule.MatchPhase, schedule.DecisionPhase} {
 			r := Ride{State: RideLocked, Acc: decimal.NewFromInt(5), Streak: 7}
 
 			err := r.Create(phase)

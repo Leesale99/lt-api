@@ -1,16 +1,13 @@
-package game
+package schedule
 
 import (
-	"errors"
 	"time"
 )
 
-// ErrInvalidRoundPhase rejects a command issued in the wrong round phase
-// (e.g. Burn during MatchPhase). Distinct from ErrInvalidTransition so
-// handlers can map the two to different client-facing errors.
-var ErrInvalidRoundPhase = errors.New("command not allowed in this round phase")
-
-// RoundPhase is the gameplay phase of a round within its lifecycle.
+// RoundPhase is the gameplay phase of a round within its lifecycle. Phase B:
+// the derivation is calendar knowledge (schedule), while the commands it
+// gates and their wrong-phase error live in game — game imports this
+// package, never the reverse.
 type RoundPhase string
 
 const (

@@ -1,4 +1,9 @@
-package game
+// Package idempotency owns the idempotency_keys table: the claim-first
+// single-flight engine every idempotent command shares (ADR-024). It is
+// transverse infrastructure — like internal/store, it serves more than one
+// context and owns no business rules of its own — so it lives outside both
+// game and schedule (Phase B hoist of the Game/Schedule split).
+package idempotency
 
 import (
 	"bytes"
@@ -41,11 +46,6 @@ type IdempotentResponse struct {
 	Status int
 	Body   []byte
 }
-
-// RideMarshal is the presentation callback a ride command hands its result
-// to: it returns the status and marshaled body the command stores as its
-// replayable response (ADR-024).
-type RideMarshal func(Ride) (int, []byte, error)
 
 // IdempotencyStore owns the idempotency_keys table. Every method runs on a
 // caller-owned transaction, because the claim shares the command's

@@ -1,4 +1,4 @@
-package game
+package schedule
 
 import (
 	"context"
@@ -208,6 +208,19 @@ func (s *RoundStore) Open(ctx context.Context, round Round) (Round, error) {
 	return round, nil
 }
 
+// ErrRidesGateRefused reports that the round-close transaction's ride
+// auto-resolution was refused by a rides gate (rides_state_gate,
+// rides_money_state_coupling — ADR-020). Both arrivals there (auto-unlock,
+// auto-burn) are legal transitions the players can also take, so a refusal
+// means the app and the DB disagree — a bug, not client input. Callers map
+// it to a 500, deliberately: it is schedule writing game's table, the
+// temporary cross-context write removed at the RoundCompleted event seam.
+//
+// TODO(Phase C): split the ride auto-unlock/burn out of Close at the
+// RoundCompleted event; this error and the rides-table SQL in this file go
+// with it.
+var ErrRidesGateRefused = errors.New("round close ride resolution refused by a rides gate")
+
 // rideAutoUnlockSQL resolves every undecided won_pending ride of a closing
 // round to unlocked. Rides carry no round_id (ADR-018), so the round comes
 // from the join through matches. The state filter is the concurrency guard:
@@ -279,7 +292,7 @@ func (s *RoundStore) Close(ctx context.Context, round Round) (Round, error) {
 	}
 	if _, err := tx.Exec(ctx, resolutionSQL, round.ID); err != nil {
 		if store.IsTriggerViolation(err) {
-			return Round{}, ErrInvalidTransition
+			return Round{}, ErrRidesGateRefused
 		}
 		return Round{}, err
 	}

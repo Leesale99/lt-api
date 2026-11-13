@@ -1,7 +1,6 @@
-// Package game owns the match/round lifecycle domain: the state machines
-// for matches, rounds and seasons, their persistence, and the schema
-// gates that keep Go-side validation and the SQL CHECK constraints in
-// lockstep.
+// Package game owns the ride gameplay domain: the ride state machines and
+// their commands, the persistence of rides and players, and the MatchResolve
+// orchestration (see store.go for the Phase B split note).
 package game
 
 import (
@@ -9,6 +8,8 @@ import (
 	"errors"
 	"time"
 
+	"lt-api.aleksrdvn.com/internal/idempotency"
+	"lt-api.aleksrdvn.com/internal/schedule"
 	"lt-api.aleksrdvn.com/internal/store"
 )
 
@@ -20,41 +21,62 @@ var (
 	// the service door (ADR-026) so every MatchResolve caller — not only
 	// the HTTP handler — passes the same rule.
 	ErrEndedAtInFuture = errors.New("ended_at must be in the past")
+	// ErrInvalidRoundPhase rejects a ride command issued in the wrong round
+	// phase (e.g. Burn during MatchPhase). Distinct from ErrInvalidTransition
+	// so handlers can map the two to different client-facing errors. The
+	// phase itself is schedule knowledge (schedule.RoundPhase); which command
+	// is legal in which phase is the ride domain's rule, so the error lives
+	// here.
+	ErrInvalidRoundPhase = errors.New("command not allowed in this round phase")
 )
 
+// Service is the ride domain's entry point. It owns the game context's
+// stores and receives the schedule store for the calendar lookups its
+// operations need (the phase window behind every ride command, the
+// next-match pick behind RideLock, and the guarded score write inside
+// MatchResolve). game → schedule is the only legal import direction between
+// the two contexts (ADR-028).
 type Service struct {
-	Store *Store
+	Store    *Store
+	Schedule *schedule.Store
 }
 
-func NewService(store *Store) *Service {
+func NewService(store *Store, scheduleStore *schedule.Store) *Service {
 	return &Service{
-		Store: store,
+		Store:    store,
+		Schedule: scheduleStore,
 	}
 }
+
+// RideMarshal is the presentation callback a ride command hands its result
+// to: it returns the status and marshaled body the command stores as its
+// replayable response (ADR-024). It is game-local (the stored answer is a
+// ride); the persistence of that answer is idempotency's.
+type RideMarshal func(Ride) (int, []byte, error)
 
 // rideResponse runs the command's presentation callback (ADR-024): its
 // answer is exactly what gets stored and what a replay returns byte-
 // identical — the handler owns status and body shape, the service never
 // re-serializes on top of it.
-func rideResponse(ride Ride, marshal RideMarshal) (IdempotentResponse, error) {
+func rideResponse(ride Ride, marshal RideMarshal) (idempotency.IdempotentResponse, error) {
 	status, body, err := marshal(ride)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
-	return IdempotentResponse{Status: status, Body: body}, nil
+	return idempotency.IdempotentResponse{Status: status, Body: body}, nil
 }
 
-func (s *Service) RidePhase(ctx context.Context, ride Ride) (RoundPhase, error) {
-	status, firstStartsAt, lastEndedAt, err := s.Store.Matches.PhaseForMatch(ctx, ride.MatchID)
+func (s *Service) RidePhase(ctx context.Context, ride Ride) (schedule.RoundPhase, error) {
+	status, firstStartsAt, lastEndedAt, err := s.Schedule.Matches.PhaseForMatch(ctx, ride.MatchID)
 	if err != nil {
 		return "", err
 	}
 
-	if status != RoundOpen {
+	if status != schedule.RoundOpen {
 		return "", ErrRoundNotOpen
 	}
 
-	phase := Phase(time.Now(), firstStartsAt, lastEndedAt)
+	phase := schedule.Phase(time.Now(), firstStartsAt, lastEndedAt)
 
 	return phase, nil
 }
@@ -72,10 +94,10 @@ func (s *Service) RidePhase(ctx context.Context, ride Ride) (RoundPhase, error) 
 // claim back (failures are never cached), and a duplicate replays the
 // stored response byte-identical instead of creating a second ride.
 // The handler validates the ride before the call, so a 422 never claims.
-func (s *Service) RideCreate(ctx context.Context, ride Ride, token IdempotencyToken, marshal RideMarshal) (IdempotentResponse, error) {
+func (s *Service) RideCreate(ctx context.Context, ride Ride, token idempotency.IdempotencyToken, marshal RideMarshal) (idempotency.IdempotentResponse, error) {
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 	// Background context: the request may be canceled mid-tx; the rollback
 	// must still run and release the connection.
@@ -88,29 +110,29 @@ func (s *Service) RideCreate(ctx context.Context, ride Ride, token IdempotencyTo
 
 	phase, err := s.RidePhase(ctx, ride)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	if err := ride.Create(phase); err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	ride, err = s.Store.Rides.InsertGuardedTx(ctx, tx, ride)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	res, err := rideResponse(ride, marshal)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	if err := s.Store.Idempotency.Save(ctx, tx, token, res); err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	return res, nil
@@ -130,10 +152,10 @@ func (s *Service) RideCreate(ctx context.Context, ride Ride, token IdempotencyTo
 //     under us) -> ErrRoundNotOpen
 //   - the marshal callback is the handler's presentation choice; its answer
 //     is what a replay returns byte-identical
-func (s *Service) RideLock(ctx context.Context, rideID int, token IdempotencyToken, marshal RideMarshal) (IdempotentResponse, error) {
+func (s *Service) RideLock(ctx context.Context, rideID int, token idempotency.IdempotencyToken, marshal RideMarshal) (idempotency.IdempotentResponse, error) {
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 	// Background context: the request may be canceled mid-tx; the rollback
 	// must still run and release the connection.
@@ -146,46 +168,46 @@ func (s *Service) RideLock(ctx context.Context, rideID int, token IdempotencyTok
 
 	ride, err := s.Store.Rides.Get(ctx, rideID)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	phase, err := s.RidePhase(ctx, ride)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	// The continuation pick is load-bearing: NextForTeam chooses the
 	// destination match, and the schedule's not-found is the domain's
 	// ErrNoNextMatch (a schedule conflict, not a missing ride).
-	nextMatch, err := s.Store.Matches.NextForTeam(ctx, ride.TeamID)
+	nextMatch, err := s.Schedule.Matches.NextForTeam(ctx, ride.TeamID)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrRecordNotFound):
-			return IdempotentResponse{}, ErrNoNextMatch
+			return idempotency.IdempotentResponse{}, ErrNoNextMatch
 		default:
-			return IdempotentResponse{}, err
+			return idempotency.IdempotentResponse{}, err
 		}
 	}
 
 	if err := ride.Lock(phase, nextMatch.ID); err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	ride, err = s.Store.Rides.UpdateGuardedTx(ctx, tx, ride, nextMatch.ID)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	res, err := rideResponse(ride, marshal)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 	if err := s.Store.Idempotency.Save(ctx, tx, token, res); err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	return res, nil
@@ -195,10 +217,10 @@ func (s *Service) RideLock(ctx context.Context, rideID int, token IdempotencyTok
 // bonus fulfilled as TB. DecisionPhase only; the RideLock execution shape
 // (ADR-024) minus the continuation pick — the ride ends on its match, so
 // the guarded write takes destination 0.
-func (s *Service) RideBurn(ctx context.Context, rideID int, token IdempotencyToken, marshal RideMarshal) (IdempotentResponse, error) {
+func (s *Service) RideBurn(ctx context.Context, rideID int, token idempotency.IdempotencyToken, marshal RideMarshal) (idempotency.IdempotentResponse, error) {
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 	// Background context: the request may be canceled mid-tx; the rollback
 	// must still run and release the connection.
@@ -211,34 +233,34 @@ func (s *Service) RideBurn(ctx context.Context, rideID int, token IdempotencyTok
 
 	ride, err := s.Store.Rides.Get(ctx, rideID)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	phase, err := s.RidePhase(ctx, ride)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	if err := ride.Burn(phase); err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	// 0 = no continuation destination: Burn ends the ride on its match.
 	ride, err = s.Store.Rides.UpdateGuardedTx(ctx, tx, ride, 0)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	res, err := rideResponse(ride, marshal)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 	if err := s.Store.Idempotency.Save(ctx, tx, token, res); err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	return res, nil
@@ -248,10 +270,10 @@ func (s *Service) RideBurn(ctx context.Context, rideID int, token IdempotencyTok
 // forfeited. DecisionPhase only; the RideLock execution shape (ADR-024)
 // minus the continuation pick — the ride ends on its match, so the guarded
 // write takes destination 0.
-func (s *Service) RideUnlock(ctx context.Context, rideID int, token IdempotencyToken, marshal RideMarshal) (IdempotentResponse, error) {
+func (s *Service) RideUnlock(ctx context.Context, rideID int, token idempotency.IdempotencyToken, marshal RideMarshal) (idempotency.IdempotentResponse, error) {
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 	// Background context: the request may be canceled mid-tx; the rollback
 	// must still run and release the connection.
@@ -264,67 +286,76 @@ func (s *Service) RideUnlock(ctx context.Context, rideID int, token IdempotencyT
 
 	ride, err := s.Store.Rides.Get(ctx, rideID)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	phase, err := s.RidePhase(ctx, ride)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	if err := ride.Unlock(phase); err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	// 0 = no continuation destination: Unlock ends the ride on its match.
 	ride, err = s.Store.Rides.UpdateGuardedTx(ctx, tx, ride, 0)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	res, err := rideResponse(ride, marshal)
 	if err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 	if err := s.Store.Idempotency.Save(ctx, tx, token, res); err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return IdempotentResponse{}, err
+		return idempotency.IdempotentResponse{}, err
 	}
 
 	return res, nil
 }
 
-func (s *Service) MatchResolve(ctx context.Context, matchID int, score Score, endedAt time.Time, version int) (Match, error) {
+// MatchResolve closes a match and settles every ride on it in one
+// transaction (phase-03): the guarded score write on the schedule's matches
+// table, then the set-based ride outcome update on game's rides table. It
+// stays in game for Phase B — moving it to schedule would force a
+// schedule → game import; the ride-outcome half splits at the
+// MatchResultRecorded event seam instead.
+//
+// TODO(Phase C): move the resolve entry point to schedule; split the
+// ride-outcome half at the MatchResultRecorded event seam.
+func (s *Service) MatchResolve(ctx context.Context, matchID int, score schedule.Score, endedAt time.Time, version int) (schedule.Match, error) {
 	// Time policy at the door (ADR-026), before the tx: never open a
 	// transaction just to fail cheaply, and never let a legality answer be
 	// outranked by a storage conflict (e.g. a closed match would turn this
 	// into a 409 if the check ran after ResolveTx).
 	if !endedAt.Before(time.Now()) {
-		return Match{}, ErrEndedAtInFuture
+		return schedule.Match{}, ErrEndedAtInFuture
 	}
 
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
-		return Match{}, err
+		return schedule.Match{}, err
 	}
 
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	match, err := s.Store.Matches.ResolveTx(ctx, tx, matchID, score, endedAt, version)
+	match, err := s.Schedule.Matches.ResolveTx(ctx, tx, matchID, score, endedAt, version)
 	if err != nil {
-		return Match{}, err
+		return schedule.Match{}, err
 	}
 
 	_, err = s.Store.Rides.UpdateAllForMatchTx(ctx, tx, match.ID)
 	if err != nil {
-		return Match{}, err
+		return schedule.Match{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return Match{}, err
+		return schedule.Match{}, err
 	}
 
 	return match, nil

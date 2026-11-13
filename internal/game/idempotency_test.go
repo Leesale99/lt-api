@@ -10,13 +10,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"strings"
+
 	"sync"
 	"testing"
 
 	"github.com/shopspring/decimal"
 
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/idempotency"
+
+	"lt-api.aleksrdvn.com/internal/schedule"
 )
 
 // idempotentMarshal is the minimal presentation callback: the status and
@@ -32,69 +34,12 @@ func idempotentMarshal(r Ride) (int, []byte, error) {
 // rideToken builds a valid token for a ride command endpoint: the hash must
 // be SHA-256-sized (32 bytes), matching the idempotency_keys request_hash
 // check.
-func rideToken(key, endpoint string) IdempotencyToken {
+func rideToken(key, endpoint string) idempotency.IdempotencyToken {
 	hash := sha256.Sum256([]byte(key))
-	return IdempotencyToken{
+	return idempotency.IdempotencyToken{
 		Key:      key,
 		Endpoint: endpoint,
 		Hash:     hash[:],
-	}
-}
-
-// TestValidateIdempotencyToken pins the key rules next to the model: the
-// same rule the DB's idempotency_keys_key_check enforces as the backstop
-// (key is a non-empty string of at most 255 bytes: octet_length <= 255).
-func TestValidateIdempotencyToken(t *testing.T) {
-	valid := func() IdempotencyToken {
-		return rideToken("replay-key", "POST /v1/rides/:id/lock")
-	}
-
-	tests := []struct {
-		name     string
-		mutate   func(t *IdempotencyToken)
-		wantErrs map[string]string // field -> first error message; empty = valid
-	}{
-		{
-			name:     "valid token",
-			mutate:   func(t *IdempotencyToken) {},
-			wantErrs: map[string]string{},
-		},
-		{
-			name:     "empty key is rejected",
-			mutate:   func(t *IdempotencyToken) { t.Key = "" },
-			wantErrs: map[string]string{"idempotency_key": "must be provided"},
-		},
-		{
-			name:     "key over 255 bytes is rejected",
-			mutate:   func(t *IdempotencyToken) { t.Key = strings.Repeat("k", 256) },
-			wantErrs: map[string]string{"idempotency_key": "must not be more than 255 bytes"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			token := valid()
-			tt.mutate(&token)
-
-			v := validator.New()
-			ValidateIdempotencyToken(v, token)
-
-			if len(tt.wantErrs) == 0 {
-				if !v.Valid() {
-					t.Fatalf("ValidateIdempotencyToken() = %v, want no errors", v.Errors)
-				}
-				return
-			}
-
-			if v.Valid() {
-				t.Fatal("ValidateIdempotencyToken() = valid, want errors")
-			}
-			for field, want := range tt.wantErrs {
-				if got, ok := v.Errors[field]; !ok || got != want {
-					t.Errorf("errors[%q] = %q (present: %v), want %q", field, got, ok, want)
-				}
-			}
-		})
 	}
 }
 
@@ -111,7 +56,7 @@ func TestService_RideLockIdempotency(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool))
 
 	t.Run("retry with the same key replays and re-executes nothing", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
@@ -162,7 +107,7 @@ func TestService_RideLockIdempotency(t *testing.T) {
 		// so the stored hash no longer matches — the reuse must be refused.
 		reused := rideToken("shared-key-other-ride", "POST /v1/rides/:id/lock")
 		reused.Key = "shared-key"
-		if _, err := svc.RideLock(ctx, other.ID, reused, idempotentMarshal); err != ErrIdempotencyConflict {
+		if _, err := svc.RideLock(ctx, other.ID, reused, idempotentMarshal); err != idempotency.ErrIdempotencyConflict {
 			t.Errorf("RideLock() error = %v, want ErrIdempotencyConflict", err)
 		}
 
@@ -184,7 +129,7 @@ func TestService_RideLockIdempotency(t *testing.T) {
 
 		token := rideToken("race-key", "POST /v1/rides/:id/lock")
 		type call struct {
-			res IdempotentResponse
+			res idempotency.IdempotentResponse
 			err error
 		}
 		results := make([]call, 2)
@@ -258,7 +203,7 @@ func TestService_RideCreateIdempotent(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(pool))
+	svc := NewService(NewStore(pool), schedule.NewStore(pool))
 
 	newRide := func(playerID, matchID, teamID int) Ride {
 		return Ride{
@@ -319,7 +264,7 @@ func TestService_RideCreateIdempotent(t *testing.T) {
 		// longer matches — the reuse must be refused before any write.
 		reused := rideToken("create-body-misuse-differs", "POST /v1/rides")
 		reused.Key = token.Key
-		if _, err := svc.RideCreate(ctx, newRide(playerID, matchID, homeID), reused, idempotentMarshal); err != ErrIdempotencyConflict {
+		if _, err := svc.RideCreate(ctx, newRide(playerID, matchID, homeID), reused, idempotentMarshal); err != idempotency.ErrIdempotencyConflict {
 			t.Errorf("RideCreate() error = %v, want ErrIdempotencyConflict", err)
 		}
 

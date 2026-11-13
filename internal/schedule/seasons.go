@@ -1,4 +1,4 @@
-package game
+package schedule
 
 import (
 	"context"

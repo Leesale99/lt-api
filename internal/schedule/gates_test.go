@@ -1,4 +1,4 @@
-package game
+package schedule
 
 // Freeze-gate tests: verify the ADR-008 rule at the database level, where it
 // is authoritative. The API layer can only show its own advisory checks;

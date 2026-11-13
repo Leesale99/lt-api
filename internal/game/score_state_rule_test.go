@@ -7,7 +7,7 @@ package game
 //
 // The three encodings:
 //
-//  1. Match.Winner (internal/game/matches.go) — the Go derivation.
+//  1. schedule.Match.Winner (internal/schedule/matches.go) — the Go derivation.
 //  2. The CASE in RideStore.UpdateAllForMatchTx (internal/game/rides.go) —
 //     the SQL computation.
 //  3. Check 5 of rides_block_illegal_transition
@@ -28,6 +28,8 @@ import (
 	"testing"
 
 	"github.com/shopspring/decimal"
+
+	"lt-api.aleksrdvn.com/internal/schedule"
 )
 
 // scoreStateRule is the fixture: one vector per final-score pairing,
@@ -74,11 +76,11 @@ func TestWinnerScoreStateRule(t *testing.T) {
 
 	for _, tt := range scoreStateRule {
 		t.Run(tt.name, func(t *testing.T) {
-			m := Match{
-				Status:     MatchClosed,
+			m := schedule.Match{
+				Status:     schedule.MatchClosed,
 				HomeTeamID: 1,
 				AwayTeamID: 2,
-				Score:      Score{Home: i(tt.home), Away: i(tt.away)},
+				Score:      schedule.Score{Home: i(tt.home), Away: i(tt.away)},
 			}
 
 			winner := m.Winner()
