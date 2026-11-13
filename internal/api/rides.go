@@ -13,6 +13,7 @@ import (
 	"github.com/shopspring/decimal"
 	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/game"
+	"lt-api.aleksrdvn.com/internal/idempotency"
 	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -38,7 +39,7 @@ func (app *Application) gameErrorResponse(w http.ResponseWriter, r *http.Request
 		app.invalidPhaseResponse(w, r)
 	case errors.Is(err, game.ErrInvalidTransition):
 		app.invalidStateTransitionResponse(w, r)
-	case errors.Is(err, game.ErrIdempotencyConflict):
+	case errors.Is(err, idempotency.ErrIdempotencyConflict):
 		app.idempotencyConflictResponse(w, r)
 	default:
 		app.serverErrorResponse(w, r, err)
@@ -128,29 +129,29 @@ func rideMarshal(ride game.Ride) (int, []byte, error) {
 
 // rideCommand is one ride command service call: ride id, idempotency token
 // and the presentation callback in, the stored-or-fresh response out.
-type rideCommand func(ctx context.Context, id int, token game.IdempotencyToken, marshal game.RideMarshal) (game.IdempotentResponse, error)
+type rideCommand func(ctx context.Context, id int, token idempotency.IdempotencyToken, marshal game.RideMarshal) (idempotency.IdempotentResponse, error)
 
 // rideCommandToken builds the command's dedup identity (ADR-024). The key
-// rules live next to the model (game.ValidateIdempotencyToken); the hash
+// rules live next to the model (idempotency.ValidateIdempotencyToken); the hash
 // covers method + request URI, so the same key on a different ride (or any
 // altered request) is the 409 idempotency conflict. ok=false means the
 // header failed validation and the 422 is written. (The body-carrying
 // ride command, create, has its own createRideToken — its bytes join the
 // hash input.)
-func (app *Application) rideCommandToken(w http.ResponseWriter, r *http.Request, endpoint string) (game.IdempotencyToken, bool) {
+func (app *Application) rideCommandToken(w http.ResponseWriter, r *http.Request, endpoint string) (idempotency.IdempotencyToken, bool) {
 	key := r.Header.Get("Idempotency-Key")
 
 	// The ride commands have no body; when a body-carrying command adopts
 	// keys, its bytes join the hash input.
 	hash := sha256.Sum256([]byte(r.Method + "\n" + r.URL.RequestURI()))
 
-	token := game.IdempotencyToken{Key: key, Endpoint: endpoint, Hash: hash[:]}
+	token := idempotency.IdempotencyToken{Key: key, Endpoint: endpoint, Hash: hash[:]}
 
 	v := validator.New()
 
-	if game.ValidateIdempotencyToken(v, token); !v.Valid() {
+	if idempotency.ValidateIdempotencyToken(v, token); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
-		return game.IdempotencyToken{}, false
+		return idempotency.IdempotencyToken{}, false
 	}
 
 	return token, true
@@ -204,7 +205,7 @@ func rideCreateMarshal(ride game.Ride) (int, []byte, error) {
 // silent replay of the first ride. The body is consumed only once, so it
 // is drained into memory and handed back on r.Body for readJSON.
 // ok=false means the token failed validation and the 422 is written.
-func (app *Application) createRideToken(w http.ResponseWriter, r *http.Request) ([]byte, game.IdempotencyToken, bool) {
+func (app *Application) createRideToken(w http.ResponseWriter, r *http.Request) ([]byte, idempotency.IdempotencyToken, bool) {
 	// The size cap must wrap the body before it is drained, not at decode:
 	// create hashes raw request bytes (ADR-024), so hash input and decoded
 	// body must be the same bytes. Capping only in readJSON would buffer an
@@ -219,16 +220,16 @@ func (app *Application) createRideToken(w http.ResponseWriter, r *http.Request) 
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
 			app.requestTooLargeResponse(w, r, maxBytesError.Limit)
-			return nil, game.IdempotencyToken{}, false
+			return nil, idempotency.IdempotencyToken{}, false
 		}
 		app.badRequestResponse(w, r, err)
-		return nil, game.IdempotencyToken{}, false
+		return nil, idempotency.IdempotencyToken{}, false
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
 	hash := sha256.Sum256(append([]byte(r.Method+"\n"+r.URL.RequestURI()+"\n"), body...))
 
-	token := game.IdempotencyToken{
+	token := idempotency.IdempotencyToken{
 		Key:      r.Header.Get("Idempotency-Key"),
 		Endpoint: "POST /v1/rides",
 		Hash:     hash[:],
@@ -236,9 +237,9 @@ func (app *Application) createRideToken(w http.ResponseWriter, r *http.Request) 
 
 	v := validator.New()
 
-	if game.ValidateIdempotencyToken(v, token); !v.Valid() {
+	if idempotency.ValidateIdempotencyToken(v, token); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
-		return nil, game.IdempotencyToken{}, false
+		return nil, idempotency.IdempotencyToken{}, false
 	}
 
 	return body, token, true

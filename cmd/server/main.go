@@ -16,6 +16,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/logging"
 	"lt-api.aleksrdvn.com/internal/mailer"
+	"lt-api.aleksrdvn.com/internal/schedule"
 )
 
 func main() {
@@ -71,8 +72,14 @@ func main() {
 		cfg.Limiter.Enabled,
 	)
 
+	// Composition root (Phase B split): the schedule store is the calendar
+	// context's dependency; the game service receives it for the calendar
+	// lookups its operations perform (phase windows, next-match pick,
+	// resolve's guarded score write). game → schedule is the only legal
+	// import direction between the two contexts (ADR-028).
+	scheduleStore := schedule.NewStore(pool)
 	gameStore := game.NewStore(pool)
-	gameService := game.NewService(gameStore)
+	gameService := game.NewService(gameStore, scheduleStore)
 	identityStore := identity.NewStore(pool)
 
 	app := &api.Application{
@@ -84,6 +91,7 @@ func main() {
 		Logger:         logger,
 		RootCtx:        root,
 		Game:           gameService,
+		Schedule:       scheduleStore,
 		Identity:       identityStore,
 		Mailer:         mailer,
 	}

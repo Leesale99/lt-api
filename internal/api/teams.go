@@ -8,7 +8,7 @@ import (
 	"strconv"
 
 	"lt-api.aleksrdvn.com/internal/constants"
-	game "lt-api.aleksrdvn.com/internal/game"
+	schedule "lt-api.aleksrdvn.com/internal/schedule"
 	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -26,7 +26,7 @@ func (app *Application) createTeamHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	team := game.Team{
+	team := schedule.Team{
 		Name:        input.Name,
 		Logo:        input.Logo,
 		Description: input.Description,
@@ -34,7 +34,7 @@ func (app *Application) createTeamHandler(w http.ResponseWriter, r *http.Request
 
 	v := validator.New()
 
-	if game.ValidateTeam(v, team); !v.Valid() {
+	if schedule.ValidateTeam(v, team); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
@@ -42,7 +42,7 @@ func (app *Application) createTeamHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	team, err = app.Game.Store.Teams.Insert(ctx, team)
+	team, err = app.Schedule.Teams.Insert(ctx, team)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -72,7 +72,7 @@ func (app *Application) showTeamHandler(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	team, err := app.Game.Store.Teams.Get(ctx, id)
+	team, err := app.Schedule.Teams.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -101,7 +101,7 @@ func (app *Application) updateTeamHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	team, err := app.Game.Store.Teams.Get(ctx, id)
+	team, err := app.Schedule.Teams.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -145,12 +145,12 @@ func (app *Application) updateTeamHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	v := validator.New()
-	if game.ValidateTeam(v, team); !v.Valid() {
+	if schedule.ValidateTeam(v, team); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
 
-	team, err = app.Game.Store.Teams.Update(ctx, team)
+	team, err = app.Schedule.Teams.Update(ctx, team)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -179,7 +179,7 @@ func (app *Application) deleteTeamHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	err = app.Game.Store.Teams.Delete(ctx, id)
+	err = app.Schedule.Teams.Delete(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -214,6 +214,6 @@ func (app *Application) listTeamsHandler(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	teams, metadata, err := app.Game.Store.Teams.GetAll(ctx, name, filters)
+	teams, metadata, err := app.Schedule.Teams.GetAll(ctx, name, filters)
 	app.writeListResponse(w, r, "teams", teams, metadata, err)
 }

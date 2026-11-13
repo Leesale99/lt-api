@@ -8,7 +8,7 @@ import (
 	"strconv"
 
 	"lt-api.aleksrdvn.com/internal/constants"
-	game "lt-api.aleksrdvn.com/internal/game"
+	schedule "lt-api.aleksrdvn.com/internal/schedule"
 	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -31,7 +31,7 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	if _, err := app.Game.Store.Seasons.Get(ctx, seasonID); err != nil {
+	if _, err := app.Schedule.Seasons.Get(ctx, seasonID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -49,20 +49,20 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	round := game.Round{
+	round := schedule.Round{
 		SeasonID: seasonID,
 		Number:   input.Number,
-		Status:   game.RoundCreated, // server-assigned, see input struct
+		Status:   schedule.RoundCreated, // server-assigned, see input struct
 	}
 
 	v := validator.New()
 
-	if game.ValidateNewRound(v, round); !v.Valid() {
+	if schedule.ValidateNewRound(v, round); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
 
-	round, err = app.Game.Store.Rounds.Insert(ctx, round)
+	round, err = app.Schedule.Rounds.Insert(ctx, round)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -95,7 +95,7 @@ func (app *Application) showRoundHandler(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	round, err := app.Game.Store.Rounds.Get(ctx, id)
+	round, err := app.Schedule.Rounds.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -119,10 +119,10 @@ func (app *Application) listRoundsHandler(w http.ResponseWriter, r *http.Request
 
 	qs := r.URL.Query()
 	seasonID := app.readInt(qs, "season_id", 0, v)
-	status := game.RoundStatus(app.readString(qs, "status", ""))
+	status := schedule.RoundStatus(app.readString(qs, "status", ""))
 
 	if status != "" {
-		game.ValidateRoundStatus(v, status)
+		schedule.ValidateRoundStatus(v, status)
 	}
 
 	sortSafelist := []string{"id", "number", "-id", "-number"}
@@ -134,7 +134,7 @@ func (app *Application) listRoundsHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	rounds, metadata, err := app.Game.Store.Rounds.GetAll(ctx, seasonID, status, filters)
+	rounds, metadata, err := app.Schedule.Rounds.GetAll(ctx, seasonID, status, filters)
 	app.writeListResponse(w, r, "rounds", rounds, metadata, err)
 }
 
@@ -154,7 +154,7 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	round, err := app.Game.Store.Rounds.Get(ctx, roundID)
+	round, err := app.Schedule.Rounds.Get(ctx, roundID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -183,8 +183,8 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 	// season_id is not part of the input: it is immutable after creation
 	// (see RoundStore.Update for the composite-FK reason).
 	var input struct {
-		Number *int              `json:"number"`
-		Status *game.RoundStatus `json:"status"`
+		Number *int                  `json:"number"`
+		Status *schedule.RoundStatus `json:"status"`
 	}
 
 	err = app.readJSON(w, r, &input)
@@ -202,7 +202,7 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 
 	v := validator.New()
 
-	if game.ValidateRoundUpdate(v, current, round); !v.Valid() {
+	if schedule.ValidateRoundUpdate(v, current, round); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
@@ -210,15 +210,15 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 	// ADR-008 point 3: the created → open transition also starts the season
 	// (open → in_progress), and the two writes must succeed together — so it
 	// goes through RoundStore.Open's transaction rather than Update.
-	if current.Status == game.RoundCreated && round.Status == game.RoundOpen {
-		round, err = app.Game.Store.Rounds.Open(ctx, round)
-	} else if current.Status == game.RoundOpen && round.Status == game.RoundClosed {
+	if current.Status == schedule.RoundCreated && round.Status == schedule.RoundOpen {
+		round, err = app.Schedule.Rounds.Open(ctx, round)
+	} else if current.Status == schedule.RoundOpen && round.Status == schedule.RoundClosed {
 		// ADR-022: closing resolves undecided rides (auto-unlock; auto-burn on
 		// the season's last round) and may close the season — one tx, so it
 		// bypasses Update like the open transition does.
-		round, err = app.Game.Store.Rounds.Close(ctx, round)
+		round, err = app.Schedule.Rounds.Close(ctx, round)
 	} else {
-		round, err = app.Game.Store.Rounds.Update(ctx, round)
+		round, err = app.Schedule.Rounds.Update(ctx, round)
 	}
 	if err != nil {
 		switch {
@@ -231,7 +231,7 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 			// regress a round with started matches, ADR-008) or
 			// rounds_close_gate (close over unresolved rides, ADR-022).
 			app.recordFrozenResponse(w, r)
-		case errors.Is(err, game.ErrInvalidTransition):
+		case errors.Is(err, schedule.ErrRidesGateRefused):
 			// RoundStore.Close's ride resolution was refused by a rides gate
 			// (ADR-020). Both arrivals there (auto-unlock, auto-burn) are
 			// legal transitions the players can also take, so a refusal means
@@ -267,7 +267,7 @@ func (app *Application) deleteRoundHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	err = app.Game.Store.Rounds.Delete(ctx, roundID, seasonID)
+	err = app.Schedule.Rounds.Delete(ctx, roundID, seasonID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):

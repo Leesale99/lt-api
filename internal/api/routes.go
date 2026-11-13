@@ -38,6 +38,12 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/matches", app.requirePermission("matches:write", app.createMatchHandler))
 	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/matches/:match_id", app.requirePermission("matches:write", app.updateMatchHandler))
 	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/matches/:match_id", app.requirePermission("matches:write", app.deleteMatchHandler))
+	// Resolve stays wired to the game service for Phase B: MatchResolve is
+	// one transactional op spanning the schedule write and the ride
+	// settlement (phase-03); the entry moves to schedule at the event seam.
+	//
+	// TODO(Phase C): move resolve entry to schedule; split ride-outcome at
+	// the MatchResultRecorded event seam.
 	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/matches/:match_id/resolve", app.requirePermission("matches:write", app.resolveMatchHandler))
 
 	// Teams

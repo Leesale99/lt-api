@@ -40,7 +40,7 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	if _, err := app.Game.Store.Seasons.Get(ctx, seasonID); err != nil {
+	if _, err := app.Schedule.Seasons.Get(ctx, seasonID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -78,7 +78,7 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if _, err := app.Game.Store.Teams.Get(ctx, player.FavoriteTeamID); err != nil {
+	if _, err := app.Schedule.Teams.Get(ctx, player.FavoriteTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -217,7 +217,7 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if _, err := app.Game.Store.Teams.Get(ctx, player.FavoriteTeamID); err != nil {
+	if _, err := app.Schedule.Teams.Get(ctx, player.FavoriteTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return

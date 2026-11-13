@@ -10,18 +10,24 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	game "lt-api.aleksrdvn.com/internal/game"
+	schedule "lt-api.aleksrdvn.com/internal/schedule"
 	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
+// createMatchHandler is schedule's route (ADR-027): match creation is
+// calendar bookkeeping — shape validation plus season/round/team existence
+// checks — with no ride rules involved. MatchResolve (the one match
+// operation that touches game state) is the deliberate exception: it stays
+// wired to the game service below.
 func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		RoundID    int        `json:"round_id"`
-		HomeTeamID int        `json:"home_team_id"`
-		AwayTeamID int        `json:"away_team_id"`
-		StartsAt   time.Time  `json:"starts_at"`
-		Odds       game.Odds  `json:"odds"`
-		Score      game.Score `json:"score"`
+		RoundID    int            `json:"round_id"`
+		HomeTeamID int            `json:"home_team_id"`
+		AwayTeamID int            `json:"away_team_id"`
+		StartsAt   time.Time      `json:"starts_at"`
+		Odds       schedule.Odds  `json:"odds"`
+		Score      schedule.Score `json:"score"`
 		// status is deliberately absent: new matches are always created, the
 		// client cannot set it (see ValidateNewMatch). Update owns the rest of
 		// the lifecycle.
@@ -36,7 +42,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	if _, err := app.Game.Store.Seasons.Get(ctx, seasonID); err != nil {
+	if _, err := app.Schedule.Seasons.Get(ctx, seasonID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -54,12 +60,12 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	match := game.Match{
+	match := schedule.Match{
 		SeasonID:   seasonID,
 		RoundID:    input.RoundID,
 		HomeTeamID: input.HomeTeamID,
 		AwayTeamID: input.AwayTeamID,
-		Status:     game.MatchCreated, // server-assigned, see input struct
+		Status:     schedule.MatchCreated, // server-assigned, see input struct
 		StartsAt:   input.StartsAt,
 		Odds:       input.Odds,
 		Score:      input.Score,
@@ -67,12 +73,12 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 
 	v := validator.New()
 
-	if game.ValidateNewMatch(v, match, time.Now()); !v.Valid() {
+	if schedule.ValidateNewMatch(v, match, time.Now()); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
 
-	round, err := app.Game.Store.Rounds.Get(ctx, input.RoundID)
+	round, err := app.Schedule.Rounds.Get(ctx, input.RoundID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -91,7 +97,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, err := app.Game.Store.Teams.Get(ctx, input.HomeTeamID); err != nil {
+	if _, err := app.Schedule.Teams.Get(ctx, input.HomeTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -104,7 +110,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, err := app.Game.Store.Teams.Get(ctx, input.AwayTeamID); err != nil {
+	if _, err := app.Schedule.Teams.Get(ctx, input.AwayTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -117,7 +123,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	match, err = app.Game.Store.Matches.Insert(ctx, match)
+	match, err = app.Schedule.Matches.Insert(ctx, match)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -147,7 +153,7 @@ func (app *Application) showMatchHandler(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	match, err := app.Game.Store.Matches.Get(ctx, id)
+	match, err := app.Schedule.Matches.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -172,10 +178,10 @@ func (app *Application) listMatchHandler(w http.ResponseWriter, r *http.Request)
 	qs := r.URL.Query()
 	seasonID := app.readInt(qs, "season_id", 0, v)
 	roundID := app.readInt(qs, "round_id", 0, v)
-	status := game.MatchStatus(app.readString(qs, "status", ""))
+	status := schedule.MatchStatus(app.readString(qs, "status", ""))
 
 	if status != "" {
-		game.ValidateMatchStatus(v, status)
+		schedule.ValidateMatchStatus(v, status)
 	}
 
 	sortSafelist := []string{"id", "starts_at", "-id", "-starts_at"}
@@ -187,7 +193,7 @@ func (app *Application) listMatchHandler(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	matches, metadata, err := app.Game.Store.Matches.GetAll(ctx, seasonID, roundID, status, filters)
+	matches, metadata, err := app.Schedule.Matches.GetAll(ctx, seasonID, roundID, status, filters)
 	app.writeListResponse(w, r, "matches", matches, metadata, err)
 }
 
@@ -207,7 +213,7 @@ func (app *Application) deleteMatchHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	err = app.Game.Store.Matches.Delete(ctx, matchID, seasonID)
+	err = app.Schedule.Matches.Delete(ctx, matchID, seasonID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -242,7 +248,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	match, err := app.Game.Store.Matches.Get(ctx, matchID)
+	match, err := app.Schedule.Matches.Get(ctx, matchID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -269,12 +275,12 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 	current := match
 
 	var input struct {
-		StartsAt   *time.Time        `json:"starts_at"`
-		HomeTeamID *int              `json:"home_team_id"`
-		AwayTeamID *int              `json:"away_team_id"`
-		Status     *game.MatchStatus `json:"status"`
-		Odds       *game.Odds        `json:"odds"`
-		Score      *game.Score       `json:"score"`
+		StartsAt   *time.Time            `json:"starts_at"`
+		HomeTeamID *int                  `json:"home_team_id"`
+		AwayTeamID *int                  `json:"away_team_id"`
+		Status     *schedule.MatchStatus `json:"status"`
+		Odds       *schedule.Odds        `json:"odds"`
+		Score      *schedule.Score       `json:"score"`
 	}
 
 	err = app.readJSON(w, r, &input)
@@ -304,12 +310,12 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 
 	v := validator.New()
 
-	if game.ValidateMatchUpdate(v, current, match); !v.Valid() {
+	if schedule.ValidateMatchUpdate(v, current, match); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
 
-	if _, err := app.Game.Store.Teams.Get(ctx, match.HomeTeamID); err != nil {
+	if _, err := app.Schedule.Teams.Get(ctx, match.HomeTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -322,7 +328,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, err := app.Game.Store.Teams.Get(ctx, match.AwayTeamID); err != nil {
+	if _, err := app.Schedule.Teams.Get(ctx, match.AwayTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -335,7 +341,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	match, err = app.Game.Store.Matches.Update(ctx, match)
+	match, err = app.Schedule.Matches.Update(ctx, match)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -363,6 +369,14 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// resolveMatchHandler is still game's route: MatchResolve must remain a
+// single transactional operation (phase-03) and moving the entry to
+// schedule now would force a schedule → game import. The match types are
+// schedule's (the row belongs to the calendar); the orchestration is
+// game's.
+//
+// TODO(Phase C): move resolve entry to schedule; split ride-outcome at the
+// MatchResultRecorded event seam.
 func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Request) {
 	matchID, err := app.readIDParam(r, "match_id")
 	if err != nil {
@@ -371,9 +385,9 @@ func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	var input struct {
-		EndedAt *time.Time `json:"ended_at"`
-		Score   game.Score `json:"score"`
-		Version int        `json:"version"`
+		EndedAt *time.Time     `json:"ended_at"`
+		Score   schedule.Score `json:"score"`
+		Version int            `json:"version"`
 	}
 
 	err = app.readJSON(w, r, &input)
@@ -382,7 +396,7 @@ func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	match := game.Match{
+	match := schedule.Match{
 		ID:      matchID,
 		EndedAt: input.EndedAt,
 		Score:   input.Score,
@@ -394,7 +408,7 @@ func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Reque
 	// Request shape only (ADR-026): the domain-legality rule (ended_at in
 	// the past) runs inside Service.MatchResolve, mapped to the same 422
 	// below.
-	if game.ValidateResolveMatch(v, match); !v.Valid() {
+	if schedule.ValidateResolveMatch(v, match); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}

@@ -8,7 +8,7 @@ import (
 	"strconv"
 
 	"lt-api.aleksrdvn.com/internal/constants"
-	game "lt-api.aleksrdvn.com/internal/game"
+	schedule "lt-api.aleksrdvn.com/internal/schedule"
 	"lt-api.aleksrdvn.com/internal/store"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -18,10 +18,10 @@ func (app *Application) listSeasonsHandler(w http.ResponseWriter, r *http.Reques
 
 	qs := r.URL.Query()
 	id := app.readInt(qs, "id", 0, v)
-	status := game.SeasonStatus(app.readString(qs, "status", ""))
+	status := schedule.SeasonStatus(app.readString(qs, "status", ""))
 
 	if status != "" {
-		game.ValidateSeasonStatus(v, status)
+		schedule.ValidateSeasonStatus(v, status)
 	}
 
 	filters, ok := app.readListFilters(w, r, qs, v, sortSafelistID)
@@ -32,7 +32,7 @@ func (app *Application) listSeasonsHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	seasons, metadata, err := app.Game.Store.Seasons.GetAll(ctx, id, status, filters)
+	seasons, metadata, err := app.Schedule.Seasons.GetAll(ctx, id, status, filters)
 	app.writeListResponse(w, r, "seasons", seasons, metadata, err)
 }
 
@@ -49,13 +49,13 @@ func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	season := game.Season{
-		Status: game.SeasonCreated, // server-assigned, see input struct
+	season := schedule.Season{
+		Status: schedule.SeasonCreated, // server-assigned, see input struct
 	}
 
 	v := validator.New()
 
-	if game.ValidateNewSeason(v, season); !v.Valid() {
+	if schedule.ValidateNewSeason(v, season); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
@@ -63,7 +63,7 @@ func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	season, err = app.Game.Store.Seasons.Insert(ctx, season)
+	season, err = app.Schedule.Seasons.Insert(ctx, season)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -93,7 +93,7 @@ func (app *Application) showSeasonHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	season, err := app.Game.Store.Seasons.Get(ctx, id)
+	season, err := app.Schedule.Seasons.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -122,7 +122,7 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	season, err := app.Game.Store.Seasons.Get(ctx, id)
+	season, err := app.Schedule.Seasons.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -144,7 +144,7 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	var input struct {
-		Status *game.SeasonStatus `json:"status"`
+		Status *schedule.SeasonStatus `json:"status"`
 	}
 
 	err = app.readJSON(w, r, &input)
@@ -159,12 +159,12 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 
 	v := validator.New()
 
-	if game.ValidateSeasonUpdate(v, current, season); !v.Valid() {
+	if schedule.ValidateSeasonUpdate(v, current, season); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
 
-	season, err = app.Game.Store.Seasons.Update(ctx, season)
+	season, err = app.Schedule.Seasons.Update(ctx, season)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrEditConflict):
@@ -195,7 +195,7 @@ func (app *Application) deleteSeasonHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	err = app.Game.Store.Seasons.Delete(ctx, id)
+	err = app.Schedule.Seasons.Delete(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):

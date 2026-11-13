@@ -12,9 +12,11 @@ import (
 	"syscall"
 	"time"
 
-	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/identity"
+	"lt-api.aleksrdvn.com/internal/schedule"
+
+	"lt-api.aleksrdvn.com/internal/constants"
 )
 
 type Application struct {
@@ -35,10 +37,17 @@ type Application struct {
 	// never mutated — a dependency like Logger, not ambient mutable state.
 	RootCtx context.Context
 
-	// Game is the domain service: the single entry point to game rules and
-	// persistence. Handlers call domain operations on it; CRUD that carries
-	// no rules goes through Game.Store.
+	// Game is the ride domain's service: the entry point to ride commands
+	// and MatchResolve. Handlers call domain operations on it; ride/player
+	// CRUD that carries no rules goes through Game.Store.
+	//
+	// Schedule is the calendar context's store (Phase B of the
+	// Game/Schedule split): the seasons/rounds/matches/teams handlers drive
+	// it directly (ADR-028 — schedule CRUD carries no rules beyond its
+	// validators, so there is no schedule service yet), and the player
+	// handlers read it for the season/team existence checks.
 	Game     *game.Service
+	Schedule *schedule.Store
 	Identity *identity.Store
 	Mailer   MailSender
 	wg       sync.WaitGroup
