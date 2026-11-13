@@ -698,6 +698,12 @@ Routing:
 - go-worker → Go implementation tasks
 - scout → codebase recon
 - general → anything else
+- orchestrator → background coordinator for long, multi-step, multi-file tasks
+
+Two-tier routing:
+- Long, multi-step, multi-file work that will take minutes and benefits from a worker tree → delegate ONCE to the orchestrator agent as a BACKGROUND job (it decomposes and runs foreground workers itself). Run the orchestrator in background only — its frontmatter already defaults to it.
+- Simple, narrow tasks → foreground subagent calls; independent ones in ONE parallel tasks[] call.
+- Workers never delegate and never run in background — background is the orchestrator's privilege, and only this main session may start it (one level deep; a child orchestrator that tries is refused).
 
 Session start: read the vault Home.md (~/Projects/vaults/lt-api/Home.md) via librarian. Its Now section declares the current task; load only what that task needs.
 `;
@@ -1312,6 +1318,9 @@ export default function (pi: ExtensionAPI) {
     label: "Subagent",
     description: [
       "Delegate tasks to specialized subagents with isolated context.",
+      // Phase 5 two-tier routing policy (enforced again at the background
+      // decision point below — this text is what the model reads up front).
+      "Two-tier routing: BACKGROUND jobs are the orchestrator agent's privilege for long, multi-step, multi-file work that will take minutes (it decomposes the task and runs foreground workers itself). Narrow work runs in FOREGROUND — single, or independent items together in ONE parallel tasks[] call. Worker agents cannot delegate and cannot run in background.",
       "Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
       "Single mode: background=true forces the detached tmux-backed job (results via job_status), background=false forces foreground, omitted = the agent config's background frontmatter decides; rejected with tasks/chain.",
       `Default agent scope is "both": project-local agents (${CONFIG_DIR_NAME}/agents) override user agents (${path.join(getAgentDir(), "agents")}) with the same name.`,

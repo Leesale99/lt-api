@@ -16,5 +16,11 @@ Routing:
 - go-worker → Go implementation tasks
 - scout → codebase recon
 - general → anything else
+- orchestrator → background coordinator for long, multi-step, multi-file tasks
+
+Two-tier routing:
+- Long, multi-step, multi-file work that will take minutes and benefits from a worker tree → delegate ONCE to the orchestrator agent as a BACKGROUND job (it decomposes and runs foreground workers itself). Run the orchestrator in background only — its frontmatter already defaults to it.
+- Simple, narrow tasks → foreground subagent calls; independent ones in ONE parallel tasks[] call.
+- Workers never delegate and never run in background — background is the orchestrator's privilege, and only this main session may start it (one level deep; a child orchestrator that tries is refused).
 
 Session start: read the vault Home.md (~/Projects/vaults/lt-api/Home.md) via librarian. Its Now section declares the current task; load only what that task needs.
