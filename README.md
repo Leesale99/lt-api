@@ -63,7 +63,7 @@ internal/schedule/    Layered module: facade schedule.go + internal/{model,
                       repository, service, handler}.
 internal/game/        Hexagonal module: facade game.go + internal/core/{domain,
                       port, service} + internal/adapter/{inbound/http,
-                      outbound/{postgres,scheduleacl}}.
+                      outbound/{postgres,schedule_acl}}.
 internal/identity/    Layered module: facade identity.go + internal/{model,
                       repository, service, handler}.
 internal/ledger/      Thin module: ledger.go + postgres.go.

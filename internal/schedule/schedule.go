@@ -98,7 +98,7 @@ func (m *Module) RegisterRoutes(router handler.RouteRegistrar, gate handler.Perm
 }
 
 // The game-facing reads: game's schedule port is satisfied through game's own
-// anti-corruption layer (game/internal/adapter/outbound/scheduleacl.go), which
+// anti-corruption layer (game/internal/adapter/outbound/schedule_acl.go), which
 // wraps this surface and translates its types and errors into game's. The SQL
 // behind these reads is schedule's own, executed on the caller's transaction
 // where noted.

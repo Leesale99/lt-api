@@ -5,7 +5,7 @@
 // stop here, translated into game's own vocabulary.
 package outbound
 
-// scheduleacl.go is the calendar anti-corruption layer: it wraps the
+// schedule_acl.go is the calendar anti-corruption layer: it wraps the
 // schedule facade's game-facing surface (the module's PhaseForMatch /
 // NextForTeam / RoundOpenTx / DestinationOpenTx / Match / Team / Season
 // reads) and implements port.Schedule over game-owned types and sentinels.

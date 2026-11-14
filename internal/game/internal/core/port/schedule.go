@@ -4,7 +4,7 @@ package port
 // domain consumes (ADR-028). Its vocabulary is game's own — Phase,
 // MatchSnapshot, NextMatch, Team, Season — and its errors are game's
 // sentinels, so the core never learns the calendar's types. The
-// anti-corruption layer at adapter/outbound (scheduleacl.go) is the one game
+// anti-corruption layer at adapter/outbound (schedule_acl.go) is the one game
 // package that translates schedule's facade into this port.
 //
 // What game may NOT do against the calendar: raw SQL against

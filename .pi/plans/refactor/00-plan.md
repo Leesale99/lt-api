@@ -11,7 +11,7 @@ Rulebook: `docs/designs/go-modular-monolith-example.md` (§1 layout, §2 core pr
 2. Layout: `internal/shared/**` (platform) + `internal/<module>/**` (bounded contexts: schedule, game, identity, ledger, idempotency). `internal/arch` stays top-level. Facade = `internal/<module>/<module>.go`; module internals under `internal/<module>/internal/**` (Go's nested-`internal` rule enforces privacy at compile time).
 3. Shared HTTP kernel: `internal/shared/httpx` (encoding, params, middleware, ratelimiter, generic error writers) + `internal/shared/server` (process lifecycle: Serve/shutdown). Handlers + routes live **inside each module**; modules expose `RegisterRoutes`.
 4. `internal/store` → `internal/shared/persistence` (Querier, Filters/Metadata, pg-error classifiers). Shared sentinel errors (`ErrRecordNotFound` etc.) **die**: each module's domain owns its sentinels, repositories translate. The game-facing port error contract flips in phase 4 together with game.
-5. **Full ACL** for game→schedule: game core owns its own types (`Phase`, `MatchSnapshot`, …); `adapter/outbound/scheduleacl.go` translates from schedule's public surface. When done, `game/internal/core/domain` must not import schedule at all.
+5. **Full ACL** for game→schedule: game core owns its own types (`Phase`, `MatchSnapshot`, …); `adapter/outbound/schedule_acl.go` translates from schedule's public surface. When done, `game/internal/core/domain` must not import schedule at all.
 6. Identity gets the full layered split; ledger + idempotency get light alignment (rename + facade only, no layout change).
 7. **BEHAVIOR FREEZE on the HTTP wire**: same 47 routes, methods, status codes, JSON bodies. DTOs copy existing json tags **verbatim** — including the odd `json:"_"` on `schedule.Match.EndedAt` and its use as a request field in the resolve handler, and the hardcoded ledger stub (TODO) in the ride-create flow. Fixes are follow-ups, not this refactor.
 8. Verification with local `LT_API_TEST_DSN` (full DB suite, same as CI's `make audit`).
@@ -50,7 +50,7 @@ internal/
 │   ├── game.go                    # facade: Module, NewModule, DTOs, capability ifaces, RegisterRoutes
 │   └── internal/core/{domain,port,service}/
 │       + internal/adapter/inbound/http/
-│       + internal/adapter/outbound/{postgres/, scheduleacl.go}
+│       + internal/adapter/outbound/{postgres/, schedule_acl.go}
 ├── identity/                      # layered module (same shape as schedule)
 │   ├── identity.go                # facade incl. UserForToken → satisfies httpx.UserLookup
 │   └── internal/{model,repository,service,handler}/
