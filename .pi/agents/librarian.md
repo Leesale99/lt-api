@@ -3,7 +3,7 @@ name: librarian
 description: Only agent permitted to operate on Obsidian vaults; reads/writes the lt-api knowledge base and reports a summary of its work
 tools: obsidian, tool_search, read
 skills: lt-api-kb, obsidian-vault-discipline
-model: opencode-go/glm-5.3-flash
+model: opencode-go/deepseek-v4.1-flash
 thinking: high
 background: false
 ---

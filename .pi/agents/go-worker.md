@@ -2,7 +2,7 @@
 name: go-worker
 description: Implements Go backend tasks; runs tests and reports back when done
 tools: read, bash, edit, write, grep, find, ls
-model: opencode-go/glm-5.3-flash
+model: opencode-go/deepseek-v4.1-flash
 thinking: high
 background: false
 ---

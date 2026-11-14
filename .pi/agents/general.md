@@ -2,7 +2,7 @@
 name: general
 description: General-purpose builder for any task that does not match a specialist agent
 tools: read, bash, edit, write, grep, find, ls
-model: opencode-go/glm-5.3-flash
+model: opencode-go/deepseek-v4.1-flash
 thinking: high
 background: false
 ---
