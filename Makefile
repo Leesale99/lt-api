@@ -22,9 +22,9 @@ confirm:
 # ============================================================================================================================ #
 
 ## run/api: run the cmd/api application
-.PHONY: run/server
-run/server: 
-	go run ./cmd/server -db-dsn=${LT_API_DSN} -smtp-username=${SMTP_USERNAME} -smtp-password=${SMTP_PASSWORD}
+.PHONY: run/api
+run/api: 
+	go run ./cmd/api -db-dsn=${LT_API_DSN} -smtp-username=${SMTP_USERNAME} -smtp-password=${SMTP_PASSWORD}
 
 ## test: run the full suite; DB-backed tests skip when LT_API_TEST_DSN is unset
 .PHONY: test
@@ -34,7 +34,7 @@ test:
 ## test/unit: run the pure-logic tests (no database needed)
 .PHONY: test/unit
 test/unit:
-	go test ./internal/game -run 'TestValidateMatch|TestWinner' -v
+	go test ./internal/schedule/... -run 'TestValidateNewMatch|TestValidateMatchUpdate|TestWinner|TestPhase' -v
 
 ## test/db: run the full suite against the test database (LT_API_TEST_DSN from .envrc; fails loudly if unreachable)
 .PHONY: test/db
@@ -118,5 +118,5 @@ audit:
 
 .PHONY: build/api
 build/api:
-	go build -ldflags='-s' -o=./bin/api ./cmd/server
-	GOOS=linux GOARCH=amd64 go build -ldflags='-s' -o=./bin/linux_amd64/api ./cmd/server/
+	go build -ldflags='-s' -o=./bin/api ./cmd/api
+	GOOS=linux GOARCH=amd64 go build -ldflags='-s' -o=./bin/linux_amd64/api ./cmd/api/

@@ -28,7 +28,7 @@ Each phase introduces one major backend concept only when the system has a concr
 ## Project layout
 
 ```
-cmd/server/        Entry point: config flags, logger, server bootstrap
+cmd/api/           Entry point: config flags, logger, server bootstrap
 internal/api/      HTTP layer: application struct, routes, handlers
 docs/              Learning-oriented implementation plan (phases 0–8)
 ```
@@ -94,7 +94,7 @@ reaches schedule only through the `SchedulePort` and ledger only through the
 extracted `Ledger` interface (`LockTokens` / `Burn` money intents) — never
 through schedule's or ledger's tables. **Ledger** owns balances and is thin:
 money intents in, it writes its own tables. **Identity** is the generic
-supporting context. `api` is the HTTP gateway, not a context; `cmd/server` is
+supporting context. `api` is the HTTP gateway, not a context; `cmd/api` is
 the composition root.
 
 The import edges between these packages are pinned in code by
