@@ -1,56 +1,26 @@
-package schedule
+package repository
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
-	"path"
-	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 	"lt-api.aleksrdvn.com/internal/shared/persistence"
-	"lt-api.aleksrdvn.com/internal/validator"
 )
 
-type Team struct {
-	ID          int       `json:"id"`
-	CreatedAt   time.Time `json:"-"`
-	Name        string    `json:"name"`
-	Logo        string    `json:"logo"`
-	Description string    `json:"description"`
-	Version     int       `json:"version"`
-}
-
-func ValidateTeam(v *validator.Validator, team Team) {
-	v.Check(team.Name != "", "name", "must be provided")
-	v.Check(len(team.Name) <= 500, "name", "must not be more than 500 bytes long")
-	v.Check(team.Logo != "", "logo", "must be provided")
-	if team.Logo != "" {
-		v.Check(validImageURL(team.Logo), "logo", "must be a valid image URL ending in png, jpg, jpeg, svg or webp")
-	}
-	v.Check(team.Description != "", "description", "must be provided")
-	v.Check(len(team.Description) <= 5000, "description", "must not be more than 5000 bytes long")
-}
-
-func validImageURL(s string) bool {
-	u, err := url.ParseRequestURI(s)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-		return false
-	}
-
-	ext := strings.ToLower(strings.TrimPrefix(path.Ext(u.EscapedPath()), "."))
-	return validator.PermittedValue(ext, "png", "jpg", "jpeg", "svg", "webp")
-}
-
-type TeamStore struct {
+type TeamRepository struct {
 	pool *pgxpool.Pool
 }
 
-func (s *TeamStore) GetAll(ctx context.Context, name string, filters persistence.Filters) ([]Team, persistence.Metadata, error) {
+func NewTeamRepository(pool *pgxpool.Pool) *TeamRepository {
+	return &TeamRepository{pool: pool}
+}
+
+func (r *TeamRepository) GetAll(ctx context.Context, name string, filters persistence.Filters) ([]model.Team, persistence.Metadata, error) {
 	// The name filter is built only when non-empty. The catch-all alternative
 	// `WHERE (name ILIKE $1 OR $1 = '')` defeats the trgm GIN index: once the
 	// statement is cached, the planner can't prune the OR branch, so the query
@@ -75,7 +45,7 @@ func (s *TeamStore) GetAll(ctx context.Context, name string, filters persistence
 
 	args = append(args, filters.Limit(), filters.Offset())
 
-	rows, err := s.pool.Query(ctx, query, args...)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, persistence.Metadata{}, err
 	}
@@ -83,10 +53,10 @@ func (s *TeamStore) GetAll(ctx context.Context, name string, filters persistence
 	defer rows.Close()
 
 	totalRecords := 0
-	teams := []Team{}
+	teams := []model.Team{}
 
 	for rows.Next() {
-		var team Team
+		var team model.Team
 		err := rows.Scan(
 			&totalRecords,
 			&team.ID,
@@ -112,9 +82,9 @@ func (s *TeamStore) GetAll(ctx context.Context, name string, filters persistence
 	return teams, metadata, nil
 }
 
-func (s *TeamStore) Get(ctx context.Context, id int) (Team, error) {
+func (r *TeamRepository) Get(ctx context.Context, id int) (model.Team, error) {
 	if id < 1 {
-		return Team{}, persistence.ErrRecordNotFound
+		return model.Team{}, persistence.ErrRecordNotFound
 	}
 
 	query := `
@@ -123,9 +93,9 @@ func (s *TeamStore) Get(ctx context.Context, id int) (Team, error) {
 		WHERE id = $1
 	`
 
-	var team Team
+	var team model.Team
 
-	err := s.pool.QueryRow(ctx, query, id).Scan(
+	err := r.pool.QueryRow(ctx, query, id).Scan(
 		&team.ID,
 		&team.CreatedAt,
 		&team.Name,
@@ -136,16 +106,16 @@ func (s *TeamStore) Get(ctx context.Context, id int) (Team, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Team{}, persistence.ErrRecordNotFound
+			return model.Team{}, persistence.ErrRecordNotFound
 		default:
-			return Team{}, err
+			return model.Team{}, err
 		}
 	}
 
 	return team, nil
 }
 
-func (s *TeamStore) Insert(ctx context.Context, team Team) (Team, error) {
+func (r *TeamRepository) Insert(ctx context.Context, team model.Team) (model.Team, error) {
 	query := `
 			INSERT INTO teams (name, logo, description)
 			VALUES ($1, $2, $3)
@@ -153,12 +123,12 @@ func (s *TeamStore) Insert(ctx context.Context, team Team) (Team, error) {
 	`
 	args := []any{team.Name, team.Logo, team.Description}
 
-	err := s.pool.QueryRow(ctx, query, args...).Scan(&team.ID, &team.CreatedAt, &team.Version)
+	err := r.pool.QueryRow(ctx, query, args...).Scan(&team.ID, &team.CreatedAt, &team.Version)
 
 	return team, err
 }
 
-func (s *TeamStore) Update(ctx context.Context, team Team) (Team, error) {
+func (r *TeamRepository) Update(ctx context.Context, team model.Team) (model.Team, error) {
 	query := `
 		UPDATE teams
 		SET name = $1, logo = $2, description = $3, version = version + 1
@@ -173,20 +143,20 @@ func (s *TeamStore) Update(ctx context.Context, team Team) (Team, error) {
 		team.Version,
 	}
 
-	err := s.pool.QueryRow(ctx, query, args...).Scan(&team.Version)
+	err := r.pool.QueryRow(ctx, query, args...).Scan(&team.Version)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Team{}, persistence.ErrEditConflict
+			return model.Team{}, persistence.ErrEditConflict
 		default:
-			return Team{}, err
+			return model.Team{}, err
 		}
 	}
 
 	return team, err
 }
 
-func (s *TeamStore) Delete(ctx context.Context, id int) error {
+func (r *TeamRepository) Delete(ctx context.Context, id int) error {
 	if id < 1 {
 		return persistence.ErrRecordNotFound
 	}
@@ -195,7 +165,7 @@ func (s *TeamStore) Delete(ctx context.Context, id int) error {
 		DELETE FROM teams
 		WHERE id = $1
 	`
-	result, err := s.pool.Exec(ctx, query, id)
+	result, err := r.pool.Exec(ctx, query, id)
 	if err != nil {
 		// teams is referenced with ON DELETE RESTRICT by matches and players:
 		// a referenced team must not be deleted (domain decision). See

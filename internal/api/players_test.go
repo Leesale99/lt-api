@@ -34,8 +34,12 @@ func newTestApplication() *Application {
 	// (the composition-root shape of cmd/api). testPool (owner) exists
 	// for fixture planting only.
 	bus := eventbus.New()
-	scheduleStore := schedule.NewStore(schedulePool)
-	gameService := game.NewService(game.NewStore(gamePool), scheduleStore, ledger.NewStore())
+	scheduleModule := schedule.NewModule(schedulePool, bus, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	gameStore := game.NewStore(gamePool)
+	gameService := game.NewService(gameStore, scheduleModule, ledger.NewStore())
+	// The module's delete policies consult game for its references, the
+	// same adapter the composition root installs.
+	scheduleModule.UseGameRefs(GameUsageAdapter{Store: gameStore})
 	// The event seam wired like the composition root: resolve/close publish
 	// post-commit, the game handlers settle from the payloads in-process.
 	eventbus.Subscribe(bus, func(ctx context.Context, event schedule.MatchResultRecorded) error {
@@ -48,7 +52,7 @@ func newTestApplication() *Application {
 	return &Application{
 		Server:   &server.Server{Logger: slog.New(slog.NewTextHandler(os.Stderr, nil))},
 		Game:     gameService,
-		Schedule: schedule.NewService(scheduleStore, bus, slog.New(slog.NewTextHandler(os.Stderr, nil))),
+		Schedule: scheduleModule,
 		Identity: identity.NewStore(identityPool),
 		Mailer:   nopMailer{},
 	}

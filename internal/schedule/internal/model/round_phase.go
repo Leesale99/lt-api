@@ -1,11 +1,11 @@
-package schedule
+package model
 
 import (
 	"time"
 )
 
 // RoundPhase is the gameplay phase of a round within its lifecycle. The
-// the derivation is calendar knowledge (schedule), while the commands it
+// derivation is calendar knowledge (schedule), while the commands it
 // gates and their wrong-phase error live in game — game imports this
 // package, never the reverse.
 type RoundPhase string

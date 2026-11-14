@@ -1,4 +1,4 @@
-package schedule
+package model
 
 import (
 	"crypto/rand"
@@ -6,12 +6,11 @@ import (
 	"time"
 )
 
-// Schedule events (the Game/Schedule split's event seam). They live here —
-// in the publisher's package, in the publisher's language (ADR-027): game
-// imports schedule (the one legal direction), schedule never imports game,
-// and there is deliberately no shared events package. Payloads are fat:
-// every fact a subscriber needs to act is inside the event, so handling
-// needs no joins back into the schedule's tables.
+// Schedule events (the Game/Schedule split's event seam). They live in the
+// publisher's language (ADR-027): game imports schedule, schedule never
+// imports game, and there is deliberately no shared events package. Payloads
+// are fat: every fact a subscriber needs to act is inside the event, so
+// handling needs no joins back into the schedule's tables.
 //
 // Delivery is post-commit, in-process, synchronous (internal/eventbus). A
 // crash between the publisher's commit and the publish — or a failing
@@ -31,6 +30,30 @@ type MatchResult struct {
 	Odds         Odds  // the pre-match odds the bonus accrual compounds on
 	WinnerTeamID *int  // nil on a draw: a draw crowns no winner (Match.Winner)
 	EndedAt      time.Time
+}
+
+// NewMatchResult derives one MatchResult from the raw facts of a settled
+// match — the one authoritative copy of the results-scan derivation (the
+// repository only maps rows, it does not re-derive outcomes). The winner
+// rule is Match.Winner's: a draw crowns no winner.
+func NewMatchResult(matchID, seasonID, roundID, homeTeamID, awayTeamID int, odds Odds, homeScore, awayScore int, endedAt time.Time) MatchResult {
+	r := MatchResult{
+		MatchID:    matchID,
+		SeasonID:   seasonID,
+		RoundID:    roundID,
+		HomeTeamID: homeTeamID,
+		AwayTeamID: awayTeamID,
+		Score:      Score{Home: &homeScore, Away: &awayScore},
+		Odds:       odds,
+		EndedAt:    endedAt,
+	}
+	switch {
+	case homeScore > awayScore:
+		r.WinnerTeamID = &r.HomeTeamID
+	case awayScore > homeScore:
+		r.WinnerTeamID = &r.AwayTeamID
+	}
+	return r
 }
 
 // MatchResultRecorded announces that a match was resolved (scores written,

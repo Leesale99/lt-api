@@ -1,4 +1,4 @@
-package schedule
+package model
 
 // Unit tests for the season and round update validators: the lifecycle
 // no-regression rule shared via checkStatusRegression (ADR-008). Pure logic,

@@ -1,4 +1,4 @@
-package api
+package handler
 
 import (
 	"context"
@@ -9,29 +9,19 @@ import (
 	"time"
 
 	"lt-api.aleksrdvn.com/internal/constants"
-	schedule "lt-api.aleksrdvn.com/internal/schedule"
+	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
 	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
-// createMatchHandler is schedule's route (ADR-027): match creation is
+// createMatch is schedule's route (ADR-027): match creation is
 // calendar bookkeeping — shape validation plus season/round/team existence
 // checks — with no ride rules involved. The resolve PATCH below is the one
 // match operation with a rule of its own (time policy), and it is
 // schedule's script since the Game/Schedule split.
-func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		RoundID    int            `json:"round_id"`
-		HomeTeamID int            `json:"home_team_id"`
-		AwayTeamID int            `json:"away_team_id"`
-		StartsAt   time.Time      `json:"starts_at"`
-		Odds       schedule.Odds  `json:"odds"`
-		Score      schedule.Score `json:"score"`
-		// status is deliberately absent: new matches are always created, the
-		// client cannot set it (see ValidateNewMatch). Update owns the rest of
-		// the lifecycle.
-	}
+func (h *Handler) createMatch(w http.ResponseWriter, r *http.Request) {
+	var input createMatchRequest
 
 	seasonID, err := httpx.ReadIDParam(r)
 	if err != nil {
@@ -42,14 +32,14 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	if _, err := app.Schedule.Seasons.Get(ctx, seasonID); err != nil {
+	if _, err := h.svc.Seasons.Get(ctx, seasonID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
 		case errors.Is(err, persistence.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
-			httpx.ServerError(w, r, app.Logger, err)
+			httpx.ServerError(w, r, h.log, err)
 		}
 		return
 	}
@@ -60,25 +50,25 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	match := schedule.Match{
+	match := model.Match{
 		SeasonID:   seasonID,
 		RoundID:    input.RoundID,
 		HomeTeamID: input.HomeTeamID,
 		AwayTeamID: input.AwayTeamID,
-		Status:     schedule.MatchCreated, // server-assigned, see input struct
+		Status:     model.MatchCreated, // server-assigned, see the request DTO
 		StartsAt:   input.StartsAt,
-		Odds:       input.Odds,
-		Score:      input.Score,
+		Odds:       oddsToModel(input.Odds),
+		Score:      scoreToModel(input.Score),
 	}
 
 	v := validator.New()
 
-	if schedule.ValidateNewMatch(v, match, time.Now()); !v.Valid() {
+	if model.ValidateNewMatch(v, match, time.Now()); !v.Valid() {
 		httpx.FailedValidation(w, r, v.Errors)
 		return
 	}
 
-	round, err := app.Schedule.Rounds.Get(ctx, input.RoundID)
+	round, err := h.svc.Rounds.Get(ctx, input.RoundID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -87,7 +77,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 			v.AddError("round_id", "must reference an existing round")
 			httpx.FailedValidation(w, r, v.Errors)
 		default:
-			httpx.ServerError(w, r, app.Logger, err)
+			httpx.ServerError(w, r, h.log, err)
 		}
 		return
 	}
@@ -97,7 +87,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, err := app.Schedule.Teams.Get(ctx, input.HomeTeamID); err != nil {
+	if _, err := h.svc.Teams.Get(ctx, input.HomeTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -105,12 +95,12 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 			v.AddError("home_team_id", "must reference an existing team")
 			httpx.FailedValidation(w, r, v.Errors)
 		default:
-			httpx.ServerError(w, r, app.Logger, err)
+			httpx.ServerError(w, r, h.log, err)
 		}
 		return
 	}
 
-	if _, err := app.Schedule.Teams.Get(ctx, input.AwayTeamID); err != nil {
+	if _, err := h.svc.Teams.Get(ctx, input.AwayTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -118,18 +108,18 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 			v.AddError("away_team_id", "must reference an existing team")
 			httpx.FailedValidation(w, r, v.Errors)
 		default:
-			httpx.ServerError(w, r, app.Logger, err)
+			httpx.ServerError(w, r, h.log, err)
 		}
 		return
 	}
 
-	match, err = app.Schedule.Matches.Insert(ctx, match)
+	match, err = h.svc.Matches.Insert(ctx, match)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
 		default:
-			httpx.ServerError(w, r, app.Logger, err)
+			httpx.ServerError(w, r, h.log, err)
 			return
 		}
 	}
@@ -137,13 +127,13 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 	headers := make(http.Header)
 	headers.Set("Location", fmt.Sprintf("/v1/matches/%d", match.ID))
 
-	err = httpx.WriteJSON(w, http.StatusCreated, httpx.Envelope{"match": match}, headers)
+	err = httpx.WriteJSON(w, http.StatusCreated, httpx.Envelope{"match": matchFromModel(match)}, headers)
 	if err != nil {
-		httpx.ServerError(w, r, app.Logger, err)
+		httpx.ServerError(w, r, h.log, err)
 	}
 }
 
-func (app *Application) showMatchHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) showMatch(w http.ResponseWriter, r *http.Request) {
 	id, err := httpx.ReadIDParam(r)
 	if err != nil {
 		httpx.NotFound(w, r)
@@ -153,7 +143,7 @@ func (app *Application) showMatchHandler(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	match, err := app.Schedule.Matches.Get(ctx, id)
+	match, err := h.svc.Matches.Get(ctx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -161,27 +151,27 @@ func (app *Application) showMatchHandler(w http.ResponseWriter, r *http.Request)
 		case errors.Is(err, persistence.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
-			httpx.ServerError(w, r, app.Logger, err)
+			httpx.ServerError(w, r, h.log, err)
 		}
 		return
 	}
 
-	err = httpx.WriteJSON(w, http.StatusOK, httpx.Envelope{"match": match}, nil)
+	err = httpx.WriteJSON(w, http.StatusOK, httpx.Envelope{"match": matchFromModel(match)}, nil)
 	if err != nil {
-		httpx.ServerError(w, r, app.Logger, err)
+		httpx.ServerError(w, r, h.log, err)
 	}
 }
 
-func (app *Application) listMatchHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) listMatches(w http.ResponseWriter, r *http.Request) {
 	v := validator.New()
 
 	qs := r.URL.Query()
 	seasonID := httpx.ReadInt(qs, "season_id", 0, v)
 	roundID := httpx.ReadInt(qs, "round_id", 0, v)
-	status := schedule.MatchStatus(httpx.ReadString(qs, "status", ""))
+	status := model.MatchStatus(httpx.ReadString(qs, "status", ""))
 
 	if status != "" {
-		schedule.ValidateMatchStatus(v, status)
+		model.ValidateMatchStatus(v, status)
 	}
 
 	sortSafelist := []string{"id", "starts_at", "-id", "-starts_at"}
@@ -193,11 +183,13 @@ func (app *Application) listMatchHandler(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	matches, metadata, err := app.Schedule.Matches.GetAll(ctx, seasonID, roundID, status, filters)
-	httpx.WriteListResponse(w, r, app.Logger, "matches", matches, metadata, err)
+	matches, metadata, err := h.svc.Matches.GetAll(ctx, seasonID, roundID, status, filters)
+	httpx.WriteListResponse(w, r, h.log, "matches", matchesFromModel(matches), metadata, err)
 }
 
-func (app *Application) deleteMatchHandler(w http.ResponseWriter, r *http.Request) {
+// deleteMatch runs the delete policy (service.DeleteMatch): the "match still
+// has rides" question is the game context's, answered before the delete.
+func (h *Handler) deleteMatch(w http.ResponseWriter, r *http.Request) {
 	seasonID, err := httpx.ReadIDParam(r)
 	if err != nil {
 		httpx.NotFound(w, r)
@@ -213,49 +205,28 @@ func (app *Application) deleteMatchHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	// rides_match_id_fkey's RESTRICT is gone with the
-	// cross-context FKs (migration 000016), so the "match still has rides"
-	// refusal is composed here: api holds both stores, game answers its
-	// own references (ADR-018: a match with rides on it must not be
-	// deleted — the tokens would vanish with it). Same ErrRecordInUse →
-	// 409 surface the FK produced. The race — a ride locked between the
-	// check and the delete — is the accepted api-level gap (the same
-	// window the delete-then-FK flow had between its own read and write).
-	rideRefs, err := app.Game.Store.Rides.ExistsForMatch(ctx, matchID)
+	err = h.svc.DeleteMatch(ctx, matchID, seasonID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		default:
-			httpx.ServerError(w, r, app.Logger, err)
-		}
-		return
-	}
-	if rideRefs {
-		app.recordInUseResponse(w, r)
-		return
-	}
-
-	err = app.Schedule.Matches.Delete(ctx, matchID, seasonID)
-	if err != nil {
-		switch {
-		case errors.Is(err, context.Canceled):
-			return
+		case errors.Is(err, persistence.ErrRecordInUse):
+			h.recordInUseResponse(w, r)
 		case errors.Is(err, persistence.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
-			httpx.ServerError(w, r, app.Logger, err)
+			httpx.ServerError(w, r, h.log, err)
 		}
 		return
 	}
 
 	err = httpx.WriteJSON(w, http.StatusOK, httpx.Envelope{"message": "match successfully deleted"}, nil)
 	if err != nil {
-		httpx.ServerError(w, r, app.Logger, err)
+		httpx.ServerError(w, r, h.log, err)
 	}
 }
 
-func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) updateMatch(w http.ResponseWriter, r *http.Request) {
 	seasonID, err := httpx.ReadIDParam(r)
 	if err != nil {
 		httpx.NotFound(w, r)
@@ -271,7 +242,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	match, err := app.Schedule.Matches.Get(ctx, matchID)
+	match, err := h.svc.Matches.Get(ctx, matchID)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -279,7 +250,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		case errors.Is(err, persistence.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
-			httpx.ServerError(w, r, app.Logger, err)
+			httpx.ServerError(w, r, h.log, err)
 		}
 		return
 	}
@@ -297,14 +268,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 
 	current := match
 
-	var input struct {
-		StartsAt   *time.Time            `json:"starts_at"`
-		HomeTeamID *int                  `json:"home_team_id"`
-		AwayTeamID *int                  `json:"away_team_id"`
-		Status     *schedule.MatchStatus `json:"status"`
-		Odds       *schedule.Odds        `json:"odds"`
-		Score      *schedule.Score       `json:"score"`
-	}
+	var input updateMatchRequest
 
 	err = httpx.ReadJSON(w, r, &input)
 	if err != nil {
@@ -325,20 +289,20 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		match.Status = *input.Status
 	}
 	if input.Odds != nil {
-		match.Odds = *input.Odds
+		match.Odds = oddsToModel(*input.Odds)
 	}
 	if input.Score != nil {
-		match.Score = *input.Score
+		match.Score = scoreToModel(*input.Score)
 	}
 
 	v := validator.New()
 
-	if schedule.ValidateMatchUpdate(v, current, match); !v.Valid() {
+	if model.ValidateMatchUpdate(v, current, match); !v.Valid() {
 		httpx.FailedValidation(w, r, v.Errors)
 		return
 	}
 
-	if _, err := app.Schedule.Teams.Get(ctx, match.HomeTeamID); err != nil {
+	if _, err := h.svc.Teams.Get(ctx, match.HomeTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -346,12 +310,12 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 			v.AddError("home_team_id", "must reference an existing team")
 			httpx.FailedValidation(w, r, v.Errors)
 		default:
-			httpx.ServerError(w, r, app.Logger, err)
+			httpx.ServerError(w, r, h.log, err)
 		}
 		return
 	}
 
-	if _, err := app.Schedule.Teams.Get(ctx, match.AwayTeamID); err != nil {
+	if _, err := h.svc.Teams.Get(ctx, match.AwayTeamID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
@@ -359,12 +323,12 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 			v.AddError("away_team_id", "must reference an existing team")
 			httpx.FailedValidation(w, r, v.Errors)
 		default:
-			httpx.ServerError(w, r, app.Logger, err)
+			httpx.ServerError(w, r, h.log, err)
 		}
 		return
 	}
 
-	match, err = app.Schedule.Matches.Update(ctx, match)
+	match, err = h.svc.Matches.Update(ctx, match)
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -374,42 +338,38 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		case errors.Is(err, persistence.ErrRecordInUse):
 			// matches_freeze_gate: the match has started and the update tried
 			// to regress it (ADR-008).
-			app.recordFrozenResponse(w, r)
+			h.recordFrozenResponse(w, r)
 		case errors.Is(err, persistence.ErrRecordNotFound):
 			// Race: a referenced team was deleted between the checks above
 			// and the update.
 			v.AddError("home_team_id", "must reference an existing team")
 			httpx.FailedValidation(w, r, v.Errors)
 		default:
-			httpx.ServerError(w, r, app.Logger, err)
+			httpx.ServerError(w, r, h.log, err)
 		}
 		return
 	}
 
-	err = httpx.WriteJSON(w, http.StatusOK, httpx.Envelope{"match": match}, nil)
+	err = httpx.WriteJSON(w, http.StatusOK, httpx.Envelope{"match": matchFromModel(match)}, nil)
 	if err != nil {
-		httpx.ServerError(w, r, app.Logger, err)
+		httpx.ServerError(w, r, h.log, err)
 	}
 }
 
-// resolveMatchHandler is schedule's route (Game/Schedule split): the
-// resolve script commits the result in schedule's own
-// transaction and publishes MatchResultRecorded post-commit — game settles
-// the rides from the event payload, not in this request's transaction.
-// The match types are schedule's (the row belongs to the calendar); the
-// ride half lives behind the event seam.
-func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Request) {
+// resolveMatch is schedule's route (Game/Schedule split): the resolve script
+// commits the result in schedule's own transaction and publishes
+// MatchResultRecorded post-commit — game settles the rides from the event
+// payload, not in this request's transaction. The match types are
+// schedule's (the row belongs to the calendar); the ride half lives behind
+// the event seam.
+func (h *Handler) resolveMatch(w http.ResponseWriter, r *http.Request) {
 	matchID, err := httpx.ReadIDParam(r, "match_id")
 	if err != nil {
 		httpx.NotFound(w, r)
 		return
 	}
 
-	var input struct {
-		EndedAt *time.Time     `json:"ended_at"`
-		Score   schedule.Score `json:"score"`
-		Version int            `json:"version"`
-	}
+	var input resolveMatchRequest
 
 	err = httpx.ReadJSON(w, r, &input)
 	if err != nil {
@@ -417,19 +377,19 @@ func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	match := schedule.Match{
+	match := model.Match{
 		ID:      matchID,
 		EndedAt: input.EndedAt,
-		Score:   input.Score,
+		Score:   scoreToModel(input.Score),
 		Version: input.Version,
 	}
 
 	v := validator.New()
 
 	// Request shape only (ADR-026): the domain-legality rule (ended_at in
-	// the past) runs inside Service.ResolveMatch, mapped to the same 422
+	// the past) runs inside the resolve use case, mapped to the same 422
 	// below.
-	if schedule.ValidateResolveMatch(v, match); !v.Valid() {
+	if model.ValidateResolveMatch(v, match); !v.Valid() {
 		httpx.FailedValidation(w, r, v.Errors)
 		return
 	}
@@ -437,27 +397,36 @@ func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	match, err = app.Schedule.ResolveMatch(ctx, match.ID, match.Score, *match.EndedAt, match.Version)
+	match, err = h.svc.ResolveMatch(ctx, match.ID, match.Score, *match.EndedAt, match.Version)
 	if err != nil {
-		if errors.Is(err, schedule.ErrEndedAtInFuture) {
+		if errors.Is(err, model.ErrEndedAtInFuture) {
 			// Time policy refusal from the service door (ADR-026), checked
-			// before any transaction; the 422 body is the message the
+			// before any transaction; the 422 body is the message this
 			// handler used to produce itself.
 			v.AddError("ended_at", "must be in the past")
 			httpx.FailedValidation(w, r, v.Errors)
 			return
 		}
-		// gameErrorResponse maps the full domain surface this flow can
-		// produce: ErrRecordNotFound (unknown match), ErrEditConflict (lost
-		// race or already-closed match, classified by the store), canceled
-		// context. (The ride-half refusals left this surface with the split:
-		// settlement is post-commit, behind the event seam.)
-		app.gameErrorResponse(w, r, err)
+		// The resolve surface: ErrRecordNotFound (unknown match),
+		// ErrEditConflict (lost race or already-closed match, classified by
+		// the repository), canceled context. (The ride-half refusals left
+		// this surface with the split: settlement is post-commit, behind the
+		// event seam.)
+		switch {
+		case errors.Is(err, context.Canceled):
+			// Client gone; response would be discarded anyway.
+		case errors.Is(err, persistence.ErrRecordNotFound):
+			httpx.NotFound(w, r)
+		case errors.Is(err, persistence.ErrEditConflict):
+			httpx.EditConflict(w, r)
+		default:
+			httpx.ServerError(w, r, h.log, err)
+		}
 		return
 	}
 
-	err = httpx.WriteJSON(w, http.StatusOK, httpx.Envelope{"match": match}, nil)
+	err = httpx.WriteJSON(w, http.StatusOK, httpx.Envelope{"match": matchFromModel(match)}, nil)
 	if err != nil {
-		httpx.ServerError(w, r, app.Logger, err)
+		httpx.ServerError(w, r, h.log, err)
 	}
 }

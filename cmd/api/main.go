@@ -92,11 +92,11 @@ func main() {
 		cfg.Limiter.Enabled,
 	)
 
-	// Composition root (bounded-context split): each context store is wired to
+	// Composition root (bounded-context split): each context module is wired to
 	// ITS OWN pool (schedule → schedule pool, game → game pool, identity →
 	// identity pool); every pool's connections run as the context's role,
 	// so a cross-context query fails on permission even when the name is
-	// resolvable. The game service consumes the schedule store for the
+	// resolvable. The game service consumes the schedule module for the
 	// calendar lookups its operations perform (phase windows, next-match
 	// pick); game → schedule is the only legal import direction between the
 	// two contexts (ADR-028) — its in-transaction round guards run as
@@ -105,21 +105,26 @@ func main() {
 	// writes only game rows and runs inside the caller's (game pool)
 	// transaction — same pool, same role.
 	eventBus := eventbus.New()
-	scheduleStore := schedule.NewStore(pools.Schedule)
-	scheduleService := schedule.NewService(scheduleStore, eventBus, logger)
+	scheduleModule := schedule.NewModule(pools.Schedule, eventBus, logger)
 	gameStore := game.NewStore(pools.Game)
 	// The ledger is the money authority (phase-05/06): every money mutation
 	// the ride commands and settlement handlers need runs as an intent on
 	// it, inside the caller's transaction. Phase 06 swaps the
 	// implementation to real balances/journal behind the same interface.
 	ledgerStore := ledger.NewStore()
-	gameService := game.NewService(gameStore, scheduleStore, ledgerStore)
+	gameService := game.NewService(gameStore, scheduleModule, ledgerStore)
 	identityStore := identity.NewStore(pools.Identity)
 
+	// The schedule module's delete policies ask game whether a team or
+	// match is still referenced before removing it; the gateway's adapter
+	// answers from the game store (schedule declares the port, game owns
+	// the facts, nobody imports across the wrong way).
+	scheduleModule.UseGameRefs(api.GameUsageAdapter{Store: gameStore})
+
 	// The event seam (ADR-027): schedule publishes post-commit, game
-	// settles from the payloads. *schedule.Store satisfies game's
-	// SchedulePort structurally, so the wiring above passes the concrete
-	// store as the port.
+	// settles from the payloads. *schedule.Module satisfies game's
+	// SchedulePort structurally, so the wiring above passes the module as
+	// the port.
 	eventbus.Subscribe(eventBus, func(ctx context.Context, event schedule.MatchResultRecorded) error {
 		return gameService.OnMatchResultRecorded(ctx, event)
 	})
@@ -134,7 +139,7 @@ func main() {
 		TrustedOrigins: cfg.CORS.Origins,
 		RateLimiter:    rateLimiter,
 		Game:           gameService,
-		Schedule:       scheduleService,
+		Schedule:       scheduleModule,
 		Identity:       identityStore,
 		Mailer:         mailer,
 	}

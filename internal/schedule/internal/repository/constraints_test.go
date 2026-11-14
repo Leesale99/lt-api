@@ -1,4 +1,4 @@
-package schedule
+package repository
 
 // Constraint tests: verify that the database schema (migrations/) enforces
 // the same rules as the Go validators, and that the permitted status values
@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 )
 
 // errorsAs delegates to errors.As for *pgconn.PgError.
@@ -112,7 +114,7 @@ func TestStatusVocabularyIsInSync(t *testing.T) {
 	defer cleanup(ctx, t)
 
 	t.Run("seasons", func(t *testing.T) {
-		for _, status := range seasonStatuses {
+		for _, status := range model.SeasonStatuses {
 			_, err := pool.Exec(ctx, `INSERT INTO schedule.seasons (status) VALUES ($1)`, status)
 			if err != nil {
 				t.Errorf("season status %q rejected by DB: %v", status, err)
@@ -121,7 +123,7 @@ func TestStatusVocabularyIsInSync(t *testing.T) {
 	})
 
 	t.Run("rounds", func(t *testing.T) {
-		for _, status := range roundStatuses {
+		for _, status := range model.RoundStatuses {
 			// Each vocabulary value gets its own live season: the lifecycle
 			// gates (000008) refuse a round beyond created in a season that is
 			// not open/in_progress, and number 1 is the only round a fresh
@@ -141,7 +143,7 @@ func TestStatusVocabularyIsInSync(t *testing.T) {
 	})
 
 	t.Run("matches", func(t *testing.T) {
-		for _, status := range matchStatuses {
+		for _, status := range model.MatchStatuses {
 			// in_progress/closed require a score per matches_status_score_check,
 			// so the vocabulary probe must supply one for those statuses; closed
 			// also requires ended_at (migration 000005, matches_ended_at_check).

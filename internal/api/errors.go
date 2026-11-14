@@ -1,10 +1,13 @@
 package api
 
 // This file holds what is left of the response writers in api: the two the
-// frozen routes.go registers by name, and the domain-flavored ones whose
-// message encodes a rule this package owns. The generic status writers live
-// in httpx (httpx/errors.go); the envelope and its logging path are shared
-// through httpx.WriteError, so nothing is duplicated.
+// router registers by name, the game-flavored ones whose message encodes a
+// rule this package owns (ride commands, idempotency), and the unique-value
+// writer the player handlers share. The schedule-flavored writers (record in
+// use, lifecycle freeze) moved into the schedule module with its handlers.
+// The generic status writers live in httpx (httpx/errors.go); the envelope
+// and its logging path are shared through httpx.WriteError, so nothing is
+// duplicated.
 
 import (
 	"net/http"
@@ -37,29 +40,16 @@ func (app *Application) writeError(w http.ResponseWriter, r *http.Request, statu
 	}
 }
 
-func (app *Application) recordInUseResponse(w http.ResponseWriter, r *http.Request) {
-	message := "the record is referenced by other records and cannot be deleted"
-	app.writeError(w, r, http.StatusConflict, message)
-}
-
-// recordFrozenResponse answers the ADR-008 freeze gates: the write tried to
-// move something back to an earlier stage while a match has already started.
-// A separate message from recordInUseResponse — the conflict is temporal,
-// not referential, and "try again later" would be wrong advice.
-func (app *Application) recordFrozenResponse(w http.ResponseWriter, r *http.Request) {
-	message := "a match has already started, so the hierarchy cannot move to an earlier stage"
-	app.writeError(w, r, http.StatusConflict, message)
-}
-
 func (app *Application) duplicateRecordResponse(w http.ResponseWriter, r *http.Request) {
 	message := "a record with these unique values already exists"
 	app.writeError(w, r, http.StatusConflict, message)
 }
 
 // roundNotOpenResponse refuses a ride command issued on a round that is not
-// open. Distinct from recordFrozenResponse (temporal hierarchy freeze): the
-// round exists and is valid, it just isn't accepting commands. Refusal
-// happens here, before phase derivation — a closed round has no phase.
+// open. Distinct from the schedule module's freeze refusal (temporal
+// hierarchy freeze): the round exists and is valid, it just isn't accepting
+// commands. Refusal happens here, before phase derivation — a closed round
+// has no phase.
 func (app *Application) roundNotOpenResponse(w http.ResponseWriter, r *http.Request) {
 	message := "ride commands require an open round"
 	app.writeError(w, r, http.StatusConflict, message)

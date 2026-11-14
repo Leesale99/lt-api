@@ -18,37 +18,10 @@ func (app *Application) routes() http.Handler {
 	// Health check
 	router.HandlerFunc(http.MethodGet, "/v1/healthcheck", app.healthcheckHandler)
 
-	// Seasons
-	router.HandlerFunc(http.MethodGet, "/v1/seasons", app.requirePermission("seasons:read", app.listSeasonsHandler))
-	router.HandlerFunc(http.MethodGet, "/v1/seasons/:id", app.requirePermission("seasons:read", app.showSeasonHandler))
-	router.HandlerFunc(http.MethodPost, "/v1/seasons", app.requirePermission("seasons:write", app.createSeasonHandler))
-	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id", app.requirePermission("seasons:write", app.updateSeasonHandler))
-	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id", app.requirePermission("seasons:write", app.deleteSeasonHandler))
-
-	// Rounds
-	router.HandlerFunc(http.MethodGet, "/v1/rounds", app.requirePermission("rounds:read", app.listRoundsHandler))
-	router.HandlerFunc(http.MethodGet, "/v1/rounds/:id", app.requirePermission("rounds:read", app.showRoundHandler))
-	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/rounds", app.requirePermission("rounds:write", app.createRoundHandler))
-	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/rounds/:round_id", app.requirePermission("rounds:write", app.updateRoundHandler))
-	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/rounds/:round_id", app.requirePermission("rounds:write", app.deleteRoundHandler))
-
-	// Matches
-	router.HandlerFunc(http.MethodGet, "/v1/matches", app.requirePermission("matches:read", app.listMatchHandler))
-	router.HandlerFunc(http.MethodGet, "/v1/matches/:id", app.requirePermission("matches:read", app.showMatchHandler))
-	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/matches", app.requirePermission("matches:write", app.createMatchHandler))
-	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/matches/:match_id", app.requirePermission("matches:write", app.updateMatchHandler))
-	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/matches/:match_id", app.requirePermission("matches:write", app.deleteMatchHandler))
-	// Resolve is schedule's script: it commits the result and
-	// publishes MatchResultRecorded — the ride settlement is game's, behind
-	// the event seam.
-	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/matches/:match_id/resolve", app.requirePermission("matches:write", app.resolveMatchHandler))
-
-	// Teams
-	router.HandlerFunc(http.MethodGet, "/v1/teams", app.requirePermission("teams:read", app.listTeamsHandler))
-	router.HandlerFunc(http.MethodGet, "/v1/teams/:id", app.requirePermission("teams:read", app.showTeamHandler))
-	router.HandlerFunc(http.MethodPost, "/v1/teams", app.requirePermission("teams:write", app.createTeamHandler))
-	router.HandlerFunc(http.MethodPatch, "/v1/teams/:id", app.requirePermission("teams:write", app.updateTeamHandler))
-	router.HandlerFunc(http.MethodDelete, "/v1/teams/:id", app.requirePermission("teams:write", app.deleteTeamHandler))
+	// Schedule module (seasons, rounds, matches, teams): the calendar
+	// context owns its own routes — paths, methods and permission gate are
+	// unchanged, the module just registers them itself.
+	app.Schedule.RegisterRoutes(router, app.requirePermission)
 
 	// Players
 	router.HandlerFunc(http.MethodGet, "/v1/players", app.requirePermission("players:read", app.listPlayersHandler))

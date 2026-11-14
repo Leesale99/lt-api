@@ -1,4 +1,4 @@
-package schedule
+package model
 
 // Unit tests for Winner. Winner relies on a domain invariant rather than a
 // nil guard: a closed match always carries a complete score, enforced

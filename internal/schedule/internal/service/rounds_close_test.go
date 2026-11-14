@@ -1,15 +1,16 @@
-package schedule
+package service
 
-// RoundStore.Close integration tests: the close transaction's status flip,
-// its gates (000008), and the RoundCompleted event seam.
+// Close integration tests: the close transaction's status flip, its gates
+// (000008), and the RoundCompleted event seam the service owns.
 //
 // Since the split the close no longer resolves rides: Schedule
-// closes on feed completion and publishes RoundCompleted post-commit; the
-// game context settles the undecided rides from the event payload. The
-// ride side is still planted/read through raw SQL, deliberately: schedule
-// must not import game, so the assertions go to the tables themselves.
-// The ride-side settlement coverage (what used to be the auto-unlock/burn
-// half of this transaction) lives in internal/game's event-handler tests.
+// closes on feed completion and the service publishes RoundCompleted
+// post-commit; the game context settles the undecided rides from the event
+// payload. The ride side is still planted/read through raw SQL,
+// deliberately: schedule must not import game, so the assertions go to the
+// tables themselves. The ride-side settlement coverage (what used to be the
+// auto-unlock/burn half of this transaction) lives in internal/game's
+// event-handler tests.
 
 import (
 	"context"
@@ -20,8 +21,22 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"lt-api.aleksrdvn.com/internal/eventbus"
+	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
+	"lt-api.aleksrdvn.com/internal/schedule/internal/repository"
 	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
+
+// testRepositories builds the storage set the close-side tests drive over
+// the role-restricted schedule pool (the composition root's wiring, minus
+// the game-facing surface this package never reads).
+func testRepositories() Repositories {
+	return Repositories{
+		Seasons: repository.NewSeasonRepository(schedulePool),
+		Rounds:  repository.NewRoundRepository(schedulePool),
+		Teams:   repository.NewTeamRepository(schedulePool),
+		Matches: repository.NewMatchRepository(schedulePool),
+	}
+}
 
 // closeRoundSQL is the direct-writer close statement the gate-backstop
 // test probes with. The unclosed-matches half of rounds_close_gate holds
@@ -194,14 +209,14 @@ func TestMatchDeleteRestricted(t *testing.T) {
 	matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 	plantRide(ctx, t, matchID, homeID, "locked", "0", 0)
 
-	err := NewStore(schedulePool).Matches.Delete(ctx, matchID, 1)
+	err := repository.NewMatchRepository(schedulePool).Delete(ctx, matchID, 1)
 
 	if err != nil {
 		t.Fatalf("Delete() = %v, want nil (rides RESTRICT moved to the api layer, 000016)", err)
 	}
 
 	// The delete actually deleted: the match row is gone.
-	if _, err := NewStore(schedulePool).Matches.Get(ctx, matchID); !errors.Is(err, persistence.ErrRecordNotFound) {
+	if _, err := repository.NewMatchRepository(schedulePool).Get(ctx, matchID); !errors.Is(err, persistence.ErrRecordNotFound) {
 		t.Fatalf("Get() after delete = %v, want ErrRecordNotFound", err)
 	}
 }
@@ -209,18 +224,18 @@ func TestMatchDeleteRestricted(t *testing.T) {
 // closeService builds the wired stack the close-side tests run against:
 // the schedule service publishing on a capture bus, so the RoundCompleted
 // payload can be asserted end-to-end (the reverse-pyramid top for the
-// event seam is the api harness; this pins the store-level publish).
-func closeService(t *testing.T) (*Service, *[]RoundCompleted) {
+// event seam is the api harness; this pins the service-level publish).
+func closeService(t *testing.T) (*Service, *[]model.RoundCompleted) {
 	t.Helper()
 
 	bus := eventbus.New()
-	var received []RoundCompleted
-	eventbus.Subscribe(bus, func(ctx context.Context, e RoundCompleted) error {
+	var received []model.RoundCompleted
+	eventbus.Subscribe(bus, func(ctx context.Context, e model.RoundCompleted) error {
 		received = append(received, e)
 		return nil
 	})
 
-	svc := NewService(NewStore(schedulePool), bus, slog.New(slog.NewTextHandler(testWriter{}, nil)))
+	svc := New(schedulePool, testRepositories(), bus, slog.New(slog.NewTextHandler(testWriter{}, nil)))
 	return svc, &received
 }
 
@@ -255,19 +270,19 @@ func seedClosedRound(ctx context.Context, t *testing.T) (int, int, int) {
 // applied — the handler contract: Close receives the round as currently
 // stored plus the requested target status, and updateRound's version
 // check still guards the write.
-func closeableRound(ctx context.Context, t *testing.T, roundID int) Round {
+func closeableRound(ctx context.Context, t *testing.T, roundID int) model.Round {
 	t.Helper()
 
-	round, err := NewStore(schedulePool).Rounds.Get(ctx, roundID)
+	round, err := repository.NewRoundRepository(schedulePool).Get(ctx, roundID)
 	if err != nil {
 		t.Fatalf("round Get() = %v, want nil", err)
 	}
-	round.Status = RoundClosed
+	round.Status = model.RoundClosed
 
 	return round
 }
 
-func TestRoundStore_Close(t *testing.T) {
+func TestRoundClose(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
@@ -283,7 +298,7 @@ func TestRoundStore_Close(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Close() = %v, want nil", err)
 		}
-		if got.Status != RoundClosed {
+		if got.Status != model.RoundClosed {
 			t.Errorf("status = %q, want closed", got.Status)
 		}
 
@@ -357,7 +372,7 @@ func TestRoundStore_Close(t *testing.T) {
 		// transaction. Here (no subscriber wired beyond the capture bus,
 		// which settles nothing) the ride must be untouched by the close:
 		// the transaction no longer writes game's table.
-		if _, err := NewStore(schedulePool).Rounds.Close(ctx, closeableRound(ctx, t, roundID)); err != nil {
+		if _, err := repository.NewRoundRepository(schedulePool).Close(ctx, closeableRound(ctx, t, roundID)); err != nil {
 			t.Fatalf("Close() = %v, want nil (the undecided-rides gate is relaxed)", err)
 		}
 
@@ -384,11 +399,11 @@ func TestRoundStore_Close(t *testing.T) {
 		}
 
 		// The refusal actually refused.
-		round, err := NewStore(schedulePool).Rounds.Get(ctx, roundID)
+		round, err := repository.NewRoundRepository(schedulePool).Get(ctx, roundID)
 		if err != nil {
 			t.Fatalf("round Get() = %v, want nil", err)
 		}
-		if round.Status != RoundOpen {
+		if round.Status != model.RoundOpen {
 			t.Errorf("round status = %q, want open", round.Status)
 		}
 	})
@@ -413,7 +428,7 @@ func renumberRoundForFixture(ctx context.Context, t *testing.T, roundID, number 
 	}
 }
 
-// TestRoundStore_Close_MidTxFailureLeavesNoTrace is the phase done-when:
+// TestRoundClose_MidTxFailureLeavesNoTrace is the phase done-when:
 // the season flip fails after the round flip succeeded, and nothing of the
 // transaction survives.
 //
@@ -421,7 +436,7 @@ func renumberRoundForFixture(ctx context.Context, t *testing.T, roundID, number 
 // close at a round whose parent season is closed, so rounds_progress_gate
 // refuses the round flip (round_progress_season_not_live) — the first
 // statement fails.
-func TestRoundStore_Close_MidTxFailureLeavesNoTrace(t *testing.T) {
+func TestRoundClose_MidTxFailureLeavesNoTrace(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
@@ -436,7 +451,7 @@ func TestRoundStore_Close_MidTxFailureLeavesNoTrace(t *testing.T) {
 		t.Fatalf("deactivate season: %v", err)
 	}
 
-	_, err := NewStore(schedulePool).Rounds.Close(ctx, closeableRound(ctx, t, roundID))
+	_, err := repository.NewRoundRepository(schedulePool).Close(ctx, closeableRound(ctx, t, roundID))
 	if err == nil {
 		t.Fatal("Close() = nil, want the season-not-live refusal")
 	}
@@ -461,21 +476,21 @@ func TestRoundStore_Close_MidTxFailureLeavesNoTrace(t *testing.T) {
 	}
 
 	// And the round is still open.
-	round, err := NewStore(schedulePool).Rounds.Get(ctx, roundID)
+	round, err := repository.NewRoundRepository(schedulePool).Get(ctx, roundID)
 	if err != nil {
 		t.Fatalf("round Get() = %v, want nil", err)
 	}
-	if round.Status != RoundOpen {
+	if round.Status != model.RoundOpen {
 		t.Errorf("round status = %q, want open", round.Status)
 	}
 }
 
-// TestRoundStore_Close_ProvesPostgresRollsBack runs Close's statement
+// TestRoundClose_ProvesPostgresRollsBack runs Close's statement
 // sequence inside a manual transaction that fails at the flip, purely to
 // pin the DB-level mechanism the store's shape relies on: a write inside
 // the transaction is visible on the connection's own snapshot before the
 // flip fails, and vanishes with the rollback.
-func TestRoundStore_Close_ProvesPostgresRollsBack(t *testing.T) {
+func TestRoundClose_ProvesPostgresRollsBack(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()

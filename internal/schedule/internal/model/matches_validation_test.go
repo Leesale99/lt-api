@@ -1,4 +1,4 @@
-package schedule
+package model
 
 // Unit tests for the match validators: pure logic, no database, microseconds.
 // The `now` argument is injected, so every case controls the clock instead of

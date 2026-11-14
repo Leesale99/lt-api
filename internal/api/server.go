@@ -31,15 +31,13 @@ type Application struct {
 	// Handlers call domain operations on it; ride/player CRUD that carries
 	// no rules goes through Game.Store.
 	//
-	// Schedule is the calendar context's service (its own context since the
-	// Game/Schedule split): the seasons/rounds/matches/teams handlers drive
-	// its stores directly (ADR-028 — schedule CRUD carries no rules beyond
-	// its validators), the player handlers read it for the season/team
-	// existence checks, and the resolve PATCH runs its ResolveMatch script,
-	// which commits the result and hands it to game as a
-	// MatchResultRecorded event.
+	// Schedule is the calendar context's module (its own context since the
+	// Game/Schedule split): it registers its own routes (seasons, rounds,
+	// matches, teams), and the player handlers read its season/team
+	// existence surface. The module also satisfies game's SchedulePort and
+	// publishes the event seam's payloads.
 	Game     *game.Service
-	Schedule *schedule.Service
+	Schedule *schedule.Module
 	Identity *identity.Store
 	Mailer   MailSender
 }

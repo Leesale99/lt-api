@@ -1,4 +1,4 @@
-package schedule
+package model
 
 // Lifecycle transition rules shared by the per-entity update validators
 // (ADR-008): each level owns a status-rank map ordering its statuses along

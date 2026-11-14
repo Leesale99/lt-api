@@ -1,4 +1,4 @@
-package schedule
+package repository
 
 import (
 	"context"
@@ -7,18 +7,19 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
-// Port methods on *Store: the narrow surface the game context consumes
-// (game.SchedulePort, satisfied structurally — ADR-028). The SQL here is
-// schedule's own (matches/rounds), executed on the CALLER's transaction
-// where noted: the write-instant round guards of the ride commands are
-// schedule facts, so the lock-taking statements live on this side of the
-// seam while the ride writes stay on game's side.
+// GameFacing is the narrow surface the game context consumes
+// (game.SchedulePort, satisfied structurally by the module facade —
+// ADR-028). The SQL here is schedule's own (matches/rounds), executed on the
+// CALLER's transaction where noted: the write-instant round guards of the
+// ride commands are schedule facts, so the lock-taking statements live on
+// this side of the seam while the ride writes stay on game's side.
 //
 // The resolve half of the old store-level coupling (ResolveTx's
-// guarded score write) is schedule's own script now (Service.ResolveMatch);
+// guarded score write) is schedule's own script (service.ResolveMatch);
 // game no longer needs it through the port.
 //
 // The context privilege boundary (migration 000018) denies
@@ -33,27 +34,29 @@ import (
 // the schedule pool, under schedule_app, and schema-qualify their tables
 // so the statements are honest about crossing the boundary wherever they
 // happen to execute.
+//
+// The error contract is UNCHANGED from the pre-split store: every refusal
+// is internal/shared/persistence's sentinel, exactly as game's callers
+// already map them. The flip belongs to game's restructure, not here.
+type GameFacing struct {
+	matches *MatchRepository
+	teams   *TeamRepository
+}
+
+func NewGameFacing(matches *MatchRepository, teams *TeamRepository) *GameFacing {
+	return &GameFacing{matches: matches, teams: teams}
+}
 
 // PhaseForMatch returns the ride-phase inputs for the round the given
-// match belongs to, in one statement: the round status (the ErrRoundNotOpen
-// gate input) plus the phase window — min(starts_at), max(ended_at) over
-// the round's matches.
-//
-// One statement, not three reads: the round-status gate and the window
-// come from the same snapshot with no explicit transaction. Phase stays
-// derived in Go from these facts (ADR-017); the store returns only facts.
-//
-// GROUP BY r.id suffices for selecting r.status: r.id is rounds' primary
-// key, so PostgreSQL treats every other rounds column as functionally
-// dependent (single-valued per group).
-func (s *Store) PhaseForMatch(ctx context.Context, matchID int) (RoundStatus, *time.Time, *time.Time, error) {
-	return s.Matches.PhaseForMatch(ctx, matchID)
+// match belongs to, in one statement.
+func (g *GameFacing) PhaseForMatch(ctx context.Context, matchID int) (model.RoundStatus, *time.Time, *time.Time, error) {
+	return g.matches.PhaseForMatch(ctx, matchID)
 }
 
 // NextForTeam returns the team's next live match — the continuation pick
 // behind RideLock.
-func (s *Store) NextForTeam(ctx context.Context, teamID int) (Match, error) {
-	return s.Matches.NextForTeam(ctx, teamID)
+func (g *GameFacing) NextForTeam(ctx context.Context, teamID int) (model.Match, error) {
+	return g.matches.NextForTeam(ctx, teamID)
 }
 
 // RoundOpenTx pins the ride's own round OPEN at the write instant, inside
@@ -67,11 +70,11 @@ func (s *Store) NextForTeam(ctx context.Context, teamID int) (Match, error) {
 //
 // ErrRecordNotFound when the match is unknown; the status otherwise — the
 // caller (game) maps a non-open round to its round-refusal sentinel.
-func (s *Store) RoundOpenTx(ctx context.Context, tx pgx.Tx, matchID int) (RoundStatus, error) {
+func (g *GameFacing) RoundOpenTx(ctx context.Context, tx pgx.Tx, matchID int) (model.RoundStatus, error) {
 	// The guard is schedule's definer function (see the file header): same
 	// statement shape as before, executed as the schema owner. NULL means
 	// the match is unknown — the not-found mapping is unchanged.
-	var status *RoundStatus
+	var status *model.RoundStatus
 
 	err := tx.QueryRow(ctx, `SELECT schedule.round_open_guard($1)`, matchID).Scan(&status)
 	switch {
@@ -96,7 +99,7 @@ func (s *Store) RoundOpenTx(ctx context.Context, tx pgx.Tx, matchID int) (RoundS
 // persistence.ErrRecordNotFound covers every refusal cause (unknown match,
 // already ended, round closed): the caller maps them all to the
 // round-refusal, the Phase 04 contract for a stale pick.
-func (s *Store) DestinationOpenTx(ctx context.Context, tx pgx.Tx, matchID int) error {
+func (g *GameFacing) DestinationOpenTx(ctx context.Context, tx pgx.Tx, matchID int) error {
 	// The guard is schedule's definer function (see the file header): FALSE
 	// covers every refusal cause (unknown, ended, round closed), the same
 	// mapping the previous statement's 0 rows had.
@@ -121,12 +124,12 @@ func (s *Store) DestinationOpenTx(ctx context.Context, tx pgx.Tx, matchID int) e
 // sees them (publish is post-commit, and ResolveMatch refuses a
 // re-resolution), so a plain pool read — schedule pool, schedule_app — is
 // the right snapshot; no in-tx read is needed.
-func (s *Store) Match(ctx context.Context, matchID int) (Match, error) {
-	return s.Matches.Get(ctx, matchID)
+func (g *GameFacing) Match(ctx context.Context, matchID int) (model.Match, error) {
+	return g.matches.Get(ctx, matchID)
 }
 
 // Team returns one team — the read behind game's ride-create team
 // existence check (see the port interface comment).
-func (s *Store) Team(ctx context.Context, teamID int) (Team, error) {
-	return s.Teams.Get(ctx, teamID)
+func (g *GameFacing) Team(ctx context.Context, teamID int) (model.Team, error) {
+	return g.teams.Get(ctx, teamID)
 }

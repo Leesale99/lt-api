@@ -1,4 +1,4 @@
-package schedule
+package model
 
 // Unit tests for Phase. The boundary convention — an instant landing exactly
 // on a phase edge belongs to the LATER phase — is a contract, not an

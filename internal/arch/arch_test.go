@@ -23,8 +23,15 @@
 //
 //   - schedule is the ACL: it owns teams/seasons/rounds/matches, mints their
 //     ids, and may import only the shared kernel (shared:persistence,
-//     shared:validator) and the event bus it publishes on. It must NEVER
-//     import game, ledger, identity or api — the downstream side of the seam.
+//     shared:validator, shared:httpx) and the event bus it publishes on. It
+//     must NEVER import game, ledger, identity or api — the downstream side
+//     of the seam.
+//   - schedule is also the LAYERED module (phase 3): its facade (the root
+//     package) reaches its own internal layers and the kernel, and each layer
+//     has its own row — model → shared:validator; repository →
+//     model/shared:persistence; service → model/repository/shared:eventbus;
+//     handler → model/service/shared:httpx. The layers cannot skip past each
+//     other, and no layer can reach the facade's callers.
 //   - game owns rides/players and consumes schedule via the SchedulePort and
 //     ledger via the LedgerPort interfaces; it may also touch the shared
 //     kernel (shared:persistence, shared:validator) and idempotency (its
@@ -71,13 +78,62 @@ var moduleClasses = map[string]bool{
 	"schedule":    true,
 }
 
+// moduleLayers declares the intra-module layer packages a MODULE exposes to
+// its own import matrix. A layered module nests its implementation under
+// internal/<module>/internal/<layer>; with the collapse rule those packages
+// would all be "<module>" and the matrix could not tell a handler from a
+// model. Each declared layer becomes its own class ("schedule:model",
+// "schedule:repository", ...), and the facade keeps the module class, so the
+// layer edges are pinned explicitly (model → validator; repository →
+// persistence; service → model/repository/eventbus; handler →
+// httpx/service/model; facade → its own layers + the kernel).
+//
+// Only schedule is layered so far (the phase-3 pilot); every other module
+// keeps the uniform collapse — an undeclared layer directory still
+// classifies as its module, so nothing slips past the matrix.
+var moduleLayers = map[string]map[string]bool{
+	"schedule": {"model": true, "repository": true, "service": true, "handler": true},
+}
+
 // allowedImports maps a class to the classes it may import. Anything not
 // listed is forbidden; a class absent from the map defaults to: no internal
 // imports. shared:* rows may list only shared:* (pinned by
 // TestSharedKernelImportsOnlyShared): the kernel never reaches a module.
 var allowedImports = map[string]map[string]bool{
+	// schedule (layered): the facade reaches its own layers and nothing else
+	// internal; each layer's row is its legal edge set.
 	"schedule": {
-		"shared:eventbus":    true,
+		"schedule:handler":    true,
+		"schedule:model":      true,
+		"schedule:repository": true,
+		"schedule:service":    true,
+		"shared:eventbus":     true,
+	},
+	// The domain model: entities, validators, events. No storage, no
+	// transport, no bus.
+	"schedule:model": {
+		"shared:validator": true,
+	},
+	// Storage: SQL and its error classification. It maps rows to model
+	// values; it never publishes (the service owns the event seam).
+	"schedule:repository": {
+		"schedule:model":     true,
+		"shared:persistence": true,
+	},
+	// Use cases: they compose repositories, publish post-commit, and speak
+	// the model's vocabulary.
+	"schedule:service": {
+		"schedule:model":      true,
+		"schedule:repository": true,
+		"shared:eventbus":     true,
+		"shared:persistence":  true,
+	},
+	// The HTTP layer: request shape and wire DTOs over the use cases.
+	"schedule:handler": {
+		"schedule:model":     true,
+		"schedule:service":   true,
+		"shared:constants":   true,
+		"shared:httpx":       true,
 		"shared:persistence": true,
 		"shared:validator":   true,
 	},
@@ -345,6 +401,12 @@ func classOf(below []string) (string, bool) {
 		return "shared:" + below[1], true
 	}
 	if moduleClasses[below[0]] {
+		// A layered module names its implementation packages: the facade is
+		// the module class, each declared layer its own ("schedule:model").
+		// Undeclared directories keep the module class (still inside it).
+		if layers, ok := moduleLayers[below[0]]; ok && len(below) >= 3 && below[1] == "internal" && layers[below[2]] {
+			return below[0] + ":" + below[2], true
+		}
 		return below[0], true
 	}
 	return "shared:" + below[0], true
