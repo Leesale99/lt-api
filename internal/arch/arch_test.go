@@ -3,27 +3,42 @@
 // package-level import edges, and fails with a readable diff when an edge
 // outside the matrix appears.
 //
-// The matrix mirrors docs/designs/bounded-contexts-dependency-map.mmd with the
-// Phase 05 refinements:
+// The matrix mirrors docs/designs/bounded-contexts-dependency-map.mmd.
+//
+// Classes are uniform (path-aware, see classify):
+//
+//   - "<module>" — a bounded context (schedule, game, ledger, identity,
+//     idempotency) or the api gateway, at ANY depth of its directory tree.
+//   - "shared:<name>" — everything else under internal/: the shared kernel,
+//     both nested (shared/persistence → shared:persistence) and flat
+//     (validator → shared:validator).
+//   - "cmd" — the composition root.
+//
+// Because nesting never changes a class, "modules import other module ROOTS
+// only" and "the kernel imports the kernel only" are enforced by the class
+// scheme itself: internal/<module>/internal/<x> is still "<module>", and no
+// shared:* row may list a module (pinned by TestSharedKernelImportsOnlyShared).
+//
+// The Phase 05 refinements the matrix encodes:
 //
 //   - schedule is the ACL: it owns teams/seasons/rounds/matches, mints their
-//     ids, and may import only the shared kernel (shared/persistence,
-//     validator) and the event bus it publishes on. It must NEVER import
-//     game, ledger, identity or api — the downstream side of the seam.
+//     ids, and may import only the shared kernel (shared:persistence,
+//     shared:validator) and the event bus it publishes on. It must NEVER
+//     import game, ledger, identity or api — the downstream side of the seam.
 //   - game owns rides/players and consumes schedule via the SchedulePort and
 //     ledger via the LedgerPort interfaces; it may also touch the shared
-//     kernel (shared/persistence, validator) and idempotency (its claim
-//     table). It must never import identity or api.
-//   - ledger and eventbus are thin: no domain imports (shared/persistence
+//     kernel (shared:persistence, shared:validator) and idempotency (its
+//     claim table). It must never import identity or api.
+//   - ledger and eventbus are thin: no domain imports (shared:persistence
 //     only for ledger).
-//   - identity is a generic supporting context: shared/persistence,
-//     validator only.
+//   - identity is a generic supporting context: shared:persistence,
+//     shared:validator only.
 //   - api is the gateway, not a context: it may import any context.
 //   - cmd/* is the composition root: wires everything, imports anything.
 //
 // Test-file policy: _test.go files are checked against the same matrix — a
 // test importing across a forbidden edge is a real coupling, not a fiction.
-// One documented exemption: internal/testdb (the DB test harness, providing
+// One documented exemption: shared:testdb (the DB test harness, providing
 // pools/roles/seeds) may be imported from any _test.go file; it is to Go
 // tests what the testing package is — infrastructure, not a context.
 package arch
@@ -42,62 +57,100 @@ import (
 // intra-module imports.
 var modulePath = mustModulePath()
 
-// allowedImports maps an internal package (relative to internal/) to the set
-// of internal packages it may import. Anything not listed is forbidden.
-// Packages absent from the map default to: no internal imports.
+// moduleClasses are the package classes that are NOT kernel: the bounded
+// contexts plus the api gateway. Every other internal package classifies as
+// "shared:<name>" (see classOf) — a new module must be registered here to get
+// its own matrix row, so an unregistered package can only ever be treated as
+// kernel (which forbids it from importing any module).
+var moduleClasses = map[string]bool{
+	"api":         true, // gateway, not a context (see apiGateway)
+	"game":        true,
+	"identity":    true,
+	"idempotency": true,
+	"ledger":      true,
+	"schedule":    true,
+}
+
+// allowedImports maps a class to the classes it may import. Anything not
+// listed is forbidden; a class absent from the map defaults to: no internal
+// imports. shared:* rows may list only shared:* (pinned by
+// TestSharedKernelImportsOnlyShared): the kernel never reaches a module.
 var allowedImports = map[string]map[string]bool{
-	"schedule": {"eventbus": true, "shared/persistence": true, "validator": true},
+	"schedule": {
+		"shared:eventbus":    true,
+		"shared:persistence": true,
+		"shared:validator":   true,
+	},
 	"game": {
 		"schedule":           true, // SchedulePort provider (resolve, ids, events)
 		"ledger":             true, // LedgerPort provider (token intents)
 		"idempotency":        true, // its own claim table
-		"eventbus":           true,
-		"shared/persistence": true,
-		"validator":          true,
+		"shared:eventbus":    true,
+		"shared:persistence": true,
+		"shared:validator":   true,
 	},
-	"identity":           {"shared/persistence": true, "validator": true},
-	"ledger":             {"shared/persistence": true},
-	"eventbus":           {}, // pure in-proc pub/sub: stdlib only
-	"idempotency":        {"validator": true},
-	"shared/persistence": {"validator": true}, // shared kernel: never a domain context
-	// shared/httpx is the transport shared by every HTTP surface: it reaches
+	"identity": {
+		"shared:persistence": true,
+		"shared:validator":   true,
+	},
+	"ledger": {
+		"shared:persistence": true,
+	},
+	"idempotency": {
+		"shared:validator": true,
+	},
+
+	// The shared kernel.
+	"shared:eventbus":    {}, // pure in-proc pub/sub: stdlib only
+	"shared:persistence": {"shared:validator": true},
+	// shared:httpx is the transport shared by every HTTP surface: it reaches
 	// the shared kernel (constants, persistence, validator) and nothing else —
-	// no domain context may ever be reachable from it (identity arrives as a
+	// no module may ever be reachable from it (identity arrives as a
 	// consumer-side interface, adapted at the composition boundary).
-	"shared/httpx": {"constants": true, "shared/persistence": true, "validator": true},
-	"validator":    {}, // leaf
-	"constants":    {},
-	"config":       {"vcs": true, "shared/persistence": true, "validator": true, "logging": true},
-	"logging":      {},
-	"mailer":       {},
-	"testdb":       {},
-	"vcs":          {},
-	"arch":         {}, // this package: walks the tree, imports nothing internal
+	"shared:httpx": {
+		"shared:constants":   true,
+		"shared:persistence": true,
+		"shared:validator":   true,
+	},
+	// shared:server owns the process lifecycle: it serves a fully-built
+	// handler and knows no module, so its only reach is the shutdown budgets.
+	"shared:server":    {"shared:constants": true},
+	"shared:validator": {},
+	"shared:constants": {},
+	"shared:config": {
+		"shared:vcs":         true,
+		"shared:persistence": true,
+		"shared:validator":   true,
+		"shared:logging":     true,
+	},
+	"shared:logging": {},
+	"shared:mailer":  {},
+	"shared:testdb":  {},
+	"shared:vcs":     {},
+	"shared:arch":    {}, // this package: walks the tree, imports nothing internal
 }
 
 // apiGateway lists what api (the HTTP gateway) may import: any context plus
-// the support packages, mirroring the gateway node in the map.
+// the shared kernel, mirroring the gateway node in the map.
 var apiGateway = map[string]bool{
-	"constants":          true,
-	"eventbus":           true,
 	"game":               true,
 	"idempotency":        true,
 	"identity":           true,
 	"ledger":             true,
-	"logging":            true,
-	"mailer":             true,
 	"schedule":           true,
-	"shared/httpx":       true,
-	"shared/persistence": true,
-	"validator":          true,
+	"shared:constants":   true,
+	"shared:eventbus":    true,
+	"shared:httpx":       true,
+	"shared:logging":     true,
+	"shared:mailer":      true,
+	"shared:persistence": true,
+	"shared:server":      true,
+	"shared:validator":   true,
 }
 
-// cmdRoot lists what the composition root may import: everything internal.
-func cmdRoot(importee string) bool { return true }
-
 type edge struct {
-	from string // internal package name, or "cmd/<name>"
-	to   string // internal package name
+	from string // class of the importing package ("cmd", "<module>" or "shared:<name>")
+	to   string // class of the imported package, same scheme
 	file string // repo-relative file path where the edge appears
 	line int
 }
@@ -129,26 +182,26 @@ func TestImportBoundaries(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		fromPkg, inCmd, ok := classify(path, root)
+		fromClass, ok := classify(path, root)
 		if !ok { // not part of the module's internal/cmd tree
+			return nil
+		}
+		// cmd is the composition root: any edge is fine.
+		if fromClass == "cmd" {
 			return nil
 		}
 		for _, imp := range f.Imports {
 			impPath := strings.Trim(imp.Path.Value, `"`)
-			toPkg, ok := internalPkg(impPath)
+			toClass, ok := internalPkg(impPath)
 			if !ok {
 				continue
 			}
-			// cmd/* is the composition root: any edge is fine.
-			if inCmd {
-				continue
-			}
 			// The test harness is infra, not a context: exempt in test files.
-			if isTest && toPkg == "testdb" {
+			if isTest && toClass == "shared:testdb" {
 				continue
 			}
 			edges = append(edges, edge{
-				from: fromPkg, to: toPkg,
+				from: fromClass, to: toClass,
 				file: relRepo(root, path, fset, imp.Pos()),
 			})
 		}
@@ -166,6 +219,7 @@ func TestImportBoundaries(t *testing.T) {
 		var ok bool
 		switch e.from {
 		case "api":
+			// The gateway is not a context: it may reach any context.
 			ok = apiGateway[e.to]
 		default:
 			ok = allowedImports[e.from][e.to]
@@ -182,79 +236,123 @@ func TestImportBoundaries(t *testing.T) {
 	}
 }
 
+// TestSharedKernelImportsOnlyShared pins the kernel direction: no shared:*
+// row may list a module class, so the kernel can never grow a dependency on a
+// bounded context (the edge check would already reject the import; this names
+// the rule when someone edits the matrix instead).
+func TestSharedKernelImportsOnlyShared(t *testing.T) {
+	for from, targets := range allowedImports {
+		if !strings.HasPrefix(from, "shared:") {
+			continue
+		}
+		for to := range targets {
+			if !strings.HasPrefix(to, "shared:") {
+				t.Errorf("matrix: %s may not import %s — the shared kernel imports shared:* only", from, to)
+			}
+		}
+	}
+}
+
 func (e edge) violation() string {
 	allowed := "nothing internal"
 	if a, exists := allowedImports[e.from]; exists && len(a) > 0 {
-		var names []string
-		for n := range a {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		allowed = strings.Join(names, ", ")
+		allowed = joinClasses(a)
 	}
 	if e.from == "api" {
-		allowed = "any context (gateway): constants, eventbus, game, idempotency, identity, ledger, logging, mailer, schedule, shared/persistence, validator"
+		allowed = "any context (gateway): " + joinClasses(apiGateway)
 	}
 	return "  X  " + e.from + " -> " + e.to + "\n     at " + e.file + "\n     " + e.from + " may import: " + allowed
 }
 
+// joinClasses renders a matrix row (a class set) as sorted, comma-separated
+// class names — violations and the rendered matrix speak the same vocabulary
+// the class scheme uses.
+func joinClasses(set map[string]bool) string {
+	names := make([]string, 0, len(set))
+	for n := range set {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
 func renderMatrix() string {
-	pkgs := make([]string, 0, len(allowedImports)+1)
+	pkgs := make([]string, 0, len(allowedImports)+2)
 	for p := range allowedImports {
 		pkgs = append(pkgs, p)
 	}
-	pkgs = append(pkgs, "api", "cmd/*")
+	pkgs = append(pkgs, "api", "cmd")
 	sort.Strings(pkgs)
 	var b strings.Builder
 	for _, p := range pkgs {
-		if p == "cmd/*" {
-			b.WriteString("  cmd/* -> any internal package (composition root)\n")
+		switch p {
+		case "cmd":
+			b.WriteString("  cmd -> any internal package (composition root)\n")
+			continue
+		case "api":
+			b.WriteString("  api -> " + joinClasses(apiGateway) + "\n")
 			continue
 		}
-		var names []string
-		if p == "api" {
-			for n := range apiGateway {
-				names = append(names, n)
-			}
-		} else {
-			for n := range allowedImports[p] {
-				names = append(names, n)
-			}
+		names := joinClasses(allowedImports[p])
+		if names == "" {
+			names = "—"
 		}
-		sort.Strings(names)
-		if len(names) == 0 {
-			names = []string{"—"}
-		}
-		b.WriteString("  " + p + " -> " + strings.Join(names, ", ") + "\n")
+		b.WriteString("  " + p + " -> " + names + "\n")
 	}
-	b.WriteString("  (+) any _test.go file may additionally import testdb (test harness)\n")
+	b.WriteString("  (+) any _test.go file may additionally import shared:testdb (test harness)\n")
 	return b.String()
 }
 
-// classify maps a .go file path to its internal package name and whether it
-// lives under cmd/ (composition root).
-func classify(path, root string) (pkg string, inCmd bool, ok bool) {
+// classify maps a .go file path to its import class: "cmd" under cmd/, and
+// otherwise the class of its directory below internal/ (see classOf).
+func classify(path, root string) (class string, ok bool) {
 	r, err := filepath.Rel(root, path)
 	if err != nil {
-		return "", false, false
+		return "", false
 	}
 	parts := strings.Split(filepath.ToSlash(filepath.Dir(r)), "/")
-	if len(parts) == 0 {
-		return "", false, false
+	if len(parts) == 0 || parts[0] == "." {
+		return "", false
 	}
-	if parts[0] == "cmd" {
-		return "cmd/" + parts[len(parts)-1], true, true
+	switch parts[0] {
+	case "cmd":
+		return "cmd", true
+	case "internal":
+	default:
+		return "", false
 	}
-	if parts[0] != "internal" {
-		return "", false, false
+	if len(parts) < 2 {
+		return "", false // a .go file directly in internal/: no package class
 	}
-	// Nested packages (internal/shared/persistence) are named by their path
-	// below internal/, so the matrix can hold shared kernel entries.
-	return strings.Join(parts[1:], "/"), false, true
+	return classOf(parts[1:])
+}
+
+// classOf maps the path segments below internal/ to a class name. Uniform at
+// any depth: the first segment decides — a module keeps its own class however
+// deeply it nests (internal/schedule/internal/foo is still "schedule"), and
+// everything else is kernel, named by its first one or two segments
+// (internal/shared/httpx → shared:httpx, internal/validator →
+// shared:validator). The collapse of nested packages into their module class
+// IS the "modules import module roots only" rule.
+func classOf(below []string) (string, bool) {
+	if len(below) == 0 || below[0] == "" {
+		return "", false
+	}
+	if below[0] == "shared" {
+		if len(below) < 2 || below[1] == "" {
+			return "", false // internal/shared itself holds no packages
+		}
+		return "shared:" + below[1], true
+	}
+	if moduleClasses[below[0]] {
+		return below[0], true
+	}
+	return "shared:" + below[0], true
 }
 
 // internalPkg reports whether an import path belongs to this module's
-// internal/ tree, returning the package name (e.g. "game").
+// internal/ tree, returning its class — the same class classify assigns to a
+// file in the imported package, so edges compare like for like.
 func internalPkg(impPath string) (string, bool) {
 	prefix := modulePath + "/internal/"
 	if !strings.HasPrefix(impPath, prefix) {
@@ -264,7 +362,7 @@ func internalPkg(impPath string) (string, bool) {
 	if rest == "" {
 		return "", false
 	}
-	return rest, true
+	return classOf(strings.Split(rest, "/"))
 }
 
 func findRepoRoot() (string, error) {
