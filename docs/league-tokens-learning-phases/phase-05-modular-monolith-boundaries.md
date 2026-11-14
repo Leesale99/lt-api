@@ -67,18 +67,21 @@ Owns:
 
 ## As built — Phase 05 final state
 
-Implemented across phases B–E. Commit trail:
+Implemented across the schedule carve-out, the event/Ledger intent seams, the
+DB context boundary and settlement serialization. Commit trail:
 
-- **B** — `276a6da` carve `internal/schedule` out of `internal/game`, hoist
-  `internal/idempotency`; `722fad7` api rewired to the schedule store.
-- **C** — `db3cbec` in-proc eventbus + schedule events and resolve/close
-  scripts; `c33baf4` ledger intent seam; `121b790` SchedulePort — resolve
-  moves fully to schedule, game's cross-table SQL eliminated.
-- **D** — `64fdec0` schema-per-context + one NOLOGIN role per context
-  (`schedule_app`, `game_app`, `identity_app`); `9a224a2` boundary smoke test
-  (game_app denied on schedule.*); `ece14d7` README database docs.
-- **E** — `35a4f9a` settlement handlers serialize on the settled round
-  (advisory lock); the edge matrix pinned in code by
+- **Schedule carve-out** — `276a6da` carve `internal/schedule` out of
+  `internal/game`, hoist `internal/idempotency`; `722fad7` api rewired to the
+  schedule store.
+- **Event/Ledger intent seams** — `db3cbec` in-proc eventbus + schedule events
+  and resolve/close scripts; `c33baf4` ledger intent seam; `121b790`
+  SchedulePort — resolve moves fully to schedule, game's cross-table SQL
+  eliminated.
+- **DB context boundary** — `64fdec0` schema-per-context + one NOLOGIN role per
+  context (`schedule_app`, `game_app`, `identity_app`); `9a224a2` boundary smoke
+  test (game_app denied on schedule.*); `ece14d7` README database docs.
+- **Settlement serialization** — `35a4f9a` settlement handlers serialize on the
+  settled round (advisory lock); the edge matrix pinned in code by
   `internal/arch/arch_test.go`.
 
 Ownership as built:
@@ -97,7 +100,7 @@ Ownership as built:
 
 The boundary is enforced twice: by the import matrix in `internal/arch` and
 by Postgres itself (schema-per-context, per-context roles — see the README's
-Phase D section). The dependency view lives in
+per-context database section). The dependency view lives in
 `docs/designs/bounded-contexts-dependency-map.mmd`.
 
 ## Boundary rule
