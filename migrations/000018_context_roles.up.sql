@@ -46,18 +46,51 @@
 --   GRANT schedule_app, game_app, identity_app TO <role> WITH ADMIN OPTION;
 -- else the membership grant below refuses, and the pools' SET ROLE would
 -- refuse at boot.
+--
+-- The guard also has to survive CONCURRENT appliers, which `go test ./...`
+-- creates: every suite migrates its own database, in parallel, but the
+-- roles and their settings are cluster state (pg_authid,
+-- pg_db_role_setting are SHARED catalogs — one cluster, one set of rows).
+-- A bare existence check is therefore a check-then-create race: two
+-- appliers both see the role absent and the loser hits
+-- pg_authid_rolname_index (23505) — the CI failure this replaces.
+--
+-- An advisory lock is NOT the answer here: advisory locks are keyed per
+-- database (the lock tag carries MyDatabaseId), so appliers in different
+-- databases never contend and would serialize nothing. Only a shared-
+-- catalog write does, so each cluster-level write tolerates losing the
+-- race instead:
+--
+--   - CREATE ROLE: the duplicate outcome (42710 when it already existed,
+--     23505 when two appliers insert at once) means another applier won;
+--     the subtransaction absorbs it and the role is there either way (the
+--     loser's insert waited for the winner's commit before failing).
+--   - ALTER ROLE ... SET: the loser of a concurrent write to the same
+--     pg_db_role_setting row gets 23505 (both inserted, the index decides)
+--     or XX000 "tuple concurrently updated" (both updated it); retried,
+--     bounded — the winner has committed by the time the conflict surfaces.
+--
+-- A DO block is a single transaction, so BEGIN ... EXCEPTION (a savepoint)
+-- is what keeps one lost race from aborting the whole migration; every
+-- retried statement is idempotent, so the second attempt converges.
 
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'schedule_app') THEN
+  BEGIN
     CREATE ROLE schedule_app NOLOGIN;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'game_app') THEN
+  EXCEPTION WHEN duplicate_object OR unique_violation THEN
+    NULL;
+  END;
+  BEGIN
     CREATE ROLE game_app NOLOGIN;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'identity_app') THEN
+  EXCEPTION WHEN duplicate_object OR unique_violation THEN
+    NULL;
+  END;
+  BEGIN
     CREATE ROLE identity_app NOLOGIN;
-  END IF;
+  EXCEPTION WHEN duplicate_object OR unique_violation THEN
+    NULL;
+  END;
 END $$;
 
 -- SQL in the stores stays unqualified. Enforcement is the GRANTs, not
@@ -66,9 +99,27 @@ END $$;
 -- server's pooled connections run SET ROLE from a shared login, so their
 -- post-connect hook sets SET ROLE + search_path explicitly — the pool
 -- wiring is where the pairing is enforced).
-ALTER ROLE schedule_app SET search_path = schedule, public;
-ALTER ROLE game_app SET search_path = game, public;
-ALTER ROLE identity_app SET search_path = identity, public;
+--
+-- The settings are shared rows too (see the roles block above): a bounded
+-- retry absorbs the lost race with another database's applier.
+DO $$
+DECLARE
+  attempt int;
+BEGIN
+  FOR attempt IN 1..50 LOOP
+    BEGIN
+      ALTER ROLE schedule_app SET search_path = schedule, public;
+      ALTER ROLE game_app SET search_path = game, public;
+      ALTER ROLE identity_app SET search_path = identity, public;
+      EXIT;
+    EXCEPTION WHEN unique_violation OR internal_error THEN
+      IF attempt = 50 THEN
+        RAISE;
+      END IF;
+      PERFORM pg_sleep(0.02);
+    END;
+  END LOOP;
+END $$;
 
 -- The two write-instant round gates as schedule's own definer operations
 -- (see header). SECURITY DEFINER + a pinned search_path: the body's
