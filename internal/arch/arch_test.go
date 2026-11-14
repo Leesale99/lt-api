@@ -359,8 +359,7 @@ type edge struct {
 	from     string // class of the importing package ("cmd", "<module>" or "shared:<name>")
 	to       string // class of the imported package, same scheme
 	file     string // repo-relative file path where the edge appears
-	line     int
-	testOnly bool // the importing file is a _test.go
+	testOnly bool   // the importing file is a _test.go
 }
 
 func TestImportBoundaries(t *testing.T) {

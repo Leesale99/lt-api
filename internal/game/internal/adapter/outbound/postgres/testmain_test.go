@@ -78,16 +78,6 @@ var migFiles = []string{
 	"../../../../../../migrations/000018_context_roles.up.sql",
 }
 
-// PostgreSQL error codes (see pgerrcode; inlined to avoid the extra dependency).
-const (
-	errCheckViolation    = "23514"
-	errForeignKey        = "23503"
-	errRestrictViolation = "23001"
-	errUniqueViolation   = "23505"
-	errUndefinedColumn   = "42703"
-	errUndefinedTable    = "42P01"
-)
-
 var pool *pgxpool.Pool
 
 // gamePool runs as game_app: the stores under test exercise the
@@ -219,25 +209,6 @@ func insertClosedMatch(ctx context.Context, t *testing.T, seasonID, roundID, hom
 	`, seasonID, roundID, homeID, awayID, ended).Scan(&id)
 	if err != nil {
 		t.Fatalf("insert closed match: %v", err)
-	}
-
-	return id
-}
-
-// insertClosedMatchScored plants a closed match carrying the given final
-// scores (insertClosedMatch hardcodes 88/79; the rule fixture needs
-// arbitrary vectors).
-func insertClosedMatchScored(ctx context.Context, t *testing.T, seasonID, roundID, homeID, awayID, home, away int) int {
-	t.Helper()
-
-	var id int
-	err := pool.QueryRow(ctx, `
-		INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at, ended_at)
-		VALUES ($1, $2, $3, $4, 1.75, 2.20, $5, $6, 'closed', now() - interval '5 hours', now() - interval '2 hours')
-		RETURNING id
-	`, seasonID, roundID, homeID, awayID, home, away).Scan(&id)
-	if err != nil {
-		t.Fatalf("insert scored closed match: %v", err)
 	}
 
 	return id

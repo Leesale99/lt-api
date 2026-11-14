@@ -83,23 +83,6 @@ func settleRound(ctx context.Context, t *testing.T, roundID int) {
 	}
 }
 
-// countRidesInState counts the rides of a round (reached through matches —
-// no round_id on rides, ADR-018) in a given state.
-func countRidesInState(ctx context.Context, t *testing.T, roundID int, state string) int {
-	t.Helper()
-
-	var n int
-	err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM game.rides rd
-		JOIN schedule.matches m ON m.id = rd.match_id
-		WHERE m.round_id = $1 AND rd.state = $2`, roundID, state).Scan(&n)
-	if err != nil {
-		t.Fatalf("count rides in state %q: %v", state, err)
-	}
-
-	return n
-}
-
 // plantPlayer inserts a player row on the fixture season (id 1 after
 // cleanup) to satisfy rides_player_id_fkey (rides RESTRICT-reference
 // players, ADR-018).

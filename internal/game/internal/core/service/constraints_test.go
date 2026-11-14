@@ -177,8 +177,6 @@ func cleanup(ctx context.Context, t *testing.T) {
 // wantCode: "" means the statement must succeed; otherwise the pg error code expected.
 type constraintCase struct {
 	name     string
-	query    string
-	args     []any
 	wantCode string
 }
 
