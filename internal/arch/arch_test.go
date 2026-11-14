@@ -32,10 +32,16 @@
 //     model/shared:persistence; service → model/repository/shared:eventbus;
 //     handler → model/service/shared:httpx. The layers cannot skip past each
 //     other, and no layer can reach the facade's callers.
-//   - game owns rides/players and consumes schedule via the SchedulePort and
-//     ledger via the LedgerPort interfaces; it may also touch the shared
-//     kernel (shared:persistence, shared:validator) and idempotency (its
-//     claim table). It must never import identity or api.
+//   - game is the HEXAGONAL module (phase 4): its facade (the root package)
+//     reaches its own core and adapters and nothing else; each nested package
+//     has its own row — core/domain → shared:validator; core/port →
+//     domain/shared:persistence; core/service → domain/port; the inbound HTTP
+//     adapter → core/service/domain/port + shared:httpx + the idempotency and
+//     identity ROOTS (wire-level translation only); the outbound ACL package
+//     is the ONLY game package importing schedule (the anti-corruption layer
+//     and the event translation); the Postgres adapter → core + the
+//     persistence kernel. The facade wires the ledger and idempotency ports
+//     the core declares.
 //   - ledger and eventbus are thin: no domain imports (shared:persistence
 //     only for ledger).
 //   - identity is also a LAYERED module (phase 5): its facade (the root
@@ -102,6 +108,24 @@ var moduleLayers = map[string]map[string]bool{
 	"identity": {"model": true, "repository": true, "service": true, "handler": true},
 }
 
+// hexLayers names a HEXAGONAL module's nested packages: their path below
+// internal/<module>/internal/ maps to their own class, so core/domain,
+// core/service and the two adapters cannot share a row. Lookup is by exact
+// path with a longest-prefix fallback (a new sub-package inherits its nearest
+// declared ancestor's row instead of silently collapsing into the module
+// class). An undeclared package still classifies as its module, so nothing
+// slips past the matrix.
+var hexLayers = map[string]map[string]string{
+	"game": {
+		"core/domain":               "game:core:domain",
+		"core/port":                 "game:core:port",
+		"core/service":              "game:core:service",
+		"adapter/inbound/http":      "game:adapter:inbound:http",
+		"adapter/outbound":          "game:adapter:outbound",
+		"adapter/outbound/postgres": "game:adapter:outbound:postgres",
+	},
+}
+
 // allowedImports maps a class to the classes it may import. Anything not
 // listed is forbidden; a class absent from the map defaults to: no internal
 // imports. shared:* rows may list only shared:* (pinned by
@@ -144,13 +168,71 @@ var allowedImports = map[string]map[string]bool{
 		"shared:persistence": true,
 		"shared:validator":   true,
 	},
+	// game (hexagonal): the facade wires its own layers and the ports'
+	// providers; it reaches no other context's internals (ledger and
+	// idempotency arrive as the core's ports, structurally satisfied).
 	"game": {
-		"schedule":           true, // SchedulePort provider (resolve, ids, events)
-		"ledger":             true, // LedgerPort provider (token intents)
-		"idempotency":        true, // its own claim table
-		"shared:eventbus":    true,
+		"game:adapter:inbound:http":      true,
+		"game:adapter:outbound":          true,
+		"game:adapter:outbound:postgres": true,
+		"game:core:domain":               true,
+		"game:core:port":                 true,
+		"game:core:service":              true,
+		"idempotency":                    true, // the facade wraps the claim engine
+		"shared:eventbus":                true,
+		"shared:persistence":             true, // the calendar capability contract
+	},
+	// The core domain: entities, validators, the state machine, sentinels. No
+	// storage, no transport, no calendar, no event bus.
+	"game:core:domain": {
+		"shared:validator": true,
+	},
+	// The consumer-side interfaces. They name the pgx tx type (the documented
+	// pragmatic exception) and the pagination primitives every list crosses
+	// with; nothing else.
+	"game:core:port": {
+		"game:core:domain":   true,
+		"shared:persistence": true,
+	},
+	// The use cases: ports and domain, plus the kernel's pagination shape the
+	// list use cases pass through and the validator the merged player row goes
+	// through. No storage, no transport, no calendar.
+	"game:core:service": {
+		"game:core:domain":   true,
+		"game:core:port":     true,
 		"shared:persistence": true,
 		"shared:validator":   true,
+	},
+	// The inbound HTTP adapter: the frozen wire DTOs over the use cases, plus
+	// the two module ROOTS it translates at the wire level (idempotency's token
+	// types/validation, identity's user existence read for player create).
+	"game:adapter:inbound:http": {
+		"game:core:domain":  true,
+		"game:core:port":    true,
+		"game:core:service": true,
+		"identity":          true,
+		"idempotency":       true,
+		"shared:constants":  true,
+		"shared:httpx":      true,
+		"shared:validator":  true,
+	},
+	// The outbound anti-corruption layers: THE only game package allowed to
+	// import the calendar. Its types and errors stop here.
+	"game:adapter:outbound": {
+		"game:core:domain":   true,
+		"game:core:port":     true,
+		"game:core:service":  true,
+		"idempotency":        true,
+		"schedule":           true,
+		"shared:eventbus":    true,
+		"shared:persistence": true,
+	},
+	// The Postgres adapter: the SQL behind the ports and its error
+	// translation. No calendar, no transport, no use cases.
+	"game:adapter:outbound:postgres": {
+		"game:core:domain":   true,
+		"game:core:port":     true,
+		"shared:persistence": true,
 	},
 	"identity": {
 		"identity:handler":    true,
@@ -241,11 +323,34 @@ var apiGateway = map[string]bool{
 	"shared:validator":   true,
 }
 
+// testOnlyImports widens a class's edge set for _test.go files only. The
+// end-to-end DB suites wire the real adapters over the real calendar — the
+// composition root's job — so the use-case package's tests reach the game
+// adapters, the ledger and the calendar facade, and the Postgres adapter's
+// tests reach the calendar ACL for the round guards. Production code in the
+// same package keeps the narrower row above (pinned by the same check).
+var testOnlyImports = map[string]map[string]bool{
+	"game:core:service": {
+		"game:adapter:outbound":          true,
+		"game:adapter:outbound:postgres": true,
+		"game:core:service":              true, // external test package import
+		"idempotency":                    true,
+		"ledger":                         true,
+		"schedule":                       true,
+		"shared:eventbus":                true,
+	},
+	"game:adapter:outbound:postgres": {
+		"game:adapter:outbound": true,
+		"schedule":              true,
+	},
+}
+
 type edge struct {
-	from string // class of the importing package ("cmd", "<module>" or "shared:<name>")
-	to   string // class of the imported package, same scheme
-	file string // repo-relative file path where the edge appears
-	line int
+	from     string // class of the importing package ("cmd", "<module>" or "shared:<name>")
+	to       string // class of the imported package, same scheme
+	file     string // repo-relative file path where the edge appears
+	line     int
+	testOnly bool // the importing file is a _test.go
 }
 
 func TestImportBoundaries(t *testing.T) {
@@ -295,7 +400,8 @@ func TestImportBoundaries(t *testing.T) {
 			}
 			edges = append(edges, edge{
 				from: fromClass, to: toClass,
-				file: relRepo(root, path, fset, imp.Pos()),
+				file:     relRepo(root, path, fset, imp.Pos()),
+				testOnly: isTest,
 			})
 		}
 		return nil
@@ -316,6 +422,9 @@ func TestImportBoundaries(t *testing.T) {
 			ok = apiGateway[e.to]
 		default:
 			ok = allowedImports[e.from][e.to]
+			if !ok {
+				ok = e.testOnly && testOnlyImports[e.from][e.to]
+			}
 		}
 		if !ok {
 			violations = append(violations, e.violation())
@@ -392,6 +501,9 @@ func renderMatrix() string {
 		}
 		b.WriteString("  " + p + " -> " + names + "\n")
 	}
+	for from, targets := range testOnlyImports {
+		b.WriteString("  (+) _test.go only: " + from + " -> " + joinClasses(targets) + "\n")
+	}
 	b.WriteString("  (+) any _test.go file may additionally import shared:testdb (test harness)\n")
 	return b.String()
 }
@@ -438,11 +550,28 @@ func classOf(below []string) (string, bool) {
 		return "shared:" + below[1], true
 	}
 	if moduleClasses[below[0]] {
-		// A layered module names its implementation packages: the facade is
-		// the module class, each declared layer its own ("schedule:model").
-		// Undeclared directories keep the module class (still inside it).
-		if layers, ok := moduleLayers[below[0]]; ok && len(below) >= 3 && below[1] == "internal" && layers[below[2]] {
-			return below[0] + ":" + below[2], true
+		if len(below) >= 3 && below[1] == "internal" {
+			// A layered module names its implementation packages: the facade is
+			// the module class, each declared layer its own ("schedule:model").
+			// Undeclared directories keep the module class (still inside it).
+			if layers, ok := moduleLayers[below[0]]; ok && layers[below[2]] {
+				return below[0] + ":" + below[2], true
+			}
+			// A hexagonal module names nested packages by their full path below
+			// internal/: core/domain, core/service, adapter/outbound/postgres.
+			if layers, ok := hexLayers[below[0]]; ok {
+				nested := strings.Join(below[2:], "/")
+				for {
+					if class, found := layers[nested]; found {
+						return class, true
+					}
+					cut := strings.LastIndex(nested, "/")
+					if cut < 0 {
+						break
+					}
+					nested = nested[:cut]
+				}
+			}
 		}
 		return below[0], true
 	}

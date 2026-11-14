@@ -1,4 +1,4 @@
-package game
+package domain
 
 // Unit tests for the ride validators: pure logic, no database, microseconds.
 // They pin the request-shape contract the handler checks before any store

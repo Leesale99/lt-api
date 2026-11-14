@@ -1,4 +1,4 @@
-package game
+package service_test
 
 // Concurrency tests for the ride commands' guarded write (Phase 04 TOCTOU
 // sweep): real goroutines racing on one ride row under READ COMMITTED,
@@ -6,7 +6,7 @@ package game
 // on exactly the states the design map allows:
 //
 //	close wins:  the round closes, the continuation is refused with
-//	             ErrRoundNotOpen (the round-refusal 409); the undecided
+//	             domain.ErrRoundNotOpen (the round-refusal 409); the undecided
 //	             ride settles later, behind RoundCompleted.
 //	lock wins:   the ride is locked onto the destination, and the close
 //	             finds no undecided ride of its own to settle — the ride
@@ -32,9 +32,10 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
-
+	"lt-api.aleksrdvn.com/internal/game/internal/adapter/outbound"
+	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
 	"lt-api.aleksrdvn.com/internal/schedule"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // raceIterations is how many fresh fixtures each race test re-runs. Each
@@ -52,7 +53,7 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 		t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
 			roundID, homeID, awayID := seedFixture(ctx, t)
 			closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-			ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+			ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 			if _, err := pool.Exec(ctx, `INSERT INTO schedule.rounds (season_id, number, status) VALUES (1, 2, 'created')`); err != nil {
 				t.Fatalf("insert round 2: %v", err)
@@ -103,7 +104,7 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 				t.Fatalf("Close() = %v, want nil", closeErr)
 			}
 
-			got, err := NewStore(gamePool).Rides.Get(ctx, ride.ID)
+			got, err := rideRepo.Get(ctx, ride.ID)
 			if err != nil {
 				t.Fatalf("Get() = %v, want nil", err)
 			}
@@ -113,20 +114,20 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 				// The continuation committed before the close: the ride is
 				// locked on the destination, outside the closing round's
 				// settlement set (which is keyed on the round's own matches).
-				if got.State != RideLocked || got.MatchID != destination {
+				if got.State != domain.RideLocked || got.MatchID != destination {
 					t.Errorf("lock won but state/match = %q/%d, want locked/%d", got.State, got.MatchID, destination)
 				}
-			case errors.Is(lockErr, ErrRoundNotOpen):
+			case errors.Is(lockErr, domain.ErrRoundNotOpen):
 				// The close committed first: the continuation's round gate
 				// re-read the committed row and refused it. The undecided
 				// ride settled right after, from the RoundCompleted payload
 				// (the settlement runs synchronously inside Close's
 				// post-commit publish — eventual, but in-process).
-				if got.State != RideUnlocked {
+				if got.State != domain.RideUnlocked {
 					t.Errorf("close won but state = %q, want unlocked (settled from the event)", got.State)
 				}
 			default:
-				t.Fatalf("RideLock() = %v, want nil or ErrRoundNotOpen", lockErr)
+				t.Fatalf("RideLock() = %v, want nil or domain.ErrRoundNotOpen", lockErr)
 			}
 
 			var status string
@@ -245,7 +246,7 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 		)
 		go func() {
 			defer close(done)
-			_, createErr = svc.RideCreate(ctx, Ride{
+			_, createErr = svc.RideCreate(ctx, domain.Ride{
 				PlayerID:     playerID,
 				TeamID:       homeID,
 				MatchID:      matchID,
@@ -260,8 +261,8 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 		}
 		<-done
 
-		if !errors.Is(createErr, ErrRoundNotOpen) {
-			t.Fatalf("RideCreate() = %v, want ErrRoundNotOpen", createErr)
+		if !errors.Is(createErr, domain.ErrRoundNotOpen) {
+			t.Fatalf("RideCreate() = %v, want domain.ErrRoundNotOpen", createErr)
 		}
 
 		var n int
@@ -278,7 +279,7 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 		matchID := insertSettledFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		playerID := plantPlayer(ctx, t, homeID)
 
-		create, err := svc.RideCreate(ctx, Ride{
+		create, err := svc.RideCreate(ctx, domain.Ride{
 			PlayerID:     playerID,
 			TeamID:       homeID,
 			MatchID:      matchID,
@@ -290,7 +291,7 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 		}
 		// The stored presentation is the marshaled ride: the created id
 		// comes out of the response body.
-		var created Ride
+		var created domain.Ride
 		if err := json.Unmarshal(create.Body, &created); err != nil {
 			t.Fatalf("decode stored ride: %v", err)
 		}
@@ -315,12 +316,12 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 			t.Fatalf("Close() = %v, want nil", err)
 		}
 
-		got, err := NewStore(gamePool).Rides.Get(ctx, created.ID)
+		got, err := rideRepo.Get(ctx, created.ID)
 		if err != nil {
 			t.Fatalf("Get() = %v, want nil", err)
 		}
 		// The created ride is version 1: settled (+1) then swept (+1).
-		if got.State != RideUnlocked || got.Version != 3 {
+		if got.State != domain.RideUnlocked || got.Version != 3 {
 			t.Errorf("state/version = %q/%d, want unlocked/3 (settled from the result, then swept)",
 				got.State, got.Version)
 		}
@@ -337,7 +338,7 @@ func TestService_RideBurnRacesExactlyOnce(t *testing.T) {
 		t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
 			roundID, homeID, awayID := seedFixture(ctx, t)
 			closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-			ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+			ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 			// Two independent requests (distinct keys), not a client retry:
 			// both claim their key and race the guarded write — the loser must
@@ -366,23 +367,23 @@ func TestService_RideBurnRacesExactlyOnce(t *testing.T) {
 				switch {
 				case err == nil:
 					winners++
-				case errors.Is(err, ErrRoundNotOpen), errors.Is(err, ErrInvalidTransition):
+				case errors.Is(err, domain.ErrRoundNotOpen), errors.Is(err, domain.ErrInvalidTransition):
 					// The loser either lost the guarded write (round sentinel)
 					// or its advisory read landed after the winner's commit
 					// (the transition graph refuses a burned ride).
 				default:
-					t.Fatalf("RideBurn() = %v, want nil, ErrRoundNotOpen or ErrInvalidTransition", err)
+					t.Fatalf("RideBurn() = %v, want nil, domain.ErrRoundNotOpen or domain.ErrInvalidTransition", err)
 				}
 			}
 			if winners != 1 {
 				t.Fatalf("winners = %d (errs: %v), want exactly 1", winners, errs)
 			}
 
-			got, err := NewStore(gamePool).Rides.Get(ctx, ride.ID)
+			got, err := rideRepo.Get(ctx, ride.ID)
 			if err != nil {
 				t.Fatalf("Get() = %v, want nil", err)
 			}
-			if got.State != RideBurned {
+			if got.State != domain.RideBurned {
 				t.Errorf("state = %q, want burned", got.State)
 			}
 			if got.Version != ride.Version+1 {
@@ -399,12 +400,12 @@ func TestService_RideBurnRacesExactlyOnce(t *testing.T) {
 // then serialize on the guarded write. The loser's CAS re-evaluates against
 // the winner's commit and matches 0 rows on the version/state predicates.
 //
-// That cause must answer ErrInvalidTransition (the invalid-state 409: the
-// claimed pre-state no longer exists), never ErrRoundNotOpen — the round is
+// That cause must answer domain.ErrInvalidTransition (the invalid-state 409: the
+// claimed pre-state no longer exists), never domain.ErrRoundNotOpen — the round is
 // open for the whole fixture, so a round-refusal here would be a lie that
 // sends the client away from a retryable conflict. The domain read side of
 // this same race (Get landing after the winner's commit) already answers
-// ErrInvalidTransition via canTransition; the write side now agrees.
+// domain.ErrInvalidTransition via canTransition; the write side now agrees.
 func TestService_RideCommandsRaceOnOneRide(t *testing.T) {
 	requireDB(t)
 
@@ -415,7 +416,7 @@ func TestService_RideCommandsRaceOnOneRide(t *testing.T) {
 		t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
 			roundID, homeID, awayID := seedFixture(ctx, t)
 			closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-			ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+			ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 			// Two independent requests (distinct keys), one snapshot: the
 			// loser must never land its write, and must lose with the
@@ -440,13 +441,13 @@ func TestService_RideCommandsRaceOnOneRide(t *testing.T) {
 				switch {
 				case err == nil:
 					winners++
-				case errors.Is(err, ErrInvalidTransition):
+				case errors.Is(err, domain.ErrInvalidTransition):
 					// The loser: either its domain read saw the winner's
 					// commit (burned/unlocked is outside won_pending's
 					// transitions) or its guarded write lost the CAS and
 					// classifyUpdateRefusal named the cause.
 				default:
-					t.Fatalf("ride command = %v, want nil or ErrInvalidTransition", err)
+					t.Fatalf("ride command = %v, want nil or domain.ErrInvalidTransition", err)
 				}
 			}
 			if winners != 1 {
@@ -456,12 +457,12 @@ func TestService_RideCommandsRaceOnOneRide(t *testing.T) {
 			// The settled state: exactly one decision landed — burned or
 			// unlocked, at exactly one version bump. A loser that wrote
 			// anything shows up here as a double bump.
-			got, err := NewStore(gamePool).Rides.Get(ctx, ride.ID)
+			got, err := rideRepo.Get(ctx, ride.ID)
 			if err != nil {
 				t.Fatalf("Get() = %v, want nil", err)
 			}
 			switch got.State {
-			case RideBurned, RideUnlocked:
+			case domain.RideBurned, domain.RideUnlocked:
 			default:
 				t.Errorf("state = %q, want burned or unlocked", got.State)
 			}
@@ -520,8 +521,8 @@ func TestResolveMatchRaces(t *testing.T) {
 			t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
 				roundID, homeID, awayID := seedFixture(ctx, t)
 				matchID, version := startedMatch(ctx, t, roundID, homeID, awayID)
-				r1 := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
-				r2 := plantRide(ctx, t, matchID, awayID, RideLocked, decimal.Zero, 0)
+				r1 := plantRide(ctx, t, matchID, homeID, domain.RideLocked, decimal.Zero, 0)
+				r2 := plantRide(ctx, t, matchID, awayID, domain.RideLocked, decimal.Zero, 0)
 
 				// Two independent resolutions, same caller version: both pass
 				// their snapshot check, then serialize on the match row lock.
@@ -560,10 +561,10 @@ func TestResolveMatchRaces(t *testing.T) {
 				// away lost, both at exactly one version bump. A loser that
 				// had written anything would show up here as a double bump.
 				for _, tc := range []struct {
-					ride  Ride
-					state RideState
-				}{{r1, RideWonPending}, {r2, RideLost}} {
-					got, err := svc.Store.Rides.Get(ctx, tc.ride.ID)
+					ride  domain.Ride
+					state domain.RideState
+				}{{r1, domain.RideWonPending}, {r2, domain.RideLost}} {
+					got, err := svc.RideGet(ctx, tc.ride.ID)
 					if err != nil {
 						t.Fatalf("Get(%d): %v", tc.ride.ID, err)
 					}
@@ -588,7 +589,7 @@ func TestResolveMatchRaces(t *testing.T) {
 			t.Run(fmt.Sprintf("iteration %d", i), func(t *testing.T) {
 				roundID, homeID, awayID := seedFixture(ctx, t)
 				matchID, _ := startedMatch(ctx, t, roundID, homeID, awayID)
-				ride := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
+				ride := plantRide(ctx, t, matchID, homeID, domain.RideLocked, decimal.Zero, 0)
 
 				// The close command's round row, as its callers supply it:
 				// read the stored facts, carry the target status like the
@@ -637,13 +638,13 @@ func TestResolveMatchRaces(t *testing.T) {
 				// post-commit publish. When the close loses the gate
 				// (unclosed match at its flip), the player keeps the
 				// decision and the ride stays where the resolve left it.
-				var wantState RideState
+				var wantState domain.RideState
 				var wantVersion int
 				switch {
 				case closeErr == nil:
-					wantState, wantVersion = RideUnlocked, 3
+					wantState, wantVersion = domain.RideUnlocked, 3
 				case errors.Is(closeErr, persistence.ErrRecordInUse):
-					wantState, wantVersion = RideWonPending, 2
+					wantState, wantVersion = domain.RideWonPending, 2
 				default:
 					t.Fatalf("Close() = %v, want nil or ErrRecordInUse", closeErr)
 				}
@@ -656,7 +657,7 @@ func TestResolveMatchRaces(t *testing.T) {
 					t.Errorf("match status = %q, want closed", matchStatus)
 				}
 
-				got, err := NewStore(gamePool).Rides.Get(ctx, ride.ID)
+				got, err := rideRepo.Get(ctx, ride.ID)
 				if err != nil {
 					t.Fatalf("Get() = %v, want nil", err)
 				}
@@ -707,7 +708,7 @@ func TestResolveMatchRaces(t *testing.T) {
 // sweep the freshly won_pending ride unlocked — whichever order the two
 // settlements run in. Under the serialization the ride lands unlocked/3
 // regardless of timing; without it, the delivery loses the CAS and
-// surfaces ErrInvalidTransition (the stranded shape).
+// surfaces domain.ErrInvalidTransition (the stranded shape).
 func TestSettlementHandlersSerializeOnTheRound(t *testing.T) {
 	requireDB(t)
 
@@ -717,7 +718,7 @@ func TestSettlementHandlersSerializeOnTheRound(t *testing.T) {
 	roundID, homeID, awayID := seedFixture(ctx, t)
 	matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "-30 minutes")
 	scoreStartedMatch(ctx, t, matchID)
-	ride := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
+	ride := plantRide(ctx, t, matchID, homeID, domain.RideLocked, decimal.Zero, 0)
 
 	// The resolve settlement, held mid-flight on its own transaction:
 	// its serialization and its guarded arrival, nothing committed yet.
@@ -727,10 +728,10 @@ func TestSettlementHandlersSerializeOnTheRound(t *testing.T) {
 	}
 	defer func() { _ = txResolve.Rollback(context.Background()) }()
 
-	if _, err := txResolve.Exec(ctx, settlementLockSQL, settlementLockClass, roundID); err != nil {
+	if err := transactor.LockSettlementRound(ctx, txResolve, roundID); err != nil {
 		t.Fatalf("settlement lock: %v", err)
 	}
-	if _, err := svc.Store.Rides.ArriveTx(ctx, txResolve, ride.ID, RideLocked, RideWonPending, ride.Version); err != nil {
+	if _, err := rideRepo.ArriveTx(ctx, txResolve, ride.ID, domain.RideLocked, domain.RideWonPending, ride.Version); err != nil {
 		t.Fatalf("held resolve arrival: %v", err)
 	}
 
@@ -758,7 +759,7 @@ func TestSettlementHandlersSerializeOnTheRound(t *testing.T) {
 		},
 	}
 	delivered := make(chan error, 1)
-	go func() { delivered <- svc.OnRoundCompleted(ctx, event) }()
+	go func() { delivered <- svc.OnRoundCompleted(ctx, outbound.TranslateRoundCompleted(event)) }()
 
 	// Let the delivery reach its lock (or, unserialized, its contended
 	// read) before the held settlement commits: the overlap this test
@@ -780,12 +781,12 @@ func TestSettlementHandlersSerializeOnTheRound(t *testing.T) {
 		t.Fatal("OnRoundCompleted did not return; still blocked behind the held settlement?")
 	}
 
-	got, err := svc.Store.Rides.Get(ctx, ride.ID)
+	got, err := svc.RideGet(ctx, ride.ID)
 	if err != nil {
 		t.Fatalf("Get() = %v, want nil", err)
 	}
-	if got.State != RideUnlocked || got.Version != 3 {
-		t.Errorf("ride state/version = %q/%d, want %q/3 (settled by the resolve, force-resolved by the close)", got.State, got.Version, RideUnlocked)
+	if got.State != domain.RideUnlocked || got.Version != 3 {
+		t.Errorf("ride state/version = %q/%d, want %q/3 (settled by the resolve, force-resolved by the close)", got.State, got.Version, domain.RideUnlocked)
 	}
 	if !got.Acc.IsZero() {
 		t.Errorf("acc = %s, want 0 (the force-resolve releases the bonus)", got.Acc)

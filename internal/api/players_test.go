@@ -14,6 +14,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/eventbus"
 	"lt-api.aleksrdvn.com/internal/game"
+	"lt-api.aleksrdvn.com/internal/idempotency"
 	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/schedule"
@@ -25,35 +26,29 @@ import (
 // {request -> want code + body fragments}.
 //
 // newTestApplication wires the real test-database pool set up by TestMain.
-// The schedule service publishes on an in-process bus (the same shape the
-// composition root wires); subscribers attach to it in the tests that
-// exercise the event seam.
-
+// The composition is the composition root's: the calendar module publishes on
+// an in-process bus, the game module consumes it through its event ACL, and
+// the calendar's delete policies ask the game facade about its references.
 func newTestApplication() *Application {
-	// Composition-root wiring: each context store on its own role-restricted pool
-	// (the composition-root shape of cmd/api). testPool (owner) exists
+	// Composition-root wiring: each context module on its own role-restricted
+	// pool (the composition-root shape of cmd/api). testPool (owner) exists
 	// for fixture planting only.
 	bus := eventbus.New()
-	scheduleModule := schedule.NewModule(schedulePool, bus, slog.New(slog.NewTextHandler(os.Stderr, nil)))
-	gameStore := game.NewStore(gamePool)
-	gameService := game.NewService(gameStore, scheduleModule, ledger.New())
-	// The module's delete policies consult game for its references, the
-	// same adapter the composition root installs.
-	scheduleModule.UseGameRefs(GameUsageAdapter{Store: gameStore})
-	// The event seam wired like the composition root: resolve/close publish
-	// post-commit, the game handlers settle from the payloads in-process.
-	eventbus.Subscribe(bus, func(ctx context.Context, event schedule.MatchResultRecorded) error {
-		return gameService.OnMatchResultRecorded(ctx, event)
-	})
-	eventbus.Subscribe(bus, func(ctx context.Context, event schedule.RoundCompleted) error {
-		return gameService.OnRoundCompleted(ctx, event)
-	})
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	scheduleModule := schedule.NewModule(schedulePool, bus, log)
+	identityModule := identity.NewModule(identityPool, nopMailer{})
+	gameModule := game.NewModule(gamePool, scheduleModule, ledger.New(), idempotency.New(), bus, log)
+	gameModule.UseIdentity(identityModule)
+
+	// The module's delete policies consult game for its references, the same
+	// wiring the composition root installs.
+	scheduleModule.UseGameRefs(gameModule)
 
 	return &Application{
-		Server:   &server.Server{Logger: slog.New(slog.NewTextHandler(os.Stderr, nil))},
-		Game:     gameService,
+		Server:   &server.Server{Logger: log},
+		Game:     gameModule,
 		Schedule: scheduleModule,
-		Identity: identity.NewModule(identityPool, nopMailer{}),
+		Identity: identityModule,
 	}
 }
 

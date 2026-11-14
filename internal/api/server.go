@@ -26,21 +26,22 @@ type Application struct {
 	// constructed with Enabled=false it passes everything through.
 	RateLimiter *httpx.RateLimiter
 
-	// Game is the ride domain's service: the entry point to ride commands.
-	// Handlers call domain operations on it; ride/player CRUD that carries
-	// no rules goes through Game.Store.
+	// Game is the ride gameplay context's module: it registers its own routes
+	// (players, rides) and exposes the reference capabilities the calendar's
+	// delete policies consult. It is a hexagonal module — the gateway only
+	// sees its facade.
 	//
 	// Schedule is the calendar context's module (its own context since the
 	// Game/Schedule split): it registers its own routes (seasons, rounds,
-	// matches, teams), and the player handlers read its season/team
-	// existence surface. The module also satisfies game's SchedulePort and
-	// publishes the event seam's payloads.
+	// matches, teams). The module also publishes the event seam's payloads,
+	// which the game module consumes through its own event ACL — the gateway
+	// wires both and knows neither's internals.
 	//
 	// Identity is the authentication context's module: it registers its own
 	// routes (users, user-tokens), owns its mailer, and satisfies httpx's
 	// UserLookup/PermissionLookup natively (no gateway adapter), so the
 	// middleware chain is built from the module itself.
-	Game     *game.Service
+	Game     *game.Module
 	Schedule *schedule.Module
 	Identity *identity.Module
 }

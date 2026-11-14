@@ -16,6 +16,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/config"
 	"lt-api.aleksrdvn.com/internal/eventbus"
 	"lt-api.aleksrdvn.com/internal/game"
+	"lt-api.aleksrdvn.com/internal/idempotency"
 	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/logging"
@@ -106,31 +107,31 @@ func main() {
 	// transaction — same pool, same role.
 	eventBus := eventbus.New()
 	scheduleModule := schedule.NewModule(pools.Schedule, eventBus, logger)
-	gameStore := game.NewStore(pools.Game)
 	// The ledger is the money authority (phase-05/06): every money mutation
-	// the ride commands and settlement handlers need runs as an intent on
-	// it, inside the caller's transaction. Phase 06 swaps the
+	// the ride commands and settlement handlers need runs as an intent on it,
+	// inside the caller's transaction. Game declares the port; the ledger
+	// facade satisfies it structurally (no adapter). Phase 06 swaps the
 	// implementation to real balances/journal behind the same interface.
 	ledgerRepo := ledger.New()
-	gameService := game.NewService(gameStore, scheduleModule, ledgerRepo)
 	identityModule := identity.NewModule(pools.Identity, mailer)
 
-	// The schedule module's delete policies ask game whether a team or
-	// match is still referenced before removing it; the gateway's adapter
-	// answers from the game store (schedule declares the port, game owns
-	// the facts, nobody imports across the wrong way).
-	scheduleModule.UseGameRefs(api.GameUsageAdapter{Store: gameStore})
+	// The game module is hexagonal: the facade takes the calendar facade
+	// (wrapped by its own anti-corruption layer), the ledger, the idempotency
+	// engine and the event bus, and wires its inbound transport, its
+	// outbound Postgres adapters and its settlement subscriptions itself. The
+	// event payload translation (schedule → game) is the module's own,
+	// inside its outbound ACL.
+	gameModule := game.NewModule(pools.Game, scheduleModule, ledgerRepo, idempotency.New(), eventBus, logger)
+	// The registration transport checks the principal's user row before game
+	// writes its reference (identity is another context): the module takes the
+	// identity facade, never imports it.
+	gameModule.UseIdentity(identityModule)
 
-	// The event seam (ADR-027): schedule publishes post-commit, game
-	// settles from the payloads. *schedule.Module satisfies game's
-	// SchedulePort structurally, so the wiring above passes the module as
-	// the port.
-	eventbus.Subscribe(eventBus, func(ctx context.Context, event schedule.MatchResultRecorded) error {
-		return gameService.OnMatchResultRecorded(ctx, event)
-	})
-	eventbus.Subscribe(eventBus, func(ctx context.Context, event schedule.RoundCompleted) error {
-		return gameService.OnRoundCompleted(ctx, event)
-	})
+	// The schedule module's delete policies ask game whether a team or match
+	// is still referenced before removing it; the game facade answers from its
+	// own rows (schedule declares the port, game owns the facts, nobody
+	// imports across the wrong way).
+	scheduleModule.UseGameRefs(gameModule)
 
 	// The gateway owns the module deps and builds the handler chain; the
 	// shared server owns the process lifecycle around it and knows nothing
@@ -141,7 +142,7 @@ func main() {
 	app := &api.Application{
 		TrustedOrigins: cfg.CORS.Origins,
 		RateLimiter:    rateLimiter,
-		Game:           gameService,
+		Game:           gameModule,
 		Schedule:       scheduleModule,
 		Identity:       identityModule,
 	}

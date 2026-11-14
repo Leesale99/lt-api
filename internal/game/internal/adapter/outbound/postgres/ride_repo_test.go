@@ -1,15 +1,14 @@
-package game
+package postgres
 
-// Store-level tests for RideStore: Insert / Get / GetAll / Update against
-// the real rides table, plus the DB gates the store must translate —
-// rides_state_gate (P0001 → ErrInvalidTransition, ADR-020) and the FK
-// parents (23503 → ErrRecordNotFound, the PlayerStore convention).
+// Adapter-level tests for RideRepository: Insert / Get / GetAll / Update
+// against the real rides table, plus the DB gates the adapter must translate —
+// rides_state_gate (P0001 → domain.ErrInvalidTransition, ADR-020) and the FK
+// parents (23503 → domain.ErrNotFound).
 //
-// Same harness as the service tests (constraints_test.go: pool, seed,
-// cleanup, requireDB). Since 000012 rides are planted locked and walked
-// to the requested state through the gate (service_test.go plantRide) —
-// the walk needs the fixture match's scores to agree with the planted
-// state, so decided-state plants go on closed matches.
+// Harness in testmain_test.go (pool, seed, cleanup, requireDB, planters).
+// Since 000012 rides are planted locked and walked to the requested state
+// through the gate (plantRide) — the walk needs the fixture match's scores to
+// agree with the planted state, so decided-state plants go on closed matches.
 
 import (
 	"context"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
 	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
@@ -30,7 +30,7 @@ func rideFilters(sort string) persistence.Filters {
 	}
 }
 
-func TestRideStore_InsertAndGet(t *testing.T) {
+func TestRideRepository_InsertAndGet(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
@@ -40,12 +40,12 @@ func TestRideStore_InsertAndGet(t *testing.T) {
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		playerID := plantPlayer(ctx, t, homeID)
 
-		rs := NewStore(gamePool).Rides
-		ride, err := rs.Insert(ctx, Ride{
+		rs := rideRepo
+		ride, err := rs.Insert(ctx, domain.Ride{
 			PlayerID:     playerID,
 			TeamID:       homeID,
 			MatchID:      matchID,
-			State:        RideLocked,
+			State:        domain.RideLocked,
 			TokensLocked: decimal.NewFromInt(100),
 			BaseAtLock:   decimal.NewFromFloat(95.50),
 			Acc:          decimal.NewFromInt(7),
@@ -74,8 +74,8 @@ func TestRideStore_InsertAndGet(t *testing.T) {
 		if got.ID != ride.ID || got.PlayerID != playerID || got.TeamID != homeID || got.MatchID != matchID {
 			t.Errorf("identity columns: got %+v, want player %d team %d match %d", got, playerID, homeID, matchID)
 		}
-		if got.State != RideLocked {
-			t.Errorf("state = %q, want %q", got.State, RideLocked)
+		if got.State != domain.RideLocked {
+			t.Errorf("state = %q, want %q", got.State, domain.RideLocked)
 		}
 		if !got.TokensLocked.Equal(decimal.NewFromInt(100)) {
 			t.Errorf("tokens_locked = %s, want 100", got.TokensLocked)
@@ -91,35 +91,35 @@ func TestRideStore_InsertAndGet(t *testing.T) {
 		}
 	})
 
-	t.Run("get unknown ride is ErrRecordNotFound", func(t *testing.T) {
+	t.Run("get unknown ride is domain.ErrNotFound", func(t *testing.T) {
 		seedFixture(ctx, t)
 
-		_, err := NewStore(gamePool).Rides.Get(ctx, 999)
+		_, err := rideRepo.Get(ctx, 999)
 
-		if !errors.Is(err, persistence.ErrRecordNotFound) {
-			t.Fatalf("Get(999) = %v, want ErrRecordNotFound", err)
+		if !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("Get(999) = %v, want domain.ErrNotFound", err)
 		}
 	})
 
-	t.Run("insert with unknown player is ErrRecordNotFound", func(t *testing.T) {
+	t.Run("insert with unknown player is domain.ErrNotFound", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 
-		_, err := NewStore(gamePool).Rides.Insert(ctx, Ride{
+		_, err := rideRepo.Insert(ctx, domain.Ride{
 			PlayerID:     999, // no such player
 			TeamID:       homeID,
 			MatchID:      matchID,
-			State:        RideLocked,
+			State:        domain.RideLocked,
 			TokensLocked: decimal.NewFromInt(100),
 			BaseAtLock:   decimal.NewFromInt(95),
 		})
 
-		if !errors.Is(err, persistence.ErrRecordNotFound) {
-			t.Fatalf("Insert() = %v, want ErrRecordNotFound (FK 23503 mapping)", err)
+		if !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("Insert() = %v, want domain.ErrNotFound (FK 23503 mapping)", err)
 		}
 	})
 
-	t.Run("insert of a non-locked state is ErrInvalidTransition (000012)", func(t *testing.T) {
+	t.Run("insert of a non-locked state is domain.ErrInvalidTransition (000012)", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		playerID := plantPlayer(ctx, t, homeID)
@@ -127,18 +127,18 @@ func TestRideStore_InsertAndGet(t *testing.T) {
 		// rides_state_insert_gate: rides are born locked (ADR-019) — a
 		// direct INSERT that skips the transition graph reaches no other
 		// state, the same hole the BEFORE UPDATE gate could not close.
-		rs := NewStore(gamePool).Rides
-		_, err := rs.Insert(ctx, Ride{
+		rs := rideRepo
+		_, err := rs.Insert(ctx, domain.Ride{
 			PlayerID:     playerID,
 			TeamID:       homeID,
 			MatchID:      matchID,
-			State:        RideWonPending,
+			State:        domain.RideWonPending,
 			TokensLocked: decimal.NewFromInt(100),
 			BaseAtLock:   decimal.NewFromInt(95),
 		})
 
-		if !errors.Is(err, ErrInvalidTransition) {
-			t.Fatalf("Insert() = %v, want ErrInvalidTransition (000012 gate mapping)", err)
+		if !errors.Is(err, domain.ErrInvalidTransition) {
+			t.Fatalf("Insert() = %v, want domain.ErrInvalidTransition (000012 gate mapping)", err)
 		}
 
 		var count int
@@ -151,11 +151,11 @@ func TestRideStore_InsertAndGet(t *testing.T) {
 	})
 }
 
-// TestRideStore_GetAll pins the filter/sort/pagination contract of the list
+// TestRideRepository_GetAll pins the filter/sort/pagination contract of the list
 // query. Every filter is exercised both ways (matching and not matching) —
 // a filter that silently matches everything, or binds the wrong placeholder,
 // only shows up when the negative case is asserted too.
-func TestRideStore_GetAll(t *testing.T) {
+func TestRideRepository_GetAll(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
@@ -170,13 +170,13 @@ func TestRideStore_GetAll(t *testing.T) {
 		player1 := plantPlayer(ctx, t, homeID)
 		player2 := plantPlayer(ctx, t, awayID)
 
-		rs := NewStore(gamePool).Rides
+		rs := rideRepo
 
-		r1, err := rs.Insert(ctx, Ride{PlayerID: player1, TeamID: homeID, MatchID: match1, State: RideLocked, TokensLocked: decimal.NewFromInt(100), BaseAtLock: decimal.NewFromInt(95)})
+		r1, err := rs.Insert(ctx, domain.Ride{PlayerID: player1, TeamID: homeID, MatchID: match1, State: domain.RideLocked, TokensLocked: decimal.NewFromInt(100), BaseAtLock: decimal.NewFromInt(95)})
 		if err != nil {
 			t.Fatalf("plant r1: %v", err)
 		}
-		r2, err := rs.Insert(ctx, Ride{PlayerID: player1, TeamID: homeID, MatchID: match2, State: RideLocked, TokensLocked: decimal.NewFromInt(100), BaseAtLock: decimal.NewFromInt(95), Acc: decimal.NewFromInt(90), Streak: 1})
+		r2, err := rs.Insert(ctx, domain.Ride{PlayerID: player1, TeamID: homeID, MatchID: match2, State: domain.RideLocked, TokensLocked: decimal.NewFromInt(100), BaseAtLock: decimal.NewFromInt(95), Acc: decimal.NewFromInt(90), Streak: 1})
 		if err != nil {
 			t.Fatalf("plant r2: %v", err)
 		}
@@ -185,92 +185,92 @@ func TestRideStore_GetAll(t *testing.T) {
 		if _, err := pool.Exec(ctx, `UPDATE game.rides SET state = 'won_pending' WHERE id = $1`, r2.ID); err != nil {
 			t.Fatalf("walk r2 to won_pending: %v", err)
 		}
-		r3, err := rs.Insert(ctx, Ride{PlayerID: player2, TeamID: awayID, MatchID: match1, State: RideLocked, TokensLocked: decimal.NewFromInt(50), BaseAtLock: decimal.NewFromInt(95)})
+		r3, err := rs.Insert(ctx, domain.Ride{PlayerID: player2, TeamID: awayID, MatchID: match1, State: domain.RideLocked, TokensLocked: decimal.NewFromInt(50), BaseAtLock: decimal.NewFromInt(95)})
 		if err != nil {
 			t.Fatalf("plant r3: %v", err)
 		}
 
 		tests := []struct {
 			name      string
-			query     func(ctx context.Context) ([]Ride, persistence.Metadata, error)
+			query     func(ctx context.Context) ([]domain.Ride, persistence.Metadata, error)
 			wantCount int
 			wantFirst int // id of the first returned row (sort-sensitive); 0 = don't check
 		}{
 			{
 				name: "no filters returns all three",
-				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
+				query: func(ctx context.Context) ([]domain.Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 0, 0, 0, "", rideFilters("id"))
 				},
 				wantCount: 3,
 			},
 			{
 				name: "filter by player",
-				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
+				query: func(ctx context.Context) ([]domain.Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, player1, 0, 0, "", rideFilters("id"))
 				},
 				wantCount: 2,
 			},
 			{
 				name: "player filter matching nothing",
-				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
+				query: func(ctx context.Context) ([]domain.Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 999, 0, 0, "", rideFilters("id"))
 				},
 				wantCount: 0,
 			},
 			{
 				name: "filter by team",
-				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
+				query: func(ctx context.Context) ([]domain.Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 0, homeID, 0, "", rideFilters("id"))
 				},
 				wantCount: 2,
 			},
 			{
 				name: "team filter matching nothing",
-				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
+				query: func(ctx context.Context) ([]domain.Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 0, 999, 0, "", rideFilters("id"))
 				},
 				wantCount: 0,
 			},
 			{
 				name: "filter by match",
-				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
+				query: func(ctx context.Context) ([]domain.Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 0, 0, match1, "", rideFilters("id"))
 				},
 				wantCount: 2,
 			},
 			{
 				name: "match filter matching nothing",
-				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
+				query: func(ctx context.Context) ([]domain.Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 0, 0, 999, "", rideFilters("id"))
 				},
 				wantCount: 0,
 			},
 			{
 				name: "filter by state",
-				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
-					return rs.GetAll(ctx, 0, 0, 0, 0, RideLocked, rideFilters("id"))
+				query: func(ctx context.Context) ([]domain.Ride, persistence.Metadata, error) {
+					return rs.GetAll(ctx, 0, 0, 0, 0, domain.RideLocked, rideFilters("id"))
 				},
 				wantCount: 2,
 			},
 			{
 				name: "state filter matching nothing",
-				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
-					return rs.GetAll(ctx, 0, 0, 0, 0, RideBurned, rideFilters("id"))
+				query: func(ctx context.Context) ([]domain.Ride, persistence.Metadata, error) {
+					return rs.GetAll(ctx, 0, 0, 0, 0, domain.RideBurned, rideFilters("id"))
 				},
 				wantCount: 0,
 			},
 			{
 				// Combined filters intersect: player 1 has one locked ride.
 				name: "combined player and state filters",
-				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
-					return rs.GetAll(ctx, 0, player1, 0, 0, RideLocked, rideFilters("id"))
+				query: func(ctx context.Context) ([]domain.Ride, persistence.Metadata, error) {
+					return rs.GetAll(ctx, 0, player1, 0, 0, domain.RideLocked, rideFilters("id"))
 				},
 				wantCount: 1,
 				wantFirst: r1.ID,
 			},
 			{
 				name: "combined player and match filters",
-				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
+				query: func(ctx context.Context) ([]domain.Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, player1, 0, match2, "", rideFilters("id"))
 				},
 				wantCount: 1,
@@ -278,7 +278,7 @@ func TestRideStore_GetAll(t *testing.T) {
 			},
 			{
 				name: "sort descending puts the newest ride first",
-				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
+				query: func(ctx context.Context) ([]domain.Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 0, 0, 0, "", rideFilters("-id"))
 				},
 				wantCount: 3,
@@ -286,7 +286,7 @@ func TestRideStore_GetAll(t *testing.T) {
 			},
 			{
 				name: "single id filter returns exactly that ride",
-				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
+				query: func(ctx context.Context) ([]domain.Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, r2.ID, 0, 0, 0, "", rideFilters("id"))
 				},
 				wantCount: 1,
@@ -318,9 +318,9 @@ func TestRideStore_GetAll(t *testing.T) {
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		playerID := plantPlayer(ctx, t, homeID)
 
-		rs := NewStore(gamePool).Rides
+		rs := rideRepo
 		for range 3 {
-			if _, err := rs.Insert(ctx, Ride{PlayerID: playerID, TeamID: homeID, MatchID: matchID, State: RideLocked, TokensLocked: decimal.NewFromInt(100), BaseAtLock: decimal.NewFromInt(95)}); err != nil {
+			if _, err := rs.Insert(ctx, domain.Ride{PlayerID: playerID, TeamID: homeID, MatchID: matchID, State: domain.RideLocked, TokensLocked: decimal.NewFromInt(100), BaseAtLock: decimal.NewFromInt(95)}); err != nil {
 				t.Fatalf("plant ride: %v", err)
 			}
 		}
@@ -379,12 +379,12 @@ func TestRideStore_GetAll(t *testing.T) {
 	})
 }
 
-// TestRideStore_Update covers the optimistic-lock write and every
+// TestRideRepository_Update covers the optimistic-lock write and every
 // rides_state_gate refusal the store must translate into
-// ErrInvalidTransition (ADR-020). The gate is phase-free — phase checks
+// domain.ErrInvalidTransition (ADR-020). The gate is phase-free — phase checks
 // live in the command methods — so the store-level cases use no phase at
 // all: whatever the trigger accepts, the store accepts.
-func TestRideStore_Update(t *testing.T) {
+func TestRideRepository_Update(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
@@ -392,12 +392,12 @@ func TestRideStore_Update(t *testing.T) {
 	t.Run("happy path persists the fields and bumps the version", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 1)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 1)
 
-		ride.State = RideBurned
+		ride.State = domain.RideBurned
 		ride.Streak = 2
 
-		got, err := NewStore(gamePool).Rides.Update(ctx, ride)
+		got, err := rideRepo.Update(ctx, ride)
 		if err != nil {
 			t.Fatalf("Update() = %v, want nil", err)
 		}
@@ -405,11 +405,11 @@ func TestRideStore_Update(t *testing.T) {
 			t.Errorf("version = %d, want %d", got.Version, ride.Version+1)
 		}
 
-		persisted, err := NewStore(gamePool).Rides.Get(ctx, ride.ID)
+		persisted, err := rideRepo.Get(ctx, ride.ID)
 		if err != nil {
 			t.Fatalf("Get() = %v, want nil", err)
 		}
-		if persisted.State != RideBurned || persisted.Streak != 2 {
+		if persisted.State != domain.RideBurned || persisted.Streak != 2 {
 			t.Errorf("persisted state/streak = %q/%d, want burned/2", persisted.State, persisted.Streak)
 		}
 		if !persisted.Acc.Equal(decimal.NewFromInt(90)) {
@@ -420,32 +420,32 @@ func TestRideStore_Update(t *testing.T) {
 	t.Run("stale version is ErrEditConflict", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 1)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 1)
 
 		ride.Version = ride.Version - 1 // somebody else already wrote
 
-		_, err := NewStore(gamePool).Rides.Update(ctx, ride)
+		_, err := rideRepo.Update(ctx, ride)
 
-		if !errors.Is(err, persistence.ErrEditConflict) {
-			t.Fatalf("Update() = %v, want ErrEditConflict", err)
+		if !errors.Is(err, domain.ErrEditConflict) {
+			t.Fatalf("Update() = %v, want domain.ErrEditConflict", err)
 		}
 	})
 
-	t.Run("illegal transition is ErrInvalidTransition (gate P0001)", func(t *testing.T) {
+	t.Run("illegal transition is domain.ErrInvalidTransition (gate P0001)", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideLocked, decimal.Zero, 0)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideLocked, decimal.Zero, 0)
 
 		// locked → burned is outside the transition graph (ADR-016). The
 		// domain command would refuse it too; this case proves the DB gate
 		// refuses it independently and the store maps P0001 to
-		// ErrInvalidTransition — the app/DB agreement is tested, not trusted.
-		ride.State = RideBurned
+		// domain.ErrInvalidTransition — the app/DB agreement is tested, not trusted.
+		ride.State = domain.RideBurned
 
-		_, err := NewStore(gamePool).Rides.Update(ctx, ride)
+		_, err := rideRepo.Update(ctx, ride)
 
-		if !errors.Is(err, ErrInvalidTransition) {
-			t.Fatalf("Update() = %v, want ErrInvalidTransition", err)
+		if !errors.Is(err, domain.ErrInvalidTransition) {
+			t.Fatalf("Update() = %v, want domain.ErrInvalidTransition", err)
 		}
 	})
 
@@ -454,23 +454,23 @@ func TestRideStore_Update(t *testing.T) {
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
 		// Away team planted: the fixture closed match ends 88:79 (home
 		// wins), so a won_pending arrival for the away ride disagrees.
-		ride := plantRide(ctx, t, closedMatch, awayID, RideLocked, decimal.Zero, 0)
+		ride := plantRide(ctx, t, closedMatch, awayID, domain.RideLocked, decimal.Zero, 0)
 
 		// Migration 000017: result agreement left the DB trigger
 		// with the cross-context read it needed (schedule's matches table).
 		// A direct store write CAN plant a won_pending arrival the committed
 		// scores disagree with — the enforcement is the service's
 		// resultAgreement check at the settlement handlers
-		// (internal/game/events.go; the lying-payload probe in
+		// (core/service/settlement.go; the lying-payload probe in
 		// score_state_rule_test.go and service_test.go pins it). This case
 		// documents the store boundary: no disagreement refusal below.
-		ride.State = RideWonPending
+		ride.State = domain.RideWonPending
 
-		got, err := NewStore(gamePool).Rides.Update(ctx, ride)
+		got, err := rideRepo.Update(ctx, ride)
 		if err != nil {
 			t.Fatalf("Update() = %v, want nil (the store alone does not enforce result agreement)", err)
 		}
-		if got.State != RideWonPending {
+		if got.State != domain.RideWonPending {
 			t.Errorf("state = %s, want won_pending", got.State)
 		}
 	})
@@ -479,15 +479,15 @@ func TestRideStore_Update(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		match1 := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		match2 := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "31 days")
-		ride := plantRide(ctx, t, match1, homeID, RideLocked, decimal.Zero, 0)
+		ride := plantRide(ctx, t, match1, homeID, domain.RideLocked, decimal.Zero, 0)
 
 		// ADR-018: match_id writes only on won_pending → locked.
 		ride.MatchID = match2
 
-		_, err := NewStore(gamePool).Rides.Update(ctx, ride)
+		_, err := rideRepo.Update(ctx, ride)
 
-		if !errors.Is(err, ErrInvalidTransition) {
-			t.Fatalf("Update() = %v, want ErrInvalidTransition", err)
+		if !errors.Is(err, domain.ErrInvalidTransition) {
+			t.Fatalf("Update() = %v, want domain.ErrInvalidTransition", err)
 		}
 	})
 
@@ -495,21 +495,21 @@ func TestRideStore_Update(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		match1 := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
 		match2 := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
-		ride := plantRide(ctx, t, match1, homeID, RideWonPending, decimal.NewFromInt(90), 1)
+		ride := plantRide(ctx, t, match1, homeID, domain.RideWonPending, decimal.NewFromInt(90), 1)
 
-		ride.State = RideLocked
+		ride.State = domain.RideLocked
 		ride.MatchID = match2
 		ride.Streak = 2
 
-		if _, err := NewStore(gamePool).Rides.Update(ctx, ride); err != nil {
+		if _, err := rideRepo.Update(ctx, ride); err != nil {
 			t.Fatalf("Update() = %v, want nil", err)
 		}
 
-		persisted, err := NewStore(gamePool).Rides.Get(ctx, ride.ID)
+		persisted, err := rideRepo.Get(ctx, ride.ID)
 		if err != nil {
 			t.Fatalf("Get() = %v, want nil", err)
 		}
-		if persisted.State != RideLocked || persisted.MatchID != match2 {
+		if persisted.State != domain.RideLocked || persisted.MatchID != match2 {
 			t.Errorf("persisted state/match = %q/%d, want locked/%d", persisted.State, persisted.MatchID, match2)
 		}
 	})
@@ -517,17 +517,17 @@ func TestRideStore_Update(t *testing.T) {
 	t.Run("terminal ride rejects a state change but accepts a rewrite", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideBurned, decimal.NewFromInt(90), 1)
-		rs := NewStore(gamePool).Rides
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideBurned, decimal.NewFromInt(90), 1)
+		rs := rideRepo
 
 		t.Run("state change", func(t *testing.T) {
 			frozen := ride
-			frozen.State = RideLost
+			frozen.State = domain.RideLost
 
 			_, err := rs.Update(ctx, frozen)
 
-			if !errors.Is(err, ErrInvalidTransition) {
-				t.Fatalf("Update() = %v, want ErrInvalidTransition", err)
+			if !errors.Is(err, domain.ErrInvalidTransition) {
+				t.Fatalf("Update() = %v, want domain.ErrInvalidTransition", err)
 			}
 		})
 
@@ -546,28 +546,28 @@ func TestRideStore_Update(t *testing.T) {
 	t.Run("unlocked arrival with non-zero acc is refused", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 1)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 1)
 
 		// A writer that flips to unlocked but forgets to zero acc: the gate
 		// is the second line of defense behind ride.Unlock (which zeroes it).
-		ride.State = RideUnlocked
+		ride.State = domain.RideUnlocked
 
-		_, err := NewStore(gamePool).Rides.Update(ctx, ride)
+		_, err := rideRepo.Update(ctx, ride)
 
-		if !errors.Is(err, ErrInvalidTransition) {
-			t.Fatalf("Update() = %v, want ErrInvalidTransition", err)
+		if !errors.Is(err, domain.ErrInvalidTransition) {
+			t.Fatalf("Update() = %v, want domain.ErrInvalidTransition", err)
 		}
 	})
 }
 
 // decisionWrite runs the ride command's write step on its own transaction —
-// the service shape without the idempotency claim (one level up): the
-// SchedulePort gates first (own round + destination when continuation), the
+// the use-case shape without the idempotency claim (one level up): the
+// calendar port's gates first (own round + destination when continuation), the
 // rides-row-only decision write second. ownMatchID is the ride's round
 // anchor — the ORIGINAL match before the domain command re-pointed
 // ride.MatchID for continuations. Errors roll the tx back and surface to
 // the caller's assertions.
-func decisionWrite(ctx context.Context, t *testing.T, svc *Service, ride Ride, ownMatchID, destinationMatchID int) (Ride, error) {
+func decisionWrite(ctx context.Context, t *testing.T, ride domain.Ride, ownMatchID, destinationMatchID int) (domain.Ride, error) {
 	t.Helper()
 
 	tx, err := gamePool.Begin(ctx)
@@ -575,31 +575,36 @@ func decisionWrite(ctx context.Context, t *testing.T, svc *Service, ride Ride, o
 		t.Fatalf("begin: %v", err)
 	}
 
-	if err := svc.roundOpenTx(ctx, tx, ownMatchID); err != nil {
+	if err := schedACL.RoundOpenTx(ctx, tx, ownMatchID); err != nil {
 		_ = tx.Rollback(context.Background())
-		return Ride{}, err
+		return domain.Ride{}, err
 	}
 	if destinationMatchID > 0 {
-		if err := svc.destinationOpenTx(ctx, tx, destinationMatchID); err != nil {
+		// The use case's mapping: every destination refusal (unknown, ended,
+		// round closed) is the round-refusal 409.
+		if err := schedACL.DestinationOpenTx(ctx, tx, destinationMatchID); err != nil {
 			_ = tx.Rollback(context.Background())
-			return Ride{}, err
+			if errors.Is(err, domain.ErrNotFound) {
+				return domain.Ride{}, domain.ErrRoundNotOpen
+			}
+			return domain.Ride{}, err
 		}
 	}
 
-	got, err := svc.Store.Rides.DecisionGuardedTx(ctx, tx, ride)
+	got, err := rideRepo.DecisionGuardedTx(ctx, tx, ride)
 	if err != nil {
 		_ = tx.Rollback(context.Background())
-		return Ride{}, err
+		return domain.Ride{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return Ride{}, err
+		return domain.Ride{}, err
 	}
 
 	return got, nil
 }
 
-// TestRideStore_DecisionGuardedTx covers the DecisionPhase commands'
+// TestRideRepository_DecisionGuardedTx covers the DecisionPhase commands'
 // guarded write (Phase 04 TOCTOU sweep) in its post-split shape: the round
 // facts are the SchedulePort gates (run here through decisionWrite), the
 // rides-row-only UPDATE re-checks the row's own facts (state, version) at
@@ -607,21 +612,20 @@ func decisionWrite(ctx context.Context, t *testing.T, svc *Service, ride Ride, o
 //
 //   - a closed own round or a dead destination is the round-refusal 409 —
 //     the port gates answer it before the write runs;
-//   - a CAS lost to a concurrent ride command is ErrInvalidTransition,
+//   - a CAS lost to a concurrent ride command is domain.ErrInvalidTransition,
 //     the invalid-state 409 (classifyDecisionRefusal names it);
-//   - a rides_state_gate P0001 stays ErrInvalidTransition, exactly like
+//   - a rides_state_gate P0001 stays domain.ErrInvalidTransition, exactly like
 //     Update — the trigger remains the transition graph's DB authority.
-func TestRideStore_DecisionGuardedTx(t *testing.T) {
+func TestRideRepository_DecisionGuardedTx(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc, _ := newTestService()
-	rs := svc.Store.Rides
+	rs := rideRepo
 
 	t.Run("continuation re-points onto the destination under the guard", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 		if _, err := pool.Exec(ctx, `INSERT INTO schedule.rounds (season_id, number, status) VALUES (1, 2, 'created')`); err != nil {
 			t.Fatalf("insert round 2: %v", err)
@@ -631,11 +635,11 @@ func TestRideStore_DecisionGuardedTx(t *testing.T) {
 		// The service shape: the domain command mutates the ride first
 		// (ADR-016), then the guarded write re-verifies the pre-mutation
 		// facts — state won_pending, own round open, destination live.
-		ride.State = RideLocked
+		ride.State = domain.RideLocked
 		ride.MatchID = destination
 		ride.Streak++
 
-		got, err := decisionWrite(ctx, t, svc, ride, closedMatch, destination)
+		got, err := decisionWrite(ctx, t, ride, closedMatch, destination)
 		if err != nil {
 			t.Fatalf("DecisionGuardedTx() = %v, want nil", err)
 		}
@@ -647,7 +651,7 @@ func TestRideStore_DecisionGuardedTx(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Get() = %v, want nil", err)
 		}
-		if persisted.State != RideLocked || persisted.MatchID != destination {
+		if persisted.State != domain.RideLocked || persisted.MatchID != destination {
 			t.Errorf("state/match = %q/%d, want locked/%d", persisted.State, persisted.MatchID, destination)
 		}
 		if persisted.Streak != 3 {
@@ -661,11 +665,11 @@ func TestRideStore_DecisionGuardedTx(t *testing.T) {
 	t.Run("burn through the guard leaves match and acc alone", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
-		ride.State = RideBurned
+		ride.State = domain.RideBurned
 
-		if _, err := decisionWrite(ctx, t, svc, ride, closedMatch, 0); err != nil {
+		if _, err := decisionWrite(ctx, t, ride, closedMatch, 0); err != nil {
 			t.Fatalf("DecisionGuardedTx() = %v, want nil", err)
 		}
 
@@ -673,7 +677,7 @@ func TestRideStore_DecisionGuardedTx(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Get() = %v, want nil", err)
 		}
-		if persisted.State != RideBurned || persisted.MatchID != closedMatch {
+		if persisted.State != domain.RideBurned || persisted.MatchID != closedMatch {
 			t.Errorf("state/match = %q/%d, want burned/%d", persisted.State, persisted.MatchID, closedMatch)
 		}
 		if !persisted.Acc.Equal(decimal.NewFromInt(90)) {
@@ -684,35 +688,35 @@ func TestRideStore_DecisionGuardedTx(t *testing.T) {
 	t.Run("a stale version loses the CAS to the invalid-state 409, not an edit conflict", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 		// Bump the version without moving state (a state-preserving
 		// rewrite is legal to the gate): the version predicate alone now
 		// refuses the decision write, and classifyDecisionRefusal names
 		// the cause — the claimed pre-state no longer exists on the row,
-		// so the CAS lost: ErrInvalidTransition (the invalid-state 409,
+		// so the CAS lost: domain.ErrInvalidTransition (the invalid-state 409,
 		// ADR-020), still not ErrEditConflict. The round-refusal 409 is
 		// reserved for an actually closed round, checked first.
 		if _, err := pool.Exec(ctx, `UPDATE game.rides SET version = version + 1 WHERE id = $1`, ride.ID); err != nil {
 			t.Fatalf("bump version: %v", err)
 		}
 
-		ride.State = RideBurned
-		_, err := decisionWrite(ctx, t, svc, ride, closedMatch, 0)
+		ride.State = domain.RideBurned
+		_, err := decisionWrite(ctx, t, ride, closedMatch, 0)
 
-		if !errors.Is(err, ErrInvalidTransition) {
-			t.Fatalf("DecisionGuardedTx() = %v, want ErrInvalidTransition", err)
+		if !errors.Is(err, domain.ErrInvalidTransition) {
+			t.Fatalf("DecisionGuardedTx() = %v, want domain.ErrInvalidTransition", err)
 		}
 	})
 
 	t.Run("a ride already decided refuses the second decision", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 		first := ride
-		first.State = RideBurned
-		if _, err := decisionWrite(ctx, t, svc, first, closedMatch, 0); err != nil {
+		first.State = domain.RideBurned
+		if _, err := decisionWrite(ctx, t, first, closedMatch, 0); err != nil {
 			t.Fatalf("first DecisionGuardedTx() = %v, want nil", err)
 		}
 
@@ -720,12 +724,12 @@ func TestRideStore_DecisionGuardedTx(t *testing.T) {
 		// snapshot: the state predicate refuses it — the decision is
 		// re-checked at the write instant, not only in the domain. The
 		// round is still open, so classifyUpdateRefusal reads the moved
-		// row and names the CAS loss: ErrInvalidTransition, the same
+		// row and names the CAS loss: domain.ErrInvalidTransition, the same
 		// answer the domain read side gives this race.
-		_, err := decisionWrite(ctx, t, svc, ride, closedMatch, 0)
+		_, err := decisionWrite(ctx, t, ride, closedMatch, 0)
 
-		if !errors.Is(err, ErrInvalidTransition) {
-			t.Fatalf("DecisionGuardedTx() = %v, want ErrInvalidTransition", err)
+		if !errors.Is(err, domain.ErrInvalidTransition) {
+			t.Fatalf("DecisionGuardedTx() = %v, want domain.ErrInvalidTransition", err)
 		}
 	})
 
@@ -740,23 +744,23 @@ func TestRideStore_DecisionGuardedTx(t *testing.T) {
 		if _, err := pool.Exec(ctx, `UPDATE schedule.rounds SET status = 'closed' WHERE id = $1`, roundID); err != nil {
 			t.Fatalf("close round: %v", err)
 		}
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 		// The version column cannot see the round's status: a plain
 		// version-checked UPDATE would write here, leaving a live decision
 		// inside a closed round — the exact defect the sweep fixes.
-		ride.State = RideBurned
-		_, err := decisionWrite(ctx, t, svc, ride, closedMatch, 0)
+		ride.State = domain.RideBurned
+		_, err := decisionWrite(ctx, t, ride, closedMatch, 0)
 
-		if !errors.Is(err, ErrRoundNotOpen) {
-			t.Fatalf("DecisionGuardedTx() = %v, want ErrRoundNotOpen", err)
+		if !errors.Is(err, domain.ErrRoundNotOpen) {
+			t.Fatalf("DecisionGuardedTx() = %v, want domain.ErrRoundNotOpen", err)
 		}
 
 		persisted, err := rs.Get(ctx, ride.ID)
 		if err != nil {
 			t.Fatalf("Get() = %v, want nil", err)
 		}
-		if persisted.State != RideWonPending || persisted.Version != ride.Version {
+		if persisted.State != domain.RideWonPending || persisted.Version != ride.Version {
 			t.Errorf("persisted state/version = %q/%d, want won_pending/%d (nothing written)",
 				persisted.State, persisted.Version, ride.Version)
 		}
@@ -765,7 +769,7 @@ func TestRideStore_DecisionGuardedTx(t *testing.T) {
 	t.Run("a destination ended after the pick is refused", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 		if _, err := pool.Exec(ctx, `INSERT INTO schedule.rounds (season_id, number, status) VALUES (1, 2, 'created')`); err != nil {
 			t.Fatalf("insert round 2: %v", err)
@@ -790,20 +794,20 @@ func TestRideStore_DecisionGuardedTx(t *testing.T) {
 			t.Fatalf("settle destination: %v", err)
 		}
 
-		ride.State = RideLocked
+		ride.State = domain.RideLocked
 		ride.MatchID = destination
 		ride.Streak++
-		_, err := decisionWrite(ctx, t, svc, ride, closedMatch, destination)
+		_, err := decisionWrite(ctx, t, ride, closedMatch, destination)
 
-		if !errors.Is(err, ErrRoundNotOpen) {
-			t.Fatalf("DecisionGuardedTx() = %v, want ErrRoundNotOpen", err)
+		if !errors.Is(err, domain.ErrRoundNotOpen) {
+			t.Fatalf("DecisionGuardedTx() = %v, want domain.ErrRoundNotOpen", err)
 		}
 
 		persisted, err := rs.Get(ctx, ride.ID)
 		if err != nil {
 			t.Fatalf("Get() = %v, want nil", err)
 		}
-		if persisted.State != RideWonPending || persisted.MatchID != closedMatch {
+		if persisted.State != domain.RideWonPending || persisted.MatchID != closedMatch {
 			t.Errorf("persisted state/match = %q/%d, want won_pending/%d (nothing written)",
 				persisted.State, persisted.MatchID, closedMatch)
 		}
@@ -812,34 +816,34 @@ func TestRideStore_DecisionGuardedTx(t *testing.T) {
 	t.Run("an unknown destination is refused without an FK hit", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
-		ride.State = RideLocked
+		ride.State = domain.RideLocked
 		ride.MatchID = 424242
 		ride.Streak++
 
-		_, err := decisionWrite(ctx, t, svc, ride, closedMatch, 424242)
+		_, err := decisionWrite(ctx, t, ride, closedMatch, 424242)
 
 		// The destination EXISTS fails first, so the row is never written
 		// and the FK never fires: one refusal shape for every stale pick.
-		if !errors.Is(err, ErrRoundNotOpen) {
-			t.Fatalf("DecisionGuardedTx() = %v, want ErrRoundNotOpen", err)
+		if !errors.Is(err, domain.ErrRoundNotOpen) {
+			t.Fatalf("DecisionGuardedTx() = %v, want domain.ErrRoundNotOpen", err)
 		}
 	})
 
 	t.Run("illegal transition is still the gate's P0001", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 		// Every guard predicate passes, but won_pending → lost is outside
 		// the transition graph (ADR-016): the DB gate refuses and the
-		// mapping stays ErrInvalidTransition, as with Update.
-		ride.State = RideLost
-		_, err := decisionWrite(ctx, t, svc, ride, closedMatch, 0)
+		// mapping stays domain.ErrInvalidTransition, as with Update.
+		ride.State = domain.RideLost
+		_, err := decisionWrite(ctx, t, ride, closedMatch, 0)
 
-		if !errors.Is(err, ErrInvalidTransition) {
-			t.Fatalf("DecisionGuardedTx() = %v, want ErrInvalidTransition", err)
+		if !errors.Is(err, domain.ErrInvalidTransition) {
+			t.Fatalf("DecisionGuardedTx() = %v, want domain.ErrInvalidTransition", err)
 		}
 	})
 }

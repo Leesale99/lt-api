@@ -1,4 +1,4 @@
-package game
+package service_test
 
 // score_state_rule_test.go is the shared fixture tying the three encodings
 // of the score→state rule together (ADR-018/ADR-020): a closed match's
@@ -7,20 +7,20 @@ package game
 //
 // The three encodings:
 //
-//  1. schedule.Match.Winner (internal/schedule/matches.go) — the publisher's
-//     derivation, carried in the event payload.
-//  2. The payload→destination derivation in game's settlement handler
-//     (internal/game/events.go, settleRideFromResult) — the consumer's copy.
-//  3. The resultAgreement check in that same handler (internal/game/
-//     events.go) — the enforcement home since migration 000017 (the old
-//     rides_state_gate check 5 read schedule's table from a game trigger,
-//     the cross-context read the split removed).
+//  1. The calendar's Match.Winner side — the publisher's derivation, carried
+//     in the event payload (pinned here through the calendar facade).
+//  2. The payload→destination derivation in game's settlement use cases
+//     (internal/game/internal/core/service/settlement.go,
+//     settleRideFromResult) — the consumer's copy.
+//  3. The resultAgreement check in that same file — the enforcement home since
+//     migration 000017 (the old rides_state_gate check 5 read the calendar's
+//     table from a game trigger, the cross-context read the split removed).
 //
 // Both tests below read the same scoreStateRule vectors: the unit side
 // asserts the Winner→state mapping, the DB side runs the settlement
 // handler against a planted closed match and probes the enforcement — a
 // lying payload (a destination the committed scores contradict) must be
-// refused with ErrInvalidTransition and leave the rides untouched. A rule
+// refused with domain.ErrInvalidTransition and leave the rides untouched. A rule
 // change must fail exactly one site first; the change-detector comments
 // at the three sites lead from any failure to the other two within a
 // minute.
@@ -32,6 +32,8 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"lt-api.aleksrdvn.com/internal/game/internal/adapter/outbound"
+	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
 	"lt-api.aleksrdvn.com/internal/schedule"
 )
 
@@ -44,11 +46,11 @@ import (
 var scoreStateRule = []struct {
 	name               string
 	home, away         int // closed-match final score
-	wantHome, wantAway RideState
+	wantHome, wantAway domain.RideState
 }{
-	{"home side wins: home ride won_pending, away ride lost", 3, 1, RideWonPending, RideLost},
-	{"away side wins: away ride won_pending, home ride lost", 1, 3, RideLost, RideWonPending},
-	{"draw crowns no winner: both rides lost", 2, 2, RideLost, RideLost},
+	{"home side wins: home ride won_pending, away ride lost", 3, 1, domain.RideWonPending, domain.RideLost},
+	{"away side wins: away ride won_pending, home ride lost", 1, 3, domain.RideLost, domain.RideWonPending},
+	{"draw crowns no winner: both rides lost", 2, 2, domain.RideLost, domain.RideLost},
 }
 
 // insertClosedMatchScored plants a closed match carrying the given final
@@ -87,11 +89,11 @@ func TestWinnerScoreStateRule(t *testing.T) {
 			}
 
 			winner := m.Winner()
-			derived := func(teamID int) RideState {
+			derived := func(teamID int) domain.RideState {
 				if winner != nil && *winner == teamID {
-					return RideWonPending
+					return domain.RideWonPending
 				}
-				return RideLost
+				return domain.RideLost
 			}
 
 			if got := derived(m.HomeTeamID); got != tt.wantHome {
@@ -109,7 +111,7 @@ func TestWinnerScoreStateRule(t *testing.T) {
 // names, and the enforcement (the service's resultAgreement check —
 // migration 000017 moved it out of the trigger) must refuse a lying
 // payload: a destination the committed scores contradict is refused with
-// ErrInvalidTransition (the same error the store mapped the old trigger's
+// domain.ErrInvalidTransition (the same error the store mapped the old trigger's
 // P0001 refusals to) and the rides stay untouched.
 func TestScoreStateRuleDB(t *testing.T) {
 	requireDB(t)
@@ -123,8 +125,8 @@ func TestScoreStateRuleDB(t *testing.T) {
 	// the lying payload crowns the ride's own team — derivation lands
 	// won_pending. Either way the derived destination contradicts the
 	// committed result and resultAgreement must refuse.
-	lyingWinner := func(want RideState, teamID, otherID int) *int {
-		if want == RideWonPending {
+	lyingWinner := func(want domain.RideState, teamID, otherID int) *int {
+		if want == domain.RideWonPending {
 			return &otherID
 		}
 		return &teamID
@@ -136,8 +138,8 @@ func TestScoreStateRuleDB(t *testing.T) {
 			seasonID, roundID, homeID, awayID := seed(ctx, t)
 
 			matchID := insertClosedMatchScored(ctx, t, seasonID, roundID, homeID, awayID, tt.home, tt.away)
-			homeRide := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
-			awayRide := plantRide(ctx, t, matchID, awayID, RideLocked, decimal.Zero, 0)
+			homeRide := plantRide(ctx, t, matchID, homeID, domain.RideLocked, decimal.Zero, 0)
+			awayRide := plantRide(ctx, t, matchID, awayID, domain.RideLocked, decimal.Zero, 0)
 
 			// The settlement, driven by the payload the publisher would
 			// send (the winner derived the way schedule.Match.Winner does).
@@ -153,13 +155,13 @@ func TestScoreStateRuleDB(t *testing.T) {
 				WinnerTeamID: winnerOf(tt.home, tt.away, homeID, awayID),
 			}
 			svc, _ := newTestService()
-			if err := svc.OnMatchResultRecorded(ctx, event); err != nil {
+			if err := svc.OnMatchResultRecorded(ctx, outbound.TranslateMatchResultRecorded(event)); err != nil {
 				t.Fatalf("OnMatchResultRecorded: %v", err)
 			}
 
-			states := make(map[int]RideState, 2)
-			for _, ride := range []Ride{homeRide, awayRide} {
-				got, err := svc.Store.Rides.Get(ctx, ride.ID)
+			states := make(map[int]domain.RideState, 2)
+			for _, ride := range []domain.Ride{homeRide, awayRide} {
+				got, err := svc.RideGet(ctx, ride.ID)
 				if err != nil {
 					t.Fatalf("Get(%d): %v", ride.ID, err)
 				}
@@ -178,33 +180,33 @@ func TestScoreStateRuleDB(t *testing.T) {
 			// Enforcement probes: fresh locked rides (the first two are out
 			// of locked now), settled with a LYING payload whose destination
 			// contradicts the committed scores. resultAgreement must refuse
-			// with ErrInvalidTransition and leave the rides locked/v1 (the
+			// with domain.ErrInvalidTransition and leave the rides locked/v1 (the
 			// whole settlement tx rolled back).
-			probeHome := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
-			probeAway := plantRide(ctx, t, matchID, awayID, RideLocked, decimal.Zero, 0)
+			probeHome := plantRide(ctx, t, matchID, homeID, domain.RideLocked, decimal.Zero, 0)
+			probeAway := plantRide(ctx, t, matchID, awayID, domain.RideLocked, decimal.Zero, 0)
 
 			lyingHome := event
 			lyingHome.EventID = tt.name + " (home side, lying payload refused)"
 			lyingHome.WinnerTeamID = lyingWinner(tt.wantHome, homeID, awayID)
-			err := svc.OnMatchResultRecorded(ctx, lyingHome)
-			if !errors.Is(err, ErrInvalidTransition) {
-				t.Errorf("lying home payload: OnMatchResultRecorded = %v, want ErrInvalidTransition", err)
+			err := svc.OnMatchResultRecorded(ctx, outbound.TranslateMatchResultRecorded(lyingHome))
+			if !errors.Is(err, domain.ErrInvalidTransition) {
+				t.Errorf("lying home payload: OnMatchResultRecorded = %v, want domain.ErrInvalidTransition", err)
 			}
 
 			lyingAway := event
 			lyingAway.EventID = tt.name + " (away side, lying payload refused)"
 			lyingAway.WinnerTeamID = lyingWinner(tt.wantAway, awayID, homeID)
-			err = svc.OnMatchResultRecorded(ctx, lyingAway)
-			if !errors.Is(err, ErrInvalidTransition) {
-				t.Errorf("lying away payload: OnMatchResultRecorded = %v, want ErrInvalidTransition", err)
+			err = svc.OnMatchResultRecorded(ctx, outbound.TranslateMatchResultRecorded(lyingAway))
+			if !errors.Is(err, domain.ErrInvalidTransition) {
+				t.Errorf("lying away payload: OnMatchResultRecorded = %v, want domain.ErrInvalidTransition", err)
 			}
 
-			for _, ride := range []Ride{probeHome, probeAway} {
-				got, err := svc.Store.Rides.Get(ctx, ride.ID)
+			for _, ride := range []domain.Ride{probeHome, probeAway} {
+				got, err := svc.RideGet(ctx, ride.ID)
 				if err != nil {
 					t.Fatalf("Get(%d): %v", ride.ID, err)
 				}
-				if got.State != RideLocked || got.Version != 1 {
+				if got.State != domain.RideLocked || got.Version != 1 {
 					t.Errorf("ride %d = %s/v%d, want untouched locked/v1 (the tx rolled back)", ride.ID, got.State, got.Version)
 				}
 			}

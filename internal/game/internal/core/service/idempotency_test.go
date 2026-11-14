@@ -1,4 +1,4 @@
-package game
+package service_test
 
 // Idempotency tests for the ride commands' shared engine (ADR-024),
 // exercised through RideLock and RideCreate: claim-first single flight,
@@ -16,15 +16,15 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
+	"lt-api.aleksrdvn.com/internal/game/internal/core/port"
 	"lt-api.aleksrdvn.com/internal/idempotency"
-	"lt-api.aleksrdvn.com/internal/ledger"
-
 	"lt-api.aleksrdvn.com/internal/schedule"
 )
 
 // idempotentMarshal is the minimal presentation callback: the status and
 // body the command stores as its replayable response.
-func idempotentMarshal(r Ride) (int, []byte, error) {
+func idempotentMarshal(r domain.Ride) (int, []byte, error) {
 	body, err := json.Marshal(r)
 	if err != nil {
 		return 0, nil, err
@@ -35,9 +35,9 @@ func idempotentMarshal(r Ride) (int, []byte, error) {
 // rideToken builds a valid token for a ride command endpoint: the hash must
 // be SHA-256-sized (32 bytes), matching the idempotency_keys request_hash
 // check.
-func rideToken(key, endpoint string) idempotency.IdempotencyToken {
+func rideToken(key, endpoint string) port.Token {
 	hash := sha256.Sum256([]byte(key))
-	return idempotency.IdempotencyToken{
+	return port.Token{
 		Key:      key,
 		Endpoint: endpoint,
 		Hash:     hash[:],
@@ -57,12 +57,12 @@ func TestService_RideLockIdempotency(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(gamePool), schedule.NewStore(schedulePool), ledger.New())
+	svc := newService(schedule.NewModule(schedulePool, nil, nil))
 
 	t.Run("retry with the same key replays and re-executes nothing", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 		ensureRound2(ctx, t)
 		insertFutureMatch(ctx, t, 1, 2, homeID, awayID, "7 days")
 
@@ -82,7 +82,7 @@ func TestService_RideLockIdempotency(t *testing.T) {
 		}
 
 		// One transition total: version 2, streak incremented once (planted 2).
-		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		persisted, err := svc.RideGet(ctx, ride.ID)
 		if err != nil {
 			t.Fatalf("read ride: %v", err)
 		}
@@ -94,8 +94,8 @@ func TestService_RideLockIdempotency(t *testing.T) {
 	t.Run("same key with a different request is ErrIdempotencyConflict", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
-		other := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(50), 1)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
+		other := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(50), 1)
 		ensureRound2(ctx, t)
 		insertFutureMatch(ctx, t, 1, 2, homeID, awayID, "7 days")
 
@@ -112,11 +112,11 @@ func TestService_RideLockIdempotency(t *testing.T) {
 			t.Errorf("RideLock() error = %v, want ErrIdempotencyConflict", err)
 		}
 
-		persisted, err := svc.Store.Rides.Get(ctx, other.ID)
+		persisted, err := svc.RideGet(ctx, other.ID)
 		if err != nil {
 			t.Fatalf("read refused ride: %v", err)
 		}
-		if persisted.Version != 1 || persisted.State != RideWonPending {
+		if persisted.Version != 1 || persisted.State != domain.RideWonPending {
 			t.Errorf("refused ride version = %d, state = %s; want 1 and won_pending", persisted.Version, persisted.State)
 		}
 	})
@@ -124,13 +124,13 @@ func TestService_RideLockIdempotency(t *testing.T) {
 	t.Run("concurrent duplicates execute the command exactly once", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 		ensureRound2(ctx, t)
 		insertFutureMatch(ctx, t, 1, 2, homeID, awayID, "7 days")
 
 		token := rideToken("race-key", "POST /v1/rides/:id/lock")
 		type call struct {
-			res idempotency.IdempotentResponse
+			res port.SavedResponse
 			err error
 		}
 		results := make([]call, 2)
@@ -157,7 +157,7 @@ func TestService_RideLockIdempotency(t *testing.T) {
 
 		// Exactly one transition: the claim blocks the duplicate until the
 		// winner commits, then the duplicate replays the stored response.
-		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		persisted, err := svc.RideGet(ctx, ride.ID)
 		if err != nil {
 			t.Fatalf("read ride: %v", err)
 		}
@@ -172,15 +172,15 @@ func TestService_RideLockIdempotency(t *testing.T) {
 		// Away team planted: the fixture closed match ends 88:79 (home
 		// wins), and the result-agreement gate (000011) only lets a losing
 		// team's ride walk to lost.
-		ride := plantRide(ctx, t, closedMatch, awayID, RideLost, decimal.Zero, 0)
+		ride := plantRide(ctx, t, closedMatch, awayID, domain.RideLost, decimal.Zero, 0)
 		// A destination must exist so the failure comes from the state
 		// machine (lost is terminal), not the schedule.
 		ensureRound2(ctx, t)
 		insertFutureMatch(ctx, t, 1, 2, homeID, awayID, "7 days")
 
 		// Lost is terminal: the command fails after the claim, inside the tx.
-		if _, err := svc.RideLock(ctx, ride.ID, rideToken("failed-key", "POST /v1/rides/:id/lock"), idempotentMarshal); err != ErrInvalidTransition {
-			t.Errorf("RideLock() error = %v, want ErrInvalidTransition", err)
+		if _, err := svc.RideLock(ctx, ride.ID, rideToken("failed-key", "POST /v1/rides/:id/lock"), idempotentMarshal); err != domain.ErrInvalidTransition {
+			t.Errorf("RideLock() error = %v, want domain.ErrInvalidTransition", err)
 		}
 
 		var keyRows int
@@ -204,10 +204,10 @@ func TestService_RideCreateIdempotent(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(gamePool), schedule.NewStore(schedulePool), ledger.New())
+	svc := newService(schedule.NewModule(schedulePool, nil, nil))
 
-	newRide := func(playerID, matchID, teamID int) Ride {
-		return Ride{
+	newRide := func(playerID, matchID, teamID int) domain.Ride {
+		return domain.Ride{
 			PlayerID:     playerID,
 			TeamID:       teamID,
 			MatchID:      matchID,
@@ -294,8 +294,8 @@ func TestService_RideCreateIdempotent(t *testing.T) {
 			t.Fatalf("close round: %v", err)
 		}
 
-		if _, err := svc.RideCreate(ctx, newRide(playerID, matchID, homeID), rideToken("create-rolled", "POST /v1/rides"), idempotentMarshal); err != ErrRoundNotOpen {
-			t.Errorf("RideCreate() error = %v, want ErrRoundNotOpen", err)
+		if _, err := svc.RideCreate(ctx, newRide(playerID, matchID, homeID), rideToken("create-rolled", "POST /v1/rides"), idempotentMarshal); err != domain.ErrRoundNotOpen {
+			t.Errorf("RideCreate() error = %v, want domain.ErrRoundNotOpen", err)
 		}
 
 		var keyRows, rideRows int

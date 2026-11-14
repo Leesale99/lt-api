@@ -1,12 +1,12 @@
-package game
+package service_test
 
 // Service-level ride tests: the four ride use-cases (create, lock, burn,
-// unlock) run end-to-end against the real stores and phase derivation at
-// the game.Service boundary — the smallest scale that can contain a
-// service-level bug. No HTTP (the handler is a thin error-mapping shell),
-// no fakes: Service.Store is a concrete struct wired to pgx, so the
-// boundary test runs where the boundary actually is (see constraints_test.go
-// for the harness: pool, seed, cleanup, requireDB).
+// unlock) run end-to-end against the real adapters and the real calendar at
+// the use-case boundary — the smallest scale that can contain a service-level
+// bug. No HTTP (the handler is a thin error-mapping shell), no fakes: the
+// stack is wired from the Postgres adapters and the calendar ACL, exactly as
+// the module facade wires it (see constraints_test.go for the harness: pool,
+// seed, cleanup, requireDB).
 //
 // The clock the service cannot inject — RidePhase calls time.Now() — is
 // controlled the same way the DB-gate tests control time: matches are
@@ -15,8 +15,8 @@ package game
 // ActionPhase; +30 minutes is MatchPhase; a closed match ended 2 hours ago
 // opens DecisionPhase (the 1-hour lead/lag constants in schedule/round_phase.go).
 //
-// Ride storage is the real rides table (migration 000006), so rides are
-// planted through RideStore.Insert plus a gated walk to the requested
+// domain.Ride storage is the real rides table (migration 000006), so rides are
+// planted through RideRepository.Insert plus a gated walk to the requested
 // state (plantRide below) — since 000012 the INSERT gate admits locked
 // only, so every other state is reached through the same transition rules
 // any writer faces. Cleanup cascades through the FK graph to the rides
@@ -34,9 +34,13 @@ import (
 	"github.com/shopspring/decimal"
 
 	"lt-api.aleksrdvn.com/internal/eventbus"
+	"lt-api.aleksrdvn.com/internal/game/internal/adapter/outbound"
+	"lt-api.aleksrdvn.com/internal/game/internal/adapter/outbound/postgres"
+	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
+	"lt-api.aleksrdvn.com/internal/game/internal/core/service"
+	"lt-api.aleksrdvn.com/internal/idempotency"
 	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/schedule"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // seedFixture re-seeds the base hierarchy (open round 1, teams 1 & 2) and
@@ -141,15 +145,15 @@ func plantPlayer(ctx context.Context, t *testing.T, teamID int) int {
 // doing its job. The walk's own transitions are incidental to what tests
 // arrange, so the final UPDATE resets version to 1: version assertions
 // count from the planted state, not from the walk.
-func plantRide(ctx context.Context, t *testing.T, matchID, teamID int, state RideState, acc decimal.Decimal, streak int) Ride {
+func plantRide(ctx context.Context, t *testing.T, matchID, teamID int, state domain.RideState, acc decimal.Decimal, streak int) domain.Ride {
 	t.Helper()
 
-	rs := NewStore(gamePool).Rides
-	ride, err := rs.Insert(ctx, Ride{
+	rs := rideRepo
+	ride, err := rs.Insert(ctx, domain.Ride{
 		PlayerID:     plantPlayer(ctx, t, teamID),
 		TeamID:       teamID,
 		MatchID:      matchID,
-		State:        RideLocked,
+		State:        domain.RideLocked,
 		TokensLocked: decimal.NewFromInt(100),
 		BaseAtLock:   decimal.NewFromInt(100),
 		Acc:          acc,
@@ -159,9 +163,9 @@ func plantRide(ctx context.Context, t *testing.T, matchID, teamID int, state Rid
 		t.Fatalf("plant ride: %v", err)
 	}
 
-	if state != RideLocked {
+	if state != domain.RideLocked {
 		// burned/unlocked arrive only via won_pending (gate check 3).
-		if state == RideBurned || state == RideUnlocked {
+		if state == domain.RideBurned || state == domain.RideUnlocked {
 			if _, err := pool.Exec(ctx, `UPDATE game.rides SET state = 'won_pending' WHERE id = $1`, ride.ID); err != nil {
 				t.Fatalf("plant ride walk (locked → won_pending): %v", err)
 			}
@@ -190,17 +194,17 @@ func TestService_RideCreate(t *testing.T) {
 
 	ctx := context.Background()
 
-	newRide := func(playerID, matchID, teamID int) Ride {
+	newRide := func(playerID, matchID, teamID int) domain.Ride {
 		// Caller-supplied domain-owned garbage on purpose: the ADR-019
 		// ride.Create contract must overwrite it — the service adds no
 		// state of its own.
-		return Ride{
+		return domain.Ride{
 			PlayerID:     playerID,
 			TeamID:       teamID,
 			MatchID:      matchID,
 			TokensLocked: decimal.NewFromInt(100),
 			BaseAtLock:   decimal.NewFromInt(95),
-			State:        RideBurned,
+			State:        domain.RideBurned,
 			Acc:          decimal.NewFromInt(5),
 			Streak:       7,
 		}
@@ -218,7 +222,7 @@ func TestService_RideCreate(t *testing.T) {
 		}
 		// The stored presentation is the marshaled ride: decode it before
 		// asserting the stored columns.
-		var got Ride
+		var got domain.Ride
 		if err := json.Unmarshal(res.Body, &got); err != nil {
 			t.Fatalf("decode stored ride: %v", err)
 		}
@@ -232,8 +236,8 @@ func TestService_RideCreate(t *testing.T) {
 		if got.CreatedAt.After(time.Now().Add(2 * time.Second)) {
 			t.Fatalf("created_at %v is more than 2s in the future", got.CreatedAt)
 		}
-		if got.State != RideLocked {
-			t.Fatalf("state = %q, want %q (caller-supplied garbage must be discarded)", got.State, RideLocked)
+		if got.State != domain.RideLocked {
+			t.Fatalf("state = %q, want %q (caller-supplied garbage must be discarded)", got.State, domain.RideLocked)
 		}
 		if !got.Acc.IsZero() || got.Streak != 0 {
 			t.Fatalf("acc/streak = %s/%d, want zeroed by the domain contract", got.Acc, got.Streak)
@@ -249,7 +253,7 @@ func TestService_RideCreate(t *testing.T) {
 	// times, passed into the command — demonstrated once in
 	// TestService_RideCommandPhaseRejection below.
 
-	t.Run("on a closed round is refused with ErrRoundNotOpen", func(t *testing.T) {
+	t.Run("on a closed round is refused with domain.ErrRoundNotOpen", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		playerID := plantPlayer(ctx, t, homeID)
@@ -265,8 +269,8 @@ func TestService_RideCreate(t *testing.T) {
 
 		_, err := mustService().RideCreate(ctx, newRide(playerID, matchID, homeID), rideToken("create-closed", "POST /v1/rides"), idempotentMarshal)
 
-		if !errors.Is(err, ErrRoundNotOpen) {
-			t.Fatalf("RideCreate() = %v, want ErrRoundNotOpen", err)
+		if !errors.Is(err, domain.ErrRoundNotOpen) {
+			t.Fatalf("RideCreate() = %v, want domain.ErrRoundNotOpen", err)
 		}
 	})
 }
@@ -280,7 +284,7 @@ func TestService_RideLock(t *testing.T) {
 	t.Run("in decision phase continues onto the team's next match", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 		// The continuation destination: a future match for the same team in
 		// another round of the same season. The destination round stays
@@ -300,12 +304,12 @@ func TestService_RideLock(t *testing.T) {
 
 		// The command's return value is the stored response; the assertions
 		// read the persisted row — the effect the command must have.
-		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		persisted, err := svc.RideGet(ctx, ride.ID)
 		if err != nil {
 			t.Fatalf("Get() = %v, want nil", err)
 		}
-		if persisted.State != RideLocked {
-			t.Fatalf("state = %q, want %q", persisted.State, RideLocked)
+		if persisted.State != domain.RideLocked {
+			t.Fatalf("state = %q, want %q", persisted.State, domain.RideLocked)
 		}
 		if persisted.MatchID != nextMatch {
 			t.Fatalf("match_id = %d, want %d (continuation re-points one FK)", persisted.MatchID, nextMatch)
@@ -319,15 +323,15 @@ func TestService_RideLock(t *testing.T) {
 		}
 	})
 
-	t.Run("without a next match maps not-found to ErrNoNextMatch", func(t *testing.T) {
+	t.Run("without a next match maps not-found to domain.ErrNoNextMatch", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 		_, err := svc.RideLock(ctx, ride.ID, rideToken("svc-lock-no-next", "POST /v1/rides/:id/lock"), idempotentMarshal)
 
-		if !errors.Is(err, ErrNoNextMatch) {
-			t.Fatalf("RideLock() = %v, want ErrNoNextMatch", err)
+		if !errors.Is(err, domain.ErrNoNextMatch) {
+			t.Fatalf("RideLock() = %v, want domain.ErrNoNextMatch", err)
 		}
 	})
 }
@@ -341,19 +345,19 @@ func TestService_RideBurn(t *testing.T) {
 	t.Run("in decision phase burns and keeps acc", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 		_, err := svc.RideBurn(ctx, ride.ID, rideToken("svc-burn", "POST /v1/rides/:id/burn"), idempotentMarshal)
 		if err != nil {
 			t.Fatalf("RideBurn() = %v, want nil", err)
 		}
 
-		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		persisted, err := svc.RideGet(ctx, ride.ID)
 		if err != nil {
 			t.Fatalf("Get() = %v, want nil", err)
 		}
-		if persisted.State != RideBurned {
-			t.Fatalf("state = %q, want %q", persisted.State, RideBurned)
+		if persisted.State != domain.RideBurned {
+			t.Fatalf("state = %q, want %q", persisted.State, domain.RideBurned)
 		}
 		// Payout is not the ride's concern; Burn leaves acc untouched.
 		if !persisted.Acc.Equal(decimal.NewFromInt(90)) {
@@ -364,7 +368,7 @@ func TestService_RideBurn(t *testing.T) {
 	t.Run("retry with the same key replays without re-executing", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 		token := rideToken("svc-burn-replay", "POST /v1/rides/:id/burn")
 		first, err := svc.RideBurn(ctx, ride.ID, token, idempotentMarshal)
@@ -379,7 +383,7 @@ func TestService_RideBurn(t *testing.T) {
 			t.Errorf("replayed body differs:\nfirst:  %s\nsecond: %s", first.Body, second.Body)
 		}
 
-		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		persisted, err := svc.RideGet(ctx, ride.ID)
 		if err != nil {
 			t.Fatalf("read ride: %v", err)
 		}
@@ -398,19 +402,19 @@ func TestService_RideUnlock(t *testing.T) {
 	t.Run("in decision phase unlocks and forfeits acc", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 		_, err := svc.RideUnlock(ctx, ride.ID, rideToken("svc-unlock", "POST /v1/rides/:id/unlock"), idempotentMarshal)
 		if err != nil {
 			t.Fatalf("RideUnlock() = %v, want nil", err)
 		}
 
-		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		persisted, err := svc.RideGet(ctx, ride.ID)
 		if err != nil {
 			t.Fatalf("Get() = %v, want nil", err)
 		}
-		if persisted.State != RideUnlocked {
-			t.Fatalf("state = %q, want %q", persisted.State, RideUnlocked)
+		if persisted.State != domain.RideUnlocked {
+			t.Fatalf("state = %q, want %q", persisted.State, domain.RideUnlocked)
 		}
 		if !persisted.Acc.IsZero() {
 			t.Fatalf("acc = %s, want 0 (unlock forfeits acc)", persisted.Acc)
@@ -420,7 +424,7 @@ func TestService_RideUnlock(t *testing.T) {
 	t.Run("retry with the same key replays without re-executing", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 		token := rideToken("svc-unlock-replay", "POST /v1/rides/:id/unlock")
 		first, err := svc.RideUnlock(ctx, ride.ID, token, idempotentMarshal)
@@ -435,7 +439,7 @@ func TestService_RideUnlock(t *testing.T) {
 			t.Errorf("replayed body differs:\nfirst:  %s\nsecond: %s", first.Body, second.Body)
 		}
 
-		persisted, err := svc.Store.Rides.Get(ctx, ride.ID)
+		persisted, err := svc.RideGet(ctx, ride.ID)
 		if err != nil {
 			t.Fatalf("read ride: %v", err)
 		}
@@ -458,7 +462,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 		seedFixture(ctx, t)
 		playerID := plantPlayer(ctx, t, 1)
 
-		_, err := mustService().RideCreate(ctx, Ride{
+		_, err := mustService().RideCreate(ctx, domain.Ride{
 			PlayerID:     playerID,
 			TeamID:       1,
 			MatchID:      999, // no such match
@@ -466,7 +470,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 			BaseAtLock:   decimal.NewFromInt(95),
 		}, rideToken("create-unknown-match", "POST /v1/rides"), idempotentMarshal)
 
-		if !errors.Is(err, persistence.ErrRecordNotFound) {
+		if !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("RideCreate() = %v, want ErrRecordNotFound", err)
 		}
 	})
@@ -475,7 +479,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 
-		_, err := mustService().RideCreate(ctx, Ride{
+		_, err := mustService().RideCreate(ctx, domain.Ride{
 			PlayerID:     999, // no such player
 			TeamID:       homeID,
 			MatchID:      matchID,
@@ -483,7 +487,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 			BaseAtLock:   decimal.NewFromInt(95),
 		}, rideToken("create-unknown-player", "POST /v1/rides"), idempotentMarshal)
 
-		if !errors.Is(err, persistence.ErrRecordNotFound) {
+		if !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("RideCreate() = %v, want ErrRecordNotFound", err)
 		}
 	})
@@ -493,7 +497,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		playerID := plantPlayer(ctx, t, homeID)
 
-		_, err := mustService().RideCreate(ctx, Ride{
+		_, err := mustService().RideCreate(ctx, domain.Ride{
 			PlayerID:     playerID,
 			TeamID:       999, // no such team
 			MatchID:      matchID,
@@ -501,7 +505,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 			BaseAtLock:   decimal.NewFromInt(95),
 		}, rideToken("create-unknown-team", "POST /v1/rides"), idempotentMarshal)
 
-		if !errors.Is(err, persistence.ErrRecordNotFound) {
+		if !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("RideCreate() = %v, want ErrRecordNotFound", err)
 		}
 	})
@@ -521,7 +525,7 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 		// A match starting inside the 1-hour action lead puts the round in MatchPhase.
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 minutes")
 
-		_, err := mustService().RideCreate(ctx, Ride{
+		_, err := mustService().RideCreate(ctx, domain.Ride{
 			PlayerID:     7,
 			TeamID:       homeID,
 			MatchID:      matchID,
@@ -529,8 +533,8 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 			BaseAtLock:   decimal.NewFromInt(95),
 		}, rideToken("create-match-phase", "POST /v1/rides"), idempotentMarshal)
 
-		if !errors.Is(err, ErrInvalidRoundPhase) {
-			t.Fatalf("RideCreate() = %v, want ErrInvalidRoundPhase", err)
+		if !errors.Is(err, domain.ErrInvalidRoundPhase) {
+			t.Fatalf("RideCreate() = %v, want domain.ErrInvalidRoundPhase", err)
 		}
 	})
 
@@ -539,12 +543,12 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 		// A match starting far outside the action lead keeps the round in ActionPhase.
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
 		scoreStartedMatch(ctx, t, matchID)
-		ride := plantRide(ctx, t, matchID, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, matchID, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 		_, err := mustService().RideLock(ctx, ride.ID, rideToken("svc-lock-action", "POST /v1/rides/:id/lock"), idempotentMarshal)
 
-		if !errors.Is(err, ErrInvalidRoundPhase) {
-			t.Fatalf("RideLock() = %v, want ErrInvalidRoundPhase", err)
+		if !errors.Is(err, domain.ErrInvalidRoundPhase) {
+			t.Fatalf("RideLock() = %v, want domain.ErrInvalidRoundPhase", err)
 		}
 	})
 
@@ -554,12 +558,12 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 		// must already be running, not merely in_progress.
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "-30 minutes")
 		scoreStartedMatch(ctx, t, matchID)
-		ride := plantRide(ctx, t, matchID, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, matchID, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 		_, err := mustService().RideBurn(ctx, ride.ID, rideToken("svc-burn-match-phase", "POST /v1/rides/:id/burn"), idempotentMarshal)
 
-		if !errors.Is(err, ErrInvalidRoundPhase) {
-			t.Fatalf("RideBurn() = %v, want ErrInvalidRoundPhase", err)
+		if !errors.Is(err, domain.ErrInvalidRoundPhase) {
+			t.Fatalf("RideBurn() = %v, want domain.ErrInvalidRoundPhase", err)
 		}
 	})
 
@@ -569,12 +573,12 @@ func TestService_RideCommandPhaseRejection(t *testing.T) {
 		// must already be running, not merely in_progress.
 		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "-30 minutes")
 		scoreStartedMatch(ctx, t, matchID)
-		ride := plantRide(ctx, t, matchID, homeID, RideWonPending, decimal.NewFromInt(90), 2)
+		ride := plantRide(ctx, t, matchID, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
 
 		_, err := mustService().RideUnlock(ctx, ride.ID, rideToken("svc-unlock-match-phase", "POST /v1/rides/:id/unlock"), idempotentMarshal)
 
-		if !errors.Is(err, ErrInvalidRoundPhase) {
-			t.Fatalf("RideUnlock() = %v, want ErrInvalidRoundPhase", err)
+		if !errors.Is(err, domain.ErrInvalidRoundPhase) {
+			t.Fatalf("RideUnlock() = %v, want domain.ErrInvalidRoundPhase", err)
 		}
 	})
 }
@@ -586,23 +590,34 @@ func resolveScore(home, away int) schedule.Score {
 }
 
 // newTestService wires the full in-process stack the service tests run
-// against (the same shape the composition root and the api harness wire):
-// the real schedule service publishing on a bus, the real game service
-// with its event handlers subscribed, the real ledger. The ride commands
-// never publish, so the wiring is harmless for them and load-bearing for
-// the settlement tests.
-func newTestService() (*Service, *schedule.Service) {
+// against (the same shape the composition root and the api harness wire): the
+// real calendar module publishing on a bus, the game use cases over the real
+// Postgres adapters and the calendar anti-corruption layer, the real ledger,
+// and the settlement handlers subscribed through the event ACL — so the
+// payload translation is exercised, not bypassed. The ride commands never
+// publish, so the wiring is harmless for them and load-bearing for the
+// settlement tests.
+func newTestService() (*service.Service, *schedule.Module) {
 	bus := eventbus.New()
-	scheduleStore := schedule.NewStore(schedulePool)
-	scheduleSvc := schedule.NewService(scheduleStore, bus, nil)
-	gameSvc := NewService(NewStore(gamePool), scheduleStore, ledger.New())
-	eventbus.Subscribe(bus, func(ctx context.Context, event schedule.MatchResultRecorded) error {
-		return gameSvc.OnMatchResultRecorded(ctx, event)
+	scheduleModule := schedule.NewModule(schedulePool, bus, nil)
+	gameSvc := newService(scheduleModule)
+	outbound.Subscribe(bus, gameSvc)
+	return gameSvc, scheduleModule
+}
+
+// newService wires the game use cases over the given calendar module: the
+// real Postgres adapters on the game pool, the calendar ACL, the real ledger
+// and idempotency engine. No bus, no subscriptions — the bare stack the
+// command-level tests drive.
+func newService(scheduleModule *schedule.Module) *service.Service {
+	return service.New(service.Deps{
+		Rides:       postgres.NewRideRepository(gamePool),
+		Players:     postgres.NewPlayerRepository(gamePool),
+		Schedule:    outbound.NewScheduleACL(scheduleModule),
+		Ledger:      ledger.New(),
+		Idempotency: outbound.NewIdempotency(idempotency.New()),
+		Transactor:  postgres.NewTransactor(gamePool),
 	})
-	eventbus.Subscribe(bus, func(ctx context.Context, event schedule.RoundCompleted) error {
-		return gameSvc.OnRoundCompleted(ctx, event)
-	})
-	return gameSvc, scheduleSvc
 }
 
 // eventResult builds a MatchResultRecorded payload for the fixture match
@@ -675,34 +690,34 @@ func TestService_OnMatchResultRecorded(t *testing.T) {
 			t.Fatalf("read match: %v", err)
 		}
 
-		home := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.NewFromInt(40), 1)
-		away := plantRide(ctx, t, matchID, awayID, RideLocked, decimal.NewFromInt(90), 2)
+		home := plantRide(ctx, t, matchID, homeID, domain.RideLocked, decimal.NewFromInt(40), 1)
+		away := plantRide(ctx, t, matchID, awayID, domain.RideLocked, decimal.NewFromInt(90), 2)
 
 		event := eventResult("evt-home-win", matchID, roundID, seasonID, homeID, awayID, 3, 1)
-		if err := gameSvc.OnMatchResultRecorded(ctx, event); err != nil {
+		if err := gameSvc.OnMatchResultRecorded(ctx, outbound.TranslateMatchResultRecorded(event)); err != nil {
 			t.Fatalf("OnMatchResultRecorded() = %v, want nil", err)
 		}
 
 		// Home won 3:1: the home ride is won_pending with the bonus
 		// accrued at its team odds (1.75), one transition total; the away
 		// ride is lost with its acc released to zero.
-		gotHome, err := gameSvc.Store.Rides.Get(ctx, home.ID)
+		gotHome, err := gameSvc.RideGet(ctx, home.ID)
 		if err != nil {
 			t.Fatalf("Get(home): %v", err)
 		}
-		if gotHome.State != RideWonPending || gotHome.Version != 2 {
+		if gotHome.State != domain.RideWonPending || gotHome.Version != 2 {
 			t.Errorf("home ride = %s/v%d, want won_pending/v2", gotHome.State, gotHome.Version)
 		}
-		wantAcc := calculateBonus(decimal.NewFromFloat(1.75), gotHome.TokensLocked, decimal.NewFromInt(40), 1)
+		wantAcc := domain.CalculateBonus(decimal.NewFromFloat(1.75), gotHome.TokensLocked, decimal.NewFromInt(40), 1)
 		if !gotHome.Acc.Equal(wantAcc) {
 			t.Errorf("home ride acc = %s, want %s (the win accrues)", gotHome.Acc, wantAcc)
 		}
 
-		gotAway, err := gameSvc.Store.Rides.Get(ctx, away.ID)
+		gotAway, err := gameSvc.RideGet(ctx, away.ID)
 		if err != nil {
 			t.Fatalf("Get(away): %v", err)
 		}
-		if gotAway.State != RideLost || gotAway.Version != 2 {
+		if gotAway.State != domain.RideLost || gotAway.Version != 2 {
 			t.Errorf("away ride = %s/v%d, want lost/v2", gotAway.State, gotAway.Version)
 		}
 		if !gotAway.Acc.IsZero() {
@@ -718,23 +733,23 @@ func TestService_OnMatchResultRecorded(t *testing.T) {
 			t.Fatalf("read match: %v", err)
 		}
 
-		home := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
-		away := plantRide(ctx, t, matchID, awayID, RideLocked, decimal.Zero, 0)
+		home := plantRide(ctx, t, matchID, homeID, domain.RideLocked, decimal.Zero, 0)
+		away := plantRide(ctx, t, matchID, awayID, domain.RideLocked, decimal.Zero, 0)
 
 		event := eventResult("evt-draw", matchID, roundID, seasonID, homeID, awayID, 2, 2)
 		if event.WinnerTeamID != nil {
 			t.Fatal("draw payload must carry no winner")
 		}
-		if err := gameSvc.OnMatchResultRecorded(ctx, event); err != nil {
+		if err := gameSvc.OnMatchResultRecorded(ctx, outbound.TranslateMatchResultRecorded(event)); err != nil {
 			t.Fatalf("OnMatchResultRecorded() = %v, want nil (draw resolves as all-lost)", err)
 		}
 
-		for _, ride := range []Ride{home, away} {
-			got, err := gameSvc.Store.Rides.Get(ctx, ride.ID)
+		for _, ride := range []domain.Ride{home, away} {
+			got, err := gameSvc.RideGet(ctx, ride.ID)
 			if err != nil {
 				t.Fatalf("Get(%d): %v", ride.ID, err)
 			}
-			if got.State != RideLost {
+			if got.State != domain.RideLost {
 				t.Errorf("ride %d state = %q, want lost (a draw crowns no winner)", got.ID, got.State)
 			}
 		}
@@ -747,23 +762,23 @@ func TestService_OnMatchResultRecorded(t *testing.T) {
 		if err := pool.QueryRow(ctx, `SELECT home_team_id, away_team_id FROM schedule.matches WHERE id = $1`, matchID).Scan(&homeID, &awayID); err != nil {
 			t.Fatalf("read match: %v", err)
 		}
-		ride := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
+		ride := plantRide(ctx, t, matchID, homeID, domain.RideLocked, decimal.Zero, 0)
 
 		event := eventResult("evt-replay", matchID, roundID, seasonID, homeID, awayID, 3, 1)
-		if err := gameSvc.OnMatchResultRecorded(ctx, event); err != nil {
+		if err := gameSvc.OnMatchResultRecorded(ctx, outbound.TranslateMatchResultRecorded(event)); err != nil {
 			t.Fatalf("first OnMatchResultRecorded() = %v, want nil", err)
 		}
 
 		// Redelivery (same EventID): the claim replays, nothing executes.
-		if err := gameSvc.OnMatchResultRecorded(ctx, event); err != nil {
+		if err := gameSvc.OnMatchResultRecorded(ctx, outbound.TranslateMatchResultRecorded(event)); err != nil {
 			t.Fatalf("replayed OnMatchResultRecorded() = %v, want nil (no-op success)", err)
 		}
 
-		got, err := gameSvc.Store.Rides.Get(ctx, ride.ID)
+		got, err := gameSvc.RideGet(ctx, ride.ID)
 		if err != nil {
 			t.Fatalf("Get(): %v", err)
 		}
-		if got.State != RideWonPending || got.Version != 2 {
+		if got.State != domain.RideWonPending || got.Version != 2 {
 			t.Errorf("ride = %s/v%d, want won_pending/v2 (settled exactly once)", got.State, got.Version)
 		}
 	})
@@ -775,7 +790,7 @@ func TestService_OnMatchResultRecorded(t *testing.T) {
 		if err := pool.QueryRow(ctx, `SELECT home_team_id, away_team_id FROM schedule.matches WHERE id = $1`, matchID).Scan(&homeID, &awayID); err != nil {
 			t.Fatalf("read match: %v", err)
 		}
-		awayRide := plantRide(ctx, t, matchID, awayID, RideLocked, decimal.Zero, 0)
+		awayRide := plantRide(ctx, t, matchID, awayID, domain.RideLocked, decimal.Zero, 0)
 
 		// A lying payload (away wins while the row says 3:1 home): the
 		// derivation would land the away ride won_pending — the service's
@@ -784,16 +799,16 @@ func TestService_OnMatchResultRecorded(t *testing.T) {
 		// check 5 since migration 000017; the handler surfaces the refusal,
 		// it never overrides it).
 		event := eventResult("evt-lying", matchID, roundID, seasonID, homeID, awayID, 1, 3)
-		err := gameSvc.OnMatchResultRecorded(ctx, event)
-		if !errors.Is(err, ErrInvalidTransition) {
-			t.Fatalf("OnMatchResultRecorded(lying payload) = %v, want ErrInvalidTransition", err)
+		err := gameSvc.OnMatchResultRecorded(ctx, outbound.TranslateMatchResultRecorded(event))
+		if !errors.Is(err, domain.ErrInvalidTransition) {
+			t.Fatalf("OnMatchResultRecorded(lying payload) = %v, want domain.ErrInvalidTransition", err)
 		}
 
-		got, err := gameSvc.Store.Rides.Get(ctx, awayRide.ID)
+		got, err := gameSvc.RideGet(ctx, awayRide.ID)
 		if err != nil {
 			t.Fatalf("Get(): %v", err)
 		}
-		if got.State != RideLocked || got.Version != 1 {
+		if got.State != domain.RideLocked || got.Version != 1 {
 			t.Errorf("ride = %s/v%d, want untouched locked/v1 (the tx rolled back)", got.State, got.Version)
 		}
 	})
@@ -847,17 +862,17 @@ func TestService_OnRoundCompleted(t *testing.T) {
 		roundID, homeID, awayID, matchID := closedRoundFixture(ctx, t, 1)
 		seasonID := 1
 
-		won := plantRide(ctx, t, matchID, homeID, RideWonPending, decimal.NewFromInt(90), 1)
+		won := plantRide(ctx, t, matchID, homeID, domain.RideWonPending, decimal.NewFromInt(90), 1)
 
-		if err := gameSvc.OnRoundCompleted(ctx, roundEvent("evt-round-unlock", roundID, seasonID, false, matchID, homeID, awayID, 2, 1)); err != nil {
+		if err := gameSvc.OnRoundCompleted(ctx, outbound.TranslateRoundCompleted(roundEvent("evt-round-unlock", roundID, seasonID, false, matchID, homeID, awayID, 2, 1))); err != nil {
 			t.Fatalf("OnRoundCompleted() = %v, want nil", err)
 		}
 
-		got, err := gameSvc.Store.Rides.Get(ctx, won.ID)
+		got, err := gameSvc.RideGet(ctx, won.ID)
 		if err != nil {
 			t.Fatalf("Get(): %v", err)
 		}
-		if got.State != RideUnlocked || got.Version != 2 {
+		if got.State != domain.RideUnlocked || got.Version != 2 {
 			t.Errorf("ride = %s/v%d, want unlocked/v2 (one force-resolve)", got.State, got.Version)
 		}
 		if !got.Acc.IsZero() {
@@ -870,17 +885,17 @@ func TestService_OnRoundCompleted(t *testing.T) {
 		roundID, homeID, awayID, matchID := closedRoundFixture(ctx, t, 38)
 		seasonID := 1
 
-		won := plantRide(ctx, t, matchID, homeID, RideWonPending, decimal.NewFromInt(90), 1)
+		won := plantRide(ctx, t, matchID, homeID, domain.RideWonPending, decimal.NewFromInt(90), 1)
 
-		if err := gameSvc.OnRoundCompleted(ctx, roundEvent("evt-round-burn", roundID, seasonID, true, matchID, homeID, awayID, 2, 1)); err != nil {
+		if err := gameSvc.OnRoundCompleted(ctx, outbound.TranslateRoundCompleted(roundEvent("evt-round-burn", roundID, seasonID, true, matchID, homeID, awayID, 2, 1))); err != nil {
 			t.Fatalf("OnRoundCompleted() = %v, want nil", err)
 		}
 
-		got, err := gameSvc.Store.Rides.Get(ctx, won.ID)
+		got, err := gameSvc.RideGet(ctx, won.ID)
 		if err != nil {
 			t.Fatalf("Get(): %v", err)
 		}
-		if got.State != RideBurned || got.Version != 2 {
+		if got.State != domain.RideBurned || got.Version != 2 {
 			t.Errorf("ride = %s/v%d, want burned/v2 (the force-burn)", got.State, got.Version)
 		}
 		if !got.Acc.Equal(decimal.NewFromInt(90)) {
@@ -897,17 +912,17 @@ func TestService_OnRoundCompleted(t *testing.T) {
 		// gap): the round settlement settles it from the payload result and
 		// then sweeps it with the undecided ones — the old close-tx
 		// semantics (settle, then force-resolve).
-		locked := plantRide(ctx, t, matchID, homeID, RideLocked, decimal.Zero, 0)
+		locked := plantRide(ctx, t, matchID, homeID, domain.RideLocked, decimal.Zero, 0)
 
-		if err := gameSvc.OnRoundCompleted(ctx, roundEvent("evt-round-backstop", roundID, seasonID, false, matchID, homeID, awayID, 2, 1)); err != nil {
+		if err := gameSvc.OnRoundCompleted(ctx, outbound.TranslateRoundCompleted(roundEvent("evt-round-backstop", roundID, seasonID, false, matchID, homeID, awayID, 2, 1))); err != nil {
 			t.Fatalf("OnRoundCompleted() = %v, want nil", err)
 		}
 
-		got, err := gameSvc.Store.Rides.Get(ctx, locked.ID)
+		got, err := gameSvc.RideGet(ctx, locked.ID)
 		if err != nil {
 			t.Fatalf("Get(): %v", err)
 		}
-		if got.State != RideUnlocked {
+		if got.State != domain.RideUnlocked {
 			t.Errorf("ride = %s, want unlocked (settled from the result, then swept)", got.State)
 		}
 		if !got.Acc.IsZero() {
@@ -921,21 +936,21 @@ func TestService_OnRoundCompleted(t *testing.T) {
 		roundID, homeID, awayID, matchID := closedRoundFixture(ctx, t, 1)
 		seasonID := 1
 
-		won := plantRide(ctx, t, matchID, homeID, RideWonPending, decimal.NewFromInt(90), 1)
+		won := plantRide(ctx, t, matchID, homeID, domain.RideWonPending, decimal.NewFromInt(90), 1)
 
 		event := roundEvent("evt-round-replay", roundID, seasonID, false, matchID, homeID, awayID, 2, 1)
-		if err := gameSvc.OnRoundCompleted(ctx, event); err != nil {
+		if err := gameSvc.OnRoundCompleted(ctx, outbound.TranslateRoundCompleted(event)); err != nil {
 			t.Fatalf("first OnRoundCompleted() = %v, want nil", err)
 		}
-		if err := gameSvc.OnRoundCompleted(ctx, event); err != nil {
+		if err := gameSvc.OnRoundCompleted(ctx, outbound.TranslateRoundCompleted(event)); err != nil {
 			t.Fatalf("replayed OnRoundCompleted() = %v, want nil (no-op success)", err)
 		}
 
-		got, err := gameSvc.Store.Rides.Get(ctx, won.ID)
+		got, err := gameSvc.RideGet(ctx, won.ID)
 		if err != nil {
 			t.Fatalf("Get(): %v", err)
 		}
-		if got.State != RideUnlocked || got.Version != 2 {
+		if got.State != domain.RideUnlocked || got.Version != 2 {
 			t.Errorf("ride = %s/v%d, want unlocked/v2 (settled exactly once)", got.State, got.Version)
 		}
 	})
@@ -974,7 +989,7 @@ func winnerOf(home, away, homeID, awayID int) *int {
 
 // mustService returns just the game service of the wired stack, for tests
 // that exercise only the ride commands (they never publish).
-func mustService() *Service {
+func mustService() *service.Service {
 	svc, _ := newTestService()
 	return svc
 }

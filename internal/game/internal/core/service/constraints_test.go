@@ -1,6 +1,6 @@
-package game
+package service_test
 
-// Ride-gate constraint test: probes the declarative
+// domain.Ride-gate constraint test: probes the declarative
 // rides_money_state_coupling rule directly at the database, where it is
 // the enforcement home (see testmain_test.go for the harness). The
 // calendar-entity constraint drift tests live in internal/schedule.
@@ -22,6 +22,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
+	"lt-api.aleksrdvn.com/internal/game/internal/adapter/outbound/postgres"
+	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
 	"lt-api.aleksrdvn.com/internal/testdb"
 )
 
@@ -30,49 +32,48 @@ import (
 // against a partial chain), 000016–000018 (FK surgery, roles) assume it,
 // and the suite runs its stores on the role-restricted pool 000018
 // creates. 000001 creates the base hierarchy, 000005 adds
-// matches.ended_at — phase derivation reads it via
-// MatchStore.PhaseForMatch (internal/schedule/matches.go), so every ride
-// service call depends on it.
+// matches.ended_at — the calendar's game-facing phase read uses it, so every
+// ride use case depends on it.
 var migFiles = []string{
-	"../../migrations/000001_create_initial_game_models.up.sql",
-	"../../migrations/000002_create_users_table.up.sql",
-	"../../migrations/000003_create_user_tokens_table.up.sql",
-	"../../migrations/000004_add_permissions.up.sql",
-	"../../migrations/000005_add_matches_ended_at.up.sql",
-	// Ride persistence: phase 03 replaced the in-memory ride stub with the
+	"../../../../../migrations/000001_create_initial_game_models.up.sql",
+	"../../../../../migrations/000002_create_users_table.up.sql",
+	"../../../../../migrations/000003_create_user_tokens_table.up.sql",
+	"../../../../../migrations/000004_add_permissions.up.sql",
+	"../../../../../migrations/000005_add_matches_ended_at.up.sql",
+	// domain.Ride persistence: phase 03 replaced the in-memory ride stub with the
 	// rides table — the service ride tests plant rides into it directly.
-	"../../migrations/000006_create_rides_table.up.sql",
-	"../../migrations/000007_alter_matches_odds_precision.up.sql",
+	"../../../../../migrations/000006_create_rides_table.up.sql",
+	"../../../../../migrations/000007_alter_matches_odds_precision.up.sql",
 	// Round lifecycle gates (000008): rounds_close_gate is the backstop the
 	// round-close transaction tests refuse against, and rounds_progress_gate
 	// participates in the mid-transaction-failure case (it fires on the
 	// status flip after the ride resolution, making the whole tx abort).
-	"../../migrations/000008_add_round_lifecycle_gates.up.sql",
-	"../../migrations/000009_add_rides_won_pending_partial_index.up.sql",
+	"../../../../../migrations/000008_add_round_lifecycle_gates.up.sql",
+	"../../../../../migrations/000009_add_rides_won_pending_partial_index.up.sql",
 	// Idempotency keys (000010): the idempotent lock service tests claim
 	// and replay through the real table.
-	"../../migrations/000010_add_idempotency_keys_table.up.sql",
+	"../../../../../migrations/000010_add_idempotency_keys_table.up.sql",
 	// Result agreement (000011): superseded by 000017 (the app-level
 	// check) but part of the chain the schema is built from.
-	"../../migrations/000011_add_rides_result_agreement_gate.up.sql",
+	"../../../../../migrations/000011_add_rides_result_agreement_gate.up.sql",
 	// INSERT state gate (000012): rides are born locked only — the plant
 	// helpers walk to other states through the UPDATE gate.
-	"../../migrations/000012_add_rides_insert_state_gate.up.sql",
+	"../../../../../migrations/000012_add_rides_insert_state_gate.up.sql",
 	// Money-state coupling (000013): the declarative CHECK that took
 	// trigger check 4's job — unlocked|lost arrivals carry no acc. The
 	// UPDATE gate body runs without check 4 from here on.
-	"../../migrations/000013_add_rides_money_state_coupling.up.sql",
+	"../../../../../migrations/000013_add_rides_money_state_coupling.up.sql",
 	// Relaxed close gate (000014): since the event seam the round
 	// close publishes RoundCompleted and the ride settlement is the game
 	// context's own transaction — undecided rides no longer refuse a close.
-	"../../migrations/000014_relax_rounds_close_gate.up.sql",
+	"../../../../../migrations/000014_relax_rounds_close_gate.up.sql",
 	// 000015–000018: the context schemas, the FK/trigger
 	// surgery and the per-context roles — the game stores run on the
 	// role-restricted pool these create.
-	"../../migrations/000015_split_context_schemas.up.sql",
-	"../../migrations/000016_drop_cross_context_foreign_keys.up.sql",
-	"../../migrations/000017_app_level_result_agreement.up.sql",
-	"../../migrations/000018_context_roles.up.sql",
+	"../../../../../migrations/000015_split_context_schemas.up.sql",
+	"../../../../../migrations/000016_drop_cross_context_foreign_keys.up.sql",
+	"../../../../../migrations/000017_app_level_result_agreement.up.sql",
+	"../../../../../migrations/000018_context_roles.up.sql",
 }
 
 // PostgreSQL error codes (see pgerrcode; inlined to avoid the extra dependency).
@@ -97,6 +98,13 @@ var gamePool *pgxpool.Pool
 // schedule context's own pool, the composition shape.
 var schedulePool *pgxpool.Pool
 
+// rideRepo and transactor are the game storage adapters the harness plants
+// fixtures through (the same constructors the module facade wires).
+var (
+	rideRepo   *postgres.RideRepository
+	transactor postgres.Transactor
+)
+
 // TestMain always runs the full suite: unit tests in this package must run
 // on a DB-less machine too. Only the DB-backed tests skip, one by one, via
 // requireDB. Exiting before m.Run() would silently disable the whole
@@ -111,7 +119,7 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 
 	// Fresh database per run: the migration itself is under test.
-	db, teardown, err := testdb.Setup(ctx, dsn, "game", migFiles...)
+	db, teardown, err := testdb.Setup(ctx, dsn, "game_service", migFiles...)
 	if err != nil {
 		// DSN set but unusable: fail loudly rather than report a green run
 		// that tested nothing.
@@ -121,6 +129,8 @@ func TestMain(m *testing.M) {
 	pool = db.Owner
 	gamePool = db.Game
 	schedulePool = db.Schedule
+	rideRepo = postgres.NewRideRepository(gamePool)
+	transactor = postgres.NewTransactor(gamePool)
 
 	code := m.Run()
 	teardown()
@@ -206,8 +216,9 @@ func assertCode(t *testing.T, c constraintCase, err error) {
 // banks on). Direct SQL probes, not the domain: the rule's enforcement
 // home is the constraint itself. The refusals must name
 // rides_money_state_coupling — that is the name the store maps to
-// ErrInvalidTransition, and hard-coding it here keeps the test, the
-// constraint and ridesMoneyStateCoupling (internal/game/rides.go) in
+// domain.ErrInvalidTransition, and hard-coding it here keeps the test, the
+// constraint and ridesMoneyStateCoupling (the postgres adapter's ride_repo.go)
+// in
 // lockstep.
 func TestRideMoneyStateCoupling(t *testing.T) {
 	requireDB(t)
@@ -242,14 +253,13 @@ func TestRideMoneyStateCoupling(t *testing.T) {
 			// (the home team won 2–1). Locked rides may carry acc (only
 			// unlocked|lost arrivals are coupled to zero), so the probe
 			// plants one holding 100 and attempts the arrival in one
-			// statement — the same shape plantRide's walk
-			// (internal/game/service_test.go) and rideAutoUnlockSQL
-			// (internal/schedule/rounds.go) use.
+			// statement — the same shape plantRide's walk (service_test.go)
+			// and the calendar's auto-unlock statement use.
 			team := awayID
 			if tt.state != "lost" {
 				team = homeID
 			}
-			ride := plantRide(ctx, t, matchID, team, RideLocked, decimal.NewFromInt(100), 0)
+			ride := plantRide(ctx, t, matchID, team, domain.RideLocked, decimal.NewFromInt(100), 0)
 
 			if tt.state != "lost" {
 				if _, err := pool.Exec(ctx, `UPDATE game.rides SET state = 'won_pending' WHERE id = $1`, ride.ID); err != nil {
@@ -268,7 +278,7 @@ func TestRideMoneyStateCoupling(t *testing.T) {
 
 			// The refusal must be the money-state constraint by name, not
 			// just any 23514: the rides table carries five other CHECKs and
-			// the store maps only this one to ErrInvalidTransition.
+			// the store maps only this one to domain.ErrInvalidTransition.
 			var pgErr *pgconn.PgError
 			if errorsAs(err, &pgErr) && pgErr.ConstraintName != constraintName {
 				t.Errorf("refusal named constraint %q, want %q", pgErr.ConstraintName, constraintName)

@@ -1,6 +1,6 @@
-package game
+package domain
 
-// Unit tests for calculateBonus. The formula under test:
+// Unit tests for CalculateBonus. The formula under test:
 //
 //	delta = tokensLocked * (odds - 1) * (1 + 0.20 * streak)
 //
@@ -70,10 +70,10 @@ func TestCalculateBonus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := calculateBonus(tt.matchOdds, tt.tokensLocked, tt.acc, tt.streak)
+			got := CalculateBonus(tt.matchOdds, tt.tokensLocked, tt.acc, tt.streak)
 
 			if !got.Equal(tt.want) {
-				t.Fatalf("calculateBonus(%s, %s, %s, %d) = %s, want %s",
+				t.Fatalf("CalculateBonus(%s, %s, %s, %d) = %s, want %s",
 					tt.matchOdds, tt.tokensLocked, tt.acc, tt.streak, got, tt.want)
 			}
 		})

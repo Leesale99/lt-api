@@ -7,8 +7,8 @@
 //
 // The package is the module's public facade (ADR-028, layered shape): this
 // file is the only thing outside the module may import, and it exposes the
-// game-facing calendar reads (game.SchedulePort, satisfied structurally), the
-// use-case surface the api layer drives, the event payloads, and its route
+// game-facing calendar reads (consumed through game's anti-corruption layer),
+// the use-case surface the api layer drives, the event payloads, and its route
 // table. Everything else lives under internal/ — model, repository, service
 // and handler — so the layers cannot leak across the boundary.
 //
@@ -97,31 +97,11 @@ func (m *Module) RegisterRoutes(router handler.RouteRegistrar, gate handler.Perm
 	m.handler.RegisterRoutes(router, gate)
 }
 
-// NewStore and NewService are the phase-3 compatibility constructors for the
-// pre-refactor wiring shape (a store plus a service that attaches the bus).
-// NewModule is the real entry point; these stay until phase 4 moves the last
-// callers — game's test harness — onto the module constructor.
-//
-// Service aliases Module so a caller that names the wired type keeps
-// compiling; the concrete module is the only implementation.
-type Service = Module
-
-// NewStore builds a module without a bus: reads and CRUD work, publishes are
-// silently skipped (the nil-safe shape the store had).
-func NewStore(pool *pgxpool.Pool) *Module {
-	return NewModule(pool, nil, nil)
-}
-
-// NewService builds the wired module over the given one's pool: the bus and
-// logger are constructor parameters, not attached afterwards.
-func NewService(m *Module, bus *eventbus.Bus, log *slog.Logger) *Module {
-	return NewModule(m.pool, bus, log)
-}
-
-// The game-facing reads (game.SchedulePort, satisfied structurally — no
-// adapter exists; the interface is the boundary line, not a layer). The SQL
-// behind them is schedule's own, executed on the caller's transaction where
-// noted.
+// The game-facing reads: game's schedule port is satisfied through game's own
+// anti-corruption layer (game/internal/adapter/outbound/scheduleacl.go), which
+// wraps this surface and translates its types and errors into game's. The SQL
+// behind these reads is schedule's own, executed on the caller's transaction
+// where noted.
 
 // PhaseForMatch returns the ride-phase inputs for the round the given match
 // belongs to: the round status (the ErrRoundNotOpen gate input) plus the
