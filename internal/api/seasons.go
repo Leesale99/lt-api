@@ -9,6 +9,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	schedule "lt-api.aleksrdvn.com/internal/schedule"
+	"lt-api.aleksrdvn.com/internal/shared/httpx"
 	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -17,14 +18,14 @@ func (app *Application) listSeasonsHandler(w http.ResponseWriter, r *http.Reques
 	v := validator.New()
 
 	qs := r.URL.Query()
-	id := app.readInt(qs, "id", 0, v)
-	status := schedule.SeasonStatus(app.readString(qs, "status", ""))
+	id := httpx.ReadInt(qs, "id", 0, v)
+	status := schedule.SeasonStatus(httpx.ReadString(qs, "status", ""))
 
 	if status != "" {
 		schedule.ValidateSeasonStatus(v, status)
 	}
 
-	filters, ok := app.readListFilters(w, r, qs, v, sortSafelistID)
+	filters, ok := httpx.ReadListFilters(w, r, qs, v, httpx.SortSafelistID)
 	if !ok {
 		return
 	}
@@ -33,7 +34,7 @@ func (app *Application) listSeasonsHandler(w http.ResponseWriter, r *http.Reques
 	defer cancel()
 
 	seasons, metadata, err := app.Schedule.Seasons.GetAll(ctx, id, status, filters)
-	app.writeListResponse(w, r, "seasons", seasons, metadata, err)
+	httpx.WriteListResponse(w, r, app.Logger, "seasons", seasons, metadata, err)
 }
 
 func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Request) {
@@ -43,9 +44,9 @@ func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Reque
 		// of the lifecycle.
 	}
 
-	err := app.readJSON(w, r, &input)
+	err := httpx.ReadJSON(w, r, &input)
 	if err != nil {
-		app.badRequestResponse(w, r, err)
+		httpx.BadRequest(w, r, err)
 		return
 	}
 
@@ -56,7 +57,7 @@ func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Reque
 	v := validator.New()
 
 	if schedule.ValidateNewSeason(v, season); !v.Valid() {
-		app.failedValidationResponse(w, r, v.Errors)
+		httpx.FailedValidation(w, r, v.Errors)
 		return
 	}
 
@@ -69,7 +70,7 @@ func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Reque
 		case errors.Is(err, context.Canceled):
 			return
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 			return
 		}
 	}
@@ -77,16 +78,16 @@ func (app *Application) createSeasonHandler(w http.ResponseWriter, r *http.Reque
 	headers := make(http.Header)
 	headers.Set("Location", fmt.Sprintf("/v1/seasons/%d", season.ID))
 
-	err = app.writeJSON(w, http.StatusCreated, envelope{"season": season}, headers)
+	err = httpx.WriteJSON(w, http.StatusCreated, httpx.Envelope{"season": season}, headers)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 	}
 }
 
 func (app *Application) showSeasonHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := app.readIDParam(r)
+	id, err := httpx.ReadIDParam(r)
 	if err != nil {
-		app.notFoundResponse(w, r)
+		httpx.NotFound(w, r)
 		return
 	}
 
@@ -99,23 +100,23 @@ func (app *Application) showSeasonHandler(w http.ResponseWriter, r *http.Request
 		case errors.Is(err, context.Canceled):
 			return
 		case errors.Is(err, persistence.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
+			httpx.NotFound(w, r)
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
 
-	err = app.writeJSON(w, http.StatusOK, envelope{"season": season}, nil)
+	err = httpx.WriteJSON(w, http.StatusOK, httpx.Envelope{"season": season}, nil)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 	}
 }
 
 func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := app.readIDParam(r)
+	id, err := httpx.ReadIDParam(r)
 	if err != nil {
-		app.notFoundResponse(w, r)
+		httpx.NotFound(w, r)
 		return
 	}
 
@@ -128,9 +129,9 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 		case errors.Is(err, context.Canceled):
 			return
 		case errors.Is(err, persistence.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
+			httpx.NotFound(w, r)
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
@@ -139,7 +140,7 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 
 	expectedVersion := r.Header.Get("X-Expected-Version")
 	if expectedVersion != "" && strconv.Itoa(season.Version) != expectedVersion {
-		app.editConflictResponse(w, r)
+		httpx.EditConflict(w, r)
 		return
 	}
 
@@ -147,9 +148,9 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 		Status *schedule.SeasonStatus `json:"status"`
 	}
 
-	err = app.readJSON(w, r, &input)
+	err = httpx.ReadJSON(w, r, &input)
 	if err != nil {
-		app.badRequestResponse(w, r, err)
+		httpx.BadRequest(w, r, err)
 		return
 	}
 
@@ -160,7 +161,7 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 	v := validator.New()
 
 	if schedule.ValidateSeasonUpdate(v, current, season); !v.Valid() {
-		app.failedValidationResponse(w, r, v.Errors)
+		httpx.FailedValidation(w, r, v.Errors)
 		return
 	}
 
@@ -168,27 +169,27 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		switch {
 		case errors.Is(err, persistence.ErrEditConflict):
-			app.editConflictResponse(w, r)
+			httpx.EditConflict(w, r)
 		case errors.Is(err, persistence.ErrRecordInUse):
 			// seasons_freeze_gate: a match has started and the update tried
 			// to move the season back to created/open (ADR-008).
 			app.recordFrozenResponse(w, r)
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
 
-	err = app.writeJSON(w, http.StatusOK, envelope{"season": season}, nil)
+	err = httpx.WriteJSON(w, http.StatusOK, httpx.Envelope{"season": season}, nil)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 	}
 }
 
 func (app *Application) deleteSeasonHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := app.readIDParam(r)
+	id, err := httpx.ReadIDParam(r)
 	if err != nil {
-		app.notFoundResponse(w, r)
+		httpx.NotFound(w, r)
 		return
 	}
 
@@ -213,9 +214,9 @@ func (app *Application) deleteSeasonHandler(w http.ResponseWriter, r *http.Reque
 		case errors.Is(err, persistence.ErrRecordInUse):
 			app.recordInUseResponse(w, r)
 		case errors.Is(err, persistence.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
+			httpx.NotFound(w, r)
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
@@ -228,15 +229,15 @@ func (app *Application) deleteSeasonHandler(w http.ResponseWriter, r *http.Reque
 		case errors.Is(err, persistence.ErrRecordInUse):
 			app.recordInUseResponse(w, r)
 		case errors.Is(err, persistence.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
+			httpx.NotFound(w, r)
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
 
-	err = app.writeJSON(w, http.StatusOK, envelope{"message": "season successfully deleted"}, nil)
+	err = httpx.WriteJSON(w, http.StatusOK, httpx.Envelope{"message": "season successfully deleted"}, nil)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 	}
 }

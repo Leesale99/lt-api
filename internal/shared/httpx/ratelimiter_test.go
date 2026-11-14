@@ -1,16 +1,18 @@
-package api
+package httpx
 
 // Rate-limiter tests, split by layer:
 //
 //   - logic tests call RateLimiter.Allow/Sweep directly — no HTTP, no
 //     Application, no database. The fake clock is injected via WithClock,
 //     so "3 minutes of idleness" and the sweep tick are test-controlled.
-//   - one middleware test drives app.rateLimit to pin the HTTP contract:
-//     429, RFC-compliant integer Retry-After, error envelope.
+//   - two middleware tests drive Middleware.RateLimit to pin the HTTP
+//     contract: 429, RFC-compliant integer Retry-After, error envelope.
 //
 // These need no database, so they run even without LT_API_TEST_DSN.
 
 import (
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -178,6 +180,11 @@ func TestRateLimiterStaleBucketsEvicted(t *testing.T) {
 	}
 }
 
+// quietLogger discards output; these tests assert on behavior, not log text.
+func quietLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
 // okHandler marks every request that got past the limiter.
 var okHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
@@ -196,11 +203,11 @@ func do(h http.Handler, remoteAddr string) *httptest.ResponseRecorder {
 // denied request is a 429 with a valid integer Retry-After and the standard
 // error envelope; the wrapped handler must not have run.
 func TestRateLimitMiddlewareDenial(t *testing.T) {
-	app := &Application{
+	mw := &Middleware{
 		Logger:      quietLogger(),
 		RateLimiter: NewRateLimiter(2, 1, true),
 	}
-	h := app.rateLimit(okHandler)
+	h := mw.RateLimit(okHandler)
 
 	const remoteAddr = "10.0.0.1:1111"
 
@@ -226,11 +233,11 @@ func TestRateLimitMiddlewareDenial(t *testing.T) {
 // TestRateLimitMiddlewarePassThrough: Enabled=false means the middleware is
 // transparent — no 429s, no headers, at any request rate.
 func TestRateLimitMiddlewarePassThrough(t *testing.T) {
-	app := &Application{
+	mw := &Middleware{
 		Logger:      quietLogger(),
 		RateLimiter: NewRateLimiter(2, 1, false),
 	}
-	h := app.rateLimit(okHandler)
+	h := mw.RateLimit(okHandler)
 
 	for i := range 10 {
 		if rec := do(h, "10.0.0.1:1111"); rec.Code != http.StatusOK {

@@ -1,65 +1,40 @@
 package api
 
+// This file holds what is left of the response writers in api: the two the
+// frozen routes.go registers by name, and the domain-flavored ones whose
+// message encodes a rule this package owns. The generic status writers live
+// in httpx (httpx/errors.go); the envelope and its logging path are shared
+// through httpx.WriteError, so nothing is duplicated.
+
 import (
-	"fmt"
 	"net/http"
+
+	"lt-api.aleksrdvn.com/internal/shared/httpx"
 )
 
-func (app *Application) logError(r *http.Request, err error) {
-	var (
-		method = r.Method
-		uri    = r.URL.RequestURI()
-	)
-
-	app.Logger.Error(err.Error(), "method", method, "uri", uri)
+// notFoundResponse and methodNotAllowedResponse are what routes.go assigns to
+// the router's NotFound/MethodNotAllowed handlers.
+func (app *Application) notFoundResponse(w http.ResponseWriter, r *http.Request) {
+	httpx.NotFound(w, r)
 }
 
-func (app *Application) writeError(w http.ResponseWriter, r *http.Request, status int, message any) {
-	env := envelope{"error": message}
+func (app *Application) methodNotAllowedResponse(w http.ResponseWriter, r *http.Request) {
+	httpx.MethodNotAllowed(w, r)
+}
 
-	err := app.writeJSON(w, status, env, nil)
+func (app *Application) logError(r *http.Request, err error) {
+	httpx.LogError(app.Logger, r, err)
+}
+
+// writeError is the envelope writer for the domain-flavored responses below:
+// the message and status are the handler's, the body shape is httpx's. A
+// marshal failure can only be the payload's fault, so it is logged here.
+func (app *Application) writeError(w http.ResponseWriter, r *http.Request, status int, message any) {
+	err := httpx.WriteError(w, status, message)
 	if err != nil {
 		app.logError(r, err)
 		w.WriteHeader(http.StatusInternalServerError)
 	}
-}
-
-func (app *Application) serverErrorResponse(w http.ResponseWriter, r *http.Request, err error) {
-	app.logError(r, err)
-
-	message := "the server encountered a problem and could not process your request"
-	app.writeError(w, r, http.StatusInternalServerError, message)
-}
-
-func (app *Application) notFoundResponse(w http.ResponseWriter, r *http.Request) {
-	message := "the requested resource could not be found"
-	app.writeError(w, r, http.StatusNotFound, message)
-}
-
-func (app *Application) methodNotAllowedResponse(w http.ResponseWriter, r *http.Request) {
-	message := fmt.Sprintf("the %s method is not supported for this resource", r.Method)
-	app.writeError(w, r, http.StatusMethodNotAllowed, message)
-}
-
-func (app *Application) badRequestResponse(w http.ResponseWriter, r *http.Request, err error) {
-	app.writeError(w, r, http.StatusBadRequest, err.Error())
-}
-
-// requestTooLargeResponse answers a body that exceeded maxBodyBytes at
-// intake (413): the read was cut short before anything was decoded or
-// hashed, so nothing is claimed and a retry with a normal body re-executes.
-func (app *Application) requestTooLargeResponse(w http.ResponseWriter, r *http.Request, limit int64) {
-	message := fmt.Sprintf("body must not be larger than %d bytes", limit)
-	app.writeError(w, r, http.StatusRequestEntityTooLarge, message)
-}
-
-func (app *Application) failedValidationResponse(w http.ResponseWriter, r *http.Request, errors map[string]string) {
-	app.writeError(w, r, http.StatusUnprocessableEntity, errors)
-}
-
-func (app *Application) editConflictResponse(w http.ResponseWriter, r *http.Request) {
-	message := "unable to update the record due to an edit conflict, please try again"
-	app.writeError(w, r, http.StatusConflict, message)
 }
 
 func (app *Application) recordInUseResponse(w http.ResponseWriter, r *http.Request) {
@@ -79,43 +54,6 @@ func (app *Application) recordFrozenResponse(w http.ResponseWriter, r *http.Requ
 func (app *Application) duplicateRecordResponse(w http.ResponseWriter, r *http.Request) {
 	message := "a record with these unique values already exists"
 	app.writeError(w, r, http.StatusConflict, message)
-}
-
-func (app *Application) invalidCredentialsResponse(w http.ResponseWriter, r *http.Request) {
-	message := "invalid authentication credentials"
-	app.writeError(w, r, http.StatusUnauthorized, message)
-}
-
-func (app *Application) invalidAuthenticationTokenResponse(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("WWW-Authenticate", "Bearer")
-
-	message := "invalid or missing authentication"
-	app.writeError(w, r, http.StatusUnauthorized, message)
-}
-
-func (app *Application) authenticationRequiredResponse(w http.ResponseWriter, r *http.Request) {
-	message := "you must be authenticated to acces this resource"
-	app.writeError(w, r, http.StatusUnauthorized, message)
-}
-
-func (app *Application) inactiveAcountResponse(w http.ResponseWriter, r *http.Request) {
-	message := "your user account must be activated to access this resource"
-	app.writeError(w, r, http.StatusForbidden, message)
-}
-
-func (app *Application) missingPermissionResponse(w http.ResponseWriter, r *http.Request) {
-	message := "your user account doesn't have the necessary permissions to access this resource"
-	app.writeError(w, r, http.StatusForbidden, message)
-}
-
-func (app *Application) forbiddenResponse(w http.ResponseWriter, r *http.Request) {
-	message := "you do not have permission to modify this resource"
-	app.writeError(w, r, http.StatusForbidden, message)
-}
-
-func (app *Application) rateLimitExceededResponse(w http.ResponseWriter, r *http.Request) {
-	message := "rate limit exceeded"
-	app.writeError(w, r, http.StatusTooManyRequests, message)
 }
 
 // roundNotOpenResponse refuses a ride command issued on a round that is not

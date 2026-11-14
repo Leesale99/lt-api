@@ -8,6 +8,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/identity"
+	"lt-api.aleksrdvn.com/internal/shared/httpx"
 	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -19,9 +20,9 @@ func (app *Application) registerUserHandler(w http.ResponseWriter, r *http.Reque
 		Password string `json:"password"`
 	}
 
-	err := app.readJSON(w, r, &input)
+	err := httpx.ReadJSON(w, r, &input)
 	if err != nil {
-		app.badRequestResponse(w, r, err)
+		httpx.BadRequest(w, r, err)
 		return
 	}
 
@@ -36,13 +37,13 @@ func (app *Application) registerUserHandler(w http.ResponseWriter, r *http.Reque
 	// Validate BEFORE hashing: bcrypt errors on input over 72 bytes, and a
 	// hashing error would surface as a 500 instead of a validation error.
 	if identity.ValidateRegistration(v, input.Name, input.Email, input.Password); !v.Valid() {
-		app.failedValidationResponse(w, r, v.Errors)
+		httpx.FailedValidation(w, r, v.Errors)
 		return
 	}
 
 	err = user.Password.Set(input.Password)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 		return
 	}
 
@@ -54,17 +55,17 @@ func (app *Application) registerUserHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, identity.ErrDuplicateEmail):
 			v.AddError("email", "a user with this email address already exists")
-			app.failedValidationResponse(w, r, v.Errors)
+			httpx.FailedValidation(w, r, v.Errors)
 			return
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
 
 	userToken, err := app.Identity.UserTokens.New(ctx, user.ID, constants.ActivationTokenTTL, identity.ScopeActivation)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 		return
 	}
 
@@ -83,9 +84,9 @@ func (app *Application) registerUserHandler(w http.ResponseWriter, r *http.Reque
 	headers := make(http.Header)
 	headers.Set("Location", fmt.Sprintf("/v1/users/%d", user.ID))
 
-	err = app.writeJSON(w, http.StatusCreated, envelope{"user": user}, headers)
+	err = httpx.WriteJSON(w, http.StatusCreated, httpx.Envelope{"user": user}, headers)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 	}
 }
 
@@ -94,16 +95,16 @@ func (app *Application) activateUserHandler(w http.ResponseWriter, r *http.Reque
 		TokenPlaintext string `json:"user_token"`
 	}
 
-	err := app.readJSON(w, r, &input)
+	err := httpx.ReadJSON(w, r, &input)
 	if err != nil {
-		app.badRequestResponse(w, r, err)
+		httpx.BadRequest(w, r, err)
 		return
 	}
 
 	v := validator.New()
 
 	if identity.ValidateUserTokenPlaintext(v, input.TokenPlaintext); !v.Valid() {
-		app.failedValidationResponse(w, r, v.Errors)
+		httpx.FailedValidation(w, r, v.Errors)
 		return
 	}
 
@@ -122,17 +123,17 @@ func (app *Application) activateUserHandler(w http.ResponseWriter, r *http.Reque
 			// Unknown, expired or out-of-scope token — the same 422 the
 			// handler produced when the lookup was its own store call.
 			v.AddError("user_token", "invalid or expired activation token")
-			app.failedValidationResponse(w, r, v.Errors)
+			httpx.FailedValidation(w, r, v.Errors)
 		case errors.Is(err, persistence.ErrEditConflict):
-			app.editConflictResponse(w, r)
+			httpx.EditConflict(w, r)
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
 
-	err = app.writeJSON(w, http.StatusOK, envelope{"user": user}, nil)
+	err = httpx.WriteJSON(w, http.StatusOK, httpx.Envelope{"user": user}, nil)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 	}
 }

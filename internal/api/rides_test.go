@@ -27,6 +27,7 @@ import (
 	"strings"
 	"testing"
 
+	"lt-api.aleksrdvn.com/internal/shared/httpx"
 	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
@@ -348,7 +349,7 @@ func TestCreateRideHandlerBodyTooLarge(t *testing.T) {
 
 	app := newTestApplication()
 
-	// Valid JSON padded with whitespace past maxBodyBytes: json tolerates
+	// Valid JSON padded with whitespace past httpx.MaxBodyBytes: json tolerates
 	// space outside the value, so if the intake cap were missing (or only
 	// applied at decode) this body would decode and create a ride — 201.
 	// The 413 can therefore only come from the MaxBytesReader at drain time.
@@ -363,7 +364,7 @@ func TestCreateRideHandlerBodyTooLarge(t *testing.T) {
 	if rr.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("got status %d, want 413 (body: %.200s)", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), fmt.Sprintf("larger than %d bytes", int64(maxBodyBytes))) {
+	if !strings.Contains(rr.Body.String(), fmt.Sprintf("larger than %d bytes", int64(httpx.MaxBodyBytes))) {
 		t.Errorf("body missing size message (body: %.200s)", rr.Body.String())
 	}
 

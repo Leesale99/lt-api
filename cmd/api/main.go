@@ -21,6 +21,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/logging"
 	"lt-api.aleksrdvn.com/internal/mailer"
 	"lt-api.aleksrdvn.com/internal/schedule"
+	"lt-api.aleksrdvn.com/internal/shared/httpx"
 )
 
 // Context role names (migration 000018). Every pool the server opens is
@@ -84,7 +85,7 @@ func main() {
 	root, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	rateLimiter := api.NewRateLimiter(
+	rateLimiter := httpx.NewRateLimiter(
 		cfg.Limiter.RPS,
 		cfg.Limiter.Burst,
 		cfg.Limiter.Enabled,

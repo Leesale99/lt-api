@@ -14,6 +14,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/idempotency"
+	"lt-api.aleksrdvn.com/internal/shared/httpx"
 	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -25,12 +26,12 @@ func (app *Application) gameErrorResponse(w http.ResponseWriter, r *http.Request
 	case errors.Is(err, context.Canceled):
 		// Client gone; response would be discarded anyway.
 	case errors.Is(err, persistence.ErrRecordNotFound):
-		app.notFoundResponse(w, r)
+		httpx.NotFound(w, r)
 	case errors.Is(err, persistence.ErrEditConflict):
 		// Store-level optimistic-concurrency refusals (version guards, the
 		// resolve classification) — 409, same as the edit handlers that map
 		// it inline.
-		app.editConflictResponse(w, r)
+		httpx.EditConflict(w, r)
 	case errors.Is(err, game.ErrRoundNotOpen):
 		app.roundNotOpenResponse(w, r)
 	case errors.Is(err, game.ErrNoNextMatch):
@@ -42,15 +43,15 @@ func (app *Application) gameErrorResponse(w http.ResponseWriter, r *http.Request
 	case errors.Is(err, idempotency.ErrIdempotencyConflict):
 		app.idempotencyConflictResponse(w, r)
 	default:
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 	}
 	return true
 }
 
 func (app *Application) showRideHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := app.readIDParam(r)
+	id, err := httpx.ReadIDParam(r)
 	if err != nil {
-		app.notFoundResponse(w, r)
+		httpx.NotFound(w, r)
 		return
 	}
 
@@ -63,16 +64,16 @@ func (app *Application) showRideHandler(w http.ResponseWriter, r *http.Request) 
 		case errors.Is(err, context.Canceled):
 			return
 		case errors.Is(err, persistence.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
+			httpx.NotFound(w, r)
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
 
-	err = app.writeJSON(w, http.StatusOK, envelope{"ride": ride}, nil)
+	err = httpx.WriteJSON(w, http.StatusOK, httpx.Envelope{"ride": ride}, nil)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 	}
 }
 
@@ -81,11 +82,11 @@ func (app *Application) listRidesHandler(w http.ResponseWriter, r *http.Request)
 
 	qs := r.URL.Query()
 
-	id := app.readInt(qs, "id", 0, v)
-	playerID := app.readInt(qs, "player_id", 0, v)
-	teamID := app.readInt(qs, "team_id", 0, v)
-	matchID := app.readInt(qs, "match_id", 0, v)
-	state := game.RideState(app.readString(qs, "state", ""))
+	id := httpx.ReadInt(qs, "id", 0, v)
+	playerID := httpx.ReadInt(qs, "player_id", 0, v)
+	teamID := httpx.ReadInt(qs, "team_id", 0, v)
+	matchID := httpx.ReadInt(qs, "match_id", 0, v)
+	state := game.RideState(httpx.ReadString(qs, "state", ""))
 
 	if state != "" {
 		game.ValidateRideState(v, state)
@@ -104,7 +105,7 @@ func (app *Application) listRidesHandler(w http.ResponseWriter, r *http.Request)
 		"-state",
 	}
 
-	filters, ok := app.readListFilters(w, r, qs, v, sortSafeList)
+	filters, ok := httpx.ReadListFilters(w, r, qs, v, sortSafeList)
 	if !ok {
 		return
 	}
@@ -113,14 +114,14 @@ func (app *Application) listRidesHandler(w http.ResponseWriter, r *http.Request)
 	defer cancel()
 
 	rides, metadata, err := app.Game.Store.Rides.GetAll(ctx, id, playerID, teamID, matchID, state, filters)
-	app.writeListResponse(w, r, "rides", rides, metadata, err)
+	httpx.WriteListResponse(w, r, app.Logger, "rides", rides, metadata, err)
 }
 
 // rideMarshal is the presentation callback the ride command handlers share:
 // the same shape writeJSON emits (MarshalIndent + newline), so a replay is
 // byte-identical to the original response (ADR-024).
 func rideMarshal(ride game.Ride) (int, []byte, error) {
-	body, err := json.MarshalIndent(envelope{"ride": ride}, "", "\t")
+	body, err := json.MarshalIndent(httpx.Envelope{"ride": ride}, "", "\t")
 	if err != nil {
 		return 0, nil, err
 	}
@@ -150,7 +151,7 @@ func (app *Application) rideCommandToken(w http.ResponseWriter, r *http.Request,
 	v := validator.New()
 
 	if idempotency.ValidateIdempotencyToken(v, token); !v.Valid() {
-		app.failedValidationResponse(w, r, v.Errors)
+		httpx.FailedValidation(w, r, v.Errors)
 		return idempotency.IdempotencyToken{}, false
 	}
 
@@ -163,9 +164,9 @@ func (app *Application) rideCommandToken(w http.ResponseWriter, r *http.Request,
 // the stored response.
 func (app *Application) rideCommandHandler(endpoint string, command rideCommand) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id, err := app.readIDParam(r)
+		id, err := httpx.ReadIDParam(r)
 		if err != nil {
-			app.notFoundResponse(w, r)
+			httpx.NotFound(w, r)
 			return
 		}
 
@@ -183,7 +184,7 @@ func (app *Application) rideCommandHandler(endpoint string, command rideCommand)
 			return
 		}
 
-		app.writeRawJSON(w, res.Status, res.Body)
+		httpx.WriteRawJSON(w, res.Status, res.Body)
 	}
 }
 
@@ -191,7 +192,7 @@ func (app *Application) rideCommandHandler(endpoint string, command rideCommand)
 // rideMarshal, but status 201 — that status is what the command stores, so
 // a replay answers 201 too (ADR-024: the stored answer is the replay).
 func rideCreateMarshal(ride game.Ride) (int, []byte, error) {
-	body, err := json.MarshalIndent(envelope{"ride": ride}, "", "\t")
+	body, err := json.MarshalIndent(httpx.Envelope{"ride": ride}, "", "\t")
 	if err != nil {
 		return 0, nil, err
 	}
@@ -212,17 +213,17 @@ func (app *Application) createRideToken(w http.ResponseWriter, r *http.Request) 
 	// oversized body here in full, store its hash if the decode somehow
 	// passed, and then truncate the retry's re-read into a hash mismatch —
 	// a 409 on the exact bytes that once succeeded. MaxBytesReader instead
-	// hard-stops the read at maxBodyBytes and requests connection close.
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	// hard-stops the read at httpx.MaxBodyBytes and requests connection close.
+	r.Body = http.MaxBytesReader(w, r.Body, httpx.MaxBodyBytes)
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
-			app.requestTooLargeResponse(w, r, maxBytesError.Limit)
+			httpx.RequestTooLarge(w, r, maxBytesError.Limit)
 			return nil, idempotency.IdempotencyToken{}, false
 		}
-		app.badRequestResponse(w, r, err)
+		httpx.BadRequest(w, r, err)
 		return nil, idempotency.IdempotencyToken{}, false
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
@@ -238,7 +239,7 @@ func (app *Application) createRideToken(w http.ResponseWriter, r *http.Request) 
 	v := validator.New()
 
 	if idempotency.ValidateIdempotencyToken(v, token); !v.Valid() {
-		app.failedValidationResponse(w, r, v.Errors)
+		httpx.FailedValidation(w, r, v.Errors)
 		return nil, idempotency.IdempotencyToken{}, false
 	}
 
@@ -261,9 +262,9 @@ func (app *Application) createRideHandler(w http.ResponseWriter, r *http.Request
 		TokensLocked int64 `json:"tokens_locked"`
 	}
 
-	err := app.readJSON(w, r, &input)
+	err := httpx.ReadJSON(w, r, &input)
 	if err != nil {
-		app.badRequestResponse(w, r, err)
+		httpx.BadRequest(w, r, err)
 		return
 	}
 
@@ -287,7 +288,7 @@ func (app *Application) createRideHandler(w http.ResponseWriter, r *http.Request
 	v := validator.New()
 
 	if game.ValidateRide(v, ride); !v.Valid() {
-		app.failedValidationResponse(w, r, v.Errors)
+		httpx.FailedValidation(w, r, v.Errors)
 		return
 	}
 
@@ -311,12 +312,12 @@ func (app *Application) createRideHandler(w http.ResponseWriter, r *http.Request
 		} `json:"ride"`
 	}
 	if err := json.Unmarshal(res.Body, &stored); err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 		return
 	}
 	if stored.Ride.ID != 0 {
 		w.Header().Set("Location", fmt.Sprintf("/v1/rides/%d", stored.Ride.ID))
 	}
 
-	app.writeRawJSON(w, res.Status, res.Body)
+	httpx.WriteRawJSON(w, res.Status, res.Body)
 }

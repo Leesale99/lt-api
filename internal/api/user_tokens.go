@@ -7,6 +7,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/identity"
+	"lt-api.aleksrdvn.com/internal/shared/httpx"
 	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -16,16 +17,16 @@ func (app *Application) createActivationTokenHandler(w http.ResponseWriter, r *h
 		Email string `json:"email"`
 	}
 
-	err := app.readJSON(w, r, &input)
+	err := httpx.ReadJSON(w, r, &input)
 	if err != nil {
-		app.badRequestResponse(w, r, err)
+		httpx.BadRequest(w, r, err)
 		return
 	}
 
 	v := validator.New()
 
 	if identity.ValidateEmail(v, input.Email); !v.Valid() {
-		app.failedValidationResponse(w, r, v.Errors)
+		httpx.FailedValidation(w, r, v.Errors)
 		return
 	}
 
@@ -38,22 +39,22 @@ func (app *Application) createActivationTokenHandler(w http.ResponseWriter, r *h
 		case errors.Is(err, context.Canceled):
 			return
 		case errors.Is(err, persistence.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
+			httpx.NotFound(w, r)
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
 
 	if user.Activated {
 		v.AddError("email", "user has already been activated")
-		app.failedValidationResponse(w, r, v.Errors)
+		httpx.FailedValidation(w, r, v.Errors)
 		return
 	}
 
 	userToken, err := app.Identity.UserTokens.New(ctx, user.ID, constants.ActivationTokenTTL, identity.ScopeActivation)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 		return
 	}
 
@@ -68,11 +69,11 @@ func (app *Application) createActivationTokenHandler(w http.ResponseWriter, r *h
 		}
 	})
 
-	env := envelope{"message": "an email will be sent to you containing activation instructions"}
+	env := httpx.Envelope{"message": "an email will be sent to you containing activation instructions"}
 
-	err = app.writeJSON(w, http.StatusAccepted, env, nil)
+	err = httpx.WriteJSON(w, http.StatusAccepted, env, nil)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 	}
 }
 
@@ -82,9 +83,9 @@ func (app *Application) createAuthenticationTokenHandler(w http.ResponseWriter, 
 		Password string `json:"password"`
 	}
 
-	err := app.readJSON(w, r, &input)
+	err := httpx.ReadJSON(w, r, &input)
 	if err != nil {
-		app.badRequestResponse(w, r, err)
+		httpx.BadRequest(w, r, err)
 		return
 	}
 
@@ -94,7 +95,7 @@ func (app *Application) createAuthenticationTokenHandler(w http.ResponseWriter, 
 	identity.ValidatePasswordPlaintext(v, input.Password)
 
 	if !v.Valid() {
-		app.failedValidationResponse(w, r, v.Errors)
+		httpx.FailedValidation(w, r, v.Errors)
 		return
 	}
 
@@ -105,31 +106,31 @@ func (app *Application) createAuthenticationTokenHandler(w http.ResponseWriter, 
 	if err != nil {
 		switch {
 		case errors.Is(err, persistence.ErrRecordNotFound):
-			app.invalidCredentialsResponse(w, r)
+			httpx.InvalidCredentials(w, r)
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
 
 	match, err := user.Password.Matches(input.Password)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 		return
 	}
 	if !match {
-		app.invalidCredentialsResponse(w, r)
+		httpx.InvalidCredentials(w, r)
 		return
 	}
 
 	userToken, err := app.Identity.UserTokens.New(ctx, user.ID, constants.AuthenticationTokenTTL, identity.ScopeAuthentication)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 		return
 	}
 
-	err = app.writeJSON(w, http.StatusCreated, envelope{"user_token": userToken}, nil)
+	err = httpx.WriteJSON(w, http.StatusCreated, httpx.Envelope{"user_token": userToken}, nil)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 	}
 }

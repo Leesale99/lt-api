@@ -1,4 +1,4 @@
-package api
+package httpx
 
 // Standalone in-memory token-bucket rate limiter keyed by client IP.
 //

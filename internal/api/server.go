@@ -12,11 +12,11 @@ import (
 	"syscall"
 	"time"
 
+	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/schedule"
-
-	"lt-api.aleksrdvn.com/internal/constants"
+	"lt-api.aleksrdvn.com/internal/shared/httpx"
 )
 
 type Application struct {
@@ -29,7 +29,7 @@ type Application struct {
 	TrustedOrigins []string
 	// RateLimiter is nil when rate limiting is not wired (handler tests);
 	// constructed with Enabled=false it passes everything through.
-	RateLimiter *RateLimiter
+	RateLimiter *httpx.RateLimiter
 	Logger      *slog.Logger
 	// RootCtx is the process-wide cancel root: canceled on SIGTERM/SIGINT
 	// (main wires it to the signal context) and handed to every background

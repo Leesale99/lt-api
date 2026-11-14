@@ -9,6 +9,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	schedule "lt-api.aleksrdvn.com/internal/schedule"
+	"lt-api.aleksrdvn.com/internal/shared/httpx"
 	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -20,9 +21,9 @@ func (app *Application) createTeamHandler(w http.ResponseWriter, r *http.Request
 		Description string `json:"description"`
 	}
 
-	err := app.readJSON(w, r, &input)
+	err := httpx.ReadJSON(w, r, &input)
 	if err != nil {
-		app.badRequestResponse(w, r, err)
+		httpx.BadRequest(w, r, err)
 		return
 	}
 
@@ -35,7 +36,7 @@ func (app *Application) createTeamHandler(w http.ResponseWriter, r *http.Request
 	v := validator.New()
 
 	if schedule.ValidateTeam(v, team); !v.Valid() {
-		app.failedValidationResponse(w, r, v.Errors)
+		httpx.FailedValidation(w, r, v.Errors)
 		return
 	}
 
@@ -48,7 +49,7 @@ func (app *Application) createTeamHandler(w http.ResponseWriter, r *http.Request
 		case errors.Is(err, context.Canceled):
 			return
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 			return
 		}
 	}
@@ -56,16 +57,16 @@ func (app *Application) createTeamHandler(w http.ResponseWriter, r *http.Request
 	headers := make(http.Header)
 	headers.Set("Location", fmt.Sprintf("/v1/teams/%d", team.ID))
 
-	err = app.writeJSON(w, http.StatusCreated, envelope{"team": team}, headers)
+	err = httpx.WriteJSON(w, http.StatusCreated, httpx.Envelope{"team": team}, headers)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 	}
 }
 
 func (app *Application) showTeamHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := app.readIDParam(r)
+	id, err := httpx.ReadIDParam(r)
 	if err != nil {
-		app.notFoundResponse(w, r)
+		httpx.NotFound(w, r)
 		return
 	}
 
@@ -78,23 +79,23 @@ func (app *Application) showTeamHandler(w http.ResponseWriter, r *http.Request) 
 		case errors.Is(err, context.Canceled):
 			return
 		case errors.Is(err, persistence.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
+			httpx.NotFound(w, r)
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
 
-	err = app.writeJSON(w, http.StatusOK, envelope{"team": team}, nil)
+	err = httpx.WriteJSON(w, http.StatusOK, httpx.Envelope{"team": team}, nil)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 	}
 }
 
 func (app *Application) updateTeamHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := app.readIDParam(r)
+	id, err := httpx.ReadIDParam(r)
 	if err != nil {
-		app.notFoundResponse(w, r)
+		httpx.NotFound(w, r)
 		return
 	}
 
@@ -107,16 +108,16 @@ func (app *Application) updateTeamHandler(w http.ResponseWriter, r *http.Request
 		case errors.Is(err, context.Canceled):
 			return
 		case errors.Is(err, persistence.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
+			httpx.NotFound(w, r)
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
 
 	expectedVersion := r.Header.Get("X-Expected-Version")
 	if expectedVersion != "" && strconv.Itoa(team.Version) != expectedVersion {
-		app.editConflictResponse(w, r)
+		httpx.EditConflict(w, r)
 		return
 	}
 
@@ -126,9 +127,9 @@ func (app *Application) updateTeamHandler(w http.ResponseWriter, r *http.Request
 		Description *string `json:"description"`
 	}
 
-	err = app.readJSON(w, r, &input)
+	err = httpx.ReadJSON(w, r, &input)
 	if err != nil {
-		app.badRequestResponse(w, r, err)
+		httpx.BadRequest(w, r, err)
 		return
 	}
 
@@ -146,7 +147,7 @@ func (app *Application) updateTeamHandler(w http.ResponseWriter, r *http.Request
 
 	v := validator.New()
 	if schedule.ValidateTeam(v, team); !v.Valid() {
-		app.failedValidationResponse(w, r, v.Errors)
+		httpx.FailedValidation(w, r, v.Errors)
 		return
 	}
 
@@ -156,23 +157,23 @@ func (app *Application) updateTeamHandler(w http.ResponseWriter, r *http.Request
 		case errors.Is(err, context.Canceled):
 			return
 		case errors.Is(err, persistence.ErrEditConflict):
-			app.editConflictResponse(w, r)
+			httpx.EditConflict(w, r)
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
 
-	err = app.writeJSON(w, http.StatusOK, envelope{"team": team}, nil)
+	err = httpx.WriteJSON(w, http.StatusOK, httpx.Envelope{"team": team}, nil)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 	}
 }
 
 func (app *Application) deleteTeamHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := app.readIDParam(r)
+	id, err := httpx.ReadIDParam(r)
 	if err != nil {
-		app.notFoundResponse(w, r)
+		httpx.NotFound(w, r)
 		return
 	}
 
@@ -194,7 +195,7 @@ func (app *Application) deleteTeamHandler(w http.ResponseWriter, r *http.Request
 		case errors.Is(err, context.Canceled):
 			return
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
@@ -204,7 +205,7 @@ func (app *Application) deleteTeamHandler(w http.ResponseWriter, r *http.Request
 		case errors.Is(err, context.Canceled):
 			return
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
@@ -221,16 +222,16 @@ func (app *Application) deleteTeamHandler(w http.ResponseWriter, r *http.Request
 		case errors.Is(err, persistence.ErrRecordInUse):
 			app.recordInUseResponse(w, r)
 		case errors.Is(err, persistence.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
+			httpx.NotFound(w, r)
 		default:
-			app.serverErrorResponse(w, r, err)
+			httpx.ServerError(w, r, app.Logger, err)
 		}
 		return
 	}
 
-	err = app.writeJSON(w, http.StatusOK, envelope{"message": "team successfully deleted"}, nil)
+	err = httpx.WriteJSON(w, http.StatusOK, httpx.Envelope{"message": "team successfully deleted"}, nil)
 	if err != nil {
-		app.serverErrorResponse(w, r, err)
+		httpx.ServerError(w, r, app.Logger, err)
 	}
 }
 
@@ -238,9 +239,9 @@ func (app *Application) listTeamsHandler(w http.ResponseWriter, r *http.Request)
 	v := validator.New()
 
 	qs := r.URL.Query()
-	name := app.readString(qs, "name", "")
+	name := httpx.ReadString(qs, "name", "")
 
-	filters, ok := app.readListFilters(w, r, qs, v, sortSafelistNameID)
+	filters, ok := httpx.ReadListFilters(w, r, qs, v, httpx.SortSafelistNameID)
 	if !ok {
 		return
 	}
@@ -249,5 +250,5 @@ func (app *Application) listTeamsHandler(w http.ResponseWriter, r *http.Request)
 	defer cancel()
 
 	teams, metadata, err := app.Schedule.Teams.GetAll(ctx, name, filters)
-	app.writeListResponse(w, r, "teams", teams, metadata, err)
+	httpx.WriteListResponse(w, r, app.Logger, "teams", teams, metadata, err)
 }

@@ -60,14 +60,19 @@ var allowedImports = map[string]map[string]bool{
 	"eventbus":           {}, // pure in-proc pub/sub: stdlib only
 	"idempotency":        {"validator": true},
 	"shared/persistence": {"validator": true}, // shared kernel: never a domain context
-	"validator":          {},                  // leaf
-	"constants":          {},
-	"config":             {"vcs": true, "shared/persistence": true, "validator": true, "logging": true},
-	"logging":            {},
-	"mailer":             {},
-	"testdb":             {},
-	"vcs":                {},
-	"arch":               {}, // this package: walks the tree, imports nothing internal
+	// shared/httpx is the transport shared by every HTTP surface: it reaches
+	// the shared kernel (constants, persistence, validator) and nothing else —
+	// no domain context may ever be reachable from it (identity arrives as a
+	// consumer-side interface, adapted at the composition boundary).
+	"shared/httpx": {"constants": true, "shared/persistence": true, "validator": true},
+	"validator":    {}, // leaf
+	"constants":    {},
+	"config":       {"vcs": true, "shared/persistence": true, "validator": true, "logging": true},
+	"logging":      {},
+	"mailer":       {},
+	"testdb":       {},
+	"vcs":          {},
+	"arch":         {}, // this package: walks the tree, imports nothing internal
 }
 
 // apiGateway lists what api (the HTTP gateway) may import: any context plus
@@ -82,6 +87,7 @@ var apiGateway = map[string]bool{
 	"logging":            true,
 	"mailer":             true,
 	"schedule":           true,
+	"shared/httpx":       true,
 	"shared/persistence": true,
 	"validator":          true,
 }
