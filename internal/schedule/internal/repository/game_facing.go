@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // GameFacing is the narrow surface the game context consumes
@@ -35,9 +34,10 @@ import (
 // so the statements are honest about crossing the boundary wherever they
 // happen to execute.
 //
-// The error contract is UNCHANGED from the pre-split store: every refusal
-// is internal/shared/persistence's sentinel, exactly as game's callers
-// already map them. The flip belongs to game's restructure, not here.
+// The error contract is the schedule model's: every refusal is one of
+// model.ErrRecordNotFound / ErrRecordInUse / ErrEditConflict, re-exported by
+// the facade, and game's anti-corruption layer translates them into game's
+// own sentinels at the boundary.
 type GameFacing struct {
 	matches *MatchRepository
 	teams   *TeamRepository
@@ -79,11 +79,11 @@ func (g *GameFacing) RoundOpenTx(ctx context.Context, tx pgx.Tx, matchID int) (m
 	err := tx.QueryRow(ctx, `SELECT schedule.round_open_guard($1)`, matchID).Scan(&status)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return "", persistence.ErrRecordNotFound
+		return "", model.ErrRecordNotFound
 	case err != nil:
 		return "", err
 	case status == nil:
-		return "", persistence.ErrRecordNotFound
+		return "", model.ErrRecordNotFound
 	default:
 		return *status, nil
 	}
@@ -96,7 +96,7 @@ func (g *GameFacing) RoundOpenTx(ctx context.Context, tx pgx.Tx, matchID int) (m
 // write — the "destination stopped between pick and write" race loses here
 // instead of inside the ride statement.
 //
-// persistence.ErrRecordNotFound covers every refusal cause (unknown match,
+// model.ErrRecordNotFound covers every refusal cause (unknown match,
 // already ended, round closed): the caller maps them all to the
 // round-refusal, the Phase 04 contract for a stale pick.
 func (g *GameFacing) DestinationOpenTx(ctx context.Context, tx pgx.Tx, matchID int) error {
@@ -110,7 +110,7 @@ func (g *GameFacing) DestinationOpenTx(ctx context.Context, tx pgx.Tx, matchID i
 	case err != nil:
 		return err
 	case !live:
-		return persistence.ErrRecordNotFound
+		return model.ErrRecordNotFound
 	default:
 		return nil
 	}

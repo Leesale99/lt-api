@@ -7,10 +7,12 @@ package domain
 // calendar or storage error type ever crosses into the core.
 //
 // The storage-shaped ones (ErrNotFound, ErrEditConflict, ErrRecordInUse,
-// ErrDuplicateRecord) mirror the persistence kernel's meanings one-for-one;
-// the ride rules (ErrInvalidTransition, ErrRoundNotOpen, ErrInvalidRoundPhase)
-// are the state machine's own. ErrNoNextMatch is the continuation pick's
-// refusal, raised when the calendar has no destination to offer.
+// ErrDuplicateRecord) are the module's own translation targets: the Postgres
+// adapter maps SQLSTATEs onto them and the calendar ACL maps schedule's
+// sentinels onto them (phases 4–6); the ride rules (ErrInvalidTransition,
+// ErrRoundNotOpen, ErrInvalidRoundPhase) are the state machine's own.
+// ErrNoNextMatch is the continuation pick's refusal, raised when the calendar
+// has no destination to offer.
 
 import (
 	"errors"

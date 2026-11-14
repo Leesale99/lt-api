@@ -3,8 +3,8 @@ package port
 // The repositories the ride use cases drive: consumer-side interfaces (the
 // game core declares what it needs; the Postgres adapter at
 // adapter/outbound/postgres implements it). Every method speaks the domain's
-// values and sentinels — no pgx row, no persistence sentinel, no HTTP shape
-// crosses here.
+// values and sentinels — no pgx row, no SQLSTATE, no HTTP shape crosses
+// here.
 //
 // The *Tx methods run on the caller's transaction: every ride command and
 // settlement handler is one unit of work, so the claim, the guards' locks and

@@ -10,7 +10,6 @@ import (
 	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -95,7 +94,7 @@ func (h *Handler) showSeason(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)
@@ -124,7 +123,7 @@ func (h *Handler) updateSeason(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)
@@ -162,9 +161,9 @@ func (h *Handler) updateSeason(w http.ResponseWriter, r *http.Request) {
 	season, err = h.svc.Seasons.Update(ctx, season)
 	if err != nil {
 		switch {
-		case errors.Is(err, persistence.ErrEditConflict):
+		case errors.Is(err, model.ErrEditConflict):
 			httpx.EditConflict(w, r)
-		case errors.Is(err, persistence.ErrRecordInUse):
+		case errors.Is(err, model.ErrRecordInUse):
 			// seasons_freeze_gate: a match has started and the update tried
 			// to move the season back to created/open (ADR-008).
 			h.recordFrozenResponse(w, r)
@@ -198,9 +197,9 @@ func (h *Handler) deleteSeason(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordInUse):
+		case errors.Is(err, model.ErrRecordInUse):
 			h.recordInUseResponse(w, r)
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)

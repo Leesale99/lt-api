@@ -28,8 +28,12 @@ Each phase introduces one major backend concept only when the system has a concr
 ## Project layout
 
 ```
-cmd/api/           Entry point: config flags, logger, server bootstrap
-internal/api/      HTTP layer: application struct, routes, handlers
+cmd/api/           Entry point and composition root: config, logger, pools,
+                   module wiring, router, shared server bootstrap
+internal/<ctx>/    Bounded contexts, each behind a facade (schedule, game,
+                   identity, ledger, idempotency)
+internal/shared/   Kernel: httpx (transport), server (lifecycle), persistence
+                   (pg classifiers), testdb (E2E harness), config, logging...
 docs/              Learning-oriented implementation plan (phases 0–8)
 ```
 

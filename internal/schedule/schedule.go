@@ -124,8 +124,7 @@ func (m *Module) RoundOpenTx(ctx context.Context, tx pgx.Tx, matchID int) (Round
 
 // DestinationOpenTx pins a continuation destination LIVE at the write instant
 // inside the caller's transaction. Every refusal (unknown, ended, round
-// closed) is persistence.ErrRecordNotFound — the caller maps it to the
-// round-refusal.
+// closed) is ErrRecordNotFound — the caller maps it to the round-refusal.
 func (m *Module) DestinationOpenTx(ctx context.Context, tx pgx.Tx, matchID int) error {
 	return m.port.DestinationOpenTx(ctx, tx, matchID)
 }
@@ -211,9 +210,19 @@ const (
 	RoundsPerSeason = model.RoundsPerSeason
 )
 
-// ErrEndedAtInFuture is the resolve use case's time-policy refusal, raised
-// before any transaction (ADR-026).
-var ErrEndedAtInFuture = model.ErrEndedAtInFuture
+// The model's sentinels, re-exported: callers (game's anti-corruption layer,
+// the E2E suites) map them to their own vocabulary. They are schedule's own —
+// the shared persistence kernel no longer carries record sentinels (phase 6).
+var (
+	ErrRecordNotFound  = model.ErrRecordNotFound
+	ErrRecordInUse     = model.ErrRecordInUse
+	ErrEditConflict    = model.ErrEditConflict
+	ErrDuplicateRecord = model.ErrDuplicateRecord
+
+	// ErrEndedAtInFuture is the resolve use case's time-policy refusal, raised
+	// before any transaction (ADR-026).
+	ErrEndedAtInFuture = model.ErrEndedAtInFuture
+)
 
 // Phase derives the gameplay phase of a round from real-world facts (see
 // model.Phase).

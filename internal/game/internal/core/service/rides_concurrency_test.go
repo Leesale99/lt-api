@@ -35,7 +35,6 @@ import (
 	"lt-api.aleksrdvn.com/internal/game/internal/adapter/outbound"
 	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
 	"lt-api.aleksrdvn.com/internal/schedule"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // raceIterations is how many fresh fixtures each race test re-runs. Each
@@ -544,7 +543,7 @@ func TestResolveMatchRaces(t *testing.T) {
 					switch {
 					case err == nil:
 						winners++
-					case errors.Is(err, persistence.ErrEditConflict):
+					case errors.Is(err, schedule.ErrEditConflict):
 						// The loser: blocked ResolveTx re-evaluated its WHERE
 						// after the winner's commit and matched 0 rows — the
 						// EvalPlanQual re-check refused the stale version, and
@@ -643,7 +642,7 @@ func TestResolveMatchRaces(t *testing.T) {
 				switch {
 				case closeErr == nil:
 					wantState, wantVersion = domain.RideUnlocked, 3
-				case errors.Is(closeErr, persistence.ErrRecordInUse):
+				case errors.Is(closeErr, schedule.ErrRecordInUse):
 					wantState, wantVersion = domain.RideWonPending, 2
 				default:
 					t.Fatalf("Close() = %v, want nil or ErrRecordInUse", closeErr)

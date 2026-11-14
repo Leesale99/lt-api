@@ -24,7 +24,6 @@ package game
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -37,7 +36,6 @@ import (
 	"lt-api.aleksrdvn.com/internal/game/internal/core/port"
 	"lt-api.aleksrdvn.com/internal/game/internal/core/service"
 	"lt-api.aleksrdvn.com/internal/idempotency"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // Module is the game bounded context as the rest of the process sees it. The
@@ -116,10 +114,11 @@ func (m *Module) RegisterRoutes(router RouteRegistrar, gate PermissionGate) {
 // port (schedule's service.GameUsage), game owns the facts, and nobody imports
 // across the wrong way (ADR-028).
 //
-// The delete-side capability speaks the persistence vocabulary the calendar's
-// delete policy already maps (ErrRecordInUse → 409, ErrRecordNotFound → 404):
-// that is the contract at this seam, so the translation happens here, at the
-// boundary, and the calendar's handler stays untouched.
+// The delete-side capability speaks GAME's vocabulary — ErrRecordInUse below,
+// re-exported from the core domain — never the shared persistence kernel's.
+// The calendar's port speaks its own model.ErrRecordInUse, so the composition
+// root adapts the two at the boundary (cmd/api's gameRefs); neither module
+// imports the other's sentinels.
 
 // PlayersExistForTeam reports whether any player favours the team
 // (players_favorite_team_id_fkey's old RESTRICT half).
@@ -141,15 +140,17 @@ func (m *Module) RidesExistForMatch(ctx context.Context, matchID int) (bool, err
 
 // DeletePlayersForSeason deletes every player of the season
 // (players_season_id_fkey's old CASCADE half). A ride still referencing one of
-// them keeps the old cascade's refusal: ErrRecordInUse → the calendar's 409.
+// them keeps the old cascade's refusal: ErrRecordInUse (game's), which the
+// composition adapter turns into the calendar's own in-use sentinel — the same
+// 409 the blocked cascade produced.
 func (m *Module) DeletePlayersForSeason(ctx context.Context, seasonID int) error {
-	err := m.svc.DeletePlayersForSeason(ctx, seasonID)
-	switch {
-	case errors.Is(err, domain.ErrRecordInUse):
-		return persistence.ErrRecordInUse
-	case errors.Is(err, domain.ErrNotFound):
-		return persistence.ErrRecordNotFound
-	default:
-		return err
-	}
+	return m.svc.DeletePlayersForSeason(ctx, seasonID)
 }
+
+// The core's sentinels, re-exported for the composition boundary: the
+// calendar's port adapter compares against these instead of reaching into the
+// module's internals.
+var (
+	ErrRecordInUse = domain.ErrRecordInUse
+	ErrNotFound    = domain.ErrNotFound
+)

@@ -1,4 +1,4 @@
-package api
+package server_test
 
 import (
 	"context"
@@ -284,7 +284,7 @@ func TestUpdateRoundHandler(t *testing.T) {
 		},
 		{
 			name: "duplicate number within season",
-			// The api suite runs the whole migration chain, so
+			// The E2E suite runs the whole migration chain, so
 			// the round gates (000008) are live: a legal renumber lands on
 			// the sequence's next number (max closed = 2 → 3) — and round 5
 			// (created, empty) taking 3 collides with round 3. The refusal
@@ -415,7 +415,7 @@ func TestUpdateRoundPersists(t *testing.T) {
 	reset(t)
 	app := newTestApplication()
 
-	// The full gate set (000008 — the api suite runs the whole migration
+	// The full gate set (000008 — the E2E suite runs the whole migration
 	// chain) shapes what a legal update is: the sequence gate
 	// admits a close only onto the next step after the closed rounds, and
 	// the close gate refuses closes over unsettled matches (a future match

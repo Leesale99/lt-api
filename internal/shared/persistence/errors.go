@@ -1,8 +1,12 @@
 // Package persistence holds the storage-layer primitives shared by every domain
-// package (game, identity): sentinel errors that the API layer translates
-// into HTTP responses, Postgres error-code classifiers, and the pagination
-// primitives that shape list queries. It must stay free of domain types so
-// domains never import each other through it.
+// package (schedule, game, identity): the Postgres error-code classifiers that
+// let a repository translate database facts into ITS module's sentinels, and
+// the pagination primitives that shape list queries. It must stay free of
+// domain types so domains never import each other through it.
+//
+// It carries no sentinel errors: record-level vocabulary (not found, in use,
+// edit conflict, duplicate) belongs to the module that raises it, declared in
+// its model/errors.go (phase 6).
 package persistence
 
 import (
@@ -10,26 +14,6 @@ import (
 	"slices"
 
 	"github.com/jackc/pgx/v5/pgconn"
-)
-
-var (
-	// ErrRecordNotFound is returned by store Get methods when no record with
-	// the given ID exists.
-	ErrRecordNotFound = errors.New("record not found")
-
-	// ErrRecordInUse is returned by store Delete methods when the record is
-	// still referenced by other rows (FK violation), so it must not be deleted.
-	ErrRecordInUse = errors.New("record in use")
-
-	// ErrEditConflict is returned by store update methods when the record's
-	// version has changed since it was read (optimistic concurrency check),
-	// meaning another request modified the row in the meantime.
-	ErrEditConflict = errors.New("edit conflict")
-
-	// ErrDuplicateRecord is returned by store write methods when the insert or
-	// update violates a unique constraint (23505), e.g. a round number that
-	// already exists in the season.
-	ErrDuplicateRecord = errors.New("duplicate record")
 )
 
 // Code reports whether err is a PostgreSQL error carrying one of the given
@@ -45,8 +29,9 @@ func Code(err error, codes ...string) bool {
 // IsUniqueViolation reports whether err is a PostgreSQL unique-constraint
 // violation (23505). Without constraint names it matches any such violation;
 // with names it matches only those constraints, so a store can collapse a
-// specific uniqueness clash into a specific error (e.g. a duplicate email vs
-// ErrDuplicateRecord) while leaving other unique violations unhandled.
+// specific uniqueness clash into a specific sentinel (e.g. a duplicate email
+// vs a duplicate round number) while leaving other unique violations
+// unhandled.
 func IsUniqueViolation(err error, constraints ...string) bool {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
@@ -70,8 +55,8 @@ func IsCheckViolation(err error, constraints ...string) bool {
 }
 
 // IsFKViolation reports whether err is a PostgreSQL foreign-key violation
-// (23503). It lets stores collapse a violated reference into
-// ErrRecordNotFound so handlers can translate it into a validation error
+// (23503). It lets stores collapse a violated reference into their module's
+// not-found sentinel so handlers can translate it into a validation error
 // instead of a 500.
 func IsFKViolation(err error) bool { return Code(err, "23503") }
 
@@ -79,11 +64,12 @@ func IsFKViolation(err error) bool { return Code(err, "23503") }
 // row is still referenced and must not be deleted: 23001 (restrict_violation)
 // for ON DELETE RESTRICT, or 23503 (foreign_key_violation) for the NO ACTION
 // that Postgres raises for deferred/unenforced-at-delete FKs. Call sites map
-// it to ErrRecordInUse.
+// it to their module's record-in-use sentinel.
 func IsDeleteRestricted(err error) bool { return Code(err, "23001", "23503") }
 
 // IsTriggerViolation reports whether err is a PostgreSQL raised exception
 // (P0001) — the ADR-007/ADR-008 gate pattern: BEFORE triggers RAISE
 // EXCEPTION with ERRCODE P0001 to refuse lifecycle-illegal writes, and the
-// store maps it to ErrRecordInUse so handlers answer 409.
+// store maps it to its module's record-in-use sentinel so handlers answer
+// 409.
 func IsTriggerViolation(err error) bool { return Code(err, "P0001") }

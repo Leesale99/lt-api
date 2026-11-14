@@ -84,7 +84,7 @@ func (r *TeamRepository) GetAll(ctx context.Context, name string, filters persis
 
 func (r *TeamRepository) Get(ctx context.Context, id int) (model.Team, error) {
 	if id < 1 {
-		return model.Team{}, persistence.ErrRecordNotFound
+		return model.Team{}, model.ErrRecordNotFound
 	}
 
 	query := `
@@ -106,7 +106,7 @@ func (r *TeamRepository) Get(ctx context.Context, id int) (model.Team, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return model.Team{}, persistence.ErrRecordNotFound
+			return model.Team{}, model.ErrRecordNotFound
 		default:
 			return model.Team{}, err
 		}
@@ -147,7 +147,7 @@ func (r *TeamRepository) Update(ctx context.Context, team model.Team) (model.Tea
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return model.Team{}, persistence.ErrEditConflict
+			return model.Team{}, model.ErrEditConflict
 		default:
 			return model.Team{}, err
 		}
@@ -158,7 +158,7 @@ func (r *TeamRepository) Update(ctx context.Context, team model.Team) (model.Tea
 
 func (r *TeamRepository) Delete(ctx context.Context, id int) error {
 	if id < 1 {
-		return persistence.ErrRecordNotFound
+		return model.ErrRecordNotFound
 	}
 
 	query := `
@@ -171,13 +171,13 @@ func (r *TeamRepository) Delete(ctx context.Context, id int) error {
 		// a referenced team must not be deleted (domain decision). See
 		// IsDeleteRestricted for the SQLSTATE codes.
 		if persistence.IsDeleteRestricted(err) {
-			return persistence.ErrRecordInUse
+			return model.ErrRecordInUse
 		}
 		return err
 	}
 
 	if result.RowsAffected() == 0 {
-		return persistence.ErrRecordNotFound
+		return model.ErrRecordNotFound
 	}
 
 	return nil

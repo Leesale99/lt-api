@@ -11,7 +11,6 @@ import (
 	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -36,7 +35,7 @@ func (h *Handler) createMatch(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)
@@ -73,7 +72,7 @@ func (h *Handler) createMatch(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			v.AddError("round_id", "must reference an existing round")
 			httpx.FailedValidation(w, r, v.Errors)
 		default:
@@ -91,7 +90,7 @@ func (h *Handler) createMatch(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			v.AddError("home_team_id", "must reference an existing team")
 			httpx.FailedValidation(w, r, v.Errors)
 		default:
@@ -104,7 +103,7 @@ func (h *Handler) createMatch(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			v.AddError("away_team_id", "must reference an existing team")
 			httpx.FailedValidation(w, r, v.Errors)
 		default:
@@ -148,7 +147,7 @@ func (h *Handler) showMatch(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)
@@ -210,9 +209,9 @@ func (h *Handler) deleteMatch(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordInUse):
+		case errors.Is(err, model.ErrRecordInUse):
 			h.recordInUseResponse(w, r)
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)
@@ -247,7 +246,7 @@ func (h *Handler) updateMatch(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)
@@ -306,7 +305,7 @@ func (h *Handler) updateMatch(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			v.AddError("home_team_id", "must reference an existing team")
 			httpx.FailedValidation(w, r, v.Errors)
 		default:
@@ -319,7 +318,7 @@ func (h *Handler) updateMatch(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			v.AddError("away_team_id", "must reference an existing team")
 			httpx.FailedValidation(w, r, v.Errors)
 		default:
@@ -333,13 +332,13 @@ func (h *Handler) updateMatch(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrEditConflict):
+		case errors.Is(err, model.ErrEditConflict):
 			httpx.EditConflict(w, r)
-		case errors.Is(err, persistence.ErrRecordInUse):
+		case errors.Is(err, model.ErrRecordInUse):
 			// matches_freeze_gate: the match has started and the update tried
 			// to regress it (ADR-008).
 			h.recordFrozenResponse(w, r)
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			// Race: a referenced team was deleted between the checks above
 			// and the update.
 			v.AddError("home_team_id", "must reference an existing team")
@@ -415,9 +414,9 @@ func (h *Handler) resolveMatch(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			// Client gone; response would be discarded anyway.
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			httpx.NotFound(w, r)
-		case errors.Is(err, persistence.ErrEditConflict):
+		case errors.Is(err, model.ErrEditConflict):
 			httpx.EditConflict(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)

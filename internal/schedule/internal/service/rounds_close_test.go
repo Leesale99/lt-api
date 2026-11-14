@@ -196,7 +196,7 @@ func seedFixture(ctx context.Context, t *testing.T) (int, int, int, int) {
 // (migration 000016), so the store alone no longer refuses a delete over
 // rides — the "match still has rides" check is the api delete handler's,
 // an api-level composition of schedule's and game's facts (same 409; the
-// probe lives in internal/api/matches_test.go). This store-level case now
+// probe lives in internal/shared/server/matches_test.go). This store-level case now
 // documents the boundary: the delete goes through (rides_player_id RESTRICT
 // is game-internal and stays, but nothing on THIS side references the
 // match anymore).
@@ -216,7 +216,7 @@ func TestMatchDeleteRestricted(t *testing.T) {
 	}
 
 	// The delete actually deleted: the match row is gone.
-	if _, err := repository.NewMatchRepository(schedulePool).Get(ctx, matchID); !errors.Is(err, persistence.ErrRecordNotFound) {
+	if _, err := repository.NewMatchRepository(schedulePool).Get(ctx, matchID); !errors.Is(err, model.ErrRecordNotFound) {
 		t.Fatalf("Get() after delete = %v, want ErrRecordNotFound", err)
 	}
 }
@@ -457,7 +457,7 @@ func TestRoundClose_MidTxFailureLeavesNoTrace(t *testing.T) {
 	}
 	// updateRound maps the rounds-gate P0001 to ErrRecordInUse (409),
 	// ADR-007/008 convention.
-	if !errors.Is(err, persistence.ErrRecordInUse) {
+	if !errors.Is(err, model.ErrRecordInUse) {
 		t.Fatalf("Close() = %v, want ErrRecordInUse", err)
 	}
 

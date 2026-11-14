@@ -2,8 +2,8 @@ package port
 
 // PlayerRepository is the consumer-side interface the player use cases
 // drive; the Postgres adapter at adapter/outbound/postgres implements it.
-// Values in, domain sentinels out — a row or a persistence sentinel never
-// crosses this line.
+// Values in, domain sentinels out — a pgx row or a SQLSTATE never crosses
+// this line.
 
 import (
 	"context"

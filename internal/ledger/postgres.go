@@ -44,7 +44,7 @@ func (r *Repository) AccrueBonus(ctx context.Context, q persistence.Querier, rid
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return persistence.ErrRecordNotFound
+		return ErrNotFound
 	}
 	return nil
 }
@@ -64,7 +64,7 @@ func (r *Repository) ReleaseBonus(ctx context.Context, q persistence.Querier, ri
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return persistence.ErrRecordNotFound
+		return ErrNotFound
 	}
 	return nil
 }

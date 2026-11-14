@@ -20,11 +20,17 @@ package ledger
 
 import (
 	"context"
+	"errors"
 
 	"github.com/shopspring/decimal"
 
 	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
+
+// ErrNotFound is the ledger's own sentinel: a money write that matched no
+// ride row (the row vanished mid-transaction). The ledger owns its vocabulary
+// — the shared persistence kernel carries classifiers and pagination only.
+var ErrNotFound = errors.New("ledger: record not found")
 
 // Ledger is the money seam game consumes. Intent-style names: the caller
 // states what should happen to the money, not how the rows change.
@@ -34,7 +40,7 @@ type Ledger interface {
 	// credit a per-team token account; today the intent is verified and
 	// carried by the ride row's tokens_locked, which the birth INSERT
 	// writes (the rides CHECK admits no zero-token birth, so the lock and
-	// the row are one statement — see store.go).
+	// the row are one statement — see postgres.go).
 	LockTokens(ctx context.Context, q persistence.Querier, playerID, teamID, rideID int, tokens, base decimal.Decimal) error
 
 	// AccrueBonus adds a won ride's accrued bonus. game owns the bonus

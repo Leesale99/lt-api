@@ -1,4 +1,4 @@
-package api
+package server_test
 
 // Canonical fixture: after reset(), every table is empty and re-seeded with
 // fixed IDs (TRUNCATE ... RESTART IDENTITY), so all handler tests can address

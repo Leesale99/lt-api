@@ -1,4 +1,4 @@
-package api
+package server_test
 
 import (
 	"net/http"

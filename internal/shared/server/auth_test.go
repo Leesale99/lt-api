@@ -1,4 +1,4 @@
-package api
+package server_test
 
 // Tests for the authentication/authorization wall: app.authenticate +
 // app.requirePermission, exercised end-to-end through routes() against the

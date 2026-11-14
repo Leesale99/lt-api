@@ -23,7 +23,7 @@ func NewRoundRepository(pool *pgxpool.Pool) *RoundRepository {
 
 func (r *RoundRepository) Get(ctx context.Context, id int) (model.Round, error) {
 	if id < 1 {
-		return model.Round{}, persistence.ErrRecordNotFound
+		return model.Round{}, model.ErrRecordNotFound
 	}
 
 	query := `
@@ -44,7 +44,7 @@ func (r *RoundRepository) Get(ctx context.Context, id int) (model.Round, error) 
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return model.Round{}, persistence.ErrRecordNotFound
+			return model.Round{}, model.ErrRecordNotFound
 		default:
 			return model.Round{}, err
 		}
@@ -64,7 +64,7 @@ func (r *RoundRepository) Insert(ctx context.Context, round model.Round) (model.
 	if err != nil {
 		switch {
 		case persistence.IsUniqueViolation(err):
-			return model.Round{}, persistence.ErrDuplicateRecord
+			return model.Round{}, model.ErrDuplicateRecord
 		}
 		return model.Round{}, err
 	}
@@ -89,13 +89,13 @@ func (r *RoundRepository) updateRound(ctx context.Context, q persistence.Querier
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return model.Round{}, persistence.ErrEditConflict
+			return model.Round{}, model.ErrEditConflict
 		case persistence.IsUniqueViolation(err):
-			return model.Round{}, persistence.ErrDuplicateRecord
+			return model.Round{}, model.ErrDuplicateRecord
 		case persistence.IsTriggerViolation(err):
 			// rounds_freeze_gate: a match of this round has started and the
 			// update tried to move it back to created/open (ADR-008).
-			return model.Round{}, persistence.ErrRecordInUse
+			return model.Round{}, model.ErrRecordInUse
 		}
 		return model.Round{}, err
 	}
@@ -291,13 +291,13 @@ func (r *RoundRepository) Delete(ctx context.Context, id, seasonID int) error {
 		// P0001 comes from the rounds delete gate (ADR-007 one level down):
 		// closed rounds are durable history, the DB is authoritative.
 		if persistence.IsTriggerViolation(err) {
-			return persistence.ErrRecordInUse
+			return model.ErrRecordInUse
 		}
 		return err
 	}
 
 	if result.RowsAffected() == 0 {
-		return persistence.ErrRecordNotFound
+		return model.ErrRecordNotFound
 	}
 
 	return nil

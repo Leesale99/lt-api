@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
+	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 )
 
 // GameUsage is the consumer-side port the delete policies consult: the game
@@ -13,9 +13,11 @@ import (
 // capabilities the policies use, so schedule never imports game (game →
 // schedule is the only legal direction, ADR-028).
 //
-// The composition root adapts the game store to it until game exposes a
-// facade of its own; the adapter is behavior-identical to the api handlers'
-// former inline calls, including which errors pass through.
+// The composition root adapts the game facade to it (the gameRefs adapter in
+// cmd/api) because the two contexts speak different sentinel vocabularies:
+// game's "still referenced" refusal arrives at the boundary as the calendar's
+// own model.ErrRecordInUse, so the policies below — and the handlers above
+// them — only ever see schedule's errors.
 type GameUsage interface {
 	// PlayersExistForTeam reports whether any player favours the team.
 	PlayersExistForTeam(ctx context.Context, teamID int) (bool, error)
@@ -55,7 +57,7 @@ func (s *Service) DeleteTeam(ctx context.Context, id int) error {
 		return err
 	}
 	if playerRefs || rideRefs {
-		return persistence.ErrRecordInUse
+		return model.ErrRecordInUse
 	}
 
 	return s.teams.Delete(ctx, id)
@@ -80,7 +82,7 @@ func (s *Service) DeleteMatch(ctx context.Context, matchID, seasonID int) error 
 		return err
 	}
 	if rideRefs {
-		return persistence.ErrRecordInUse
+		return model.ErrRecordInUse
 	}
 
 	return s.matches.Delete(ctx, matchID, seasonID)

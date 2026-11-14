@@ -1,64 +1,23 @@
-package api
+package server_test
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
-
-	"lt-api.aleksrdvn.com/internal/eventbus"
-	"lt-api.aleksrdvn.com/internal/game"
-	"lt-api.aleksrdvn.com/internal/idempotency"
-	"lt-api.aleksrdvn.com/internal/identity"
-	"lt-api.aleksrdvn.com/internal/ledger"
-	"lt-api.aleksrdvn.com/internal/schedule"
-	"lt-api.aleksrdvn.com/internal/shared/server"
 )
 
 // Template for all handler tests: fresh app + fresh fixture per subtest
 // (reset() re-seeds the canonical rows with fixed IDs), table of
-// {request -> want code + body fragments}.
+// {request -> want code + body fragments}. The app comes from the ONE
+// composition helper (compose_test.go), which mirrors cmd/api/main.go.
 //
-// newTestApplication wires the real test-database pool set up by TestMain.
-// The composition is the composition root's: the calendar module publishes on
-// an in-process bus, the game module consumes it through its event ACL, and
-// the calendar's delete policies ask the game facade about its references.
-func newTestApplication() *Application {
-	// Composition-root wiring: each context module on its own role-restricted
-	// pool (the composition-root shape of cmd/api). testPool (owner) exists
-	// for fixture planting only.
-	bus := eventbus.New()
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	scheduleModule := schedule.NewModule(schedulePool, bus, log)
-	identityModule := identity.NewModule(identityPool, nopMailer{})
-	gameModule := game.NewModule(gamePool, scheduleModule, ledger.New(), idempotency.New(), bus, log)
-	gameModule.UseIdentity(identityModule)
-
-	// The module's delete policies consult game for its references, the same
-	// wiring the composition root installs.
-	scheduleModule.UseGameRefs(gameModule)
-
-	return &Application{
-		Server:   &server.Server{Logger: log},
-		Game:     gameModule,
-		Schedule: scheduleModule,
-		Identity: identityModule,
-	}
-}
-
-// nopMailer stands in for the real SMTP client: handlers call Send, nothing
-// leaves the process, and the background goroutine has nothing to panic on.
-type nopMailer struct{}
-
-func (nopMailer) Send(_ context.Context, recipient string, templateFile string, data any) error {
-	return nil
-}
+// Every request below is served by app.routes() — the real handler chain, the
+// real modules, the real role-restricted pools.
 
 func TestShowPlayerHandler(t *testing.T) {
 	requireDB(t)

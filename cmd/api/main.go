@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/tracelog"
-	"lt-api.aleksrdvn.com/internal/api"
 	"lt-api.aleksrdvn.com/internal/config"
 	"lt-api.aleksrdvn.com/internal/eventbus"
 	"lt-api.aleksrdvn.com/internal/game"
@@ -130,24 +129,17 @@ func main() {
 	// The schedule module's delete policies ask game whether a team or match
 	// is still referenced before removing it; the game facade answers from its
 	// own rows (schedule declares the port, game owns the facts, nobody
-	// imports across the wrong way).
-	scheduleModule.UseGameRefs(gameModule)
+	// imports across the wrong way). gameRefs is the boundary adapter: it
+	// translates game's sentinels into the calendar's at the one place the two
+	// vocabularies meet.
+	scheduleModule.UseGameRefs(gameRefs{game: gameModule})
 
-	// The gateway owns the module deps and builds the handler chain; the
-	// shared server owns the process lifecycle around it and knows nothing
-	// about the modules. Assembly order: deps → server → chain → background
-	// wiring → Serve. The chain is built after the server exists because
-	// route registration logs through the gateway's logger, and the identity
-	// module books its mail deliveries on the server's background tracker.
-	app := &api.Application{
-		TrustedOrigins: cfg.CORS.Origins,
-		RateLimiter:    rateLimiter,
-		Game:           gameModule,
-		Schedule:       scheduleModule,
-		Identity:       identityModule,
-	}
-
-	app.Server = &server.Server{
+	// The shared server owns the process lifecycle around a fully-built
+	// handler and knows nothing about the modules. Assembly order: deps →
+	// server → chain → background wiring → serve. The chain is built after
+	// the server exists because route registration logs through its logger,
+	// and the identity module books its mail deliveries on its tracker.
+	srv := &server.Server{
 		Version: cfg.Version,
 		Port:    cfg.Port,
 		Env:     cfg.Env,
@@ -155,14 +147,28 @@ func main() {
 		RootCtx: root,
 	}
 
-	app.Server.Handler = app.HandlerChain()
+	srv.Handler = routes(srv, &httpx.Middleware{
+		Logger:         logger,
+		TrustedOrigins: cfg.CORS.Origins,
+		RateLimiter:    rateLimiter,
+		Users:          identityModule,
+		Permissions:    identityModule,
+	}, scheduleModule, gameModule, identityModule)
 
 	// Registration and activation mail must outlive their request but not the
 	// process: the module hands deliveries to the server's tracker, which the
 	// shutdown drain waits out.
-	identityModule.UseBackground(app.Server.Background)
+	identityModule.UseBackground(srv.Background)
 
-	err = app.Serve()
+	// The rate-limiter sweep is api-owned background work that lives exactly as
+	// long as serving: booked on the server's tracker (the one Serve waits out
+	// during shutdown) BEFORE Serve starts, so the drain cannot miss it. It was
+	// Application.Serve's first act before phase 6; it is explicit here.
+	if rateLimiter.Enabled {
+		srv.Background(rateLimiter.Sweep)
+	}
+
+	err = srv.Serve()
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
@@ -172,7 +178,7 @@ func main() {
 // contextPools carries the one pool per bounded context. Every store is
 // wired to exactly its own pool; the migration runner and the seed keep
 // their own (unrestricted, owner) connections and are never handed to a
-// context store.
+// context repository.
 type contextPools struct {
 	Schedule *pgxpool.Pool
 	Game     *pgxpool.Pool

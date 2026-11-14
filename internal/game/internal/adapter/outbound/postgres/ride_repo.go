@@ -1,8 +1,8 @@
 // Package postgres is the game module's storage adapter: the SQL behind the
 // core's repository ports, and the translation of every Postgres fact into
-// the domain's values and sentinels. It is the only game package that speaks
-// persistence's vocabulary — nothing above it sees a pgx row, an SQLSTATE or
-// a persistence sentinel.
+// the domain's values and sentinels. It is the only game package that reads
+// SQLSTATEs — nothing above it sees a pgx row, a Postgres error code or a
+// storage-shaped error.
 package postgres
 
 // The pre-refactor rides SQL, unchanged: since the Game/Schedule split every

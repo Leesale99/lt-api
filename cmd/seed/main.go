@@ -19,7 +19,7 @@ import (
 // no pairing repeats. Rounds 1-4 are closed (past, fake results); round 5 is
 // open (first upcoming); rounds 6-8 are created. 20 players are fake
 // registered users of the game (2 favorite fans per team), not real athletes. Deliberately independent of the test
-// fixture in internal/api/seed_test.go — dev data and test data serve
+// fixture in internal/shared/server/seed_test.go — dev data and test data serve
 // different purposes.
 //
 //go:embed seed.sql

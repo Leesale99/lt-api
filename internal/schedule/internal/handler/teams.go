@@ -10,7 +10,6 @@ import (
 	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -74,7 +73,7 @@ func (h *Handler) showTeam(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)
@@ -103,7 +102,7 @@ func (h *Handler) updateTeam(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)
@@ -148,7 +147,7 @@ func (h *Handler) updateTeam(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrEditConflict):
+		case errors.Is(err, model.ErrEditConflict):
 			httpx.EditConflict(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)
@@ -179,9 +178,9 @@ func (h *Handler) deleteTeam(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordInUse):
+		case errors.Is(err, model.ErrRecordInUse):
 			h.recordInUseResponse(w, r)
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)

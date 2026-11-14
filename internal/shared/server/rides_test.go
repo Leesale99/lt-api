@@ -1,4 +1,4 @@
-package api
+package server_test
 
 // Ride handler tests: the HTTP contract of the ride endpoints against the
 // real rides table (migration 000006) — request validation, error mapping

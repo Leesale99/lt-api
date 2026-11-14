@@ -30,7 +30,7 @@ func NewMatchRepository(pool *pgxpool.Pool) *MatchRepository {
 
 func (r *MatchRepository) Get(ctx context.Context, id int) (model.Match, error) {
 	if id < 1 {
-		return model.Match{}, persistence.ErrRecordNotFound
+		return model.Match{}, model.ErrRecordNotFound
 	}
 
 	query := `
@@ -60,7 +60,7 @@ func (r *MatchRepository) Get(ctx context.Context, id int) (model.Match, error) 
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return model.Match{}, persistence.ErrRecordNotFound
+			return model.Match{}, model.ErrRecordNotFound
 		default:
 			return model.Match{}, err
 		}
@@ -183,13 +183,13 @@ func (r *MatchRepository) Delete(ctx context.Context, id, seasonID int) error {
 		// (service.DeleteMatch), which asks the game context before deleting
 		// (same 409). The remaining FK refusals are schedule-internal.
 		if persistence.IsDeleteRestricted(err) {
-			return persistence.ErrRecordInUse
+			return model.ErrRecordInUse
 		}
 		return err
 	}
 
 	if result.RowsAffected() == 0 {
-		return persistence.ErrRecordNotFound
+		return model.ErrRecordNotFound
 	}
 
 	return nil
@@ -219,16 +219,16 @@ func (r *MatchRepository) Update(ctx context.Context, match model.Match) (model.
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return model.Match{}, persistence.ErrEditConflict
+			return model.Match{}, model.ErrEditConflict
 		case persistence.IsFKViolation(err):
 			// The referenced team was deleted between the handler's existence
 			// check and this write (season and round are not updatable, so
 			// they cannot trigger the FK here).
-			return model.Match{}, persistence.ErrRecordNotFound
+			return model.Match{}, model.ErrRecordNotFound
 		case persistence.IsTriggerViolation(err):
 			// matches_freeze_gate: the match has started and the update tried
 			// to regress it to created/postponed (ADR-008).
-			return model.Match{}, persistence.ErrRecordInUse
+			return model.Match{}, model.ErrRecordInUse
 		default:
 			return model.Match{}, err
 		}
@@ -269,7 +269,7 @@ func (r *MatchRepository) PhaseForMatch(ctx context.Context, matchID int) (model
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return "", nil, nil, persistence.ErrRecordNotFound
+			return "", nil, nil, model.ErrRecordNotFound
 		default:
 			return "", nil, nil, err
 		}
@@ -313,7 +313,7 @@ func (r *MatchRepository) NextForTeam(ctx context.Context, teamID int) (model.Ma
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return model.Match{}, persistence.ErrRecordNotFound
+			return model.Match{}, model.ErrRecordNotFound
 		default:
 			return model.Match{}, err
 		}
@@ -391,11 +391,11 @@ func (r *MatchRepository) classifyResolveRefusal(ctx context.Context, matchID in
 	err := r.pool.QueryRow(ctx, `SELECT id FROM matches WHERE id = $1`, matchID).Scan(&id)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return persistence.ErrRecordNotFound
+		return model.ErrRecordNotFound
 	case err != nil:
 		return err
 	default:
-		return persistence.ErrEditConflict
+		return model.ErrEditConflict
 	}
 }
 

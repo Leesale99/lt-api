@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // UpdateRound is the round PATCH use case: the lifecycle transition dispatch
@@ -26,7 +25,7 @@ import (
 // re-verifies it so the use case never trusts that its caller checked.
 func (s *RoundService) UpdateRound(ctx context.Context, current, updated model.Round, expectedVersion string) (model.Round, error) {
 	if expectedVersion != "" && strconv.Itoa(current.Version) != expectedVersion {
-		return model.Round{}, persistence.ErrEditConflict
+		return model.Round{}, model.ErrEditConflict
 	}
 
 	// ADR-008 point 3: the created → open transition also starts the season
@@ -52,7 +51,7 @@ func (s *RoundService) UpdateRound(ctx context.Context, current, updated model.R
 // post-commit (ADR-027): the ride settlement is game's, driven by this
 // event. The repository commits the flip (and the last round's season
 // close); the publish — the results read and the delivery — happens here,
-// after that commit, exactly where it used to run inside the store.
+// after that commit, exactly where it used to run inside the repository.
 func (s *RoundService) Close(ctx context.Context, round model.Round) (model.Round, error) {
 	closed, err := s.repo.Close(ctx, round)
 	if err != nil {

@@ -1,18 +1,20 @@
-// Package arch pins the bounded-context dependency map (Phase 05, as built)
-// in code: it walks every Go file under internal/ and cmd/, extracts the
-// package-level import edges, and fails with a readable diff when an edge
-// outside the matrix appears.
+// Package arch pins the bounded-context dependency map (Phase 05, as built;
+// final shape after phase 6) in code: it walks every Go file under internal/
+// and cmd/, extracts the package-level import edges, and fails with a
+// readable diff when an edge outside the matrix appears.
 //
 // The matrix mirrors docs/designs/bounded-contexts-dependency-map.mmd.
 //
 // Classes are uniform (path-aware, see classify):
 //
 //   - "<module>" — a bounded context (schedule, game, ledger, identity,
-//     idempotency) or the api gateway, at ANY depth of its directory tree.
+//     idempotency), at ANY depth of its directory tree.
 //   - "shared:<name>" — everything else under internal/: the shared kernel,
 //     both nested (shared/persistence → shared:persistence) and flat
 //     (validator → shared:validator).
-//   - "cmd" — the composition root.
+//   - "cmd" — the composition root. Phase 6 deleted the api gateway class
+//     with the package: cmd/api now owns the router, the middleware chain and
+//     the healthcheck, so there is no API-layer row to special-case.
 //
 // Because nesting never changes a class, "modules import other module ROOTS
 // only" and "the kernel imports the kernel only" are enforced by the class
@@ -24,8 +26,8 @@
 //   - schedule is the ACL: it owns teams/seasons/rounds/matches, mints their
 //     ids, and may import only the shared kernel (shared:persistence,
 //     shared:validator, shared:httpx) and the event bus it publishes on. It
-//     must NEVER import game, ledger, identity or api — the downstream side
-//     of the seam.
+//     must NEVER import game, ledger or identity — the downstream side of the
+//     seam.
 //   - schedule is also the LAYERED module (phase 3): its facade (the root
 //     package) reaches its own internal layers and the kernel, and each layer
 //     has its own row — model → shared:validator; repository →
@@ -51,14 +53,24 @@
 //     handler → model/service/shared:constants/shared:httpx/shared:validator.
 //     The facade is what httpx's consumer-side lookups are satisfied by, and
 //     it is the only identity package any other class may import.
-//   - api is the gateway, not a context: it may import any context.
-//   - cmd/* is the composition root: wires everything, imports anything.
+//   - cmd/api is the composition root: it wires every module and the shared
+//     kernel, owns the router and the chain, and imports anything. There is
+//     no gateway class between it and the modules (phase 6 deleted the api
+//     package); the only HTTP surface left above the modules is httpx.
 //
 // Test-file policy: _test.go files are checked against the same matrix — a
 // test importing across a forbidden edge is a real coupling, not a fiction.
-// One documented exemption: shared:testdb (the DB test harness, providing
-// pools/roles/seeds) may be imported from any _test.go file; it is to Go
-// tests what the testing package is — infrastructure, not a context.
+// Two documented exemptions:
+//
+//   - shared:testdb (the DB test harness, providing pools/roles/seeds) may be
+//     imported from any _test.go file; it is to Go tests what the testing
+//     package is — infrastructure, not a context.
+//   - shared:server's E2E suite is the composition root in test form: since
+//     phase 6 every converted api test lives in internal/shared/server/*_test.go
+//     and composes the real modules exactly like cmd/api/main.go (the ONE
+//     compose_test.go helper). Its row is widened for _test.go files only —
+//     shared:server's production code still imports shared:constants and
+//     nothing else (pinned by the same check, which separates testOnly edges).
 package arch
 
 import (
@@ -76,12 +88,11 @@ import (
 var modulePath = mustModulePath()
 
 // moduleClasses are the package classes that are NOT kernel: the bounded
-// contexts plus the api gateway. Every other internal package classifies as
-// "shared:<name>" (see classOf) — a new module must be registered here to get
-// its own matrix row, so an unregistered package can only ever be treated as
-// kernel (which forbids it from importing any module).
+// contexts. Every other internal package classifies as "shared:<name>" (see
+// classOf) — a new module must be registered here to get its own matrix row,
+// so an unregistered package can only ever be treated as kernel (which
+// forbids it from importing any module).
 var moduleClasses = map[string]bool{
-	"api":         true, // gateway, not a context (see apiGateway)
 	"game":        true,
 	"identity":    true,
 	"idempotency": true,
@@ -305,24 +316,6 @@ var allowedImports = map[string]map[string]bool{
 	"shared:arch":    {}, // this package: walks the tree, imports nothing internal
 }
 
-// apiGateway lists what api (the HTTP gateway) may import: any context plus
-// the shared kernel, mirroring the gateway node in the map.
-var apiGateway = map[string]bool{
-	"game":               true,
-	"idempotency":        true,
-	"identity":           true,
-	"ledger":             true,
-	"schedule":           true,
-	"shared:constants":   true,
-	"shared:eventbus":    true,
-	"shared:httpx":       true,
-	"shared:logging":     true,
-	"shared:mailer":      true,
-	"shared:persistence": true,
-	"shared:server":      true,
-	"shared:validator":   true,
-}
-
 // testOnlyImports widens a class's edge set for _test.go files only. The
 // end-to-end DB suites wire the real adapters over the real calendar — the
 // composition root's job — so the use-case package's tests reach the game
@@ -342,6 +335,23 @@ var testOnlyImports = map[string]map[string]bool{
 	"game:adapter:outbound:postgres": {
 		"game:adapter:outbound": true,
 		"schedule":              true,
+	},
+	// The E2E suite (converted from the api gateway package in phase 6): its
+	// compose_test.go mirrors cmd/api/main.go, so it composes every module
+	// root and the shared kernel. Production shared:server keeps its
+	// row above — the check tags test-only edges, so this widening can never
+	// leak into the served code.
+	"shared:server": {
+		"game":               true,
+		"idempotency":        true,
+		"identity":           true,
+		"ledger":             true,
+		"schedule":           true,
+		"shared:constants":   true,
+		"shared:eventbus":    true,
+		"shared:httpx":       true,
+		"shared:persistence": true,
+		"shared:server":      true, // the external test package's own import
 	},
 }
 
@@ -415,16 +425,9 @@ func TestImportBoundaries(t *testing.T) {
 
 	var violations []string
 	for _, e := range edges {
-		var ok bool
-		switch e.from {
-		case "api":
-			// The gateway is not a context: it may reach any context.
-			ok = apiGateway[e.to]
-		default:
-			ok = allowedImports[e.from][e.to]
-			if !ok {
-				ok = e.testOnly && testOnlyImports[e.from][e.to]
-			}
+		ok := allowedImports[e.from][e.to]
+		if !ok {
+			ok = e.testOnly && testOnlyImports[e.from][e.to]
 		}
 		if !ok {
 			violations = append(violations, e.violation())
@@ -460,9 +463,6 @@ func (e edge) violation() string {
 	if a, exists := allowedImports[e.from]; exists && len(a) > 0 {
 		allowed = joinClasses(a)
 	}
-	if e.from == "api" {
-		allowed = "any context (gateway): " + joinClasses(apiGateway)
-	}
 	return "  X  " + e.from + " -> " + e.to + "\n     at " + e.file + "\n     " + e.from + " may import: " + allowed
 }
 
@@ -479,20 +479,16 @@ func joinClasses(set map[string]bool) string {
 }
 
 func renderMatrix() string {
-	pkgs := make([]string, 0, len(allowedImports)+2)
+	pkgs := make([]string, 0, len(allowedImports)+1)
 	for p := range allowedImports {
 		pkgs = append(pkgs, p)
 	}
-	pkgs = append(pkgs, "api", "cmd")
+	pkgs = append(pkgs, "cmd")
 	sort.Strings(pkgs)
 	var b strings.Builder
 	for _, p := range pkgs {
-		switch p {
-		case "cmd":
+		if p == "cmd" {
 			b.WriteString("  cmd -> any internal package (composition root)\n")
-			continue
-		case "api":
-			b.WriteString("  api -> " + joinClasses(apiGateway) + "\n")
 			continue
 		}
 		names := joinClasses(allowedImports[p])

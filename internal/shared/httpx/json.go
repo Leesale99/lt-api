@@ -2,7 +2,7 @@
 // the JSON envelope and its reader/writer, request-param parsing, list
 // filters, the generic error writers, and the middleware chain.
 //
-// It is transport, not a context: httpx never imports internal/api,
+// It is transport, not a context: httpx never imports a module,
 // schedule, game, identity, ledger or idempotency. Anything contextual —
 // resolving a bearer token, reading a role's permissions — reaches it
 // through the consumer-side interfaces declared in middleware.go.

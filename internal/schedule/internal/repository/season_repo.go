@@ -23,7 +23,7 @@ func NewSeasonRepository(pool *pgxpool.Pool) *SeasonRepository {
 
 func (r *SeasonRepository) Get(ctx context.Context, id int) (model.Season, error) {
 	if id < 1 {
-		return model.Season{}, persistence.ErrRecordNotFound
+		return model.Season{}, model.ErrRecordNotFound
 	}
 
 	query := `
@@ -43,7 +43,7 @@ func (r *SeasonRepository) Get(ctx context.Context, id int) (model.Season, error
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return model.Season{}, persistence.ErrRecordNotFound
+			return model.Season{}, model.ErrRecordNotFound
 		default:
 			return model.Season{}, err
 		}
@@ -74,11 +74,11 @@ func (r *SeasonRepository) Update(ctx context.Context, season model.Season) (mod
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return model.Season{}, persistence.ErrEditConflict
+			return model.Season{}, model.ErrEditConflict
 		case persistence.IsTriggerViolation(err):
 			// seasons_freeze_gate: a match has started and the update tried
 			// to move the season back to created/open (ADR-008).
-			return model.Season{}, persistence.ErrRecordInUse
+			return model.Season{}, model.ErrRecordInUse
 		}
 		return model.Season{}, err
 	}
@@ -149,7 +149,7 @@ func (r *SeasonRepository) GetAll(ctx context.Context, id int, status model.Seas
 
 func (r *SeasonRepository) Delete(ctx context.Context, id int) error {
 	if id < 1 {
-		return persistence.ErrRecordNotFound
+		return model.ErrRecordNotFound
 	}
 
 	query := `
@@ -163,13 +163,13 @@ func (r *SeasonRepository) Delete(ctx context.Context, id int) error {
 		// in_progress/closed seasons and open seasons with match history are
 		// durable, the DB is authoritative.
 		if persistence.IsTriggerViolation(err) {
-			return persistence.ErrRecordInUse
+			return model.ErrRecordInUse
 		}
 		return err
 	}
 
 	if result.RowsAffected() == 0 {
-		return persistence.ErrRecordNotFound
+		return model.ErrRecordNotFound
 	}
 
 	return nil

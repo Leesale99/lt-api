@@ -10,10 +10,11 @@ package outbound
 // NextForTeam / RoundOpenTx / DestinationOpenTx / Match / Team / Season
 // reads) and implements port.Schedule over game-owned types and sentinels.
 //
-// The error contract flip lives here (phase 4): the calendar still speaks
-// internal/shared/persistence's sentinels, game's core speaks its own, and
-// this file is where one becomes the other. Every refusal the calendar can
-// raise is named once, here, so no game call site checks a foreign error.
+// The error contract flip lives here: the calendar speaks its own sentinels
+// (schedule.ErrRecordNotFound and friends, re-exported by its facade), game's
+// core speaks its own, and this file is where one becomes the other. Every
+// refusal the calendar can raise is named once, here, so no game call site
+// checks a foreign error.
 
 import (
 	"context"
@@ -26,7 +27,6 @@ import (
 	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
 	"lt-api.aleksrdvn.com/internal/game/internal/core/port"
 	"lt-api.aleksrdvn.com/internal/schedule"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // ScheduleAPI is the schedule facade surface this ACL consumes — the
@@ -80,7 +80,7 @@ func (a *ScheduleACL) PhaseForMatch(ctx context.Context, matchID int, now time.T
 func (a *ScheduleACL) NextForTeam(ctx context.Context, teamID int) (port.NextMatch, error) {
 	match, err := a.api.NextForTeam(ctx, teamID)
 	if err != nil {
-		if errors.Is(err, persistence.ErrRecordNotFound) {
+		if errors.Is(err, schedule.ErrRecordNotFound) {
 			return port.NextMatch{}, domain.ErrNoNextMatch
 		}
 		return port.NextMatch{}, err
@@ -161,7 +161,7 @@ func translate(err error) error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, persistence.ErrRecordNotFound):
+	case errors.Is(err, schedule.ErrRecordNotFound):
 		return domain.ErrNotFound
 	default:
 		return err

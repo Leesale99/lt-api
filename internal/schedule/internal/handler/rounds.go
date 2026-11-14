@@ -10,7 +10,6 @@ import (
 	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -30,7 +29,7 @@ func (h *Handler) createRound(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)
@@ -62,7 +61,7 @@ func (h *Handler) createRound(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrDuplicateRecord):
+		case errors.Is(err, model.ErrDuplicateRecord):
 			h.duplicateRecordResponse(w, r)
 			return
 		default:
@@ -95,7 +94,7 @@ func (h *Handler) showRound(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)
@@ -158,7 +157,7 @@ func (h *Handler) updateRound(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)
@@ -204,11 +203,11 @@ func (h *Handler) updateRound(w http.ResponseWriter, r *http.Request) {
 	round, err = h.svc.Rounds.UpdateRound(ctx, current, round, expectedVersion)
 	if err != nil {
 		switch {
-		case errors.Is(err, persistence.ErrEditConflict):
+		case errors.Is(err, model.ErrEditConflict):
 			httpx.EditConflict(w, r)
-		case errors.Is(err, persistence.ErrDuplicateRecord):
+		case errors.Is(err, model.ErrDuplicateRecord):
 			h.duplicateRecordResponse(w, r)
-		case errors.Is(err, persistence.ErrRecordInUse):
+		case errors.Is(err, model.ErrRecordInUse):
 			// A DB gate refused: rounds_freeze_gate (the update tried to
 			// regress a round with started matches, ADR-008) or
 			// rounds_close_gate (close over unsettled matches, ADR-022).
@@ -248,9 +247,9 @@ func (h *Handler) deleteRound(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordInUse):
+		case errors.Is(err, model.ErrRecordInUse):
 			h.recordInUseResponse(w, r)
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, model.ErrRecordNotFound):
 			httpx.NotFound(w, r)
 		default:
 			httpx.ServerError(w, r, h.log, err)
