@@ -22,6 +22,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/mailer"
 	"lt-api.aleksrdvn.com/internal/schedule"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
+	"lt-api.aleksrdvn.com/internal/shared/server"
 )
 
 // Context role names (migration 000018). Every pool the server opens is
@@ -126,18 +127,24 @@ func main() {
 		return gameService.OnRoundCompleted(ctx, event)
 	})
 
+	// The gateway owns the module deps and builds the handler chain; the
+	// shared server owns the process lifecycle around it and knows nothing
+	// about the modules. Assembly order: deps → chain → server → Serve.
 	app := &api.Application{
-		Version:        cfg.Version,
-		Env:            cfg.Env,
-		Port:           cfg.Port,
 		TrustedOrigins: cfg.CORS.Origins,
 		RateLimiter:    rateLimiter,
-		Logger:         logger,
-		RootCtx:        root,
 		Game:           gameService,
 		Schedule:       scheduleService,
 		Identity:       identityStore,
 		Mailer:         mailer,
+	}
+	app.Server = &server.Server{
+		Version: cfg.Version,
+		Port:    cfg.Port,
+		Env:     cfg.Env,
+		Logger:  logger,
+		RootCtx: root,
+		Handler: app.HandlerChain(),
 	}
 
 	err = app.Serve()

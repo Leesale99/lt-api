@@ -17,6 +17,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/schedule"
+	"lt-api.aleksrdvn.com/internal/shared/server"
 )
 
 // Template for all handler tests: fresh app + fresh fixture per subtest
@@ -45,7 +46,7 @@ func newTestApplication() *Application {
 	})
 
 	return &Application{
-		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		Server:   &server.Server{Logger: slog.New(slog.NewTextHandler(os.Stderr, nil))},
 		Game:     gameService,
 		Schedule: schedule.NewService(scheduleStore, bus, slog.New(slog.NewTextHandler(os.Stderr, nil))),
 		Identity: identity.NewStore(identityPool),

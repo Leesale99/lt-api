@@ -1,4 +1,4 @@
-package api
+package server
 
 // Shutdown-lifecycle tests: they drive runServer with injected servers and
 // self-delivered signals, so they need neither the database (no requireDB)
@@ -91,9 +91,9 @@ func busyConn(t *testing.T, addr string) net.Conn {
 }
 
 // startServe runs runServer in the background and returns its result.
-func startServe(app *Application, srv *http.Server, opts RunOptions) <-chan error {
+func startServe(s *Server, srv *http.Server, opts RunOptions) <-chan error {
 	errc := make(chan error, 1)
-	go func() { errc <- app.runServer(srv, opts) }()
+	go func() { errc <- s.runServer(srv, opts) }()
 	return errc
 }
 
@@ -128,7 +128,7 @@ func TestDrainTimeoutForceCloses(t *testing.T) {
 	defer stop()
 
 	const grace = 300 * time.Millisecond
-	app := &Application{
+	s := &Server{
 		Logger:  quietLogger(),
 		RootCtx: ctx,
 	}
@@ -141,7 +141,7 @@ func TestDrainTimeoutForceCloses(t *testing.T) {
 	defer close(block) // release the hung handler so nothing leaks at teardown
 
 	srv, started := hangServer(freeAddr(t), block)
-	errc := startServe(app, srv, opts)
+	errc := startServe(s, srv, opts)
 
 	conn := busyConn(t, srv.Addr)
 	defer func() { _ = conn.Close() }()
@@ -167,7 +167,7 @@ func TestSecondSignalForceClosesDuringDrain(t *testing.T) {
 	defer stop()
 
 	const grace = 10 * time.Second // long enough that a pass would be obvious
-	app := &Application{
+	s := &Server{
 		Logger:  quietLogger(),
 		RootCtx: ctx,
 	}
@@ -180,7 +180,7 @@ func TestSecondSignalForceClosesDuringDrain(t *testing.T) {
 	defer close(block)
 
 	srv, started := hangServer(freeAddr(t), block)
-	errc := startServe(app, srv, opts)
+	errc := startServe(s, srv, opts)
 
 	conn := busyConn(t, srv.Addr)
 	defer func() { _ = conn.Close() }()
@@ -211,7 +211,7 @@ func TestBackgroundTaskBudgetBoundsWait(t *testing.T) {
 	defer cancel()
 
 	const budget = 200 * time.Millisecond
-	app := &Application{
+	s := &Server{
 		Logger:  quietLogger(),
 		RootCtx: root,
 	}
@@ -225,12 +225,12 @@ func TestBackgroundTaskBudgetBoundsWait(t *testing.T) {
 
 	// Spawn before Serve: mimics a request that kicked off a send, then the
 	// process got its shutdown signal.
-	app.background(func(ctx context.Context) {
+	s.Background(func(ctx context.Context) {
 		<-block // ignores ctx on purpose — the misbehaving-task worst case
 	})
 
 	srv, _ := hangServer(freeAddr(t), make(chan struct{})) // never hangs: no requests, started never fires
-	errc := startServe(app, srv, opts)
+	errc := startServe(s, srv, opts)
 
 	// Wait until listening, then cancel the root the way a signal would.
 	conn := busyConn(t, srv.Addr)
