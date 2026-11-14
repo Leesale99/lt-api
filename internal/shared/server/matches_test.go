@@ -34,7 +34,7 @@ func TestShowMatchHandler(t *testing.T) {
 			// Match 5 is the first canonical created match.
 			url:      "/v1/matches/5",
 			wantCode: http.StatusOK,
-			wantBody: []string{`"status": "created"`},
+			wantBody: []string{`"status": "created"`, `"ended_at": null`},
 		},
 		{
 			name:     "unknown match",
@@ -603,7 +603,9 @@ func TestResolveMatchHandler(t *testing.T) {
 			url:      "/v1/seasons/1/matches/12/resolve",
 			body:     `{"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
 			wantCode: http.StatusOK,
-			wantBody: []string{`"status": "closed"`, `"home": 80`, `"away": 79`, `"version": 2`},
+			// The response echoes the ended_at the request sent, under the same
+			// "ended_at" key (request and response are symmetric).
+			wantBody: []string{`"status": "closed"`, `"home": 80`, `"away": 79`, `"version": 2`, `"ended_at": "2020-01-01T12:00:00Z"`},
 		},
 		{
 			// Match 1 is the canonical closed match: the store classifies the

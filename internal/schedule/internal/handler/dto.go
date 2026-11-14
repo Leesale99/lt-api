@@ -11,10 +11,10 @@ import (
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 )
 
-// The DTOs are the frozen wire format. The model structs carry no json tags:
-// these structs replicate the tags the pre-refactor domain structs had —
-// VERBATIM, oddities included — so the HTTP surface is byte-identical while
-// the model stays transport-free. Do not "clean up" a tag: it is a contract.
+// The DTOs own the wire format. The model structs carry no json tags: these
+// structs hold the HTTP keys for both requests and responses, keeping the
+// model transport-free. A tag is the contract — changing a key is a deliberate
+// wire change, not a cleanup.
 
 type seasonDTO struct {
 	ID        int                `json:"id"`
@@ -101,7 +101,7 @@ type matchDTO struct {
 	ID         int               `json:"id"`
 	CreatedAt  time.Time         `json:"-"`
 	StartsAt   time.Time         `json:"starts_at"`
-	EndedAt    *time.Time        `json:"_"` // frozen wire format: the key is "_", not "ended_at"
+	EndedAt    *time.Time        `json:"ended_at"`
 	SeasonID   int               `json:"season_id"`
 	RoundID    int               `json:"round_id"`
 	HomeTeamID int               `json:"home_team_id"`
@@ -214,9 +214,8 @@ type updateMatchRequest struct {
 	Score      *scoreDTO          `json:"score"`
 }
 
-// resolveMatchRequest is the resolve body: ended_at arrives as "ended_at"
-// here — unlike the response's frozen "_" key (see matchDTO); both are part
-// of the wire contract.
+// resolveMatchRequest is the resolve body: ended_at arrives as "ended_at",
+// the same key the match response emits (see matchDTO).
 type resolveMatchRequest struct {
 	EndedAt *time.Time `json:"ended_at"`
 	Score   scoreDTO   `json:"score"`
