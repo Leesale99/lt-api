@@ -28,14 +28,48 @@ Each phase introduces one major backend concept only when the system has a concr
 ## Project layout
 
 ```
-cmd/api/           Entry point and composition root: config, logger, pools,
-                   module wiring, router, shared server bootstrap
-internal/<ctx>/    Bounded contexts, each behind a facade (schedule, game,
-                   identity, ledger, idempotency)
-internal/shared/   Kernel: httpx (transport), server (lifecycle), persistence
-                   (pg classifiers), testdb (E2E harness), config, logging...
-docs/              Learning-oriented implementation plan (phases 0–8)
+cmd/api/              Entry point + composition root, in explicit order:
+                      config → logging → mailer → per-context pools →
+                      eventbus → schedule.NewModule → game.NewModule (ACL
+                      wired in) → identity.NewModule → eventbus wiring →
+                      httpx middleware chain → router → shared server →
+                      Serve. Side files: routes.go (router, 404/405),
+                      healthcheck.go, gamerefs.go (schedule↔game seam
+                      adapter: the only place both vocabularies meet).
+internal/arch/        Boundary matrix, path-aware (shared:* classes, module
+                      classes collapse nested packages, cmd row):
+                      TestImportBoundaries + TestSharedKernelImportsOnlyShared.
+internal/shared/      Kernel: httpx (transport: JSON envelope/codecs,
+                      params, filters, error writers, request context,
+                      middleware incl. ratelimiter), server (process
+                      lifecycle: Serve/shutdown/RunOptions/background
+                      tasks), persistence (Querier, Filters/Metadata,
+                      pg-error classifiers — no shared sentinels), plus
+                      eventbus, validator, logging, mailer, config,
+                      constants, vcs, testdb.
+internal/schedule/    Layered module: facade schedule.go + internal/{model,
+                      repository, service, handler}.
+internal/game/        Hexagonal module: facade game.go + internal/core/{domain,
+                      port, service} + internal/adapter/{inbound/http,
+                      outbound/{postgres,scheduleacl}}.
+internal/identity/    Layered module: facade identity.go + internal/{model,
+                      repository, service, handler}.
+internal/ledger/      Thin module: ledger.go + postgres.go.
+internal/idempotency/ Thin module: facade + Repository.
+docs/                 Learning-oriented implementation plan (phases 0–8)
 ```
+
+Bounded contexts sit behind facades: the module root is the only package
+outsiders may import, and everything else lives under
+`internal/<ctx>/internal/` so the layers cannot leak — the privacy is
+compile-time, not convention. `httpx`, `server` and `persistence` are nested
+under `internal/shared/`; the rest of the kernel is flat under `internal/`
+and all of it classifies as `shared:<name>` in the boundary matrix.
+
+Each module owns its own route table (`RegisterRoutes`), and `cmd/api`
+composes them — so the wire surface is identical to the pre-refactor one.
+The E2E suite lives in `internal/shared/server/*_test.go` and composes the
+real modules exactly like `cmd/api/main.go` through one shared helper.
 
 ## Database: context schemas, per-context roles and configuration
 
@@ -98,8 +132,9 @@ reaches schedule only through the `SchedulePort` and ledger only through the
 extracted `Ledger` interface (`LockTokens` / `Burn` money intents) — never
 through schedule's or ledger's tables. **Ledger** owns balances and is thin:
 money intents in, it writes its own tables. **Identity** is the generic
-supporting context. `api` is the HTTP gateway, not a context; `cmd/api` is
-the composition root.
+supporting context. `cmd/api` is the composition root, not a context: it owns
+the router, the middleware chain and the healthcheck, and the only HTTP
+surface above the modules is the shared `httpx` transport.
 
 The import edges between these packages are pinned in code by
 `internal/arch/arch_test.go`; the data-flow view lives in
