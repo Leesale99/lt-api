@@ -46,7 +46,7 @@ internal/shared/      Kernel: httpx (transport: JSON envelope/codecs,
                       tasks), persistence (Querier, Filters/Metadata,
                       pg-error classifiers — no shared sentinels), plus
                       eventbus, validator, logging, mailer, config,
-                      constants, vcs, testdb.
+                      vcs, testdb.
 internal/schedule/    Layered module: facade schedule.go + internal/{model,
                       repository, service, handler}.
 internal/game/        Hexagonal module: facade game.go + internal/core/{domain,

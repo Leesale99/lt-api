@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 
-	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -20,8 +19,8 @@ import (
 // using the same v so their errors land in the same 422 response.
 func ReadListFilters(w http.ResponseWriter, r *http.Request, qs url.Values, v *validator.Validator, sortSafelist []string) (persistence.Filters, bool) {
 	filters := persistence.Filters{
-		Page:         ReadInt(qs, "page", constants.DefaultPage, v),
-		PageSize:     ReadInt(qs, "page_size", constants.DefaultPageSize, v),
+		Page:         ReadInt(qs, "page", DefaultPage, v),
+		PageSize:     ReadInt(qs, "page_size", DefaultPageSize, v),
 		Sort:         ReadString(qs, "sort", "id"),
 		SortSafelist: sortSafelist,
 	}

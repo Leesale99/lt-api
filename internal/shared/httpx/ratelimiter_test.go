@@ -19,8 +19,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"lt-api.aleksrdvn.com/internal/constants"
 )
 
 // fakeClock is a stateful, test-controlled clock: now() returns the last
@@ -173,7 +171,7 @@ func TestRateLimiterStaleBucketsEvicted(t *testing.T) {
 	// tick (1ms period) before the stale bucket is actually deleted, so
 	// wait a few ticks — asserting immediately would race the sweep and hit
 	// the still-mapped stale bucket.
-	clock.set(time.Now().Add(2*time.Minute + constants.RateLimitCleanupInterval + time.Minute))
+	clock.set(time.Now().Add(2*time.Minute + RateLimitCleanupInterval + time.Minute))
 	time.Sleep(20 * time.Millisecond)
 	if ok, _ := l.Allow("10.0.0.1"); !ok {
 		t.Fatal("after >cleanup-interval idle: denied, want allowed (bucket must be evicted)")

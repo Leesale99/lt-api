@@ -20,8 +20,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"lt-api.aleksrdvn.com/internal/constants"
 )
 
 // Server is the process lifecycle: config that only the server and the
@@ -47,8 +45,8 @@ type Server struct {
 
 // RunOptions carries the shutdown budgets consumed only by runServer.
 // They are runServer's options, not Server state: they cannot drift
-// mid-flight and main needs no knowledge of them (zero value = constants
-// defaults). Tests pass short values so shutdown scenarios run in ms.
+// mid-flight and main needs no knowledge of them (zero value = the defaults
+// in consts.go). Tests pass short values so shutdown scenarios run in ms.
 type RunOptions struct {
 	// GracePeriod bounds the HTTP drain before force-close.
 	GracePeriod time.Duration
@@ -57,12 +55,12 @@ type RunOptions struct {
 }
 
 // gracePeriod is the HTTP-drain budget: explicit override if set, else the
-// constants default.
+// package default.
 func (o RunOptions) gracePeriod() time.Duration {
 	if o.GracePeriod > 0 {
 		return o.GracePeriod
 	}
-	return constants.ShutdownGracePeriod
+	return ShutdownGracePeriod
 }
 
 // taskBudget is the background-goroutine wait budget, same override rule.
@@ -70,7 +68,7 @@ func (o RunOptions) taskBudget() time.Duration {
 	if o.TaskBudget > 0 {
 		return o.TaskBudget
 	}
-	return constants.BackgroundTaskBudget
+	return BackgroundTaskBudget
 }
 
 // Background runs fn on a tracked goroutine and hands it the process-wide

@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"time"
 
-	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
 	"lt-api.aleksrdvn.com/internal/validator"
@@ -28,7 +27,7 @@ func (h *Handler) createMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
 	defer cancel()
 
 	if _, err := h.svc.Seasons.Get(ctx, seasonID); err != nil {
@@ -139,7 +138,7 @@ func (h *Handler) showMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
 	defer cancel()
 
 	match, err := h.svc.Matches.Get(ctx, id)
@@ -179,7 +178,7 @@ func (h *Handler) listMatches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
 	defer cancel()
 
 	matches, metadata, err := h.svc.Matches.GetAll(ctx, seasonID, roundID, status, filters)
@@ -201,7 +200,7 @@ func (h *Handler) deleteMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
 	defer cancel()
 
 	err = h.svc.DeleteMatch(ctx, matchID, seasonID)
@@ -238,7 +237,7 @@ func (h *Handler) updateMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
 	defer cancel()
 
 	match, err := h.svc.Matches.Get(ctx, matchID)
@@ -393,7 +392,7 @@ func (h *Handler) resolveMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
 	defer cancel()
 
 	match, err = h.svc.ResolveMatch(ctx, match.ID, match.Score, *match.EndedAt, match.Version)

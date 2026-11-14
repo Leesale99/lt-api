@@ -27,8 +27,6 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
-
-	"lt-api.aleksrdvn.com/internal/constants"
 )
 
 // rateLimiterClient is one IP's bucket: the token bucket itself plus the
@@ -64,7 +62,7 @@ func WithClock(now func() time.Time) Option {
 }
 
 // WithSweepPeriod overrides how often the sweep checks for stale buckets.
-// (The staleness threshold itself is constants.RateLimitCleanupInterval in
+// (The staleness threshold itself is RateLimitCleanupInterval in
 // both modes; only the check frequency changes.)
 func WithSweepPeriod(d time.Duration) Option {
 	return func(l *RateLimiter) { l.tick = d }
@@ -122,7 +120,7 @@ func (l *RateLimiter) Allow(ip string) (ok bool, retryAfter time.Duration) {
 }
 
 // Sweep evicts buckets whose client has been idle longer than
-// constants.RateLimitCleanupInterval. It blocks until ctx is canceled —
+// RateLimitCleanupInterval. It blocks until ctx is canceled —
 // callers run it in a goroutine (in production: app.background, so the
 // waitgroup covers it during shutdown).
 func (l *RateLimiter) Sweep(ctx context.Context) {
@@ -136,7 +134,7 @@ func (l *RateLimiter) Sweep(ctx context.Context) {
 		case <-ticker.C:
 			l.mu.Lock()
 			for ip, client := range l.clients {
-				if l.now().Sub(client.lastSeen) > constants.RateLimitCleanupInterval {
+				if l.now().Sub(client.lastSeen) > RateLimitCleanupInterval {
 					delete(l.clients, ip)
 				}
 			}

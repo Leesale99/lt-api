@@ -49,8 +49,8 @@
 //   - identity is also a LAYERED module (phase 5): its facade (the root
 //     package) reaches its own internal layers and the shared kernel, and
 //     each layer has its own row — model → shared:validator; repository →
-//     model/shared:persistence; service → model/repository/shared:constants;
-//     handler → model/service/shared:constants/shared:httpx/shared:validator.
+//     model/shared:persistence; service → model/repository;
+//     handler → model/service/shared:httpx/shared:validator.
 //     The facade is what httpx's consumer-side lookups are satisfied by, and
 //     it is the only identity package any other class may import.
 //   - cmd/api is the composition root: it wires every module and the shared
@@ -69,8 +69,8 @@
 //     phase 6 every converted api test lives in internal/shared/server/*_test.go
 //     and composes the real modules exactly like cmd/api/main.go (the ONE
 //     compose_test.go helper). Its row is widened for _test.go files only —
-//     shared:server's production code still imports shared:constants and
-//     nothing else (pinned by the same check, which separates testOnly edges).
+//     shared:server's production code still imports nothing internal (pinned
+//     by the same check, which separates testOnly edges).
 package arch
 
 import (
@@ -174,7 +174,6 @@ var allowedImports = map[string]map[string]bool{
 	"schedule:handler": {
 		"schedule:model":     true,
 		"schedule:service":   true,
-		"shared:constants":   true,
 		"shared:httpx":       true,
 		"shared:persistence": true,
 		"shared:validator":   true,
@@ -223,7 +222,6 @@ var allowedImports = map[string]map[string]bool{
 		"game:core:service": true,
 		"identity":          true,
 		"idempotency":       true,
-		"shared:constants":  true,
 		"shared:httpx":      true,
 		"shared:validator":  true,
 	},
@@ -269,13 +267,11 @@ var allowedImports = map[string]map[string]bool{
 	"identity:service": {
 		"identity:model":      true,
 		"identity:repository": true,
-		"shared:constants":    true,
 	},
 	// The HTTP layer: the frozen wire DTOs over the use cases.
 	"identity:handler": {
 		"identity:model":   true,
 		"identity:service": true,
-		"shared:constants": true,
 		"shared:httpx":     true,
 		"shared:validator": true,
 	},
@@ -290,19 +286,19 @@ var allowedImports = map[string]map[string]bool{
 	"shared:eventbus":    {}, // pure in-proc pub/sub: stdlib only
 	"shared:persistence": {"shared:validator": true},
 	// shared:httpx is the transport shared by every HTTP surface: it reaches
-	// the shared kernel (constants, persistence, validator) and nothing else —
-	// no module may ever be reachable from it (identity arrives as a
-	// consumer-side interface, adapted at the composition boundary).
+	// the shared kernel (persistence, validator) and nothing else — no module
+	// may ever be reachable from it (identity arrives as a consumer-side
+	// interface, adapted at the composition boundary). Its own tuning values
+	// (DB timeout, list defaults, rate-limit sweep interval) are local consts.
 	"shared:httpx": {
-		"shared:constants":   true,
 		"shared:persistence": true,
 		"shared:validator":   true,
 	},
 	// shared:server owns the process lifecycle: it serves a fully-built
-	// handler and knows no module, so its only reach is the shutdown budgets.
-	"shared:server":    {"shared:constants": true},
+	// handler and knows no module, so it reaches nothing internal — its
+	// shutdown budgets are local consts.
+	"shared:server":    {},
 	"shared:validator": {},
-	"shared:constants": {},
 	"shared:config": {
 		"shared:vcs":         true,
 		"shared:persistence": true,
@@ -347,7 +343,6 @@ var testOnlyImports = map[string]map[string]bool{
 		"identity":           true,
 		"ledger":             true,
 		"schedule":           true,
-		"shared:constants":   true,
 		"shared:eventbus":    true,
 		"shared:httpx":       true,
 		"shared:persistence": true,

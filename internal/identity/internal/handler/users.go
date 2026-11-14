@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/identity/internal/model"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
 	"lt-api.aleksrdvn.com/internal/validator"
@@ -32,7 +31,7 @@ func (h *Handler) registerUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
 	defer cancel()
 
 	user, err := h.svc.Register(ctx, model.User{Name: input.Name, Email: input.Email}, input.Password)
@@ -73,7 +72,7 @@ func (h *Handler) activateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
 	defer cancel()
 
 	// The use case owns the transaction (ADR-025): the flip and the token

@@ -18,7 +18,6 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
 	"lt-api.aleksrdvn.com/internal/game/internal/core/port"
 	"lt-api.aleksrdvn.com/internal/game/internal/core/service"
@@ -34,7 +33,7 @@ func (h *Handler) showRide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
 	defer cancel()
 
 	ride, err := h.svc.RideGet(ctx, id)
@@ -82,7 +81,7 @@ func (h *Handler) listRides(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
 	defer cancel()
 
 	rides, metadata, err := h.svc.RideList(ctx, id, playerID, teamID, matchID, state, filters)
@@ -136,7 +135,7 @@ func (h *Handler) rideCommand(endpoint string, command rideCommand) http.Handler
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+		ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
 		defer cancel()
 
 		res, err := command(ctx, id, token, rideMarshal)
@@ -242,7 +241,7 @@ func (h *Handler) createRide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
 	defer cancel()
 
 	// Every ride command is idempotent (ADR-024), create included: the

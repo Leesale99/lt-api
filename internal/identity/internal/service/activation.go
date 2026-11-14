@@ -29,7 +29,6 @@ import (
 	"context"
 	"errors"
 
-	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/identity/internal/model"
 )
 
@@ -58,7 +57,7 @@ func (s *Service) Register(ctx context.Context, user model.User, plaintextPasswo
 		return model.User{}, err
 	}
 
-	userToken, err := s.userTokens.New(ctx, user.ID, constants.ActivationTokenTTL, model.ScopeActivation)
+	userToken, err := s.userTokens.New(ctx, user.ID, activationTokenTTL, model.ScopeActivation)
 	if err != nil {
 		return model.User{}, err
 	}
@@ -84,7 +83,7 @@ func (s *Service) RequestActivationToken(ctx context.Context, email string) erro
 		return model.ErrAlreadyActivated
 	}
 
-	userToken, err := s.userTokens.New(ctx, user.ID, constants.ActivationTokenTTL, model.ScopeActivation)
+	userToken, err := s.userTokens.New(ctx, user.ID, activationTokenTTL, model.ScopeActivation)
 	if err != nil {
 		return err
 	}
@@ -117,7 +116,7 @@ func (s *Service) Authenticate(ctx context.Context, email, plaintextPassword str
 		return model.UserToken{}, model.ErrInvalidCredentials
 	}
 
-	userToken, err := s.userTokens.New(ctx, user.ID, constants.AuthenticationTokenTTL, model.ScopeAuthentication)
+	userToken, err := s.userTokens.New(ctx, user.ID, authenticationTokenTTL, model.ScopeAuthentication)
 	if err != nil {
 		return model.UserToken{}, err
 	}
