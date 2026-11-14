@@ -12,11 +12,16 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Tests for POST /v1/users (registerUser). These run against the real test
-// database, so they also cover the identity.UsersStore.Insert paths the
-// handler depends on — most importantly the duplicate-email translation
-// (pg 23505 on users_email_key → ErrDuplicateEmail → 422), which was
-// previously a nil-pointer bug (pqErr never populated via errors.As).
+// Tests for POST /v1/users (the identity module's register use case, driven
+// through the gateway's route table). These run against the real test
+// database, so they also cover the repository Insert paths behind the
+// handler — most importantly the duplicate-email translation (pg 23505 on
+// users_email_key → model.ErrDuplicateEmail → 422), which was previously a
+// nil-pointer bug (pqErr never populated via errors.As).
+//
+// The handler itself lives in internal/identity/internal/handler from phase
+// 5 on; this file stays in the gateway until the phase-6 E2E move because it
+// exercises the full middleware chain and the shared envelope.
 
 // registerUserCase is the table row shape shared by the handler tests.
 type registerUserCase struct {

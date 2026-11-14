@@ -2,8 +2,7 @@ package api
 
 // The three middleware methods routes.go registers are one-line delegations:
 // the chain itself lives in httpx (httpx.Middleware), the wiring — logger,
-// CORS allowlist, limiter, identity adapter — is Application's. routes.go is
-// frozen this phase, so these names stay until it is rewritten.
+// CORS allowlist, limiter, identity module — is Application's.
 
 import (
 	"net/http"
@@ -12,14 +11,15 @@ import (
 )
 
 // middleware is the httpx chain state for this application. It carries no
-// per-request state; the identity seam is the adapter in authadapter.go.
+// per-request state; the identity seam is the module's facade, which
+// satisfies both consumer-side lookups natively.
 func (app *Application) middleware() *httpx.Middleware {
 	return &httpx.Middleware{
 		Logger:         app.Logger,
 		TrustedOrigins: app.TrustedOrigins,
 		RateLimiter:    app.RateLimiter,
-		Users:          identityAuth{app.Identity},
-		Permissions:    identityAuth{app.Identity},
+		Users:          app.Identity,
+		Permissions:    app.Identity,
 	}
 }
 

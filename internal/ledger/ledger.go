@@ -6,9 +6,9 @@
 // change.
 //
 // Current state of the implementation: there are no balance tables yet, so
-// the concrete Store (store.go) persists the money facts the rides table
-// already carries — bonus_acc — inside the CALLER's transaction (game and
-// ledger share one Postgres tx; no async). LockTokens and Burn are the
+// the concrete Repository (postgres.go) persists the money facts the rides
+// table already carries — bonus_acc — inside the CALLER's transaction (game
+// and ledger share one Postgres tx; no async). LockTokens and Burn are the
 // intent seams whose real effect (debit a player balance, credit a token
 // account, move locked tokens to TB) arrives with the Phase 06 tables; the
 // seams are wired today so the swap is an implementation change only.

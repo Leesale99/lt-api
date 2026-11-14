@@ -40,13 +40,11 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/burn", app.rideCommandHandler("POST /v1/rides/:id/burn", app.Game.RideBurn))
 	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/unlock", app.rideCommandHandler("POST /v1/rides/:id/unlock", app.Game.RideUnlock))
 
-	// Users
-	router.HandlerFunc(http.MethodPost, "/v1/users", app.registerUserHandler)
-	router.HandlerFunc(http.MethodPut, "/v1/users/activated", app.activateUserHandler)
-
-	// User Tokens
-	router.HandlerFunc(http.MethodPost, "/v1/user-tokens/activation", app.createActivationTokenHandler)
-	router.HandlerFunc(http.MethodPost, "/v1/user-tokens/authentication", app.createAuthenticationTokenHandler)
+	// Users and User Tokens: the identity context owns its own routes
+	// (register, activate, token issuance) — these are the pre-authentication
+	// flows, so none sits behind a permission gate; paths and methods are the
+	// pre-refactor routes.go's, unchanged.
+	app.Identity.RegisterRoutes(router, app.Logger)
 
 	return app.recoverPanic(app.enableCORS(app.rateLimit(app.authenticate(router))))
 }

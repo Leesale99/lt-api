@@ -57,7 +57,7 @@ func TestService_RideLockIdempotency(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(gamePool), schedule.NewStore(schedulePool), ledger.NewStore())
+	svc := NewService(NewStore(gamePool), schedule.NewStore(schedulePool), ledger.New())
 
 	t.Run("retry with the same key replays and re-executes nothing", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
@@ -204,7 +204,7 @@ func TestService_RideCreateIdempotent(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
-	svc := NewService(NewStore(gamePool), schedule.NewStore(schedulePool), ledger.NewStore())
+	svc := NewService(NewStore(gamePool), schedule.NewStore(schedulePool), ledger.New())
 
 	newRide := func(playerID, matchID, teamID int) Ride {
 		return Ride{

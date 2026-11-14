@@ -38,8 +38,13 @@
 //     claim table). It must never import identity or api.
 //   - ledger and eventbus are thin: no domain imports (shared:persistence
 //     only for ledger).
-//   - identity is a generic supporting context: shared:persistence,
-//     shared:validator only.
+//   - identity is also a LAYERED module (phase 5): its facade (the root
+//     package) reaches its own internal layers and the shared kernel, and
+//     each layer has its own row — model → shared:validator; repository →
+//     model/shared:persistence; service → model/repository/shared:constants;
+//     handler → model/service/shared:constants/shared:httpx/shared:validator.
+//     The facade is what httpx's consumer-side lookups are satisfied by, and
+//     it is the only identity package any other class may import.
 //   - api is the gateway, not a context: it may import any context.
 //   - cmd/* is the composition root: wires everything, imports anything.
 //
@@ -88,11 +93,13 @@ var moduleClasses = map[string]bool{
 // persistence; service → model/repository/eventbus; handler →
 // httpx/service/model; facade → its own layers + the kernel).
 //
-// Only schedule is layered so far (the phase-3 pilot); every other module
-// keeps the uniform collapse — an undeclared layer directory still
-// classifies as its module, so nothing slips past the matrix.
+// Only schedule and identity are layered so far (the phase-3 pilot and the
+// phase-5 conversion); every other module keeps the uniform collapse — an
+// undeclared layer directory still classifies as its module, so nothing
+// slips past the matrix.
 var moduleLayers = map[string]map[string]bool{
 	"schedule": {"model": true, "repository": true, "service": true, "handler": true},
+	"identity": {"model": true, "repository": true, "service": true, "handler": true},
 }
 
 // allowedImports maps a class to the classes it may import. Anything not
@@ -146,8 +153,38 @@ var allowedImports = map[string]map[string]bool{
 		"shared:validator":   true,
 	},
 	"identity": {
+		"identity:handler":    true,
+		"identity:model":      true,
+		"identity:repository": true,
+		"identity:service":    true,
+		"shared:httpx":        true,
+		"shared:validator":    true,
+	},
+	// The domain model: entities, validators and the identity sentinels. No
+	// storage, no transport.
+	"identity:model": {
+		"shared:validator": true,
+	},
+	// Storage: SQL and its error classification (Postgres facts → the model's
+	// sentinels). It maps rows to model values; it never speaks HTTP.
+	"identity:repository": {
+		"identity:model":     true,
 		"shared:persistence": true,
-		"shared:validator":   true,
+	},
+	// Use cases: the activation transaction and the registration/token
+	// flows (which deliver mail through the Mailer port declared here).
+	"identity:service": {
+		"identity:model":      true,
+		"identity:repository": true,
+		"shared:constants":    true,
+	},
+	// The HTTP layer: the frozen wire DTOs over the use cases.
+	"identity:handler": {
+		"identity:model":   true,
+		"identity:service": true,
+		"shared:constants": true,
+		"shared:httpx":     true,
+		"shared:validator": true,
 	},
 	"ledger": {
 		"shared:persistence": true,

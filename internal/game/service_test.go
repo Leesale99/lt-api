@@ -595,7 +595,7 @@ func newTestService() (*Service, *schedule.Service) {
 	bus := eventbus.New()
 	scheduleStore := schedule.NewStore(schedulePool)
 	scheduleSvc := schedule.NewService(scheduleStore, bus, nil)
-	gameSvc := NewService(NewStore(gamePool), scheduleStore, ledger.NewStore())
+	gameSvc := NewService(NewStore(gamePool), scheduleStore, ledger.New())
 	eventbus.Subscribe(bus, func(ctx context.Context, event schedule.MatchResultRecorded) error {
 		return gameSvc.OnMatchResultRecorded(ctx, event)
 	})

@@ -1,13 +1,13 @@
-package identity
+package service
 
-// Tests for the activation use case (Store.Activate, ADR-025): the token
+// Tests for the activation use case (Service.Activate, ADR-025): the token
 // lookup, the activated flip and the activation-token cleanup must behave
 // as one unit of persistence.
 //
-// Integration tests against the same "identity" suite database as the
-// other store tests. The rollback case forces the LAST statement of the
-// transaction to fail with a test-only trigger — the only way to inject a
-// deterministic mid-transaction failure with no production seam — and then
+// Integration tests against the same "identity_service" suite database as
+// the other service tests. The rollback case forces the LAST statement of
+// the transaction to fail with a test-only trigger — the only way to inject
+// a deterministic mid-transaction failure with no production seam — and then
 // asserts NOTHING was written: the flag flip rolled back with the cleanup.
 
 import (
@@ -18,20 +18,20 @@ import (
 	"testing"
 	"time"
 
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
+	"lt-api.aleksrdvn.com/internal/identity/internal/model"
 )
 
 // plantActivatableUser inserts an unactivated user with one fresh activation
 // token and returns both.
-func plantActivatableUser(t *testing.T, store *Store) (User, UserToken) {
+func plantActivatableUser(t *testing.T, h harness) (model.User, model.UserToken) {
 	t.Helper()
 
-	user, err := store.Users.Insert(context.Background(), mustUser("Alice", fmt.Sprintf("alice-%d@example.com", time.Now().UnixNano()), "pa55word123"))
+	user, err := h.users.Insert(context.Background(), mustUser("Alice", fmt.Sprintf("alice-%d@example.com", time.Now().UnixNano()), "pa55word123"))
 	if err != nil {
 		t.Fatalf("seed insert: %v", err)
 	}
 
-	token, err := store.UserTokens.New(context.Background(), user.ID, time.Hour, ScopeActivation)
+	token, err := h.tokens.New(context.Background(), user.ID, time.Hour, model.ScopeActivation)
 	if err != nil {
 		t.Fatalf("seed token: %v", err)
 	}
@@ -55,13 +55,13 @@ func assertUserState(t *testing.T, userID int) (bool, int) {
 
 func TestActivate(t *testing.T) {
 	requireDB(t)
-	store := NewStore(identityPool)
+	h := newHarness()
 
 	t.Run("happy path: flip and cleanup commit together", func(t *testing.T) {
 		resetUsers(t)
-		user, token := plantActivatableUser(t, store)
+		user, token := plantActivatableUser(t, h)
 
-		got, err := store.Activate(context.Background(), token.Plaintext)
+		got, err := h.svc.Activate(context.Background(), token.Plaintext)
 		if err != nil {
 			t.Fatalf("Activate: %v", err)
 		}
@@ -81,7 +81,7 @@ func TestActivate(t *testing.T) {
 
 		var tokens int
 		if err := testPool.QueryRow(context.Background(),
-			`SELECT count(*) FROM identity.user_tokens WHERE user_id = $1 AND scope = $2`, user.ID, ScopeActivation).Scan(&tokens); err != nil {
+			`SELECT count(*) FROM identity.user_tokens WHERE user_id = $1 AND scope = $2`, user.ID, model.ScopeActivation).Scan(&tokens); err != nil {
 			t.Fatal(err)
 		}
 		if tokens != 0 {
@@ -89,20 +89,20 @@ func TestActivate(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown, expired or out-of-scope token is ErrRecordNotFound", func(t *testing.T) {
+	t.Run("unknown, expired or out-of-scope token is ErrNotFound", func(t *testing.T) {
 		resetUsers(t)
-		user, _ := plantActivatableUser(t, store)
+		user, _ := plantActivatableUser(t, h)
 
-		if _, err := store.Activate(context.Background(), "ZZZZZZZZZZZZZZZZZZZZZZZZZZ"); !errors.Is(err, persistence.ErrRecordNotFound) {
-			t.Fatalf("Activate(unknown) = %v, want ErrRecordNotFound", err)
+		if _, err := h.svc.Activate(context.Background(), "ZZZZZZZZZZZZZZZZZZZZZZZZZZ"); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("Activate(unknown) = %v, want ErrNotFound", err)
 		}
 
-		expired, err := store.UserTokens.New(context.Background(), user.ID, -time.Minute, ScopeActivation)
+		expired, err := h.tokens.New(context.Background(), user.ID, -time.Minute, model.ScopeActivation)
 		if err != nil {
 			t.Fatalf("seed expired token: %v", err)
 		}
-		if _, err := store.Activate(context.Background(), expired.Plaintext); !errors.Is(err, persistence.ErrRecordNotFound) {
-			t.Fatalf("Activate(expired) = %v, want ErrRecordNotFound", err)
+		if _, err := h.svc.Activate(context.Background(), expired.Plaintext); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("Activate(expired) = %v, want ErrNotFound", err)
 		}
 
 		// The refusals wrote nothing: still unactivated at the planted version.
@@ -114,7 +114,7 @@ func TestActivate(t *testing.T) {
 
 	t.Run("a failed cleanup rolls the flip back — nothing is left behind", func(t *testing.T) {
 		resetUsers(t)
-		user, token := plantActivatableUser(t, store)
+		user, token := plantActivatableUser(t, h)
 
 		// Test-only failure injection: forbid deleting from user_tokens.
 		// This is the deterministic stand-in for the crash the invariant
@@ -137,7 +137,7 @@ func TestActivate(t *testing.T) {
 			t.Fatalf("create forbid trigger: %v", err)
 		}
 
-		_, err := store.Activate(context.Background(), token.Plaintext)
+		_, err := h.svc.Activate(context.Background(), token.Plaintext)
 		if err == nil {
 			t.Fatal("Activate() = nil error, want the injected failure")
 		}
@@ -151,7 +151,7 @@ func TestActivate(t *testing.T) {
 
 		var tokens int
 		if err := testPool.QueryRow(context.Background(),
-			`SELECT count(*) FROM identity.user_tokens WHERE user_id = $1 AND scope = $2`, user.ID, ScopeActivation).Scan(&tokens); err != nil {
+			`SELECT count(*) FROM identity.user_tokens WHERE user_id = $1 AND scope = $2`, user.ID, model.ScopeActivation).Scan(&tokens); err != nil {
 			t.Fatal(err)
 		}
 		if tokens != 1 {
@@ -162,12 +162,12 @@ func TestActivate(t *testing.T) {
 	t.Run("two concurrent activations activate exactly once", func(t *testing.T) {
 		resetUsers(t)
 
-		store := NewStore(identityPool)
-		user, token1 := plantActivatableUser(t, store)
+		h := newHarness()
+		user, token1 := plantActivatableUser(t, h)
 
 		// A second fresh token for the same user: two independent
 		// activations, same guarded write target.
-		token2, err := store.UserTokens.New(context.Background(), user.ID, time.Hour, ScopeActivation)
+		token2, err := h.tokens.New(context.Background(), user.ID, time.Hour, model.ScopeActivation)
 		if err != nil {
 			t.Fatalf("seed second token: %v", err)
 		}
@@ -181,24 +181,24 @@ func TestActivate(t *testing.T) {
 		for i := range builds {
 			go func(i int) {
 				defer wg.Done()
-				_, errs[i] = store.Activate(context.Background(), builds[i])
+				_, errs[i] = h.svc.Activate(context.Background(), builds[i])
 			}(i)
 		}
 		wg.Wait()
 
 		// Every outcome is legal in exactly one of two shapes: committed
 		// (nil), losing the version race (ErrEditConflict), or reading a
-		// snapshot that predates the winner's token cleanup
-		// (ErrRecordNotFound). Any other error is a bug.
+		// snapshot that predates the winner's token cleanup (ErrNotFound).
+		// Any other error is a bug.
 		winners := 0
 		for _, err := range errs {
 			switch {
 			case err == nil:
 				winners++
-			case errors.Is(err, persistence.ErrEditConflict), errors.Is(err, persistence.ErrRecordNotFound):
+			case errors.Is(err, model.ErrEditConflict), errors.Is(err, model.ErrNotFound):
 				// A legal loser.
 			default:
-				t.Fatalf("Activate() = %v, want nil, ErrEditConflict or ErrRecordNotFound", err)
+				t.Fatalf("Activate() = %v, want nil, ErrEditConflict or ErrNotFound", err)
 			}
 		}
 		if winners == 0 {
@@ -213,7 +213,7 @@ func TestActivate(t *testing.T) {
 
 		var tokens int
 		if err := testPool.QueryRow(context.Background(),
-			`SELECT count(*) FROM identity.user_tokens WHERE user_id = $1 AND scope = $2`, user.ID, ScopeActivation).Scan(&tokens); err != nil {
+			`SELECT count(*) FROM identity.user_tokens WHERE user_id = $1 AND scope = $2`, user.ID, model.ScopeActivation).Scan(&tokens); err != nil {
 			t.Fatal(err)
 		}
 		if tokens != 0 {

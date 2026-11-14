@@ -111,9 +111,9 @@ func main() {
 	// the ride commands and settlement handlers need runs as an intent on
 	// it, inside the caller's transaction. Phase 06 swaps the
 	// implementation to real balances/journal behind the same interface.
-	ledgerStore := ledger.NewStore()
-	gameService := game.NewService(gameStore, scheduleModule, ledgerStore)
-	identityStore := identity.NewStore(pools.Identity)
+	ledgerRepo := ledger.New()
+	gameService := game.NewService(gameStore, scheduleModule, ledgerRepo)
+	identityModule := identity.NewModule(pools.Identity, mailer)
 
 	// The schedule module's delete policies ask game whether a team or
 	// match is still referenced before removing it; the gateway's adapter
@@ -134,23 +134,32 @@ func main() {
 
 	// The gateway owns the module deps and builds the handler chain; the
 	// shared server owns the process lifecycle around it and knows nothing
-	// about the modules. Assembly order: deps → chain → server → Serve.
+	// about the modules. Assembly order: deps → server → chain → background
+	// wiring → Serve. The chain is built after the server exists because
+	// route registration logs through the gateway's logger, and the identity
+	// module books its mail deliveries on the server's background tracker.
 	app := &api.Application{
 		TrustedOrigins: cfg.CORS.Origins,
 		RateLimiter:    rateLimiter,
 		Game:           gameService,
 		Schedule:       scheduleModule,
-		Identity:       identityStore,
-		Mailer:         mailer,
+		Identity:       identityModule,
 	}
+
 	app.Server = &server.Server{
 		Version: cfg.Version,
 		Port:    cfg.Port,
 		Env:     cfg.Env,
 		Logger:  logger,
 		RootCtx: root,
-		Handler: app.HandlerChain(),
 	}
+
+	app.Server.Handler = app.HandlerChain()
+
+	// Registration and activation mail must outlive their request but not the
+	// process: the module hands deliveries to the server's tracker, which the
+	// shutdown drain waits out.
+	identityModule.UseBackground(app.Server.Background)
 
 	err = app.Serve()
 	if err != nil {

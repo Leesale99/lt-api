@@ -9,6 +9,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	game "lt-api.aleksrdvn.com/internal/game"
+	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
 	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
@@ -67,16 +68,16 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 
 	// Player user existence is an api-level check since the cross-context
 	// FKs came out (migration 000016 — identity is another context: the
-	// players_user_id_fkey is gone), and api holds the identity store.
+	// players_user_id_fkey is gone), and api holds the identity module.
 	// user_id is only ever the authenticated principal's ID (the
 	// update path never writes it), so this is the one spot the check
 	// belongs. The refusal keeps the shape the FK refusal produced:
-	// persistence.ErrRecordNotFound → the 422 favorite_team_id validation error.
-	if _, err := app.Identity.Users.Get(ctx, authenticatedUser.ID); err != nil {
+	// identity.ErrNotFound → the 422 favorite_team_id validation error.
+	if _, err := app.Identity.User(ctx, authenticatedUser.ID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, persistence.ErrRecordNotFound):
+		case errors.Is(err, identity.ErrNotFound):
 			v := validator.New()
 			v.AddError("favorite_team_id", "must reference an existing team")
 			httpx.FailedValidation(w, r, v.Errors)

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"net/http"
 
 	"lt-api.aleksrdvn.com/internal/game"
@@ -36,18 +35,14 @@ type Application struct {
 	// matches, teams), and the player handlers read its season/team
 	// existence surface. The module also satisfies game's SchedulePort and
 	// publishes the event seam's payloads.
+	//
+	// Identity is the authentication context's module: it registers its own
+	// routes (users, user-tokens), owns its mailer, and satisfies httpx's
+	// UserLookup/PermissionLookup natively (no gateway adapter), so the
+	// middleware chain is built from the module itself.
 	Game     *game.Service
 	Schedule *schedule.Module
-	Identity *identity.Store
-	Mailer   MailSender
-}
-
-// MailSender is everything the gateway needs from the mailer: one method.
-// Declaring the interface here (at the consumer, not next to the concrete
-// type) keeps api decoupled from SMTP entirely — tests inject a no-op
-// instead of a live client.
-type MailSender interface {
-	Send(ctx context.Context, recipient string, templateFile string, data any) error
+	Identity *identity.Module
 }
 
 // HandlerChain builds the full handler chain (router + middleware) the

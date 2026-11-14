@@ -48,19 +48,24 @@ type IdempotentResponse struct {
 	Body   []byte
 }
 
-// IdempotencyStore owns the idempotency_keys table. Every method runs on a
+// Repository owns the idempotency_keys table. Every method runs on a
 // caller-owned transaction, because the claim shares the command's
 // transaction:
 //   - a failed command rolls its claim back — failures are never cached
 //   - a concurrent duplicate blocks on the claim, then replays the committed
 //     response (single-flight by insert conflict, no in-flight state machine)
-type IdempotencyStore struct{}
+type Repository struct{}
+
+// New returns the idempotency engine. It carries no state — the claim lives
+// in the table, on the caller's transaction — so the zero value is usable
+// too; the constructor exists for wiring symmetry with the other contexts.
+func New() Repository { return Repository{} }
 
 // Claim tries to claim the key inside tx:
 //   - claimed=true: this request owns the key and must execute the command
 //   - claimed=false: the key is already completed — replay is its stored answer
 //   - ErrIdempotencyConflict: the key exists with a different request hash
-func (s IdempotencyStore) Claim(ctx context.Context, tx pgx.Tx, token IdempotencyToken) (bool, IdempotentResponse, error) {
+func (r Repository) Claim(ctx context.Context, tx pgx.Tx, token IdempotencyToken) (bool, IdempotentResponse, error) {
 	claim := `
 		INSERT INTO idempotency_keys (key, endpoint, request_hash, response_status, response_body)
 		VALUES ($1, $2, $3, 0, ''::bytea)
@@ -100,7 +105,7 @@ func (s IdempotencyStore) Claim(ctx context.Context, tx pgx.Tx, token Idempotenc
 
 // Save stores the command's HTTP answer on the claimed row. Runs in the
 // command's transaction, so the claim commits only with its response.
-func (s IdempotencyStore) Save(ctx context.Context, tx pgx.Tx, token IdempotencyToken, res IdempotentResponse) error {
+func (r Repository) Save(ctx context.Context, tx pgx.Tx, token IdempotencyToken, res IdempotentResponse) error {
 	tag, err := tx.Exec(ctx, `
 		UPDATE idempotency_keys
 		SET response_status = $2, response_body = $3

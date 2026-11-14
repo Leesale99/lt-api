@@ -27,7 +27,7 @@ type Store struct {
 	Pool        *pgxpool.Pool
 	Players     PlayerStore
 	Rides       RideStore
-	Idempotency idempotency.IdempotencyStore
+	Idempotency idempotency.Repository
 }
 
 func NewStore(pool *pgxpool.Pool) *Store {
@@ -35,6 +35,6 @@ func NewStore(pool *pgxpool.Pool) *Store {
 		Pool:        pool,
 		Players:     PlayerStore{pool},
 		Rides:       RideStore{pool},
-		Idempotency: idempotency.IdempotencyStore{},
+		Idempotency: idempotency.New(),
 	}
 }

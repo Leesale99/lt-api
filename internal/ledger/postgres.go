@@ -8,15 +8,15 @@ import (
 	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
-// Store is the Ledger implementation behind the intent seam: the rides
+// Repository is the Ledger implementation behind the intent seam: the rides
 // table's money facts (bonus_acc) are the only balances that exist, so its
 // write SQL lives here — moved out of game's RideStore, whose state machine
 // no longer touches money columns. Phase 06 swaps this type (and adds the
 // accounts/journal tables) behind the unchanged interface.
-type Store struct{}
+type Repository struct{}
 
-// NewStore returns the ledger backed by the rides table's money facts.
-func NewStore() *Store { return &Store{} }
+// New returns the ledger backed by the rides table's money facts.
+func New() *Repository { return &Repository{} }
 
 // LockTokens records the ride-creation lock. Nothing to write yet: the
 // locked amount and its base price are born on the ride row (game's birth
@@ -24,7 +24,7 @@ func NewStore() *Store { return &Store{} }
 // lock and row are one statement, not a two-step lock onto an existing
 // balance). Phase 06 moves the real movement (player balance debit, token
 // account credit) here.
-func (s *Store) LockTokens(_ context.Context, _ persistence.Querier, _, _, _ int, _, _ decimal.Decimal) error {
+func (r *Repository) LockTokens(_ context.Context, _ persistence.Querier, _, _, _ int, _, _ decimal.Decimal) error {
 	return nil
 }
 
@@ -34,7 +34,7 @@ func (s *Store) LockTokens(_ context.Context, _ persistence.Querier, _, _, _ int
 // composes correctly even if a read in the same tx already saw a newer
 // value. 0 rows means the ride vanished mid-tx — refuse, never silently
 // pass.
-func (s *Store) AccrueBonus(ctx context.Context, q persistence.Querier, rideID int, delta decimal.Decimal) error {
+func (r *Repository) AccrueBonus(ctx context.Context, q persistence.Querier, rideID int, delta decimal.Decimal) error {
 	tag, err := q.Exec(ctx, `
 		UPDATE rides
 		SET bonus_acc = bonus_acc + $2
@@ -54,7 +54,7 @@ func (s *Store) AccrueBonus(ctx context.Context, q persistence.Querier, rideID i
 // — rides_money_state_coupling (000013) refuses an unlocked|lost row
 // carrying acc, so the money write must precede the state write inside the
 // caller's transaction.
-func (s *Store) ReleaseBonus(ctx context.Context, q persistence.Querier, rideID int) error {
+func (r *Repository) ReleaseBonus(ctx context.Context, q persistence.Querier, rideID int) error {
 	tag, err := q.Exec(ctx, `
 		UPDATE rides
 		SET bonus_acc = 0
@@ -73,6 +73,6 @@ func (s *Store) ReleaseBonus(ctx context.Context, q persistence.Querier, rideID 
 // the rides row keeps its money columns on a burned arrival (the 000013
 // coupling deliberately excludes burn), and no TB balance exists. Phase 06
 // moves the real movement (token account debit, TB credit) here.
-func (s *Store) Burn(_ context.Context, _ persistence.Querier, _ int, _ decimal.Decimal) error {
+func (r *Repository) Burn(_ context.Context, _ persistence.Querier, _ int, _ decimal.Decimal) error {
 	return nil
 }
