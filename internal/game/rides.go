@@ -1,12 +1,12 @@
 package game
 
-// rides.go persists the ride rows and ONLY the ride rows: since the Phase C
-// split every schedule fact reaches game through the SchedulePort (round
-// guards) or the event payloads (results), so there is no SQL left here
-// touching matches or rounds. The money columns (tokens_locked, bonus_acc)
-// are the Ledger's — this file writes state, continuation and streak; the
-// birth INSERT is the one exception (a ride is born carrying its locked
-// tokens — see the insert statements).
+// rides.go persists the ride rows and ONLY the ride rows: since the
+// Game/Schedule split every schedule fact reaches game through the
+// SchedulePort (round guards) or the event payloads (results), so no SQL
+// here touches matches or rounds. The money columns (tokens_locked,
+// bonus_acc) are the Ledger's — this file writes state, continuation and
+// streak; the birth INSERT is the one exception (a ride is born carrying
+// its locked tokens — see the insert statements).
 
 import (
 	"context"
@@ -325,7 +325,7 @@ func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID in
 	return rides, metadata, nil
 }
 
-// arrivalUpdateSQL is the settlement handlers' arrival write (Phase C,
+// arrivalUpdateSQL is the settlement handlers' arrival write (post-commit,
 // behind the MatchResultRecorded/RoundCompleted events): a single-ride
 // state flip whose WHERE re-checks the contended facts at the write
 // instant — the ride's version and its from-state — so a concurrent writer
@@ -417,9 +417,9 @@ func (s *RideStore) classifyArrivalRefusal(ctx context.Context, rideID, claimedV
 
 func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
 	// bonus_acc is deliberately absent from the SET clause: the money
-	// columns are the Ledger's since Phase C — this statement moves state,
-	// continuation and streak; the ledger moves money (and the money-state
-	// coupling still checks the row as a whole).
+	// columns are the Ledger's since the intent seam — this statement
+	// moves state, continuation and streak; the ledger moves money (and
+	// the money-state coupling still checks the row as a whole).
 	query := `
 		UPDATE rides
 		SET match_id = $1, state = $2, streak = $3, version = version + 1
@@ -539,7 +539,7 @@ func (s *RideStore) DecisionGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride)
 			// carry no acc. Same 409 surface the P0001 refusal produced.
 			return Ride{}, ErrInvalidTransition
 		case store.IsFKViolation(err):
-			// Since Phase D (000016) no FK is left on rides; the port's
+			// Since 000016 no FK is left on rides; the port's
 			// destination gate has the match-existence check before this
 			// write. Kept as the generic FK race mapping shape.
 			return Ride{}, store.ErrRecordNotFound
@@ -592,7 +592,7 @@ func (s *RideStore) classifyDecisionRefusal(ctx context.Context, rideID, claimed
 }
 
 // ExistsForMatch reports whether any ride sits on the match — the game
-// half of the api match-delete refusal (Phase D: rides_match_id_fkey's
+// half of the api match-delete refusal (000016: rides_match_id_fkey's
 // RESTRICT is gone with the cross-context FKs, so the "match still has
 // rides" check is an api-level composition; same ErrRecordInUse → 409
 // surface the FK produced, ADR-018: a match with rides on it must not be

@@ -29,7 +29,7 @@ import (
 // exercise the event seam.
 
 func newTestApplication() *Application {
-	// Phase D wiring: each context store on its own role-restricted pool
+	// Composition-root wiring: each context store on its own role-restricted pool
 	// (the composition-root shape of cmd/server). testPool (owner) exists
 	// for fixture planting only.
 	bus := eventbus.New()

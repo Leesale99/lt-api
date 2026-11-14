@@ -7,7 +7,7 @@ package game
 //
 //	close wins:  the round closes, the continuation is refused with
 //	             ErrRoundNotOpen (the round-refusal 409); the undecided
-//	             ride settles later, behind RoundCompleted (Phase C).
+//	             ride settles later, behind RoundCompleted.
 //	lock wins:   the ride is locked onto the destination, and the close
 //	             finds no undecided ride of its own to settle — the ride
 //	             continues into the next round.
@@ -121,7 +121,7 @@ func TestService_RideLockRacesRoundClose(t *testing.T) {
 				// re-read the committed row and refused it. The undecided
 				// ride settled right after, from the RoundCompleted payload
 				// (the settlement runs synchronously inside Close's
-				// post-commit publish — Phase C eventual, but in-process).
+				// post-commit publish — eventual, but in-process).
 				if got.State != RideUnlocked {
 					t.Errorf("close won but state = %q, want unlocked (settled from the event)", got.State)
 				}
@@ -170,7 +170,7 @@ func insertSettledFutureMatch(ctx context.Context, t *testing.T, seasonID, round
 // goroutine could see the committed close and be refused for the mundane
 // reason, proving nothing about the lock. The blocked statement is the
 // SchedulePort's round gate — schedule.round_open_guard (the FOR SHARE
-// lives inside schedule's definer function since Phase D) — the ride write
+// lives inside schedule's definer function since 000018) — the ride write
 // runs only after the gate returns.
 func waitUntilInsertBlocked(ctx context.Context, t *testing.T) {
 	t.Helper()
@@ -206,10 +206,10 @@ func TestService_RideCreateRacesRoundClose(t *testing.T) {
 
 		// The close command's status flip, held uncommitted: updateRound
 		// takes the round row's lock exactly like Rounds.Close does. Both
-		// gates pass — the match is settled, no ride exists yet. (Phase D:
-		// the flip is a schedule write, so the tx runs on the schedule
-		// pool — the ride's FOR SHARE guard still blocks on this tx's row
-		// lock; same DB, same serialization.)
+		// gates pass — the match is settled, no ride exists yet. (Context
+		// schemas and roles: the flip is a schedule write, so the tx runs on
+		// the schedule pool — the ride's FOR SHARE guard still blocks on this
+		// tx's row lock; same DB, same serialization.)
 		tx, err := schedulePool.Begin(ctx)
 		if err != nil {
 			t.Fatalf("begin close tx: %v", err)

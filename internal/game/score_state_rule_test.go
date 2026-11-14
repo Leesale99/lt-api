@@ -14,7 +14,7 @@ package game
 //  3. The resultAgreement check in that same handler (internal/game/
 //     events.go) — the enforcement home since migration 000017 (the old
 //     rides_state_gate check 5 read schedule's table from a game trigger,
-//     the cross-context read Phase D removed).
+//     the cross-context read the split removed).
 //
 // Both tests below read the same scoreStateRule vectors: the unit side
 // asserts the Winner→state mapping, the DB side runs the settlement

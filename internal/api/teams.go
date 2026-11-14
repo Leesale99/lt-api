@@ -179,7 +179,7 @@ func (app *Application) deleteTeamHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	// (Phase D) The players_favorite_team_id_fkey and rides_team_id_fkey
+	// The players_favorite_team_id_fkey and rides_team_id_fkey
 	// RESTRICTs are gone with the cross-context FKs (migration 000016), so
 	// the "team still referenced by the game context" refusal is composed
 	// here: api holds both stores, game answers its own references (matches

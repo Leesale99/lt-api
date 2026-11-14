@@ -13,7 +13,7 @@ import (
 // ErrEndedAtInFuture reports a resolve whose ended_at lies at or after the
 // current time. This is time policy, not request shape: it lives at the
 // service door (ADR-026) so every ResolveMatch caller — not only the HTTP
-// handler — passes the same rule. (It moved here from game in Phase C: the
+// handler — passes the same rule. (It moved here from game with the
 // resolve entry point is schedule's script now.)
 var ErrEndedAtInFuture = errors.New("ended_at must be in the past")
 
@@ -50,7 +50,7 @@ func NewService(store *Store, bus *eventbus.Bus, log *slog.Logger) *Service {
 //
 // Publish is post-commit and synchronous: by the time ResolveMatch returns,
 // the game handler has settled the locked rides of the match (or the
-// settlement error has been logged as the accepted Phase C gap — the commit
+// settlement error has been logged as the accepted gap — the commit
 // above is already durable, so a failed handler must not fail the request).
 func (s *Service) ResolveMatch(ctx context.Context, matchID int, score Score, endedAt time.Time, version int) (Match, error) {
 	if !endedAt.Before(time.Now()) {
@@ -96,7 +96,7 @@ func (s *Service) ResolveMatch(ctx context.Context, matchID int, score Score, en
 }
 
 // publish delivers one event on the process bus, after the caller's
-// transaction committed. Failure is the accepted Phase C crash gap: the
+// transaction committed. Failure is the accepted crash gap: the
 // commit is durable, so the event is logged and dropped — the Phase 07
 // sweep (Phase 08 outbox) closes the hole. The context loses its
 // cancellation: the publisher's request may be gone, but the handler's work

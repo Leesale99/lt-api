@@ -55,7 +55,8 @@ type Match struct {
 // scores decide a ride's destination, a draw crowns no winner. The other
 // two encodings: the payload derivation in game's MatchResultRecorded
 // settlement handler (internal/game/events.go — the event consumer of
-// Phase C) and the result-agreement check in that same handler, which
+// the Game/Schedule split) and the result-agreement check in that same
+// handler, which
 // re-verifies the payload against the committed result through the
 // SchedulePort (the app-level enforcement home since migration 000017;
 // the old rides_state_gate check 5 read schedule's table from a game
@@ -318,7 +319,7 @@ func (s *MatchStore) Delete(ctx context.Context, id, seasonID int) error {
 
 	result, err := s.pool.Exec(ctx, query, id, seasonID)
 	if err != nil {
-		// (Phase D) rides_match_id_fkey — the FK that made this refusal
+		// rides_match_id_fkey — the FK that made this refusal
 		// automatic — is gone with the cross-context FKs (000016); the
 		// "match still has rides" refusal moved to the api delete handler,
 		// which asks the game context before deleting (same 409). The
@@ -393,7 +394,7 @@ func (s *MatchStore) Update(ctx context.Context, match Match) (Match, error) {
 // key, so PostgreSQL treats every other rounds column as functionally
 // dependent (single-valued per group).
 func (s *MatchStore) PhaseForMatch(ctx context.Context, matchID int) (RoundStatus, *time.Time, *time.Time, error) {
-	// Schema-qualified (Phase D): this statement runs on both pools — the
+	// Schema-qualified: this statement runs on both pools — the
 	// schedule's own (schedule_app) and, through the SchedulePort, game's
 	// ride commands' phase gate — so it names the schema it reads across
 	// instead of leaning on a search_path that differs per role.

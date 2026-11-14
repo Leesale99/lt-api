@@ -17,11 +17,11 @@ import (
 // schedule facts, so the lock-taking statements live on this side of the
 // seam while the ride writes stay on game's side.
 //
-// Phase C: the resolve half of the old store-level coupling (ResolveTx's
+// The resolve half of the old store-level coupling (ResolveTx's
 // guarded score write) is schedule's own script now (Service.ResolveMatch);
 // game no longer needs it through the port.
 //
-// Phase D: the context privilege boundary (migration 000018) denies
+// The context privilege boundary (migration 000018) denies
 // game_app every schedule table, so the in-caller's-tx guards cannot be
 // plain SELECTs — row locking (FOR SHARE) needs UPDATE privilege, and
 // granting that would let game corrupt schedule state. The two guards

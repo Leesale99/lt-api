@@ -5,7 +5,7 @@
 // behind the same interface (the phase-05 example shape), with no game
 // change.
 //
-// Phase C state of the implementation: there are no balance tables yet, so
+// Current state of the implementation: there are no balance tables yet, so
 // the concrete Store (store.go) persists the money facts the rides table
 // already carries — bonus_acc — inside the CALLER's transaction (game and
 // ledger share one Postgres tx; no async). LockTokens and Burn are the

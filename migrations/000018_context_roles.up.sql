@@ -1,4 +1,4 @@
--- Phase D: the privilege boundary. One NOLOGIN role per context, granted
+-- The privilege boundary. One NOLOGIN role per context, granted
 -- exactly its own schema's CRUD — after the server pools run
 -- `SET ROLE <context_role>` (the post-connect hook), a cross-context query
 -- fails on PERMISSION even when the name is resolvable: the boundary is

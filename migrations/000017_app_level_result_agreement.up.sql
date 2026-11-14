@@ -1,4 +1,4 @@
--- Phase D: result agreement (000011, check 5) changes enforcement home.
+-- App-level result agreement: 000011's check 5 changes enforcement home.
 -- The trigger body reads `matches` — schedule's table — inside the
 -- writing transaction; after the split that is the cross-context read the
 -- boundary rule (ADR-028) removes from the DB. The check moves into game

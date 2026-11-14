@@ -29,14 +29,14 @@ var (
 	ErrInvalidRoundPhase = errors.New("command not allowed in this round phase")
 )
 
-// (ErrEndedAtInFuture moved to schedule in Phase C, with the resolve
+// (ErrEndedAtInFuture moved to schedule with the resolve
 // script it belongs to — the api maps it to the same 422 from there.)
 
 // Service is the ride domain's entry point. It owns the game context's
 // stores, consumes the schedule context through the SchedulePort (the
 // calendar facts its commands need: phase window, round-open guards,
-// next-match pick — the resolve score write is schedule's script since
-// Phase C), and the Ledger for every money mutation (game sends intents;
+// next-match pick — the resolve score write is schedule's script), and
+// the Ledger for every money mutation (game sends intents;
 // the ledger owns the writes — phase-05/06). The event handlers settle
 // rides from schedule's MatchResultRecorded/RoundCompleted payloads.
 // game → schedule and game → ledger are the only legal import directions
@@ -164,7 +164,7 @@ func (s *Service) RideCreate(ctx context.Context, ride Ride, token idempotency.I
 		return idempotency.IdempotentResponse{}, err
 	}
 
-	// The team reference is checked here since Phase D (000016 dropped
+	// The team reference is checked here since 000016 dropped
 	// rides_team_id_fkey with the cross-context FKs): the port answers the
 	// calendar fact, and an unknown team is the parent-gone 404 the FK
 	// produced. Player existence stays DB-enforced (rides_player_id_fkey

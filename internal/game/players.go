@@ -20,8 +20,8 @@ type Player struct {
 	ID        int       `json:"id"`
 	CreatedAt time.Time `json:"-"`
 	Name      string    `json:"name"`
-	// Nullable: since Phase D there is no players_user_id FK (000016 —
-	// identity is another context), so a deleted user no longer nulls the
+	// Nullable: since 000016 there is no players_user_id FK (identity is
+	// another context), so a deleted user no longer nulls the
 	// column in the DB; the column stays nullable for the historical
 	// "no owner" shape.
 	UserID         *int `json:"-"`
@@ -160,7 +160,7 @@ func (s *PlayerStore) Insert(ctx context.Context, player Player) (Player, error)
 			// A second registration of the same user in the same season.
 			return Player{}, store.ErrDuplicateRecord
 		case store.IsFKViolation(err):
-			// Since Phase D there is no cross-context FK left on players
+			// Since 000016 there is no cross-context FK left on players
 			// (000016) — the only remaining FK is none, so this branch is
 			// currently unreachable; it stays as the generic race mapping
 			// shape for when a same-context FK reappears.
@@ -189,7 +189,7 @@ func (s *PlayerStore) Update(ctx context.Context, player Player) (Player, error)
 		case errors.Is(err, pgx.ErrNoRows):
 			return Player{}, store.ErrEditConflict
 		case store.IsFKViolation(err):
-			// Since Phase D (000016) no FK is left on players; the team
+			// Since 000016 no FK is left on players; the team
 			// existence check is the api handler's, before this write.
 			return Player{}, store.ErrRecordNotFound
 		default:
@@ -218,7 +218,7 @@ func (s *PlayerStore) Delete(ctx context.Context, id, seasonID int) error {
 }
 
 // ExistsForTeam reports whether any player names the team as their
-// favorite — the game half of the api team-delete refusal (Phase D: the
+// favorite — the game half of the api team-delete refusal (000016: the
 // players_favorite_team_id_fkey RESTRICT is gone with the cross-context
 // FKs, so the "team still referenced" check is an api-level composition
 // of schedule's and game's facts; same ErrRecordInUse → 409 surface).
@@ -229,7 +229,7 @@ func (s *PlayerStore) ExistsForTeam(ctx context.Context, teamID int) (bool, erro
 }
 
 // DeleteForSeason deletes every player registered in the season — the
-// game half of the api season-delete cascade (Phase D: the FK CASCADE is
+// game half of the api season-delete cascade (000016: the FK CASCADE is
 // gone with the cross-context FKs, so the api handler deletes the
 // season's players through game before deleting the season; the row
 // outcome is the old cascade's). A ride still referencing a player trips

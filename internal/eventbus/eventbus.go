@@ -1,6 +1,6 @@
 // Package eventbus is transverse infrastructure: a minimal in-process,
 // synchronous pub/sub used as the module event seam of the Game/Schedule
-// split (Phase C). It imports no domain package — events travel as `any`
+// split. It imports no domain package — events travel as `any`
 // and every subscriber type-asserts — so neither game nor schedule can leak
 // through it and no shared events package is needed: each publisher defines
 // its events in its own package (ADR-027: events speak the publisher's

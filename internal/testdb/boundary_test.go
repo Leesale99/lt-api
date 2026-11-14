@@ -1,6 +1,6 @@
 package testdb
 
-// Boundary smoke test (Phase D): the context privilege boundary is
+// Boundary smoke test: the context privilege boundary is
 // Postgres' to enforce — this suite connects AS the context roles and
 // asserts the boundary from the outside:
 //

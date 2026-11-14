@@ -1,4 +1,4 @@
--- Phase C of the Game/Schedule split: round-close becomes EVENTUAL (ADR-027
+-- The Game/Schedule split: round-close becomes EVENTUAL (ADR-027
 -- event seam). Schedule closes a round on feed completion and publishes
 -- RoundCompleted; the game context settles the round's undecided rides
 -- afterwards (auto-unlock rounds 1-37, auto-burn round 38), inside its own
@@ -22,12 +22,12 @@
 --     are no-ops;
 --   - a crash between the close's commit and the settlement (or a failed
 --     settlement) leaves undecided rides in a closed round — the accepted
---     Phase C gap, swept by the Phase 07 background sweep / replaced by the
+--     settlement gap, swept by the Phase 07 background sweep / replaced by the
 --     Phase 08 transactional outbox. No money is lost: the rides simply
 --     keep waiting, and rides_state_gate still refuses every illegal
 --     arrival.
 --
--- Down migration restores the pre-Phase-C backstop verbatim.
+-- Down migration restores the pre-event-seam backstop verbatim.
 
 CREATE OR REPLACE FUNCTION rounds_block_illegal_close() RETURNS trigger AS $$
 BEGIN

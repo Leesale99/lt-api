@@ -15,7 +15,7 @@ import (
 // the concrete store and no adapter exists — the interface is the boundary
 // line, not a layer.
 //
-// What game may NOT do against schedule anymore (Phase C): raw SQL against
+// What game may NOT do against schedule anymore: raw SQL against
 // matches/rounds (the guarded statements' EXISTS predicates and the
 // resolve's score write moved — the resolve is schedule's
 // Service.ResolveMatch script, the round guards are the two Tx methods
@@ -51,7 +51,7 @@ type SchedulePort interface {
 	Match(ctx context.Context, matchID int) (schedule.Match, error)
 
 	// Team reports one team's existence — the app-level check behind ride
-	// create's team reference (Phase D: rides_team_id_fkey is gone with
+	// create's team reference (000016: rides_team_id_fkey is gone with
 	// the cross-context FKs, migration 000016; the api-level team-existence
 	// surface is schedule's, the ride command reads it through the port).
 	// ErrRecordNotFound when the team is unknown.

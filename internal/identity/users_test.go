@@ -35,7 +35,7 @@ import (
 // tested nothing is worse than a red one.
 var testPool *pgxpool.Pool
 
-// identityPool runs as identity_app (Phase D): the stores under test
+// identityPool runs as identity_app: the stores under test
 // exercise the real privilege regime; testPool (owner) plants fixtures.
 var identityPool *pgxpool.Pool
 
@@ -46,11 +46,11 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 
-	// The full migration series, not just the identity slice: Phase D's
-	// 000015 moves whatever tables exist, and 000016–000018 (FK surgery,
-	// roles) assume the whole preceding chain — so identity tests run the
-	// same layout the server runs, including the calendar/game tables it
-	// no longer touches.
+	// The full migration series, not just the identity slice: 000015 moves
+	// whatever tables exist, and 000016–000018 (FK surgery, roles) assume
+	// the whole preceding chain — so identity tests run the same layout
+	// the server runs, including the calendar/game tables it no longer
+	// touches.
 	db, teardown, err := testdb.Setup(
 		context.Background(),
 		dsn,
@@ -97,10 +97,10 @@ func requireDB(t *testing.T) {
 // resetUsers wipes the identity tables with identity restart, so ID-based
 // assertions (first insert → id 1) hold in every test. roles/permissions are
 // reference data from migration 000004 and stay untouched. The token store
-// references users (FK), so user_tokens goes in the same TRUNCATE. (Phase D:
-// players is no longer identity's concern — players_user_id_fkey is gone
-// with the cross-context FKs, migration 000016 — so it leaves the
-// truncate; game.rides' RESTRICT on players would refuse it anyway.)
+// references users (FK), so user_tokens goes in the same TRUNCATE. (Since
+// 000016 players is no longer identity's concern — players_user_id_fkey is
+// gone with the cross-context FKs — so it leaves the truncate; game.rides'
+// RESTRICT on players would refuse it anyway.)
 func resetUsers(t *testing.T) {
 	t.Helper()
 	if _, err := testPool.Exec(context.Background(), `TRUNCATE identity.users, identity.user_tokens RESTART IDENTITY`); err != nil {

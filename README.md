@@ -33,7 +33,7 @@ internal/api/      HTTP layer: application struct, routes, handlers
 docs/              Learning-oriented implementation plan (phases 0–8)
 ```
 
-## Database: schemas, roles and configuration (Phase D)
+## Database: context schemas, per-context roles and configuration
 
 The Postgres layout mirrors the bounded contexts (ADR-028), and the
 boundary is enforced by Postgres itself (migrations 000015–000018):

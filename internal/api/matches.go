@@ -18,7 +18,7 @@ import (
 // calendar bookkeeping — shape validation plus season/round/team existence
 // checks — with no ride rules involved. The resolve PATCH below is the one
 // match operation with a rule of its own (time policy), and it is
-// schedule's script since Phase C.
+// schedule's script since the Game/Schedule split.
 func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		RoundID    int            `json:"round_id"`
@@ -212,7 +212,7 @@ func (app *Application) deleteMatchHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	// (Phase D) rides_match_id_fkey's RESTRICT is gone with the
+	// rides_match_id_fkey's RESTRICT is gone with the
 	// cross-context FKs (migration 000016), so the "match still has rides"
 	// refusal is composed here: api holds both stores, game answers its
 	// own references (ADR-018: a match with rides on it must not be
@@ -391,8 +391,8 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-// resolveMatchHandler is schedule's route (Phase C of the Game/Schedule
-// split): the resolve script commits the result in schedule's own
+// resolveMatchHandler is schedule's route (Game/Schedule split): the
+// resolve script commits the result in schedule's own
 // transaction and publishes MatchResultRecorded post-commit — game settles
 // the rides from the event payload, not in this request's transaction.
 // The match types are schedule's (the row belongs to the calendar); the
@@ -449,7 +449,7 @@ func (app *Application) resolveMatchHandler(w http.ResponseWriter, r *http.Reque
 		// gameErrorResponse maps the full domain surface this flow can
 		// produce: ErrRecordNotFound (unknown match), ErrEditConflict (lost
 		// race or already-closed match, classified by the store), canceled
-		// context. (The ride-half refusals left this surface in Phase C:
+		// context. (The ride-half refusals left this surface with the split:
 		// settlement is post-commit, behind the event seam.)
 		app.gameErrorResponse(w, r, err)
 		return

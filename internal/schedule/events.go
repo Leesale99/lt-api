@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Schedule events (Phase C of the Game/Schedule split). They live here —
+// Schedule events (the Game/Schedule split's event seam). They live here —
 // in the publisher's package, in the publisher's language (ADR-027): game
 // imports schedule (the one legal direction), schedule never imports game,
 // and there is deliberately no shared events package. Payloads are fat:

@@ -449,14 +449,14 @@ func TestRideStore_Update(t *testing.T) {
 		}
 	})
 
-	t.Run("the store is not the result-agreement enforcement point (Phase D)", func(t *testing.T) {
+	t.Run("the store is not the result-agreement enforcement point (000017)", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
 		// Away team planted: the fixture closed match ends 88:79 (home
 		// wins), so a won_pending arrival for the away ride disagrees.
 		ride := plantRide(ctx, t, closedMatch, awayID, RideLocked, decimal.Zero, 0)
 
-		// Phase D (migration 000017): result agreement left the DB trigger
+		// Migration 000017: result agreement left the DB trigger
 		// with the cross-context read it needed (schedule's matches table).
 		// A direct store write CAN plant a won_pending arrival the committed
 		// scores disagree with — the enforcement is the service's
@@ -600,7 +600,7 @@ func decisionWrite(ctx context.Context, t *testing.T, svc *Service, ride Ride, o
 }
 
 // TestRideStore_DecisionGuardedTx covers the DecisionPhase commands'
-// guarded write (Phase 04 TOCTOU sweep) in its Phase C shape: the round
+// guarded write (Phase 04 TOCTOU sweep) in its post-split shape: the round
 // facts are the SchedulePort gates (run here through decisionWrite), the
 // rides-row-only UPDATE re-checks the row's own facts (state, version) at
 // the write instant. Three deliberate choices the cases pin:

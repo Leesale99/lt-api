@@ -195,7 +195,7 @@ func (app *Application) deleteSeasonHandler(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), constants.DBTimeout)
 	defer cancel()
 
-	// (Phase D) players_season_id_fkey's CASCADE is gone with the
+	// players_season_id_fkey's CASCADE is gone with the
 	// cross-context FKs (migration 000016), so the api handler replays the
 	// cascade's game half explicitly: the season's players are deleted
 	// through game BEFORE the season. The row outcome is the old

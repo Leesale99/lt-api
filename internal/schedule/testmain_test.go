@@ -24,7 +24,7 @@ import (
 )
 
 // migFile lists all migrations the schedule tests need — the FULL series
-// since Phase D: 000015 moves whatever tables exist (it cannot run
+// since 000015: that migration moves whatever tables exist (it cannot run
 // against a partial chain), 000016–000018 (FK surgery, roles) assume it,
 // and the suite runs its stores on the role-restricted pool 000018
 // creates. The calendar hierarchy is 000001; 000005 adds
@@ -32,7 +32,7 @@ import (
 // migrations (000006/11/12/13) are here because the ride fixtures plant
 // rides and walk through the same UPDATE gates every writer faces.
 // 000014 relaxes the unresolved-rides half of rounds_close_gate — since
-// the Phase C event seam the ride settlement is the game context's,
+// the event seam the ride settlement is the game context's,
 // behind RoundCompleted.
 var migFiles = []string{
 	"../../migrations/000001_create_initial_game_models.up.sql",
@@ -65,7 +65,7 @@ const (
 
 var pool *pgxpool.Pool
 
-// schedulePool runs as schedule_app (Phase D): the stores under test
+// schedulePool runs as schedule_app: the stores under test
 // exercise the real privilege regime; pool (owner) plants fixtures —
 // including cross-schema ones (rides/players are the game context's, and
 // the ride fixtures keep planting them as the composition owner).

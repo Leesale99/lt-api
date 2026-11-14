@@ -41,7 +41,7 @@ type Application struct {
 	// Handlers call domain operations on it; ride/player CRUD that carries
 	// no rules goes through Game.Store.
 	//
-	// Schedule is the calendar context's service (Phase C of the
+	// Schedule is the calendar context's service (its own context since the
 	// Game/Schedule split): the seasons/rounds/matches/teams handlers drive
 	// its stores directly (ADR-028 — schedule CRUD carries no rules beyond
 	// its validators), the player handlers read it for the season/team

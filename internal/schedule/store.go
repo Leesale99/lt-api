@@ -8,7 +8,7 @@
 // Package layout is the ADR-028 shape (Transaction Script + Layered-3):
 // anemic entities + validators here, straightforward store SQL, and the
 // Service for the use cases that must publish (ResolveMatch; Close's
-// RoundCompleted). Since Phase C of the Game/Schedule split the
+// RoundCompleted). Since the Game/Schedule split the
 // match-result handoff to game is an event (internal/schedule/events.go),
 // not a shared transaction — game consumes schedule lookups through a
 // narrow port (game.SchedulePort) and schedule never imports game

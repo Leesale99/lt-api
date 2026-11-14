@@ -26,9 +26,9 @@ import (
 // Context role names (migration 000018). Every pool the server opens is
 // bound to one bounded context and runs SET ROLE <role> on each of its
 // connections, so the session's effective privileges are the context
-// role's — the schema boundary (ADR-028, made physical in Phase D) is
-// enforced by Postgres, not by code review. Each role's search_path
-// resolves the stores' unqualified SQL to its own schema.
+// role's — the schema boundary (ADR-028, made physical by per-context
+// schemas and roles) is enforced by Postgres, not by code review. Each
+// role's search_path resolves the stores' unqualified SQL to its own schema.
 const (
 	roleSchedule = "schedule_app"
 	roleGame     = "game_app"
@@ -90,7 +90,7 @@ func main() {
 		cfg.Limiter.Enabled,
 	)
 
-	// Composition root (Phase B/C/D split): each context store is wired to
+	// Composition root (bounded-context split): each context store is wired to
 	// ITS OWN pool (schedule → schedule pool, game → game pool, identity →
 	// identity pool); every pool's connections run as the context's role,
 	// so a cross-context query fails on permission even when the name is

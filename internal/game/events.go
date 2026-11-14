@@ -1,8 +1,9 @@
 package game
 
-// Event handlers (Phase C of the Game/Schedule split): game subscribes to
-// schedule's MatchResultRecorded and RoundCompleted (published post-commit,
-// in-process — internal/eventbus) and settles rides from their payloads.
+// Event handlers (the Game/Schedule split's event seam): game subscribes
+// to schedule's MatchResultRecorded and RoundCompleted — published
+// post-commit, in-process (internal/eventbus) — and settles rides from
+// their payloads.
 //
 // Handler shape, every one of them:
 //
@@ -14,7 +15,7 @@ package game
 //     money intents share it — settlement is atomic;
 //   - payload-driven: ride outcomes are derived from the event's facts,
 //     never from a join into schedule's tables. The committed match is
-//     still the source of truth: since Phase D the result agreement (the
+//     still the source of truth: since 000017 the result agreement (the
 //     old rides_state_gate check 5, migration 000017) is the app-level
 //     resultAgreement check below — every locked→result arrival is
 //     verified against the committed scores (via the SchedulePort), so a
@@ -25,15 +26,15 @@ package game
 //     transition graph's (rides_state_gate check 3), which these writes
 //     go through like every other writer.
 //
-// Round-close is EVENTUAL since Phase C (documented at schedule's
+// Round-close is EVENTUAL (documented at schedule's
 // RoundStore.Close): Schedule closes on feed completion and publishes
 // RoundCompleted; THIS side settles the round's rides after — undecided
 // won_pending rides auto-unlock (rounds 1-37) or auto-burn (the season's
 // last round, ADR-022). The old "block close while rides undecided" gate
 // half was relaxed accordingly (migration 000014). The gap window — close
 // committed, settlement not yet run, or settlement failed — is the
-// accepted Phase C crash gap: the rides simply keep waiting (no money is
-// lost), and the Phase 07 sweep closes it.
+// accepted crash gap: the rides simply keep waiting (no money is lost),
+// and the Phase 07 sweep closes it.
 //
 // The two settlement transactions serialize on the settled round
 // (pg_advisory_xact_lock below): a resolve and a close publishing at the
@@ -80,7 +81,7 @@ const (
 // OnMatchResultRecorded settles the locked rides of one resolved match,
 // from the payload: winner == ride.team → won_pending (the bonus accrues,
 // the rule ride.WonPending encodes), otherwise lost (the accrued bonus is
-// released — the Phase B set-based path skipped both money halves; this
+// released — the pre-split set-based path skipped both money halves; this
 // handler does them through the Ledger).
 func (s *Service) OnMatchResultRecorded(ctx context.Context, event schedule.MatchResultRecorded) error {
 	return s.runEvent(ctx, matchResultEndpoint, event.EventID, event, event.RoundID, func(tx pgx.Tx) error {

@@ -8,14 +8,14 @@ import (
 	"lt-api.aleksrdvn.com/internal/store"
 )
 
-// Store is the Phase C Ledger implementation: the rides table's money
-// facts (bonus_acc) are the only balances that exist, so its write SQL
-// lives here — moved out of game's RideStore, whose state machine no
-// longer touches money columns. Phase 06 swaps this type (and adds the
+// Store is the Ledger implementation behind the intent seam: the rides
+// table's money facts (bonus_acc) are the only balances that exist, so its
+// write SQL lives here — moved out of game's RideStore, whose state machine
+// no longer touches money columns. Phase 06 swaps this type (and adds the
 // accounts/journal tables) behind the unchanged interface.
 type Store struct{}
 
-// NewStore returns the Phase C ledger.
+// NewStore returns the ledger backed by the rides table's money facts.
 func NewStore() *Store { return &Store{} }
 
 // LockTokens records the ride-creation lock. Nothing to write yet: the

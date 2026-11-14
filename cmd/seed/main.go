@@ -81,7 +81,7 @@ func run(ctx context.Context, logger *slog.Logger, dsn string, reset bool) error
 	defer func() { _ = tx.Rollback(ctx) }() // noop after Commit (ErrTxClosed)
 
 	if reset {
-		// Phase D: the tables live in their context schemas — the names are
+		// The tables live in their context schemas (000015) — the names are
 		// qualified. The seed runs as the migration runner (owner), so the
 		// cross-schema TRUNCATE ... CASCADE needs no extra privileges.
 		if _, err := tx.Exec(ctx, `TRUNCATE schedule.matches, game.players, schedule.rounds, schedule.seasons, schedule.teams RESTART IDENTITY CASCADE`); err != nil {

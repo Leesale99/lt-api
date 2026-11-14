@@ -1,9 +1,9 @@
 package schedule
 
 // RoundStore.Close integration tests: the close transaction's status flip,
-// its gates (000008), and the RoundCompleted event seam (Phase C).
+// its gates (000008), and the RoundCompleted event seam.
 //
-// Since the Phase C split the close no longer resolves rides: Schedule
+// Since the split the close no longer resolves rides: Schedule
 // closes on feed completion and publishes RoundCompleted post-commit; the
 // game context settles the undecided rides from the event payload. The
 // ride side is still planted/read through raw SQL, deliberately: schedule
@@ -176,7 +176,7 @@ func seedFixture(ctx context.Context, t *testing.T) (int, int, int, int) {
 	return seed(ctx, t)
 }
 
-// TestMatchDeleteRestricted pins the Phase D shape of the ADR-018 rule:
+// TestMatchDeleteRestricted pins the post-000016 shape of the ADR-018 rule:
 // rides_match_id_fkey's RESTRICT is gone with the cross-context FKs
 // (migration 000016), so the store alone no longer refuses a delete over
 // rides — the "match still has rides" check is the api delete handler's,
@@ -197,7 +197,7 @@ func TestMatchDeleteRestricted(t *testing.T) {
 	err := NewStore(schedulePool).Matches.Delete(ctx, matchID, 1)
 
 	if err != nil {
-		t.Fatalf("Delete() = %v, want nil (rides RESTRICT moved to the api layer, Phase D)", err)
+		t.Fatalf("Delete() = %v, want nil (rides RESTRICT moved to the api layer, 000016)", err)
 	}
 
 	// The delete actually deleted: the match row is gone.
@@ -447,7 +447,7 @@ func TestRoundStore_Close_MidTxFailureLeavesNoTrace(t *testing.T) {
 	}
 
 	// The ride is untouched: state, acc and version all read back as
-	// planted. (The close owns no ride writes since Phase C — this pins
+	// planted. (The close owns no ride writes since the split — this pins
 	// that the refusal left the whole world as it was.)
 	persisted := getRideRow(ctx, t, rideID)
 	if persisted.state != "won_pending" {

@@ -1,4 +1,4 @@
--- Phase D of the Game/Schedule split: the context boundaries become
+-- Schema-per-context: the context boundaries become
 -- enforceable BY POSTGRES ITSELF. Three schemas, one per bounded context
 -- (ADR-028's ownership map, made physical):
 --

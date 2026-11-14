@@ -1,6 +1,6 @@
--- Restore the pre-Phase-C rounds_close_gate: refuse closing over undecided
+-- Restore the pre-event-seam rounds_close_gate: refuse closing over undecided
 -- won_pending rides (round_close_has_unresolved_rides). Only meaningful
--- together with the Phase B close transaction that auto-resolved those
+-- together with the pre-split close transaction that auto-resolved those
 -- rides before the flip — see 000014 up for why it was dropped.
 
 CREATE OR REPLACE FUNCTION rounds_block_illegal_close() RETURNS trigger AS $$

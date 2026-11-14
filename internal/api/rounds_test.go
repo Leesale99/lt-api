@@ -284,7 +284,7 @@ func TestUpdateRoundHandler(t *testing.T) {
 		},
 		{
 			name: "duplicate number within season",
-			// The api suite runs the whole migration chain since Phase D, so
+			// The api suite runs the whole migration chain, so
 			// the round gates (000008) are live: a legal renumber lands on
 			// the sequence's next number (max closed = 2 → 3) — and round 5
 			// (created, empty) taking 3 collides with round 3. The refusal
@@ -307,7 +307,7 @@ func TestUpdateRoundHandler(t *testing.T) {
 			setup: func(t *testing.T) {
 				// Season 2's round 6 carries the fixture's other-season match;
 				// the close gate refuses a close over unclosed matches, so the
-				// match goes first. Owner-pool fixture writes, Phase D-qualified.
+				// match goes first. Owner-pool fixture writes, schema-qualified.
 				_, err := testPool.Exec(context.Background(),
 					`DELETE FROM schedule.matches WHERE round_id = 6`)
 				if err != nil {
@@ -416,7 +416,7 @@ func TestUpdateRoundPersists(t *testing.T) {
 	app := newTestApplication()
 
 	// The full gate set (000008 — the api suite runs the whole migration
-	// chain since Phase D) shapes what a legal update is: the sequence gate
+	// chain) shapes what a legal update is: the sequence gate
 	// admits a close only onto the next step after the closed rounds, and
 	// the close gate refuses closes over unsettled matches (a future match
 	// cannot even be closed directly — the ended_at stamp would predate

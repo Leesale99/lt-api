@@ -5,9 +5,9 @@
 //
 //   - The DSN comes from LT_API_TEST_DSN and points at the test database,
 //     which does NOT need to exist. The role in the DSN only needs LOGIN +
-//     CREATEDB (+ CREATEROLE since Phase D: migration 000018 creates the
-//     per-context roles): the harness creates the database itself (and
-//     therefore owns it, and therefore may drop it). Nothing else is
+//     CREATEDB and CREATEROLE (migration 000018 creates the per-context
+//     roles): the harness creates the database itself (and therefore owns
+//     it, and therefore may drop it). Nothing else is
 //     granted.
 //   - CREATE/DROP DATABASE must run outside a transaction, so they go through
 //     a separate connection to the "postgres" maintenance database on the
@@ -18,7 +18,7 @@
 //   - The database is dropped and recreated on every run: migrations are part
 //     of what integration tests exercise, so the schema is always built from
 //     the migration files, never inherited from a previous run.
-//   - Since Phase D the harness hands out FOUR pools: Owner (the DSN role —
+//   - The harness hands out FOUR pools: Owner (the DSN role —
 //     fixture planting, direct constraint probes, the api composition root's
 //     reset) and one per context role (schedule_app / game_app /
 //     identity_app, via SET ROLE on every connection — see ContextPool), so

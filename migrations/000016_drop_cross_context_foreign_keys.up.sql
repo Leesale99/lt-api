@@ -1,8 +1,9 @@
--- Phase D: the cross-context FOREIGN KEYs come out. ADR-028's boundary
--- rule — other contexts consume a context's public operations, not its
--- tables — applied to the schema level: an FK is a coupling the referencing
--- context enforces inside the referenced context's storage, and after the
--- split it is exactly the shape of coupling the split exists to remove.
+-- Schema-per-context: the cross-context FOREIGN KEYs come out. ADR-028's
+-- boundary rule — other contexts consume a context's public operations,
+-- not its tables — applied to the schema level: an FK is a coupling the
+-- referencing context enforces inside the referenced context's storage,
+-- and after the split it is exactly the shape of coupling the split
+-- exists to remove.
 -- Each dropped constraint's check moves to the side that owns the writing:
 --
 --   players.user_id → users            game wrote it; identity owns users.
@@ -14,7 +15,7 @@
 --                                      Update never writes it.
 --   players.season_id → seasons        game handlers validate the season
 --                                      through app.Schedule before the
---                                      write (Phase C); the FK's CASCADE
+--                                      write (event seam); the FK's CASCADE
 --                                      on season delete moves to the api
 --                                      season-delete handler, which now
 --                                      deletes the season's players
@@ -22,13 +23,13 @@
 --                                      outcome, same 409 when a ride
 --                                      still references a player).
 --   players.favorite_team_id → teams   same handler-level existence check
---                                      (already there since Phase C); the
+--                                      (already there since the split); the
 --                                      team-delete refusal for referenced
 --                                      teams moves to the api delete
 --                                      handler (409 preserved).
 --   rides.match_id → matches           the ride-ref checks are the
 --                                      SchedulePort's (RoundOpenTx /
---                                      DestinationOpenTx, Phase C); the
+--                                      DestinationOpenTx, the round gates); the
 --                                      match-delete refusal for referenced
 --                                      rides moves to the api delete
 --                                      handler (409 preserved).

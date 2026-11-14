@@ -280,7 +280,7 @@ func TestDeleteMatchHandler(t *testing.T) {
 
 	// ridesMatchWithRide seeds a ride on the created match 5 (the
 	// delete-with-rides case needs a game-side reference; the handler's
-	// refusal is the api-level composition since the FK is gone, Phase D).
+	// refusal is the api-level composition since the FK is gone, 000016).
 	ridesMatchWithRide := func(t *testing.T) {
 		t.Helper()
 		playerID := plantPlayerRow(t, 1)

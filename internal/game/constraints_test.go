@@ -26,7 +26,7 @@ import (
 )
 
 // migFile lists all migrations the game tests need — the FULL series
-// since Phase D: 000015 moves whatever tables exist (it cannot run
+// since 000015: that migration moves whatever tables exist (it cannot run
 // against a partial chain), 000016–000018 (FK surgery, roles) assume it,
 // and the suite runs its stores on the role-restricted pool 000018
 // creates. 000001 creates the base hierarchy, 000005 adds
@@ -62,11 +62,11 @@ var migFiles = []string{
 	// trigger check 4's job — unlocked|lost arrivals carry no acc. The
 	// UPDATE gate body runs without check 4 from here on.
 	"../../migrations/000013_add_rides_money_state_coupling.up.sql",
-	// Relaxed close gate (000014): since the Phase C event seam the round
+	// Relaxed close gate (000014): since the event seam the round
 	// close publishes RoundCompleted and the ride settlement is the game
 	// context's own transaction — undecided rides no longer refuse a close.
 	"../../migrations/000014_relax_rounds_close_gate.up.sql",
-	// Phase D (000015–000018): the context schemas, the FK/trigger
+	// 000015–000018: the context schemas, the FK/trigger
 	// surgery and the per-context roles — the game stores run on the
 	// role-restricted pool these create.
 	"../../migrations/000015_split_context_schemas.up.sql",
@@ -87,7 +87,7 @@ const (
 
 var pool *pgxpool.Pool
 
-// gamePool runs as game_app (Phase D): the stores under test exercise the
+// gamePool runs as game_app: the stores under test exercise the
 // real privilege regime; pool (owner) plants fixtures — including
 // cross-schema ones (matches/rounds/teams are the schedule context's).
 var gamePool *pgxpool.Pool

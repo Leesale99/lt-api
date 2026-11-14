@@ -3,7 +3,7 @@
 -- 8 rounds x 5 matches, every team plays exactly once per round, no pairing repeats.
 -- Rounds 1-4: closed (past, fake results). Round 5: open (first upcoming). Rounds 6-8: created.
 -- IDs are deterministic via insert order + TRUNCATE ... RESTART IDENTITY in cmd/seed.
--- Phase D: table names are schema-qualified (schedule.* / game.*) — the
+-- Table names are schema-qualified (schedule.* / game.* since 000015) — the
 -- seed runs as the migration runner (owner) with a plain search_path.
 -- Closed matches carry ended_at = starts_at + 2h (matches_ended_at_check, migration 000005:
 -- (status='closed') = (ended_at IS NOT NULL)). Round 5 is open in ActionPhase: no match

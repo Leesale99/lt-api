@@ -33,7 +33,7 @@ type Config struct {
 		DSN         string
 		MaxConns    int
 		MaxIdleTime time.Duration
-		// Per-context DSN overrides (Phase D): each connection pool is
+		// Per-context DSN overrides: each connection pool is
 		// bound to one bounded context (schedule/game/identity) and runs
 		// SET ROLE <context_role> on every connection. Derived from DSN
 		// unless the override is set (deployment splits the contexts onto

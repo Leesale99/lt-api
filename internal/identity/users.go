@@ -146,7 +146,7 @@ func (s *UserStore) GetByEmail(ctx context.Context, email string) (User, error) 
 }
 
 // Get returns the user by ID — the api-level user-existence check behind
-// player create (Phase D: the players_user_id_fkey is gone with the
+// player create (000016: the players_user_id_fkey is gone with the
 // cross-context FKs, migration 000016, so the api handler — which holds
 // the identity store — verifies the principal before writing the player;
 // user_id is only ever the authenticated user's ID).

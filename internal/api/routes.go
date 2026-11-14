@@ -38,7 +38,7 @@ func (app *Application) routes() http.Handler {
 	router.HandlerFunc(http.MethodPost, "/v1/seasons/:id/matches", app.requirePermission("matches:write", app.createMatchHandler))
 	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/matches/:match_id", app.requirePermission("matches:write", app.updateMatchHandler))
 	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/matches/:match_id", app.requirePermission("matches:write", app.deleteMatchHandler))
-	// Resolve is schedule's script (Phase C): it commits the result and
+	// Resolve is schedule's script: it commits the result and
 	// publishes MatchResultRecorded — the ride settlement is game's, behind
 	// the event seam.
 	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/matches/:match_id/resolve", app.requirePermission("matches:write", app.resolveMatchHandler))

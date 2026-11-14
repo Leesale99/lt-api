@@ -213,7 +213,7 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 	if current.Status == schedule.RoundCreated && round.Status == schedule.RoundOpen {
 		round, err = app.Schedule.Rounds.Open(ctx, round)
 	} else if current.Status == schedule.RoundOpen && round.Status == schedule.RoundClosed {
-		// ADR-022, Phase C: closing flips the round (and the season, on the
+		// ADR-022 (event seam): closing flips the round (and the season, on the
 		// last round) and publishes RoundCompleted post-commit — the game
 		// context settles the undecided rides from the event payload
 		// (auto-unlock rounds 1-37, auto-burn round 38). Ride settlement is

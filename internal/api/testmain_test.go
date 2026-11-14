@@ -21,7 +21,7 @@ import (
 
 var testPool *pgxpool.Pool
 
-// Per-context pools (Phase D): the api E2E is the composition root and
+// Per-context pools: the api E2E is the composition root and
 // wires its app with these — the handlers run under the real privilege
 // regime. testPool (owner) plants fixtures.
 var (
@@ -63,11 +63,11 @@ func TestMain(m *testing.M) {
 		"../../migrations/000011_add_rides_result_agreement_gate.up.sql",
 		"../../migrations/000012_add_rides_insert_state_gate.up.sql",
 		"../../migrations/000013_add_rides_money_state_coupling.up.sql",
-		// Relaxed close gate (000014): the Phase C event seam moved the ride
+		// Relaxed close gate (000014): the event seam moved the ride
 		// settlement behind RoundCompleted, so undecided rides no longer
 		// refuse a round close.
 		"../../migrations/000014_relax_rounds_close_gate.up.sql",
-		// Phase D (000015–000018): the context schemas, the cross-context
+		// 000015–000018: the context schemas, the cross-context
 		// FK/trigger surgery and the per-context roles — the api E2E runs
 		// its stores on the role-restricted pools these create.
 		"../../migrations/000015_split_context_schemas.up.sql",

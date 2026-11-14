@@ -231,7 +231,7 @@ const seasonInProgressToClosedSQL = `
 // post-commit (ADR-027): the ride settlement is game's, driven by this
 // event.
 //
-// Since Phase C the close is EVENTUAL about rides (documented decision):
+// Since the split the close is EVENTUAL about rides (documented decision):
 // the undecided won_pending rides of the round are NOT resolved here.
 // Schedule closes on feed completion; the game context settles the round's
 // rides (auto-unlock rounds 1-37, auto-burn round 38) inside its own
@@ -239,7 +239,7 @@ const seasonInProgressToClosedSQL = `
 // rounds_close_gate was relaxed accordingly (migration 000014): undecided
 // rides in a closed round are the designed intermediate state, not a
 // corruption signal. The gap window (close committed, settlement not yet
-// run) is the accepted Phase C crash gap — the settlement handler is
+// run) is the accepted crash gap — the settlement handler is
 // idempotent, and the Phase 07 sweep / Phase 08 outbox close it.
 //
 // Statement order is still load-bearing: the season flip runs after the
@@ -296,7 +296,7 @@ func (s *RoundStore) Close(ctx context.Context, round Round) (Round, error) {
 		}
 		if err := s.bus.Publish(context.WithoutCancel(ctx), event); err != nil && s.log != nil {
 			// Crash gap: the close is committed; a failed settlement is the
-			// Phase C gap the Phase 07 sweep will close. The request must not
+			// gap the Phase 07 sweep will close. The request must not
 			// fail — its write is already durable.
 			s.log.Warn("event handler failed after commit; awaiting the Phase 07 sweep",
 				"event_type", "schedule.RoundCompleted", "round_id", round.ID, "error", err)

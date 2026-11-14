@@ -658,7 +658,7 @@ func scoreClosedMatch(ctx context.Context, t *testing.T, home, away int) (int, i
 }
 
 // TestService_OnMatchResultRecorded pins the match-result settlement
-// (Phase C): rides settle from the event payload, the money halves move
+// (event seam): rides settle from the event payload, the money halves move
 // through the Ledger, replays are no-ops, and the DB stays the enforcement
 // home (a payload disagreeing with the committed scores is refused by
 // rides_state_gate, not applied).
@@ -799,7 +799,7 @@ func TestService_OnMatchResultRecorded(t *testing.T) {
 	})
 }
 
-// TestService_OnRoundCompleted pins the round settlement (Phase C eventual
+// TestService_OnRoundCompleted pins the round settlement (eventual
 // close): undecided rides force-resolve from the payload (unlock 1-37,
 // burn the season's last round), still-locked rides settle from the
 // payload results (the backstop for a lost MatchResultRecorded), and a
