@@ -9,7 +9,7 @@ import (
 	"net/http"
 
 	"lt-api.aleksrdvn.com/internal/kernel/httpx"
-	"lt-api.aleksrdvn.com/internal/shared/server"
+	"lt-api.aleksrdvn.com/internal/platform/server"
 )
 
 func healthcheckHandler(srv *server.Server) http.HandlerFunc {

@@ -17,13 +17,13 @@ import (
 	"github.com/julienschmidt/httprouter"
 
 	"lt-api.aleksrdvn.com/internal/game"
-	"lt-api.aleksrdvn.com/internal/idempotency"
 	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/kernel/eventbus"
 	"lt-api.aleksrdvn.com/internal/kernel/httpx"
+	"lt-api.aleksrdvn.com/internal/kernel/idempotency"
 	"lt-api.aleksrdvn.com/internal/ledger"
+	"lt-api.aleksrdvn.com/internal/platform/server"
 	"lt-api.aleksrdvn.com/internal/schedule"
-	"lt-api.aleksrdvn.com/internal/shared/server"
 )
 
 // testApplication is the composition root's state, one field per

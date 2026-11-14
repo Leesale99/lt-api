@@ -37,8 +37,8 @@ import (
 	"lt-api.aleksrdvn.com/internal/game/internal/adapter/outbound/postgres"
 	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
 	"lt-api.aleksrdvn.com/internal/game/internal/core/service"
-	"lt-api.aleksrdvn.com/internal/idempotency"
 	"lt-api.aleksrdvn.com/internal/kernel/eventbus"
+	"lt-api.aleksrdvn.com/internal/kernel/idempotency"
 	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/schedule"
 )

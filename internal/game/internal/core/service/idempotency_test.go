@@ -18,7 +18,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
 	"lt-api.aleksrdvn.com/internal/game/internal/core/port"
-	"lt-api.aleksrdvn.com/internal/idempotency"
+	"lt-api.aleksrdvn.com/internal/kernel/idempotency"
 	"lt-api.aleksrdvn.com/internal/schedule"
 )
 

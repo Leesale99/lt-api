@@ -35,7 +35,7 @@ import (
 
 // Mailer is the module's mail dependency: the interface declared at the
 // service layer, re-exported so the composition root can name it. The
-// concrete internal/shared/mailer satisfies it structurally.
+// concrete internal/platform/mailer satisfies it structurally.
 type Mailer = service.Mailer
 
 // Module is the identity bounded context as the rest of the process sees it.

@@ -12,8 +12,8 @@ import (
 	"net/http"
 
 	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
-	"lt-api.aleksrdvn.com/internal/idempotency"
 	"lt-api.aleksrdvn.com/internal/kernel/httpx"
+	"lt-api.aleksrdvn.com/internal/kernel/idempotency"
 )
 
 // gameErrorResponse maps game errors to HTTP responses. It returns true

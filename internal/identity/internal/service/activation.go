@@ -34,7 +34,7 @@ import (
 )
 
 // Mailer is everything identity needs from the outside world's mail
-// transport: one method, exactly the shape internal/shared/mailer.Send has —
+// transport: one method, exactly the shape internal/platform/mailer.Send has —
 // the concrete SMTP client satisfies it structurally, and a test injects a
 // no-op instead of a live client. Declared here, at the consumer, so the
 // module never depends on SMTP.

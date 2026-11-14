@@ -1,9 +1,10 @@
 // Package idempotency owns the idempotency_keys table: the claim-first
-// single-flight engine every idempotent command shares (ADR-024). It is
-// transverse infrastructure — like internal/kernel/persistence, it serves
-// more than one context and owns no business rules of its own — so it lives
-// outside both game and schedule (transverse infra, hoisted out of game by
-// the split).
+// single-flight engine every idempotent command shares (ADR-024). It is a
+// kernel package: a context-agnostic technical capability that owns no
+// business rules and never imports a module, so any context that needs it may
+// import it (game and schedule today; more than one is a signal, not a
+// requirement). It is the kernel's first STATEFUL package — the
+// idempotency_keys table is its state.
 package idempotency
 
 import (

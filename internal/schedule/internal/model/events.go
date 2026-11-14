@@ -16,7 +16,7 @@ import (
 // crash between the publisher's commit and the publish — or a failing
 // handler — loses the event; that gap is accepted until the Phase 07 sweep
 // / Phase 08 outbox, and every subscriber claims the EventID first
-// (internal/idempotency) so a future delivery mechanism can replay freely.
+// (internal/kernel/idempotency) so a future delivery mechanism can replay freely.
 
 // MatchResult is one settled match as the feed reports it: the facts of the
 // result plus the identity needed to find and settle what rides on it.

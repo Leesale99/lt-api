@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"lt-api.aleksrdvn.com/internal/game/internal/core/port"
-	"lt-api.aleksrdvn.com/internal/idempotency"
+	"lt-api.aleksrdvn.com/internal/kernel/idempotency"
 )
 
 // Idempotency adapts idempotency.Repository to port.Idempotency.

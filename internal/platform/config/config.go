@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"lt-api.aleksrdvn.com/internal/vcs"
 )
 
 type Config struct {
@@ -67,7 +66,7 @@ type Config struct {
 // It is the only entry point: callers never touch flag or env for server
 // config, and a returned error is always safe to log verbatim.
 func Parse(args []string) (Config, error) {
-	version := vcs.Version()
+	version := buildVersion()
 	env, err := readEnv()
 	if err != nil {
 		return Config{}, err

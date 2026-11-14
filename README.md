@@ -32,26 +32,33 @@ cmd/api/              Entry point + composition root, in explicit order:
                       config → logging → mailer → per-context pools →
                       eventbus → schedule.NewModule → game.NewModule (ACL
                       wired in) → identity.NewModule → eventbus wiring →
-                      httpx middleware chain → router → shared server →
+                      httpx middleware chain → router → platform server →
                       Serve. Side files: routes.go (router, 404/405),
                       healthcheck.go, gamerefs.go (schedule↔game seam
                       adapter: the only place both vocabularies meet).
-internal/arch/        Boundary matrix, path-aware (kernel:*/shared:* classes,
-                      module classes collapse nested packages, cmd row):
-                      TestImportBoundaries + TestSharedKernelImportsOnlyShared.
+internal/arch/        Boundary matrix, path-aware (kernel:*/platform:*/
+                      shared:* classes, module classes collapse nested
+                      packages, cmd row): TestImportBoundaries +
+                      TestKernelImportsOnlyKernel +
+                      TestNonModulesNeverImportModules +
+                      TestModulesNeverImportPlatform.
 internal/kernel/      Kernel machinery: httpx (transport: JSON envelope/codecs,
                       params, filters, error writers, request context,
                       middleware incl. ratelimiter), persistence (Querier,
                       Filters/Metadata, pg-error classifiers — no shared
-                      sentinels), eventbus, validator. All of it classifies
-                      as kernel:<name> in the boundary matrix.
-internal/shared/      server (process lifecycle: Serve/shutdown/RunOptions/
-                      background tasks) — the one package still here.
-internal/config/,     The rest of the kernel, flat under internal/ and still
-internal/logging/,    classed as shared:<name>: config, logging, mailer, vcs,
-internal/mailer/,     testdb.
-internal/vcs/,
-internal/testdb/
+                      sentinels), eventbus, validator, idempotency (the
+                      claim-first single-flight engine — the first stateful
+                      kernel package, it owns idempotency_keys). All of it
+                      classifies as kernel:<name> in the boundary matrix.
+internal/platform/    Process-level technical packages, classed
+                      platform:<name>: config (variable names, precedence,
+                      semantic validation, inlined VCS version), logging (the
+                      process-wide slog logger + pgx bridge), mailer (SMTP
+                      delivery, embedded templates), server (process
+                      lifecycle: Serve/shutdown/RunOptions/background tasks).
+internal/e2e/         Acceptance suite: the composition root in test form,
+                      composing the real modules over the real test pools.
+internal/testdb/      DB test harness (shared:testdb in the matrix).
 internal/schedule/    Layered module: facade schedule.go + internal/{model,
                       repository, service, handler}.
 internal/game/        Hexagonal module: facade game.go + internal/core/{domain,
@@ -60,18 +67,19 @@ internal/game/        Hexagonal module: facade game.go + internal/core/{domain,
 internal/identity/    Layered module: facade identity.go + internal/{model,
                       repository, service, handler}.
 internal/ledger/      Thin module: ledger.go + postgres.go.
-internal/idempotency/ Thin module: facade + Repository.
 docs/                 Learning-oriented implementation plan (phases 0–8)
 ```
 
 Bounded contexts sit behind facades: the module root is the only package
 outsiders may import, and everything else lives under
 `internal/<ctx>/internal/` so the layers cannot leak — the privacy is
-compile-time, not convention. `httpx`, `persistence`, `eventbus` and
-`validator` are the kernel, nested under `internal/kernel/`; `server` stays
-under `internal/shared/`, and the rest of the kernel is flat under
-`internal/`. The moved packages classify as `kernel:<name>`, the rest as
-`shared:<name>`, in the boundary matrix.
+compile-time, not convention. `httpx`, `persistence`, `eventbus`, `validator`
+and `idempotency` are the kernel, nested under `internal/kernel/`; `config`,
+`logging`, `mailer` and `server` are the platform, nested under
+`internal/platform/` (the VCS version helper is inlined into `config`). They
+classify as `kernel:<name>` and `platform:<name>` in the boundary matrix.
+Only the test harness (`internal/testdb`) and the matrix itself
+(`internal/arch`) sit outside those classes, as `shared:<name>`.
 
 Each module owns its own route table (`RegisterRoutes`), and `cmd/api`
 composes them — so the wire surface is identical to the pre-refactor one.

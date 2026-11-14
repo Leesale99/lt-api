@@ -1,7 +1,7 @@
 package port
 
 // The idempotency seam (ADR-024). The claim-first single-flight engine lives
-// in internal/idempotency (transverse infrastructure), but the core speaks
+// in internal/kernel/idempotency, but the core speaks
 // its own vocabulary: Token and SavedResponse below. The composition
 // boundary (the module facade) converts them, so no idempotency type leaks
 // into the core — the field layouts are identical, which keeps the

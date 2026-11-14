@@ -7,13 +7,16 @@
 //
 // Classes are uniform (path-aware, see classify):
 //
-//   - "<module>" — a bounded context (schedule, game, ledger, identity,
-//     idempotency), at ANY depth of its directory tree.
+//   - "<module>" — a bounded context (schedule, game, ledger, identity), at
+//     ANY depth of its directory tree.
 //   - "kernel:<name>" — the kernel machinery under internal/kernel/
 //     (kernel/persistence → kernel:persistence): httpx, persistence,
-//     eventbus, validator.
-//   - "shared:<name>" — everything else under internal/shared/: today only
-//     the server package (shared/server → shared:server).
+//     eventbus, validator, idempotency.
+//   - "platform:<name>" — the technical platform under internal/platform/
+//     (platform/config → platform:config): config, logging, mailer, server.
+//   - "shared:<name>" — the test-only remainder that is neither kernel nor
+//     platform: internal/testdb (the DB harness) and internal/arch (this
+//     package).
 //   - "cmd" — the composition root. Phase 6 deleted the api gateway class
 //     with the package: cmd/api now owns the router, the middleware chain and
 //     the healthcheck, so there is no API-layer row to special-case.
@@ -21,10 +24,19 @@
 //     composition root in test form, so it gets its own cmd-like row instead
 //     of collapsing into "shared:e2e".
 //
+// The kernel is a set of context-agnostic technical capabilities: each owns
+// no business rules, never imports a module, and serves any context that
+// needs it — at least one today ("more than one context" is a signal, not a
+// requirement). kernel:idempotency is the first STATEFUL member: it owns the
+// idempotency_keys table, while still holding no business rule of its own.
+//
 // Because nesting never changes a class, "modules import other module ROOTS
 // only" and "the kernel imports the kernel only" are enforced by the class
 // scheme itself: internal/<module>/internal/<x> is still "<module>", and no
-// shared:* row may list a module (pinned by TestSharedKernelImportsOnlyShared).
+// kernel:* or platform:* row may list a module (pinned by
+// TestKernelImportsOnlyKernel and TestNonModulesNeverImportModules). No
+// module may reach the platform either (pinned by
+// TestModulesNeverImportPlatform).
 //
 // The Phase 05 refinements the matrix encodes:
 //
@@ -43,8 +55,8 @@
 //     reaches its own core and adapters and nothing else; each nested package
 //     has its own row — core/domain → kernel:validator; core/port →
 //     domain/kernel:persistence; core/service → domain/port; the inbound HTTP
-//     adapter → core/service/domain/port + kernel:httpx + the idempotency and
-//     identity ROOTS (wire-level translation only); the outbound ACL package
+//     adapter → core/service/domain/port + kernel:httpx + the idempotency
+//     KERNEL and the identity ROOT (wire-level translation only); the outbound ACL package
 //     is the ONLY game package importing schedule (the anti-corruption layer
 //     and the event translation); the Postgres adapter → core + the
 //     persistence kernel. The facade wires the ledger and idempotency ports
@@ -75,7 +87,7 @@
 //     test lives in internal/e2e and composes the real modules exactly like
 //     cmd/api/main.go (the ONE compose_test.go helper). It has its own "e2e"
 //     class, whose row is cmd-like in width but enumerated; nothing may import
-//     it. shared:server's production code still imports nothing internal.
+//     it. platform:server's production code still imports nothing internal.
 package arch
 
 import (
@@ -92,17 +104,17 @@ import (
 // intra-module imports.
 var modulePath = mustModulePath()
 
-// moduleClasses are the package classes that are NOT kernel: the bounded
-// contexts. Every other internal package classifies as "kernel:<name>" or
-// "shared:<name>" (see classOf) — a new module must be registered here to get
-// its own matrix row, so an unregistered package can only ever be treated as
-// kernel (which forbids it from importing any module).
+// moduleClasses are the package classes that are NOT kernel or platform: the
+// bounded contexts. Every other internal package classifies as
+// "kernel:<name>", "platform:<name>" or "shared:<name>" (see classOf) — a new
+// module must be registered here to get its own matrix row, so an
+// unregistered package can only ever be treated as kernel/platform/shared
+// (which forbids it from importing any module).
 var moduleClasses = map[string]bool{
-	"game":        true,
-	"identity":    true,
-	"idempotency": true,
-	"ledger":      true,
-	"schedule":    true,
+	"game":     true,
+	"identity": true,
+	"ledger":   true,
+	"schedule": true,
 }
 
 // moduleLayers declares the intra-module layer packages a MODULE exposes to
@@ -144,9 +156,11 @@ var hexLayers = map[string]map[string]string{
 
 // allowedImports maps a class to the classes it may import. Anything not
 // listed is forbidden; a class absent from the map defaults to: no internal
-// imports. shared:* rows may list only shared:* and kernel:* rows only
-// kernel:* (pinned by TestSharedKernelImportsOnlyShared and
-// TestKernelImportsOnlyKernel): the kernel never reaches a module.
+// imports. Rows below the modules (kernel:*, platform:*, shared:*) may never
+// list a module; platform:* rows reach platform:* and kernel:* only, and
+// kernel:* rows reach kernel:* only (pinned by
+// TestNonModulesNeverImportModules, TestModulesNeverImportPlatform and
+// TestKernelImportsOnlyKernel). The kernel never reaches a module.
 var allowedImports = map[string]map[string]bool{
 	// schedule (layered): the facade reaches its own layers and nothing else
 	// internal; each layer's row is its legal edge set.
@@ -185,8 +199,9 @@ var allowedImports = map[string]map[string]bool{
 		"kernel:validator":   true,
 	},
 	// game (hexagonal): the facade wires its own layers and the ports'
-	// providers; it reaches no other context's internals (ledger and
-	// idempotency arrive as the core's ports, structurally satisfied).
+	// providers; it reaches no other context's internals (ledger and the
+	// idempotency claim engine arrive as the core's ports, structurally
+	// satisfied).
 	"game": {
 		"game:adapter:inbound:http":      true,
 		"game:adapter:outbound":          true,
@@ -194,9 +209,8 @@ var allowedImports = map[string]map[string]bool{
 		"game:core:domain":               true,
 		"game:core:port":                 true,
 		"game:core:service":              true,
-		"idempotency":                    true, // the facade wraps the claim engine
 		"kernel:eventbus":                true,
-		"kernel:persistence":             true, // the calendar capability contract
+		"kernel:idempotency":             true, // the facade wraps the claim engine
 	},
 	// The core domain: entities, validators, the state machine, sentinels. No
 	// storage, no transport, no calendar, no event bus.
@@ -220,16 +234,16 @@ var allowedImports = map[string]map[string]bool{
 		"kernel:validator":   true,
 	},
 	// The inbound HTTP adapter: the frozen wire DTOs over the use cases, plus
-	// the two module ROOTS it translates at the wire level (idempotency's token
-	// types/validation, identity's user existence read for player create). It
-	// draws its per-request database budget from the persistence kernel.
+	// the idempotency kernel's token types/validation and the identity ROOT's
+	// user existence read for player create. It draws its per-request
+	// database budget from the persistence kernel.
 	"game:adapter:inbound:http": {
 		"game:core:domain":   true,
 		"game:core:port":     true,
 		"game:core:service":  true,
 		"identity":           true,
-		"idempotency":        true,
 		"kernel:httpx":       true,
+		"kernel:idempotency": true,
 		"kernel:persistence": true,
 		"kernel:validator":   true,
 	},
@@ -239,10 +253,9 @@ var allowedImports = map[string]map[string]bool{
 		"game:core:domain":   true,
 		"game:core:port":     true,
 		"game:core:service":  true,
-		"idempotency":        true,
-		"schedule":           true,
 		"kernel:eventbus":    true,
-		"kernel:persistence": true,
+		"kernel:idempotency": true,
+		"schedule":           true,
 	},
 	// The Postgres adapter: the SQL behind the ports and its error
 	// translation. No calendar, no transport, no use cases.
@@ -292,7 +305,10 @@ var allowedImports = map[string]map[string]bool{
 	"ledger": {
 		"kernel:persistence": true,
 	},
-	"idempotency": {
+	// kernel:idempotency is the first STATEFUL kernel package: it owns the
+	// idempotency_keys table but holds no business rule of its own, so it
+	// reaches only the validator.
+	"kernel:idempotency": {
 		"kernel:validator": true,
 	},
 
@@ -318,31 +334,29 @@ var allowedImports = map[string]map[string]bool{
 	"e2e": {
 		"game":               true,
 		"identity":           true,
-		"idempotency":        true,
 		"ledger":             true,
 		"schedule":           true,
 		"kernel:eventbus":    true,
 		"kernel:httpx":       true,
+		"kernel:idempotency": true,
 		"kernel:persistence": true,
-		"shared:server":      true, // the suite drives the process lifecycle
+		"platform:server":    true, // the suite drives the process lifecycle
 	},
 
-	// shared:server owns the process lifecycle: it serves a fully-built
+	// The platform (internal/platform/): process-level technical packages.
+	// None reaches a module; today none reaches even the kernel (config's vcs
+	// helper is inlined, and the server/logging/mailer packages use stdlib and
+	// external libraries only). Only cmd/api (implicitly) and e2e import them.
+	"platform:config":  {}, // flag/env precedence + semantic validation
+	"platform:logging": {}, // the process-wide slog logger and the pgx bridge
+	"platform:mailer":  {}, // SMTP delivery with embedded templates
+	// platform:server owns the process lifecycle: it serves a fully-built
 	// handler and knows no module, so it reaches nothing internal — its
 	// shutdown budgets are local consts.
-	"shared:server":    {},
+	"platform:server":  {},
 	"kernel:validator": {},
-	"shared:config": {
-		"shared:vcs":         true,
-		"kernel:persistence": true,
-		"kernel:validator":   true,
-		"shared:logging":     true,
-	},
-	"shared:logging": {},
-	"shared:mailer":  {},
-	"shared:testdb":  {},
-	"shared:vcs":     {},
-	"shared:arch":    {}, // this package: walks the tree, imports nothing internal
+	"shared:testdb":    {},
+	"shared:arch":      {}, // this package: walks the tree, imports nothing internal
 }
 
 // testOnlyImports widens a class's edge set for _test.go files only. The
@@ -356,10 +370,10 @@ var testOnlyImports = map[string]map[string]bool{
 		"game:adapter:outbound":          true,
 		"game:adapter:outbound:postgres": true,
 		"game:core:service":              true, // external test package import
-		"idempotency":                    true,
+		"kernel:eventbus":                true,
+		"kernel:idempotency":             true,
 		"ledger":                         true,
 		"schedule":                       true,
-		"kernel:eventbus":                true,
 	},
 	"game:adapter:outbound:postgres": {
 		"game:adapter:outbound": true,
@@ -368,7 +382,7 @@ var testOnlyImports = map[string]map[string]bool{
 }
 
 type edge struct {
-	from     string // class of the importing package ("cmd", "e2e", "<module>", "kernel:<name>" or "shared:<name>")
+	from     string // class of the importing package ("cmd", "e2e", "<module>", "kernel:<name>", "platform:<name>" or "shared:<name>")
 	to       string // class of the imported package, same scheme
 	file     string // repo-relative file path where the edge appears
 	testOnly bool   // the importing file is a _test.go
@@ -452,27 +466,61 @@ func TestImportBoundaries(t *testing.T) {
 	}
 }
 
-// TestSharedKernelImportsOnlyShared pins the kernel direction: no shared:*
-// row may list a module class, so the kernel can never grow a dependency on a
-// bounded context (the edge check would already reject the import; this names
-// the rule when someone edits the matrix instead). A shared:* row may reach the
-// kernel machinery (kernel:*), but never a module.
-func TestSharedKernelImportsOnlyShared(t *testing.T) {
+// TestNonModulesNeverImportModules pins the direction for everything below
+// the modules: no platform:*, kernel:* or shared:* row may list a module
+// class, so the technical layers can never grow a dependency on a bounded
+// context (the edge check would already reject the import; this names the
+// rule when someone edits the matrix instead). Only the module rows
+// themselves (their own layers, the game ACL's calendar) and the e2e
+// composition root may reach a module.
+func TestNonModulesNeverImportModules(t *testing.T) {
 	for from, targets := range allowedImports {
-		if !strings.HasPrefix(from, "shared:") {
+		if from == "e2e" || isModuleClass(from) {
 			continue
 		}
 		for to := range targets {
-			if !strings.HasPrefix(to, "shared:") && !strings.HasPrefix(to, "kernel:") {
-				t.Errorf("matrix: %s may not import %s — the shared kernel imports shared:*/kernel:* only", from, to)
+			if isModuleClass(to) {
+				t.Errorf("matrix: %s may not import %s — only a module or e2e reaches a module", from, to)
 			}
 		}
 	}
 }
 
-// TestKernelImportsOnlyKernel pins the same direction for the renamed kernel
-// classes: no kernel:* row may list a module or a shared:* class, so the
-// kernel imports the kernel only (httpx → persistence → validator).
+// TestModulesNeverImportPlatform pins the platform direction: a platform:*
+// row reaches platform:* and kernel:* only, and no module row may reach a
+// platform:* class. Only cmd/api (the composition root, implicit) and e2e
+// import the platform.
+func TestModulesNeverImportPlatform(t *testing.T) {
+	for from, targets := range allowedImports {
+		isPlatform := strings.HasPrefix(from, "platform:")
+		for to := range targets {
+			if strings.HasPrefix(to, "platform:") {
+				if !isPlatform && from != "e2e" {
+					t.Errorf("matrix: %s may not import %s — only cmd and e2e import the platform", from, to)
+				}
+				continue
+			}
+			if isPlatform && !strings.HasPrefix(to, "kernel:") {
+				t.Errorf("matrix: %s may not import %s — a platform package imports platform:*/kernel:* only", from, to)
+			}
+		}
+	}
+}
+
+// isModuleClass reports whether a class names a bounded context: the module
+// root itself ("game") or any of its layers/facade rows ("game:core:domain").
+func isModuleClass(class string) bool {
+	for module := range moduleClasses {
+		if class == module || strings.HasPrefix(class, module+":") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestKernelImportsOnlyKernel pins the kernel direction: no kernel:* row may
+// list a module, a platform:* or a shared:* class, so the kernel imports the
+// kernel only (httpx → persistence → validator).
 func TestKernelImportsOnlyKernel(t *testing.T) {
 	for from, targets := range allowedImports {
 		if !strings.HasPrefix(from, "kernel:") {
@@ -559,10 +607,11 @@ func classify(path, root string) (class string, ok bool) {
 // classOf maps the path segments below internal/ to a class name. Uniform at
 // any depth: the first segment decides — a module keeps its own class however
 // deeply it nests (internal/schedule/internal/foo is still "schedule"), the
-// acceptance suite is its own class (internal/e2e → "e2e"), and everything
-// else is kernel, named by its first one or two segments
-// (internal/kernel/httpx → kernel:httpx, internal/shared/server →
-// shared:server). The collapse of nested packages into their module class
+// acceptance suite is its own class (internal/e2e → "e2e"), the platform is
+// named by its first two segments (internal/platform/config →
+// platform:config), and everything else is kernel, named the same way
+// (internal/kernel/httpx → kernel:httpx, internal/testdb → shared:testdb).
+// The collapse of nested packages into their module class
 // IS the "modules import module roots only" rule.
 func classOf(below []string) (string, bool) {
 	if len(below) == 0 || below[0] == "" {
@@ -581,11 +630,11 @@ func classOf(below []string) (string, bool) {
 		}
 		return "kernel:" + below[1], true
 	}
-	if below[0] == "shared" {
+	if below[0] == "platform" {
 		if len(below) < 2 || below[1] == "" {
-			return "", false // internal/shared itself holds no packages
+			return "", false // internal/platform itself holds no packages
 		}
-		return "shared:" + below[1], true
+		return "platform:" + below[1], true
 	}
 	if moduleClasses[below[0]] {
 		if len(below) >= 3 && below[1] == "internal" {
@@ -613,6 +662,9 @@ func classOf(below []string) (string, bool) {
 		}
 		return below[0], true
 	}
+	// Everything else is the test-only rest (internal/testdb →
+	// shared:testdb, internal/arch → shared:arch): the DB harness and this
+	// matrix package, neither a module nor a technical capability.
 	return "shared:" + below[0], true
 }
 

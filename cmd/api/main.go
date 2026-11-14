@@ -12,17 +12,17 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/tracelog"
-	"lt-api.aleksrdvn.com/internal/config"
 	"lt-api.aleksrdvn.com/internal/game"
-	"lt-api.aleksrdvn.com/internal/idempotency"
 	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/kernel/eventbus"
 	"lt-api.aleksrdvn.com/internal/kernel/httpx"
+	"lt-api.aleksrdvn.com/internal/kernel/idempotency"
 	"lt-api.aleksrdvn.com/internal/ledger"
-	"lt-api.aleksrdvn.com/internal/logging"
-	"lt-api.aleksrdvn.com/internal/mailer"
+	"lt-api.aleksrdvn.com/internal/platform/config"
+	"lt-api.aleksrdvn.com/internal/platform/logging"
+	"lt-api.aleksrdvn.com/internal/platform/mailer"
+	"lt-api.aleksrdvn.com/internal/platform/server"
 	"lt-api.aleksrdvn.com/internal/schedule"
-	"lt-api.aleksrdvn.com/internal/shared/server"
 )
 
 // Context role names (migration 000018). Every pool the server opens is

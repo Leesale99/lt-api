@@ -1,7 +1,7 @@
 // Package testdb sets up a throwaway PostgreSQL database for integration
 // tests.
 //
-// Conventions shared by every consumer (internal/shared/server E2E,
+// Conventions shared by every consumer (internal/e2e,
 // internal/game):
 //
 //   - The DSN comes from LT_API_TEST_DSN and points at the test database,
