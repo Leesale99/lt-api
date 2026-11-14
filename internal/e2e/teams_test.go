@@ -1,4 +1,4 @@
-package server_test
+package e2e
 
 import (
 	"context"

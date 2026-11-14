@@ -15,6 +15,9 @@
 //   - "cmd" — the composition root. Phase 6 deleted the api gateway class
 //     with the package: cmd/api now owns the router, the middleware chain and
 //     the healthcheck, so there is no API-layer row to special-case.
+//   - "e2e" — the acceptance suite (internal/e2e): flat, test-only, and the
+//     composition root in test form, so it gets its own cmd-like row instead
+//     of collapsing into "shared:e2e".
 //
 // Because nesting never changes a class, "modules import other module ROOTS
 // only" and "the kernel imports the kernel only" are enforced by the class
@@ -66,12 +69,11 @@
 //   - shared:testdb (the DB test harness, providing pools/roles/seeds) may be
 //     imported from any _test.go file; it is to Go tests what the testing
 //     package is — infrastructure, not a context.
-//   - shared:server's E2E suite is the composition root in test form: since
-//     phase 6 every converted api test lives in internal/shared/server/*_test.go
-//     and composes the real modules exactly like cmd/api/main.go (the ONE
-//     compose_test.go helper). Its row is widened for _test.go files only —
-//     shared:server's production code still imports nothing internal (pinned
-//     by the same check, which separates testOnly edges).
+//   - the E2E suite is the composition root in test form: every converted api
+//     test lives in internal/e2e and composes the real modules exactly like
+//     cmd/api/main.go (the ONE compose_test.go helper). It has its own "e2e"
+//     class, whose row is cmd-like in width but enumerated; nothing may import
+//     it. shared:server's production code still imports nothing internal.
 package arch
 
 import (
@@ -304,6 +306,24 @@ var allowedImports = map[string]map[string]bool{
 		"shared:persistence": true,
 		"shared:validator":   true,
 	},
+	// e2e is the acceptance suite (the composition root in test form): it
+	// composes the real modules over the real Postgres test pools exactly as
+	// cmd/api/main.go does, so it reaches module ROOTS and the kernel the way
+	// cmd does. Every file in the package is a _test.go — doc.go holds only
+	// the package comment — so this is not a production surface, and nothing
+	// may import e2e: it is a leaf.
+	"e2e": {
+		"game":               true,
+		"identity":           true,
+		"idempotency":        true,
+		"ledger":             true,
+		"schedule":           true,
+		"shared:eventbus":    true,
+		"shared:httpx":       true,
+		"shared:persistence": true,
+		"shared:server":      true, // the suite drives the process lifecycle
+	},
+
 	// shared:server owns the process lifecycle: it serves a fully-built
 	// handler and knows no module, so it reaches nothing internal — its
 	// shutdown budgets are local consts.
@@ -342,26 +362,10 @@ var testOnlyImports = map[string]map[string]bool{
 		"game:adapter:outbound": true,
 		"schedule":              true,
 	},
-	// The E2E suite (converted from the api gateway package in phase 6): its
-	// compose_test.go mirrors cmd/api/main.go, so it composes every module
-	// root and the shared kernel. Production shared:server keeps its
-	// row above — the check tags test-only edges, so this widening can never
-	// leak into the served code.
-	"shared:server": {
-		"game":               true,
-		"idempotency":        true,
-		"identity":           true,
-		"ledger":             true,
-		"schedule":           true,
-		"shared:eventbus":    true,
-		"shared:httpx":       true,
-		"shared:persistence": true,
-		"shared:server":      true, // the external test package's own import
-	},
 }
 
 type edge struct {
-	from     string // class of the importing package ("cmd", "<module>" or "shared:<name>")
+	from     string // class of the importing package ("cmd", "e2e", "<module>" or "shared:<name>")
 	to       string // class of the imported package, same scheme
 	file     string // repo-relative file path where the edge appears
 	testOnly bool   // the importing file is a _test.go
@@ -534,14 +538,22 @@ func classify(path, root string) (class string, ok bool) {
 
 // classOf maps the path segments below internal/ to a class name. Uniform at
 // any depth: the first segment decides — a module keeps its own class however
-// deeply it nests (internal/schedule/internal/foo is still "schedule"), and
-// everything else is kernel, named by its first one or two segments
+// deeply it nests (internal/schedule/internal/foo is still "schedule"), the
+// acceptance suite is its own class (internal/e2e → "e2e"), and everything
+// else is kernel, named by its first one or two segments
 // (internal/shared/httpx → shared:httpx, internal/validator →
 // shared:validator). The collapse of nested packages into their module class
 // IS the "modules import module roots only" rule.
 func classOf(below []string) (string, bool) {
 	if len(below) == 0 || below[0] == "" {
 		return "", false
+	}
+	if below[0] == "e2e" {
+		// The acceptance suite: a flat, non-module directory that is the
+		// composition root in test form. It gets its own class rather than
+		// defaulting to "shared:e2e", so its (cmd-like) edges are pinned in
+		// their own row and nothing can reach it by accident.
+		return "e2e", true
 	}
 	if below[0] == "shared" {
 		if len(below) < 2 || below[1] == "" {

@@ -1,4 +1,4 @@
-package server_test
+package e2e
 
 // compose_test.go is the ONE end-to-end composition helper (phase 6): it wires
 // the real modules over the real test-database pools exactly like

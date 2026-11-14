@@ -68,7 +68,7 @@ and all of it classifies as `shared:<name>` in the boundary matrix.
 
 Each module owns its own route table (`RegisterRoutes`), and `cmd/api`
 composes them — so the wire surface is identical to the pre-refactor one.
-The E2E suite lives in `internal/shared/server/*_test.go` and composes the
+The E2E suite lives in `internal/e2e` and composes the
 real modules exactly like `cmd/api/main.go` through one shared helper.
 
 ## Database: context schemas, per-context roles and configuration
