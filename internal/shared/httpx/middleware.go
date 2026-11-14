@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // ErrInvalidToken is the verdict a UserLookup returns for a bearer token it
@@ -82,7 +84,7 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 
 		userToken := headerParts[1]
 
-		ctx, cancel := context.WithTimeout(r.Context(), DBTimeout)
+		ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 		defer cancel()
 
 		user, err := m.Users.UserForToken(ctx, userToken)
@@ -120,7 +122,7 @@ func (m *Middleware) RequirePermission(code string, next http.HandlerFunc) http.
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), DBTimeout)
+		ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 		defer cancel()
 
 		permissions, err := m.Permissions.PermissionsForRole(ctx, authenticatedUser.RoleID)

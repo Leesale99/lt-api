@@ -30,6 +30,7 @@ import (
 	"errors"
 
 	"lt-api.aleksrdvn.com/internal/identity/internal/model"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // Mailer is everything identity needs from the outside world's mail
@@ -45,6 +46,12 @@ type Mailer interface {
 // welcome email. The caller has already validated the request (validating
 // before hashing is what turns an over-72-byte password into a 422 instead
 // of a bcrypt error surfacing as a 500).
+//
+// Timeout placement: the password hash runs FIRST, untimed (still bounded by
+// the request context), and only the two store writes share one
+// persistence.DBTimeout window. The budget bounds database work, not crypto —
+// a cost-12 hash can eat it on a contended machine and starve the INSERT.
+// The mail dispatch stays outside the timed section: it is not storage.
 func (s *Service) Register(ctx context.Context, user model.User, plaintextPassword string) (model.User, error) {
 	if err := user.Password.Set(plaintextPassword); err != nil {
 		return model.User{}, err
@@ -52,12 +59,15 @@ func (s *Service) Register(ctx context.Context, user model.User, plaintextPasswo
 
 	user.Activated = false
 
-	user, err := s.users.Insert(ctx, user)
+	dbCtx, cancel := context.WithTimeout(ctx, persistence.DBTimeout)
+	defer cancel()
+
+	user, err := s.users.Insert(dbCtx, user)
 	if err != nil {
 		return model.User{}, err
 	}
 
-	userToken, err := s.userTokens.New(ctx, user.ID, activationTokenTTL, model.ScopeActivation)
+	userToken, err := s.userTokens.New(dbCtx, user.ID, activationTokenTTL, model.ScopeActivation)
 	if err != nil {
 		return model.User{}, err
 	}
@@ -99,8 +109,15 @@ func (s *Service) RequestActivationToken(ctx context.Context, email string) erro
 // unknown email and a wrong password both surface as
 // model.ErrInvalidCredentials: the same 401, and the same code path — the
 // caller's response must not reveal which half failed.
+//
+// Timeout placement: each store call gets its own persistence.DBTimeout
+// child; the bcrypt compare runs BETWEEN them, outside any DB budget, so a
+// slow hash cannot turn a healthy token INSERT into a deadline error.
 func (s *Service) Authenticate(ctx context.Context, email, plaintextPassword string) (model.UserToken, error) {
-	user, err := s.users.GetByEmail(ctx, email)
+	lookupCtx, cancelLookup := context.WithTimeout(ctx, persistence.DBTimeout)
+	defer cancelLookup()
+
+	user, err := s.users.GetByEmail(lookupCtx, email)
 	if err != nil {
 		if errors.Is(err, model.ErrNotFound) {
 			return model.UserToken{}, model.ErrInvalidCredentials
@@ -108,6 +125,9 @@ func (s *Service) Authenticate(ctx context.Context, email, plaintextPassword str
 		return model.UserToken{}, err
 	}
 
+	cancelLookup()
+
+	// Untimed: bounded by the request context only, never by the DB budget.
 	match, err := user.Password.Matches(plaintextPassword)
 	if err != nil {
 		return model.UserToken{}, err
@@ -116,7 +136,10 @@ func (s *Service) Authenticate(ctx context.Context, email, plaintextPassword str
 		return model.UserToken{}, model.ErrInvalidCredentials
 	}
 
-	userToken, err := s.userTokens.New(ctx, user.ID, authenticationTokenTTL, model.ScopeAuthentication)
+	tokenCtx, cancelToken := context.WithTimeout(ctx, persistence.DBTimeout)
+	defer cancelToken()
+
+	userToken, err := s.userTokens.New(tokenCtx, user.ID, authenticationTokenTTL, model.ScopeAuthentication)
 	if err != nil {
 		return model.UserToken{}, err
 	}

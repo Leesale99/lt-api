@@ -16,6 +16,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/game/internal/core/service"
 	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -65,7 +66,7 @@ func (h *Handler) createPlayer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	// User existence is a transport-level check since the cross-context FKs
@@ -125,7 +126,7 @@ func (h *Handler) showPlayer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	player, err := h.svc.PlayerGet(ctx, id)
@@ -184,7 +185,7 @@ func (h *Handler) updatePlayer(w http.ResponseWriter, r *http.Request) {
 		FavoriteTeamID: input.FavoriteTeamID,
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	player, err := h.svc.PlayerUpdate(ctx, actorOf(r), seasonID, playerID, patch, expectedVersion)
@@ -212,7 +213,7 @@ func (h *Handler) deletePlayer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	if err := h.svc.PlayerDelete(ctx, actorOf(r), seasonID, playerID); err != nil {
@@ -238,7 +239,7 @@ func (h *Handler) listPlayers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	players, metadata, err := h.svc.PlayerList(ctx, name, favoriteTeamID, filters)

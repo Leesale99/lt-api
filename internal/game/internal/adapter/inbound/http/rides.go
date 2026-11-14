@@ -23,6 +23,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/game/internal/core/service"
 	"lt-api.aleksrdvn.com/internal/idempotency"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -33,7 +34,7 @@ func (h *Handler) showRide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	ride, err := h.svc.RideGet(ctx, id)
@@ -81,7 +82,7 @@ func (h *Handler) listRides(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	rides, metadata, err := h.svc.RideList(ctx, id, playerID, teamID, matchID, state, filters)
@@ -135,7 +136,7 @@ func (h *Handler) rideCommand(endpoint string, command rideCommand) http.Handler
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+		ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 		defer cancel()
 
 		res, err := command(ctx, id, token, rideMarshal)
@@ -241,7 +242,7 @@ func (h *Handler) createRide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	// Every ride command is idempotent (ADR-024), create included: the

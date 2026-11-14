@@ -49,8 +49,9 @@
 //   - identity is also a LAYERED module (phase 5): its facade (the root
 //     package) reaches its own internal layers and the shared kernel, and
 //     each layer has its own row — model → shared:validator; repository →
-//     model/shared:persistence; service → model/repository;
-//     handler → model/service/shared:httpx/shared:validator.
+//     model/shared:persistence; service → model/repository/shared:persistence
+//     (it owns the DB budget its store calls are wrapped in);
+//     handler → model/service/shared:httpx/shared:persistence/shared:validator.
 //     The facade is what httpx's consumer-side lookups are satisfied by, and
 //     it is the only identity package any other class may import.
 //   - cmd/api is the composition root: it wires every module and the shared
@@ -215,15 +216,17 @@ var allowedImports = map[string]map[string]bool{
 	},
 	// The inbound HTTP adapter: the frozen wire DTOs over the use cases, plus
 	// the two module ROOTS it translates at the wire level (idempotency's token
-	// types/validation, identity's user existence read for player create).
+	// types/validation, identity's user existence read for player create). It
+	// draws its per-request database budget from the persistence kernel.
 	"game:adapter:inbound:http": {
-		"game:core:domain":  true,
-		"game:core:port":    true,
-		"game:core:service": true,
-		"identity":          true,
-		"idempotency":       true,
-		"shared:httpx":      true,
-		"shared:validator":  true,
+		"game:core:domain":   true,
+		"game:core:port":     true,
+		"game:core:service":  true,
+		"identity":           true,
+		"idempotency":        true,
+		"shared:httpx":       true,
+		"shared:persistence": true,
+		"shared:validator":   true,
 	},
 	// The outbound anti-corruption layers: THE only game package allowed to
 	// import the calendar. Its types and errors stop here.
@@ -263,17 +266,23 @@ var allowedImports = map[string]map[string]bool{
 		"shared:persistence": true,
 	},
 	// Use cases: the activation transaction and the registration/token
-	// flows (which deliver mail through the Mailer port declared here).
+	// flows (which deliver mail through the Mailer port declared here). The
+	// DB budget they wrap their store calls in is the kernel's
+	// persistence.DBTimeout — the crypto between those calls runs untimed.
 	"identity:service": {
 		"identity:model":      true,
 		"identity:repository": true,
+		"shared:persistence":  true,
 	},
-	// The HTTP layer: the frozen wire DTOs over the use cases.
+	// The HTTP layer: the frozen wire DTOs over the use cases. It draws the
+	// DB budget (persistence.DBTimeout) for the paths whose use case does no
+	// crypto; the crypto paths leave the timing to the service.
 	"identity:handler": {
-		"identity:model":   true,
-		"identity:service": true,
-		"shared:httpx":     true,
-		"shared:validator": true,
+		"identity:model":     true,
+		"identity:service":   true,
+		"shared:httpx":       true,
+		"shared:persistence": true,
+		"shared:validator":   true,
 	},
 	"ledger": {
 		"shared:persistence": true,
@@ -288,8 +297,9 @@ var allowedImports = map[string]map[string]bool{
 	// shared:httpx is the transport shared by every HTTP surface: it reaches
 	// the shared kernel (persistence, validator) and nothing else — no module
 	// may ever be reachable from it (identity arrives as a consumer-side
-	// interface, adapted at the composition boundary). Its own tuning values
-	// (DB timeout, list defaults, rate-limit sweep interval) are local consts.
+	// interface, adapted at the composition boundary). Its per-request list
+	// defaults and sweep interval are local consts; the database budget it
+	// spends on auth/permission lookups comes from the persistence kernel.
 	"shared:httpx": {
 		"shared:persistence": true,
 		"shared:validator":   true,

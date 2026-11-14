@@ -9,6 +9,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -28,7 +29,7 @@ func (h *Handler) listSeasons(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	seasons, metadata, err := h.svc.Seasons.GetAll(ctx, id, status, filters)
@@ -55,7 +56,7 @@ func (h *Handler) createSeason(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	season, err = h.svc.Seasons.Insert(ctx, season)
@@ -85,7 +86,7 @@ func (h *Handler) showSeason(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	season, err := h.svc.Seasons.Get(ctx, id)
@@ -114,7 +115,7 @@ func (h *Handler) updateSeason(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	season, err := h.svc.Seasons.Get(ctx, id)
@@ -188,7 +189,7 @@ func (h *Handler) deleteSeason(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	err = h.svc.DeleteSeason(ctx, id)

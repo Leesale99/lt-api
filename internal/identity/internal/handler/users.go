@@ -8,6 +8,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/identity/internal/model"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -31,10 +32,10 @@ func (h *Handler) registerUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
-	defer cancel()
-
-	user, err := h.svc.Register(ctx, model.User{Name: input.Name, Email: input.Email}, input.Password)
+	// No DB budget is opened here: the use case times its own database
+	// sections, so the bcrypt hash on registration never spends the budget
+	// (a cost-12 hash can starve the INSERT on a slow machine).
+	user, err := h.svc.Register(r.Context(), model.User{Name: input.Name, Email: input.Email}, input.Password)
 	if err != nil {
 		switch {
 		case errors.Is(err, model.ErrDuplicateEmail):
@@ -72,7 +73,7 @@ func (h *Handler) activateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	// The use case owns the transaction (ADR-025): the flip and the token

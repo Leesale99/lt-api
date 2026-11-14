@@ -9,6 +9,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -34,7 +35,7 @@ func (h *Handler) createTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	team, err = h.svc.Teams.Insert(ctx, team)
@@ -64,7 +65,7 @@ func (h *Handler) showTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	team, err := h.svc.Teams.Get(ctx, id)
@@ -93,7 +94,7 @@ func (h *Handler) updateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	team, err := h.svc.Teams.Get(ctx, id)
@@ -169,7 +170,7 @@ func (h *Handler) deleteTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	err = h.svc.DeleteTeam(ctx, id)
@@ -204,7 +205,7 @@ func (h *Handler) listTeams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	teams, metadata, err := h.svc.Teams.GetAll(ctx, name, filters)

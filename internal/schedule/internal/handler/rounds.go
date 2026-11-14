@@ -9,6 +9,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -21,7 +22,7 @@ func (h *Handler) createRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	if _, err := h.svc.Seasons.Get(ctx, seasonID); err != nil {
@@ -85,7 +86,7 @@ func (h *Handler) showRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	round, err := h.svc.Rounds.Get(ctx, id)
@@ -124,7 +125,7 @@ func (h *Handler) listRounds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	rounds, metadata, err := h.svc.Rounds.GetAll(ctx, seasonID, status, filters)
@@ -148,7 +149,7 @@ func (h *Handler) updateRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	round, err := h.svc.Rounds.Get(ctx, roundID)
@@ -238,7 +239,7 @@ func (h *Handler) deleteRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	err = h.svc.Rounds.Delete(ctx, roundID, seasonID)

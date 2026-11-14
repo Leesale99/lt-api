@@ -7,6 +7,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/identity/internal/model"
 	"lt-api.aleksrdvn.com/internal/shared/httpx"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -27,7 +28,7 @@ func (h *Handler) createActivationToken(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), persistence.DBTimeout)
 	defer cancel()
 
 	err = h.svc.RequestActivationToken(ctx, input.Email)
@@ -73,10 +74,9 @@ func (h *Handler) createAuthenticationToken(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), httpx.DBTimeout)
-	defer cancel()
-
-	userToken, err := h.svc.Authenticate(ctx, input.Email, input.Password)
+	// No DB budget is opened here: the use case times its own database
+	// sections, so the bcrypt compare on login never spends the budget.
+	userToken, err := h.svc.Authenticate(r.Context(), input.Email, input.Password)
 	if err != nil {
 		if errors.Is(err, model.ErrInvalidCredentials) {
 			httpx.InvalidCredentials(w, r)
