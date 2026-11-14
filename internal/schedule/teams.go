@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -50,7 +50,7 @@ type TeamStore struct {
 	pool *pgxpool.Pool
 }
 
-func (s *TeamStore) GetAll(ctx context.Context, name string, filters store.Filters) ([]Team, store.Metadata, error) {
+func (s *TeamStore) GetAll(ctx context.Context, name string, filters persistence.Filters) ([]Team, persistence.Metadata, error) {
 	// The name filter is built only when non-empty. The catch-all alternative
 	// `WHERE (name ILIKE $1 OR $1 = '')` defeats the trgm GIN index: once the
 	// statement is cached, the planner can't prune the OR branch, so the query
@@ -77,7 +77,7 @@ func (s *TeamStore) GetAll(ctx context.Context, name string, filters store.Filte
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, store.Metadata{}, err
+		return nil, persistence.Metadata{}, err
 	}
 
 	defer rows.Close()
@@ -97,24 +97,24 @@ func (s *TeamStore) GetAll(ctx context.Context, name string, filters store.Filte
 			&team.Version,
 		)
 		if err != nil {
-			return nil, store.Metadata{}, err
+			return nil, persistence.Metadata{}, err
 		}
 
 		teams = append(teams, team)
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, store.Metadata{}, err
+		return nil, persistence.Metadata{}, err
 	}
 
-	metadata := store.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
+	metadata := persistence.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
 
 	return teams, metadata, nil
 }
 
 func (s *TeamStore) Get(ctx context.Context, id int) (Team, error) {
 	if id < 1 {
-		return Team{}, store.ErrRecordNotFound
+		return Team{}, persistence.ErrRecordNotFound
 	}
 
 	query := `
@@ -136,7 +136,7 @@ func (s *TeamStore) Get(ctx context.Context, id int) (Team, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Team{}, store.ErrRecordNotFound
+			return Team{}, persistence.ErrRecordNotFound
 		default:
 			return Team{}, err
 		}
@@ -177,7 +177,7 @@ func (s *TeamStore) Update(ctx context.Context, team Team) (Team, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Team{}, store.ErrEditConflict
+			return Team{}, persistence.ErrEditConflict
 		default:
 			return Team{}, err
 		}
@@ -188,7 +188,7 @@ func (s *TeamStore) Update(ctx context.Context, team Team) (Team, error) {
 
 func (s *TeamStore) Delete(ctx context.Context, id int) error {
 	if id < 1 {
-		return store.ErrRecordNotFound
+		return persistence.ErrRecordNotFound
 	}
 
 	query := `
@@ -200,14 +200,14 @@ func (s *TeamStore) Delete(ctx context.Context, id int) error {
 		// teams is referenced with ON DELETE RESTRICT by matches and players:
 		// a referenced team must not be deleted (domain decision). See
 		// IsDeleteRestricted for the SQLSTATE codes.
-		if store.IsDeleteRestricted(err) {
-			return store.ErrRecordInUse
+		if persistence.IsDeleteRestricted(err) {
+			return persistence.ErrRecordInUse
 		}
 		return err
 	}
 
 	if result.RowsAffected() == 0 {
-		return store.ErrRecordNotFound
+		return persistence.ErrRecordNotFound
 	}
 
 	return nil

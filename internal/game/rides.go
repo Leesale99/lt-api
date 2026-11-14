@@ -20,7 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 	"lt-api.aleksrdvn.com/internal/schedule"
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -96,18 +96,18 @@ const insertSQL = `
 // insert runs the birth statement on any querier — the pool (Insert, the
 // test-planter path) or the caller's transaction (InsertTx, the idempotent
 // command path).
-func insert(ctx context.Context, q store.Querier, ride Ride) (Ride, error) {
+func insert(ctx context.Context, q persistence.Querier, ride Ride) (Ride, error) {
 	args := []any{ride.PlayerID, ride.TeamID, ride.MatchID, ride.State, ride.TokensLocked, ride.BaseAtLock, ride.Acc, ride.Streak}
 
 	err := q.QueryRow(ctx, insertSQL, args...).Scan(&ride.ID, &ride.CreatedAt, &ride.Version)
 	if err != nil {
 		switch {
-		case store.IsFKViolation(err):
+		case persistence.IsFKViolation(err):
 			// The referenced player, team or match does not exist — the
 			// handler validates only positivity, so an unknown parent can
 			// only be caught here (same convention as PlayerStore.Insert).
-			return Ride{}, store.ErrRecordNotFound
-		case store.IsTriggerViolation(err):
+			return Ride{}, persistence.ErrRecordNotFound
+		case persistence.IsTriggerViolation(err):
 			// rides_state_insert_gate: a non-locked state tried to be born
 			// (ADR-019). Same 409 surface as every other gate refusal.
 			return Ride{}, ErrInvalidTransition
@@ -237,7 +237,7 @@ func (s *RideStore) Get(ctx context.Context, id int) (Ride, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Ride{}, store.ErrRecordNotFound
+			return Ride{}, persistence.ErrRecordNotFound
 		default:
 			return Ride{}, err
 		}
@@ -246,7 +246,7 @@ func (s *RideStore) Get(ctx context.Context, id int) (Ride, error) {
 	return ride, nil
 }
 
-func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID int, state RideState, filters store.Filters) ([]Ride, store.Metadata, error) {
+func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID int, state RideState, filters persistence.Filters) ([]Ride, persistence.Metadata, error) {
 	conds, args := []string{}, []any{}
 	if id != 0 {
 		args = append(args, id)
@@ -285,7 +285,7 @@ func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID in
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, store.Metadata{}, err
+		return nil, persistence.Metadata{}, err
 	}
 
 	defer rows.Close()
@@ -310,17 +310,17 @@ func (s *RideStore) GetAll(ctx context.Context, id, playerID, teamID, matchID in
 			&ride.Version,
 		)
 		if err != nil {
-			return nil, store.Metadata{}, err
+			return nil, persistence.Metadata{}, err
 		}
 
 		rides = append(rides, ride)
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, store.Metadata{}, err
+		return nil, persistence.Metadata{}, err
 	}
 
-	metadata := store.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
+	metadata := persistence.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
 
 	return rides, metadata, nil
 }
@@ -374,12 +374,12 @@ func (s *RideStore) ArriveTx(ctx context.Context, tx pgx.Tx, rideID int, from, t
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			return Ride{}, s.classifyArrivalRefusal(ctx, rideID, claimedVersion)
-		case store.IsTriggerViolation(err):
+		case persistence.IsTriggerViolation(err):
 			// rides_state_gate (ADR-020): the DB refused the arrival — the
 			// state graph (checks 1–3); result agreement is the service's
 			// app-level check since migration 000017.
 			return Ride{}, ErrInvalidTransition
-		case store.IsCheckViolation(err, ridesMoneyStateCoupling):
+		case persistence.IsCheckViolation(err, ridesMoneyStateCoupling):
 			return Ride{}, ErrInvalidTransition
 		default:
 			return Ride{}, err
@@ -403,7 +403,7 @@ func (s *RideStore) classifyArrivalRefusal(ctx context.Context, rideID, claimedV
 	err := s.pool.QueryRow(ctx, `SELECT state, version FROM rides WHERE id = $1`, rideID).Scan(&state, &version)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return store.ErrRecordNotFound
+		return persistence.ErrRecordNotFound
 	case err != nil:
 		return err
 	case version != claimedVersion:
@@ -437,14 +437,14 @@ func (s *RideStore) Update(ctx context.Context, ride Ride) (Ride, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Ride{}, store.ErrEditConflict
-		case store.IsTriggerViolation(err):
+			return Ride{}, persistence.ErrEditConflict
+		case persistence.IsTriggerViolation(err):
 			// rides_state_gate (ADR-020): the DB refused the transition.
 			// Deliberately ErrInvalidTransition — the invalid-state 409 —
 			// NOT ErrRecordInUse: the row is not referenced by anything,
 			// its state machine rejected the write.
 			return Ride{}, ErrInvalidTransition
-		case store.IsCheckViolation(err, ridesMoneyStateCoupling):
+		case persistence.IsCheckViolation(err, ridesMoneyStateCoupling):
 			// rides_money_state_coupling (000013): the declarative check
 			// that took trigger check 4's job — unlocked|lost arrivals
 			// carry no acc. Same 409 surface the P0001 refusal produced.
@@ -531,18 +531,18 @@ func (s *RideStore) DecisionGuardedTx(ctx context.Context, tx pgx.Tx, ride Ride)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			return Ride{}, s.classifyDecisionRefusal(ctx, ride.ID, ride.Version)
-		case store.IsTriggerViolation(err):
+		case persistence.IsTriggerViolation(err):
 			return Ride{}, ErrInvalidTransition
-		case store.IsCheckViolation(err, ridesMoneyStateCoupling):
+		case persistence.IsCheckViolation(err, ridesMoneyStateCoupling):
 			// rides_money_state_coupling (000013): the declarative check
 			// that took trigger check 4's job — unlocked|lost arrivals
 			// carry no acc. Same 409 surface the P0001 refusal produced.
 			return Ride{}, ErrInvalidTransition
-		case store.IsFKViolation(err):
+		case persistence.IsFKViolation(err):
 			// Since 000016 no FK is left on rides; the port's
 			// destination gate has the match-existence check before this
 			// write. Kept as the generic FK race mapping shape.
-			return Ride{}, store.ErrRecordNotFound
+			return Ride{}, persistence.ErrRecordNotFound
 		default:
 			return Ride{}, err
 		}
@@ -573,7 +573,7 @@ func (s *RideStore) classifyDecisionRefusal(ctx context.Context, rideID, claimed
 	case errors.Is(err, pgx.ErrNoRows):
 		// The ride itself is gone mid-flight: same parent-gone mapping
 		// the FK refusals use.
-		return store.ErrRecordNotFound
+		return persistence.ErrRecordNotFound
 	case err != nil:
 		return err
 	case version != claimedVersion || state != RideWonPending:

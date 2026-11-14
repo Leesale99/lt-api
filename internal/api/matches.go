@@ -10,7 +10,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	schedule "lt-api.aleksrdvn.com/internal/schedule"
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -45,7 +45,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -82,7 +82,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			v.AddError("round_id", "must reference an existing round")
 			app.failedValidationResponse(w, r, v.Errors)
 		default:
@@ -100,7 +100,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			v.AddError("home_team_id", "must reference an existing team")
 			app.failedValidationResponse(w, r, v.Errors)
 		default:
@@ -113,7 +113,7 @@ func (app *Application) createMatchHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			v.AddError("away_team_id", "must reference an existing team")
 			app.failedValidationResponse(w, r, v.Errors)
 		default:
@@ -157,7 +157,7 @@ func (app *Application) showMatchHandler(w http.ResponseWriter, r *http.Request)
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -240,7 +240,7 @@ func (app *Application) deleteMatchHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -275,7 +275,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -341,7 +341,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			v.AddError("home_team_id", "must reference an existing team")
 			app.failedValidationResponse(w, r, v.Errors)
 		default:
@@ -354,7 +354,7 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			v.AddError("away_team_id", "must reference an existing team")
 			app.failedValidationResponse(w, r, v.Errors)
 		default:
@@ -368,13 +368,13 @@ func (app *Application) updateMatchHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrEditConflict):
+		case errors.Is(err, persistence.ErrEditConflict):
 			app.editConflictResponse(w, r)
-		case errors.Is(err, store.ErrRecordInUse):
+		case errors.Is(err, persistence.ErrRecordInUse):
 			// matches_freeze_gate: the match has started and the update tried
 			// to regress it (ADR-008).
 			app.recordFrozenResponse(w, r)
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			// Race: a referenced team was deleted between the checks above
 			// and the update.
 			v.AddError("home_team_id", "must reference an existing team")

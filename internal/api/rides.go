@@ -14,7 +14,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/idempotency"
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -24,9 +24,9 @@ func (app *Application) gameErrorResponse(w http.ResponseWriter, r *http.Request
 	switch {
 	case errors.Is(err, context.Canceled):
 		// Client gone; response would be discarded anyway.
-	case errors.Is(err, store.ErrRecordNotFound):
+	case errors.Is(err, persistence.ErrRecordNotFound):
 		app.notFoundResponse(w, r)
-	case errors.Is(err, store.ErrEditConflict):
+	case errors.Is(err, persistence.ErrEditConflict):
 		// Store-level optimistic-concurrency refusals (version guards, the
 		// resolve classification) — 409, same as the edit handlers that map
 		// it inline.
@@ -62,7 +62,7 @@ func (app *Application) showRideHandler(w http.ResponseWriter, r *http.Request) 
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)

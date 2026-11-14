@@ -32,7 +32,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 
 	"lt-api.aleksrdvn.com/internal/schedule"
 )
@@ -543,7 +543,7 @@ func TestResolveMatchRaces(t *testing.T) {
 					switch {
 					case err == nil:
 						winners++
-					case errors.Is(err, store.ErrEditConflict):
+					case errors.Is(err, persistence.ErrEditConflict):
 						// The loser: blocked ResolveTx re-evaluated its WHERE
 						// after the winner's commit and matched 0 rows — the
 						// EvalPlanQual re-check refused the stale version, and
@@ -642,7 +642,7 @@ func TestResolveMatchRaces(t *testing.T) {
 				switch {
 				case closeErr == nil:
 					wantState, wantVersion = RideUnlocked, 3
-				case errors.Is(closeErr, store.ErrRecordInUse):
+				case errors.Is(closeErr, persistence.ErrRecordInUse):
 					wantState, wantVersion = RideWonPending, 2
 				default:
 					t.Fatalf("Close() = %v, want nil or ErrRecordInUse", closeErr)

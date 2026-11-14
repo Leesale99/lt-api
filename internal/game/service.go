@@ -14,7 +14,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/idempotency"
 	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/schedule"
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 var (
@@ -63,8 +63,8 @@ func NewService(store *Store, sched SchedulePort, led ledger.Ledger) *Service {
 func (s *Service) roundOpenTx(ctx context.Context, tx pgx.Tx, matchID int) error {
 	status, err := s.Schedule.RoundOpenTx(ctx, tx, matchID)
 	switch {
-	case errors.Is(err, store.ErrRecordNotFound):
-		return store.ErrRecordNotFound
+	case errors.Is(err, persistence.ErrRecordNotFound):
+		return persistence.ErrRecordNotFound
 	case err != nil:
 		return err
 	case status != schedule.RoundOpen:
@@ -80,7 +80,7 @@ func (s *Service) roundOpenTx(ctx context.Context, tx pgx.Tx, matchID int) error
 // pick, including the unknown-destination case (no FK hit needed).
 func (s *Service) destinationOpenTx(ctx context.Context, tx pgx.Tx, matchID int) error {
 	err := s.Schedule.DestinationOpenTx(ctx, tx, matchID)
-	if errors.Is(err, store.ErrRecordNotFound) {
+	if errors.Is(err, persistence.ErrRecordNotFound) {
 		return ErrRoundNotOpen
 	}
 	return err
@@ -246,7 +246,7 @@ func (s *Service) RideLock(ctx context.Context, rideID int, token idempotency.Id
 	nextMatch, err := s.Schedule.NextForTeam(ctx, ride.TeamID)
 	if err != nil {
 		switch {
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			return idempotency.IdempotentResponse{}, ErrNoNextMatch
 		default:
 			return idempotency.IdempotentResponse{}, err

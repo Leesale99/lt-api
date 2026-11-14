@@ -12,7 +12,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/identity"
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -63,7 +63,7 @@ func (app *Application) authenticate(next http.Handler) http.Handler {
 			switch {
 			case errors.Is(err, context.Canceled):
 				return
-			case errors.Is(err, store.ErrRecordNotFound):
+			case errors.Is(err, persistence.ErrRecordNotFound):
 				app.invalidAuthenticationTokenResponse(w, r)
 			default:
 				app.serverErrorResponse(w, r, err)

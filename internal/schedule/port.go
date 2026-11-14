@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // Port methods on *Store: the narrow surface the game context consumes
@@ -76,11 +76,11 @@ func (s *Store) RoundOpenTx(ctx context.Context, tx pgx.Tx, matchID int) (RoundS
 	err := tx.QueryRow(ctx, `SELECT schedule.round_open_guard($1)`, matchID).Scan(&status)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return "", store.ErrRecordNotFound
+		return "", persistence.ErrRecordNotFound
 	case err != nil:
 		return "", err
 	case status == nil:
-		return "", store.ErrRecordNotFound
+		return "", persistence.ErrRecordNotFound
 	default:
 		return *status, nil
 	}
@@ -93,7 +93,7 @@ func (s *Store) RoundOpenTx(ctx context.Context, tx pgx.Tx, matchID int) (RoundS
 // write — the "destination stopped between pick and write" race loses here
 // instead of inside the ride statement.
 //
-// store.ErrRecordNotFound covers every refusal cause (unknown match,
+// persistence.ErrRecordNotFound covers every refusal cause (unknown match,
 // already ended, round closed): the caller maps them all to the
 // round-refusal, the Phase 04 contract for a stale pick.
 func (s *Store) DestinationOpenTx(ctx context.Context, tx pgx.Tx, matchID int) error {
@@ -107,7 +107,7 @@ func (s *Store) DestinationOpenTx(ctx context.Context, tx pgx.Tx, matchID int) e
 	case err != nil:
 		return err
 	case !live:
-		return store.ErrRecordNotFound
+		return persistence.ErrRecordNotFound
 	default:
 		return nil
 	}

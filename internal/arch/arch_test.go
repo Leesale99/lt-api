@@ -7,15 +7,17 @@
 // Phase 05 refinements:
 //
 //   - schedule is the ACL: it owns teams/seasons/rounds/matches, mints their
-//     ids, and may import only the shared kernel (store/validator) and the
-//     event bus it publishes on. It must NEVER import game, ledger, identity
-//     or api — the downstream side of the seam.
+//     ids, and may import only the shared kernel (shared/persistence,
+//     validator) and the event bus it publishes on. It must NEVER import
+//     game, ledger, identity or api — the downstream side of the seam.
 //   - game owns rides/players and consumes schedule via the SchedulePort and
 //     ledger via the LedgerPort interfaces; it may also touch the shared
-//     kernel (store/validator) and idempotency (its claim table). It must
-//     never import identity or api.
-//   - ledger and eventbus are thin: no domain imports (store only for ledger).
-//   - identity is a generic supporting context: store/validator only.
+//     kernel (shared/persistence, validator) and idempotency (its claim
+//     table). It must never import identity or api.
+//   - ledger and eventbus are thin: no domain imports (shared/persistence
+//     only for ledger).
+//   - identity is a generic supporting context: shared/persistence,
+//     validator only.
 //   - api is the gateway, not a context: it may import any context.
 //   - cmd/* is the composition root: wires everything, imports anything.
 //
@@ -44,44 +46,44 @@ var modulePath = mustModulePath()
 // of internal packages it may import. Anything not listed is forbidden.
 // Packages absent from the map default to: no internal imports.
 var allowedImports = map[string]map[string]bool{
-	"schedule": {"eventbus": true, "store": true, "validator": true},
+	"schedule": {"eventbus": true, "shared/persistence": true, "validator": true},
 	"game": {
-		"schedule":    true, // SchedulePort provider (resolve, ids, events)
-		"ledger":      true, // LedgerPort provider (token intents)
-		"idempotency": true, // its own claim table
-		"eventbus":    true,
-		"store":       true,
-		"validator":   true,
+		"schedule":           true, // SchedulePort provider (resolve, ids, events)
+		"ledger":             true, // LedgerPort provider (token intents)
+		"idempotency":        true, // its own claim table
+		"eventbus":           true,
+		"shared/persistence": true,
+		"validator":          true,
 	},
-	"identity":    {"store": true, "validator": true},
-	"ledger":      {"store": true},
-	"eventbus":    {}, // pure in-proc pub/sub: stdlib only
-	"idempotency": {"validator": true},
-	"store":       {"validator": true}, // shared kernel: never a domain context
-	"validator":   {},                  // leaf
-	"constants":   {},
-	"config":      {"vcs": true, "store": true, "validator": true, "logging": true},
-	"logging":     {},
-	"mailer":      {},
-	"testdb":      {},
-	"vcs":         {},
-	"arch":        {}, // this package: walks the tree, imports nothing internal
+	"identity":           {"shared/persistence": true, "validator": true},
+	"ledger":             {"shared/persistence": true},
+	"eventbus":           {}, // pure in-proc pub/sub: stdlib only
+	"idempotency":        {"validator": true},
+	"shared/persistence": {"validator": true}, // shared kernel: never a domain context
+	"validator":          {},                  // leaf
+	"constants":          {},
+	"config":             {"vcs": true, "shared/persistence": true, "validator": true, "logging": true},
+	"logging":            {},
+	"mailer":             {},
+	"testdb":             {},
+	"vcs":                {},
+	"arch":               {}, // this package: walks the tree, imports nothing internal
 }
 
 // apiGateway lists what api (the HTTP gateway) may import: any context plus
 // the support packages, mirroring the gateway node in the map.
 var apiGateway = map[string]bool{
-	"constants":   true,
-	"eventbus":    true,
-	"game":        true,
-	"idempotency": true,
-	"identity":    true,
-	"ledger":      true,
-	"logging":     true,
-	"mailer":      true,
-	"schedule":    true,
-	"store":       true,
-	"validator":   true,
+	"constants":          true,
+	"eventbus":           true,
+	"game":               true,
+	"idempotency":        true,
+	"identity":           true,
+	"ledger":             true,
+	"logging":            true,
+	"mailer":             true,
+	"schedule":           true,
+	"shared/persistence": true,
+	"validator":          true,
 }
 
 // cmdRoot lists what the composition root may import: everything internal.
@@ -185,7 +187,7 @@ func (e edge) violation() string {
 		allowed = strings.Join(names, ", ")
 	}
 	if e.from == "api" {
-		allowed = "any context (gateway): constants, eventbus, game, idempotency, identity, ledger, logging, mailer, schedule, store, validator"
+		allowed = "any context (gateway): constants, eventbus, game, idempotency, identity, ledger, logging, mailer, schedule, shared/persistence, validator"
 	}
 	return "  X  " + e.from + " -> " + e.to + "\n     at " + e.file + "\n     " + e.from + " may import: " + allowed
 }
@@ -240,7 +242,9 @@ func classify(path, root string) (pkg string, inCmd bool, ok bool) {
 	if parts[0] != "internal" {
 		return "", false, false
 	}
-	return parts[len(parts)-1], false, true
+	// Nested packages (internal/shared/persistence) are named by their path
+	// below internal/, so the matrix can hold shared kernel entries.
+	return strings.Join(parts[1:], "/"), false, true
 }
 
 // internalPkg reports whether an import path belongs to this module's
@@ -251,7 +255,7 @@ func internalPkg(impPath string) (string, bool) {
 		return "", false
 	}
 	rest := strings.TrimPrefix(impPath, prefix)
-	if rest == "" || strings.Contains(rest, "/") {
+	if rest == "" {
 		return "", false
 	}
 	return rest, true

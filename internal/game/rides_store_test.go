@@ -18,11 +18,11 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
-func rideFilters(sort string) store.Filters {
-	return store.Filters{
+func rideFilters(sort string) persistence.Filters {
+	return persistence.Filters{
 		Page:         1,
 		PageSize:     10,
 		Sort:         sort,
@@ -96,7 +96,7 @@ func TestRideStore_InsertAndGet(t *testing.T) {
 
 		_, err := NewStore(gamePool).Rides.Get(ctx, 999)
 
-		if !errors.Is(err, store.ErrRecordNotFound) {
+		if !errors.Is(err, persistence.ErrRecordNotFound) {
 			t.Fatalf("Get(999) = %v, want ErrRecordNotFound", err)
 		}
 	})
@@ -114,7 +114,7 @@ func TestRideStore_InsertAndGet(t *testing.T) {
 			BaseAtLock:   decimal.NewFromInt(95),
 		})
 
-		if !errors.Is(err, store.ErrRecordNotFound) {
+		if !errors.Is(err, persistence.ErrRecordNotFound) {
 			t.Fatalf("Insert() = %v, want ErrRecordNotFound (FK 23503 mapping)", err)
 		}
 	})
@@ -192,69 +192,69 @@ func TestRideStore_GetAll(t *testing.T) {
 
 		tests := []struct {
 			name      string
-			query     func(ctx context.Context) ([]Ride, store.Metadata, error)
+			query     func(ctx context.Context) ([]Ride, persistence.Metadata, error)
 			wantCount int
 			wantFirst int // id of the first returned row (sort-sensitive); 0 = don't check
 		}{
 			{
 				name: "no filters returns all three",
-				query: func(ctx context.Context) ([]Ride, store.Metadata, error) {
+				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 0, 0, 0, "", rideFilters("id"))
 				},
 				wantCount: 3,
 			},
 			{
 				name: "filter by player",
-				query: func(ctx context.Context) ([]Ride, store.Metadata, error) {
+				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, player1, 0, 0, "", rideFilters("id"))
 				},
 				wantCount: 2,
 			},
 			{
 				name: "player filter matching nothing",
-				query: func(ctx context.Context) ([]Ride, store.Metadata, error) {
+				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 999, 0, 0, "", rideFilters("id"))
 				},
 				wantCount: 0,
 			},
 			{
 				name: "filter by team",
-				query: func(ctx context.Context) ([]Ride, store.Metadata, error) {
+				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 0, homeID, 0, "", rideFilters("id"))
 				},
 				wantCount: 2,
 			},
 			{
 				name: "team filter matching nothing",
-				query: func(ctx context.Context) ([]Ride, store.Metadata, error) {
+				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 0, 999, 0, "", rideFilters("id"))
 				},
 				wantCount: 0,
 			},
 			{
 				name: "filter by match",
-				query: func(ctx context.Context) ([]Ride, store.Metadata, error) {
+				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 0, 0, match1, "", rideFilters("id"))
 				},
 				wantCount: 2,
 			},
 			{
 				name: "match filter matching nothing",
-				query: func(ctx context.Context) ([]Ride, store.Metadata, error) {
+				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 0, 0, 999, "", rideFilters("id"))
 				},
 				wantCount: 0,
 			},
 			{
 				name: "filter by state",
-				query: func(ctx context.Context) ([]Ride, store.Metadata, error) {
+				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 0, 0, 0, RideLocked, rideFilters("id"))
 				},
 				wantCount: 2,
 			},
 			{
 				name: "state filter matching nothing",
-				query: func(ctx context.Context) ([]Ride, store.Metadata, error) {
+				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 0, 0, 0, RideBurned, rideFilters("id"))
 				},
 				wantCount: 0,
@@ -262,7 +262,7 @@ func TestRideStore_GetAll(t *testing.T) {
 			{
 				// Combined filters intersect: player 1 has one locked ride.
 				name: "combined player and state filters",
-				query: func(ctx context.Context) ([]Ride, store.Metadata, error) {
+				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, player1, 0, 0, RideLocked, rideFilters("id"))
 				},
 				wantCount: 1,
@@ -270,7 +270,7 @@ func TestRideStore_GetAll(t *testing.T) {
 			},
 			{
 				name: "combined player and match filters",
-				query: func(ctx context.Context) ([]Ride, store.Metadata, error) {
+				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, player1, 0, match2, "", rideFilters("id"))
 				},
 				wantCount: 1,
@@ -278,7 +278,7 @@ func TestRideStore_GetAll(t *testing.T) {
 			},
 			{
 				name: "sort descending puts the newest ride first",
-				query: func(ctx context.Context) ([]Ride, store.Metadata, error) {
+				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, 0, 0, 0, 0, "", rideFilters("-id"))
 				},
 				wantCount: 3,
@@ -286,7 +286,7 @@ func TestRideStore_GetAll(t *testing.T) {
 			},
 			{
 				name: "single id filter returns exactly that ride",
-				query: func(ctx context.Context) ([]Ride, store.Metadata, error) {
+				query: func(ctx context.Context) ([]Ride, persistence.Metadata, error) {
 					return rs.GetAll(ctx, r2.ID, 0, 0, 0, "", rideFilters("id"))
 				},
 				wantCount: 1,
@@ -372,7 +372,7 @@ func TestRideStore_GetAll(t *testing.T) {
 			if len(rides) != 0 {
 				t.Fatalf("got %d rides, want 0", len(rides))
 			}
-			if metadata != (store.Metadata{}) {
+			if metadata != (persistence.Metadata{}) {
 				t.Errorf("metadata = %+v, want zero", metadata)
 			}
 		})
@@ -426,7 +426,7 @@ func TestRideStore_Update(t *testing.T) {
 
 		_, err := NewStore(gamePool).Rides.Update(ctx, ride)
 
-		if !errors.Is(err, store.ErrEditConflict) {
+		if !errors.Is(err, persistence.ErrEditConflict) {
 			t.Fatalf("Update() = %v, want ErrEditConflict", err)
 		}
 	})

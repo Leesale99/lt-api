@@ -36,7 +36,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/eventbus"
 	"lt-api.aleksrdvn.com/internal/ledger"
 	"lt-api.aleksrdvn.com/internal/schedule"
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // seedFixture re-seeds the base hierarchy (open round 1, teams 1 & 2) and
@@ -466,7 +466,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 			BaseAtLock:   decimal.NewFromInt(95),
 		}, rideToken("create-unknown-match", "POST /v1/rides"), idempotentMarshal)
 
-		if !errors.Is(err, store.ErrRecordNotFound) {
+		if !errors.Is(err, persistence.ErrRecordNotFound) {
 			t.Fatalf("RideCreate() = %v, want ErrRecordNotFound", err)
 		}
 	})
@@ -483,7 +483,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 			BaseAtLock:   decimal.NewFromInt(95),
 		}, rideToken("create-unknown-player", "POST /v1/rides"), idempotentMarshal)
 
-		if !errors.Is(err, store.ErrRecordNotFound) {
+		if !errors.Is(err, persistence.ErrRecordNotFound) {
 			t.Fatalf("RideCreate() = %v, want ErrRecordNotFound", err)
 		}
 	})
@@ -501,7 +501,7 @@ func TestService_RideCreateUnknownParents(t *testing.T) {
 			BaseAtLock:   decimal.NewFromInt(95),
 		}, rideToken("create-unknown-team", "POST /v1/rides"), idempotentMarshal)
 
-		if !errors.Is(err, store.ErrRecordNotFound) {
+		if !errors.Is(err, persistence.ErrRecordNotFound) {
 			t.Fatalf("RideCreate() = %v, want ErrRecordNotFound", err)
 		}
 	})

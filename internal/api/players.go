@@ -9,7 +9,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	game "lt-api.aleksrdvn.com/internal/game"
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -44,7 +44,7 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -70,12 +70,12 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 	// user_id is only ever the authenticated principal's ID (the
 	// update path never writes it), so this is the one spot the check
 	// belongs. The refusal keeps the shape the FK refusal produced:
-	// store.ErrRecordNotFound → the 422 favorite_team_id validation error.
+	// persistence.ErrRecordNotFound → the 422 favorite_team_id validation error.
 	if _, err := app.Identity.Users.Get(ctx, authenticatedUser.ID); err != nil {
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			v := validator.New()
 			v.AddError("favorite_team_id", "must reference an existing team")
 			app.failedValidationResponse(w, r, v.Errors)
@@ -103,7 +103,7 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			v.AddError("favorite_team_id", "must reference an existing team")
 			app.failedValidationResponse(w, r, v.Errors)
 		default:
@@ -117,10 +117,10 @@ func (app *Application) createPlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrDuplicateRecord):
+		case errors.Is(err, persistence.ErrDuplicateRecord):
 			app.duplicateRecordResponse(w, r)
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			// Race: the team was deleted between the check above and the insert.
 			v.AddError("favorite_team_id", "must reference an existing team")
 			app.failedValidationResponse(w, r, v.Errors)
@@ -154,7 +154,7 @@ func (app *Application) showPlayerHandler(w http.ResponseWriter, r *http.Request
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -189,7 +189,7 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -242,7 +242,7 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			v.AddError("favorite_team_id", "must reference an existing team")
 			app.failedValidationResponse(w, r, v.Errors)
 		default:
@@ -256,9 +256,9 @@ func (app *Application) updatePlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrEditConflict):
+		case errors.Is(err, persistence.ErrEditConflict):
 			app.editConflictResponse(w, r)
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			// Race: the team was deleted between the check above and the update.
 			v.AddError("favorite_team_id", "must reference an existing team")
 			app.failedValidationResponse(w, r, v.Errors)
@@ -295,7 +295,7 @@ func (app *Application) deletePlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 			return
 		default:
@@ -319,7 +319,7 @@ func (app *Application) deletePlayerHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)

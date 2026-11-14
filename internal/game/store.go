@@ -17,9 +17,9 @@ import (
 
 // Store composes the per-entity stores of the game context. Generic storage
 // primitives (sentinel errors, Postgres error classifiers, pagination) live
-// in internal/store, shared with the other contexts; the idempotency engine
-// lives in internal/idempotency (transverse infra, hoisted from this
-// package when schedule was carved out).
+// in internal/shared/persistence, shared with the other contexts; the
+// idempotency engine lives in internal/idempotency (transverse infra, hoisted
+// from this package when schedule was carved out).
 //
 // Pool rides on Store so a use-case method can own a transaction that spans
 // several stores (the idempotent ride commands are the consumers).

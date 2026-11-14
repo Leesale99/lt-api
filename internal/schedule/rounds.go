@@ -13,7 +13,7 @@ import (
 	"log/slog"
 
 	"lt-api.aleksrdvn.com/internal/eventbus"
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -89,7 +89,7 @@ type RoundStore struct {
 
 func (s *RoundStore) Get(ctx context.Context, id int) (Round, error) {
 	if id < 1 {
-		return Round{}, store.ErrRecordNotFound
+		return Round{}, persistence.ErrRecordNotFound
 	}
 
 	query := `
@@ -110,7 +110,7 @@ func (s *RoundStore) Get(ctx context.Context, id int) (Round, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Round{}, store.ErrRecordNotFound
+			return Round{}, persistence.ErrRecordNotFound
 		default:
 			return Round{}, err
 		}
@@ -129,8 +129,8 @@ func (s *RoundStore) Insert(ctx context.Context, round Round) (Round, error) {
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&round.ID, &round.CreatedAt, &round.Version)
 	if err != nil {
 		switch {
-		case store.IsUniqueViolation(err):
-			return Round{}, store.ErrDuplicateRecord
+		case persistence.IsUniqueViolation(err):
+			return Round{}, persistence.ErrDuplicateRecord
 		}
 		return Round{}, err
 	}
@@ -150,18 +150,18 @@ const roundUpdateSQL = `
 
 // updateRound executes the shared round-update statement on q and maps
 // store-level errors to sentinels.
-func (s *RoundStore) updateRound(ctx context.Context, q store.Querier, round Round) (Round, error) {
+func (s *RoundStore) updateRound(ctx context.Context, q persistence.Querier, round Round) (Round, error) {
 	err := q.QueryRow(ctx, roundUpdateSQL, round.Number, round.Status, round.ID, round.Version).Scan(&round.Version)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Round{}, store.ErrEditConflict
-		case store.IsUniqueViolation(err):
-			return Round{}, store.ErrDuplicateRecord
-		case store.IsTriggerViolation(err):
+			return Round{}, persistence.ErrEditConflict
+		case persistence.IsUniqueViolation(err):
+			return Round{}, persistence.ErrDuplicateRecord
+		case persistence.IsTriggerViolation(err):
 			// rounds_freeze_gate: a match of this round has started and the
 			// update tried to move it back to created/open (ADR-008).
-			return Round{}, store.ErrRecordInUse
+			return Round{}, persistence.ErrRecordInUse
 		}
 		return Round{}, err
 	}
@@ -315,7 +315,7 @@ func (s *RoundStore) logCloseGap(ctx context.Context, round Round, stage string,
 		"stage", stage, "round_id", round.ID, "error", err)
 }
 
-func (s *RoundStore) GetAll(ctx context.Context, seasonID int, status RoundStatus, filters store.Filters) ([]Round, store.Metadata, error) {
+func (s *RoundStore) GetAll(ctx context.Context, seasonID int, status RoundStatus, filters persistence.Filters) ([]Round, persistence.Metadata, error) {
 	conds, args := []string{}, []any{}
 
 	if seasonID != 0 {
@@ -343,7 +343,7 @@ func (s *RoundStore) GetAll(ctx context.Context, seasonID int, status RoundStatu
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, store.Metadata{}, err
+		return nil, persistence.Metadata{}, err
 	}
 
 	defer rows.Close()
@@ -363,17 +363,17 @@ func (s *RoundStore) GetAll(ctx context.Context, seasonID int, status RoundStatu
 			&round.Version,
 		)
 		if err != nil {
-			return nil, store.Metadata{}, err
+			return nil, persistence.Metadata{}, err
 		}
 
 		rounds = append(rounds, round)
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, store.Metadata{}, err
+		return nil, persistence.Metadata{}, err
 	}
 
-	metadata := store.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
+	metadata := persistence.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
 
 	return rounds, metadata, nil
 }
@@ -388,14 +388,14 @@ func (s *RoundStore) Delete(ctx context.Context, id, seasonID int) error {
 	if err != nil {
 		// P0001 comes from the rounds delete gate (ADR-007 one level down):
 		// closed rounds are durable history, the DB is authoritative.
-		if store.IsTriggerViolation(err) {
-			return store.ErrRecordInUse
+		if persistence.IsTriggerViolation(err) {
+			return persistence.ErrRecordInUse
 		}
 		return err
 	}
 
 	if result.RowsAffected() == 0 {
-		return store.ErrRecordNotFound
+		return persistence.ErrRecordNotFound
 	}
 
 	return nil

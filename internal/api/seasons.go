@@ -9,7 +9,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	schedule "lt-api.aleksrdvn.com/internal/schedule"
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -98,7 +98,7 @@ func (app *Application) showSeasonHandler(w http.ResponseWriter, r *http.Request
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -127,7 +127,7 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -167,9 +167,9 @@ func (app *Application) updateSeasonHandler(w http.ResponseWriter, r *http.Reque
 	season, err = app.Schedule.Seasons.Update(ctx, season)
 	if err != nil {
 		switch {
-		case errors.Is(err, store.ErrEditConflict):
+		case errors.Is(err, persistence.ErrEditConflict):
 			app.editConflictResponse(w, r)
-		case errors.Is(err, store.ErrRecordInUse):
+		case errors.Is(err, persistence.ErrRecordInUse):
 			// seasons_freeze_gate: a match has started and the update tried
 			// to move the season back to created/open (ADR-008).
 			app.recordFrozenResponse(w, r)
@@ -210,9 +210,9 @@ func (app *Application) deleteSeasonHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordInUse):
+		case errors.Is(err, persistence.ErrRecordInUse):
 			app.recordInUseResponse(w, r)
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -225,9 +225,9 @@ func (app *Application) deleteSeasonHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordInUse):
+		case errors.Is(err, persistence.ErrRecordInUse):
 			app.recordInUseResponse(w, r)
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)

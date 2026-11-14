@@ -26,8 +26,8 @@ import (
 // Store composes the schedule's per-entity stores. It is the single
 // dependency the API layer holds for calendar CRUD; game consumes it
 // structurally as its SchedulePort. Generic storage primitives (sentinel
-// errors, Postgres error classifiers, pagination) live in internal/store,
-// shared with the other contexts.
+// errors, Postgres error classifiers, pagination) live in
+// internal/shared/persistence, shared with the other contexts.
 //
 // Pool rides on Store so a use-case method can own a transaction that spans
 // several stores (RoundStore.Open and Close are the consumers).

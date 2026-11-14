@@ -23,7 +23,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // Ledger is the money seam game consumes. Intent-style names: the caller
@@ -35,22 +35,22 @@ type Ledger interface {
 	// carried by the ride row's tokens_locked, which the birth INSERT
 	// writes (the rides CHECK admits no zero-token birth, so the lock and
 	// the row are one statement — see store.go).
-	LockTokens(ctx context.Context, q store.Querier, playerID, teamID, rideID int, tokens, base decimal.Decimal) error
+	LockTokens(ctx context.Context, q persistence.Querier, playerID, teamID, rideID int, tokens, base decimal.Decimal) error
 
 	// AccrueBonus adds a won ride's accrued bonus. game owns the bonus
 	// formula (the streak-rate chain, ADR-021) and passes the delta; the
 	// ledger owns the balance write and the rounding/exactness guarantees.
-	AccrueBonus(ctx context.Context, q store.Querier, rideID int, delta decimal.Decimal) error
+	AccrueBonus(ctx context.Context, q persistence.Querier, rideID int, delta decimal.Decimal) error
 
 	// ReleaseBonus forfeits a ride's accrued bonus: zero on the unlock and
 	// lost arrivals (the money-state rule ride.Unlock/ride.Lost obey, and
 	// the rides_money_state_coupling CHECK enforces at the row).
-	ReleaseBonus(ctx context.Context, q store.Querier, rideID int) error
+	ReleaseBonus(ctx context.Context, q persistence.Querier, rideID int) error
 
 	// Burn records that a ride's locked tokens are fulfilled as TB — the
 	// player burn command and the season-end force-burn of undecided rides.
 	// Phase 06 will debit the token account / credit the TB side; today
 	// there is nothing to write (the rides row keeps its money columns on a
 	// burned arrival — the 000013 CHECK deliberately does not couple burn).
-	Burn(ctx context.Context, q store.Querier, rideID int, tokens decimal.Decimal) error
+	Burn(ctx context.Context, q persistence.Querier, rideID int, tokens decimal.Decimal) error
 }

@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -172,7 +172,7 @@ type MatchStore struct {
 
 func (s *MatchStore) Get(ctx context.Context, id int) (Match, error) {
 	if id < 1 {
-		return Match{}, store.ErrRecordNotFound
+		return Match{}, persistence.ErrRecordNotFound
 	}
 
 	query := `
@@ -202,7 +202,7 @@ func (s *MatchStore) Get(ctx context.Context, id int) (Match, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Match{}, store.ErrRecordNotFound
+			return Match{}, persistence.ErrRecordNotFound
 		default:
 			return Match{}, err
 		}
@@ -234,7 +234,7 @@ func (s *MatchStore) Insert(ctx context.Context, match Match) (Match, error) {
 	return match, err
 }
 
-func (s *MatchStore) GetAll(ctx context.Context, seasonID, roundID int, status MatchStatus, filters store.Filters) ([]Match, store.Metadata, error) {
+func (s *MatchStore) GetAll(ctx context.Context, seasonID, roundID int, status MatchStatus, filters persistence.Filters) ([]Match, persistence.Metadata, error) {
 	// Optional filters are composed in Go rather than OR-ed into a cached
 	// statement: [[ADR-006 - Conditional WHERE for optional filters (never OR $1 = '')]].
 	conds, args := []string{}, []any{}
@@ -268,7 +268,7 @@ func (s *MatchStore) GetAll(ctx context.Context, seasonID, roundID int, status M
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, store.Metadata{}, err
+		return nil, persistence.Metadata{}, err
 	}
 
 	defer rows.Close()
@@ -296,17 +296,17 @@ func (s *MatchStore) GetAll(ctx context.Context, seasonID, roundID int, status M
 			&match.Version,
 		)
 		if err != nil {
-			return nil, store.Metadata{}, err
+			return nil, persistence.Metadata{}, err
 		}
 
 		matches = append(matches, match)
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, store.Metadata{}, err
+		return nil, persistence.Metadata{}, err
 	}
 
-	metadata := store.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
+	metadata := persistence.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
 
 	return matches, metadata, nil
 }
@@ -324,14 +324,14 @@ func (s *MatchStore) Delete(ctx context.Context, id, seasonID int) error {
 		// "match still has rides" refusal moved to the api delete handler,
 		// which asks the game context before deleting (same 409). The
 		// remaining FK refusals are schedule-internal.
-		if store.IsDeleteRestricted(err) {
-			return store.ErrRecordInUse
+		if persistence.IsDeleteRestricted(err) {
+			return persistence.ErrRecordInUse
 		}
 		return err
 	}
 
 	if result.RowsAffected() == 0 {
-		return store.ErrRecordNotFound
+		return persistence.ErrRecordNotFound
 	}
 
 	return nil
@@ -361,16 +361,16 @@ func (s *MatchStore) Update(ctx context.Context, match Match) (Match, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Match{}, store.ErrEditConflict
-		case store.IsFKViolation(err):
+			return Match{}, persistence.ErrEditConflict
+		case persistence.IsFKViolation(err):
 			// The referenced team was deleted between the handler's existence
 			// check and this write (season and round are not updatable, so
 			// they cannot trigger the FK here).
-			return Match{}, store.ErrRecordNotFound
-		case store.IsTriggerViolation(err):
+			return Match{}, persistence.ErrRecordNotFound
+		case persistence.IsTriggerViolation(err):
 			// matches_freeze_gate: the match has started and the update tried
 			// to regress it to created/postponed (ADR-008).
-			return Match{}, store.ErrRecordInUse
+			return Match{}, persistence.ErrRecordInUse
 		default:
 			return Match{}, err
 		}
@@ -411,7 +411,7 @@ func (s *MatchStore) PhaseForMatch(ctx context.Context, matchID int) (RoundStatu
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return "", nil, nil, store.ErrRecordNotFound
+			return "", nil, nil, persistence.ErrRecordNotFound
 		default:
 			return "", nil, nil, err
 		}
@@ -455,7 +455,7 @@ func (s *MatchStore) NextForTeam(ctx context.Context, teamID int) (Match, error)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Match{}, store.ErrRecordNotFound
+			return Match{}, persistence.ErrRecordNotFound
 		default:
 			return Match{}, err
 		}
@@ -533,11 +533,11 @@ func (s *MatchStore) classifyResolveRefusal(ctx context.Context, matchID int) er
 	err := s.pool.QueryRow(ctx, `SELECT id FROM matches WHERE id = $1`, matchID).Scan(&id)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return store.ErrRecordNotFound
+		return persistence.ErrRecordNotFound
 	case err != nil:
 		return err
 	default:
-		return store.ErrEditConflict
+		return persistence.ErrEditConflict
 	}
 }
 

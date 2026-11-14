@@ -8,7 +8,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	"lt-api.aleksrdvn.com/internal/identity"
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -118,12 +118,12 @@ func (app *Application) activateUserHandler(w http.ResponseWriter, r *http.Reque
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			// Unknown, expired or out-of-scope token — the same 422 the
 			// handler produced when the lookup was its own store call.
 			v.AddError("user_token", "invalid or expired activation token")
 			app.failedValidationResponse(w, r, v.Errors)
-		case errors.Is(err, store.ErrEditConflict):
+		case errors.Is(err, persistence.ErrEditConflict):
 			app.editConflictResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)

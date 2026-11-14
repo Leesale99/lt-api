@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	storepkg "lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // plantActivatableUser inserts an unactivated user with one fresh activation
@@ -93,7 +93,7 @@ func TestActivate(t *testing.T) {
 		resetUsers(t)
 		user, _ := plantActivatableUser(t, store)
 
-		if _, err := store.Activate(context.Background(), "ZZZZZZZZZZZZZZZZZZZZZZZZZZ"); !errors.Is(err, storepkg.ErrRecordNotFound) {
+		if _, err := store.Activate(context.Background(), "ZZZZZZZZZZZZZZZZZZZZZZZZZZ"); !errors.Is(err, persistence.ErrRecordNotFound) {
 			t.Fatalf("Activate(unknown) = %v, want ErrRecordNotFound", err)
 		}
 
@@ -101,7 +101,7 @@ func TestActivate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("seed expired token: %v", err)
 		}
-		if _, err := store.Activate(context.Background(), expired.Plaintext); !errors.Is(err, storepkg.ErrRecordNotFound) {
+		if _, err := store.Activate(context.Background(), expired.Plaintext); !errors.Is(err, persistence.ErrRecordNotFound) {
 			t.Fatalf("Activate(expired) = %v, want ErrRecordNotFound", err)
 		}
 
@@ -195,7 +195,7 @@ func TestActivate(t *testing.T) {
 			switch {
 			case err == nil:
 				winners++
-			case errors.Is(err, storepkg.ErrEditConflict), errors.Is(err, storepkg.ErrRecordNotFound):
+			case errors.Is(err, persistence.ErrEditConflict), errors.Is(err, persistence.ErrRecordNotFound):
 				// A legal loser.
 			default:
 				t.Fatalf("Activate() = %v, want nil, ErrEditConflict or ErrRecordNotFound", err)

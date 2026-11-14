@@ -27,7 +27,7 @@ import (
 	"strings"
 	"testing"
 
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // plantPlayerRow inserts a player row and returns its id. Player 1 exists
@@ -673,7 +673,7 @@ type rideListResponse struct {
 	Rides []struct {
 		ID int `json:"id"`
 	} `json:"rides"`
-	Metadata store.Metadata `json:"metadata"`
+	Metadata persistence.Metadata `json:"metadata"`
 }
 
 func decodeRideList(t *testing.T, rr *httptest.ResponseRecorder) rideListResponse {

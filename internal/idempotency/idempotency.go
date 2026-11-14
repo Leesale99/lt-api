@@ -1,8 +1,9 @@
 // Package idempotency owns the idempotency_keys table: the claim-first
 // single-flight engine every idempotent command shares (ADR-024). It is
-// transverse infrastructure — like internal/store, it serves more than one
-// context and owns no business rules of its own — so it lives outside both
-// game and schedule (transverse infra, hoisted out of game by the split).
+// transverse infrastructure — like internal/shared/persistence, it serves
+// more than one context and owns no business rules of its own — so it lives
+// outside both game and schedule (transverse infra, hoisted out of game by
+// the split).
 package idempotency
 
 import (

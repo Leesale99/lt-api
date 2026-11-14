@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -41,7 +41,7 @@ type PlayerStore struct {
 	pool *pgxpool.Pool
 }
 
-func (s *PlayerStore) GetAll(ctx context.Context, name string, favoriteTeamID int, filters store.Filters) ([]Player, store.Metadata, error) {
+func (s *PlayerStore) GetAll(ctx context.Context, name string, favoriteTeamID int, filters persistence.Filters) ([]Player, persistence.Metadata, error) {
 	// Each filter is appended as a separate predicate (AND-composed) so the
 	// planner can still use the per-column indexes — do not switch to a
 	// catch-all like `WHERE (name ILIKE $1 OR $1 = '')`, which defeats the
@@ -75,7 +75,7 @@ func (s *PlayerStore) GetAll(ctx context.Context, name string, favoriteTeamID in
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, store.Metadata{}, err
+		return nil, persistence.Metadata{}, err
 	}
 
 	defer rows.Close()
@@ -97,24 +97,24 @@ func (s *PlayerStore) GetAll(ctx context.Context, name string, favoriteTeamID in
 			&player.Version,
 		)
 		if err != nil {
-			return nil, store.Metadata{}, err
+			return nil, persistence.Metadata{}, err
 		}
 
 		players = append(players, player)
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, store.Metadata{}, err
+		return nil, persistence.Metadata{}, err
 	}
 
-	metadata := store.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
+	metadata := persistence.CalculateMetadata(totalRecords, filters.Page, filters.PageSize)
 
 	return players, metadata, nil
 }
 
 func (s *PlayerStore) Get(ctx context.Context, id int) (Player, error) {
 	if id < 1 {
-		return Player{}, store.ErrRecordNotFound
+		return Player{}, persistence.ErrRecordNotFound
 	}
 
 	query := `
@@ -136,7 +136,7 @@ func (s *PlayerStore) Get(ctx context.Context, id int) (Player, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Player{}, store.ErrRecordNotFound
+			return Player{}, persistence.ErrRecordNotFound
 		default:
 			return Player{}, err
 		}
@@ -156,15 +156,15 @@ func (s *PlayerStore) Insert(ctx context.Context, player Player) (Player, error)
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&player.ID, &player.CreatedAt, &player.Version)
 	if err != nil {
 		switch {
-		case store.IsUniqueViolation(err, "players_season_id_user_id_key"):
+		case persistence.IsUniqueViolation(err, "players_season_id_user_id_key"):
 			// A second registration of the same user in the same season.
-			return Player{}, store.ErrDuplicateRecord
-		case store.IsFKViolation(err):
+			return Player{}, persistence.ErrDuplicateRecord
+		case persistence.IsFKViolation(err):
 			// Since 000016 there is no cross-context FK left on players
 			// (000016) — the only remaining FK is none, so this branch is
 			// currently unreachable; it stays as the generic race mapping
 			// shape for when a same-context FK reappears.
-			return Player{}, store.ErrRecordNotFound
+			return Player{}, persistence.ErrRecordNotFound
 		default:
 			return Player{}, err
 		}
@@ -187,11 +187,11 @@ func (s *PlayerStore) Update(ctx context.Context, player Player) (Player, error)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return Player{}, store.ErrEditConflict
-		case store.IsFKViolation(err):
+			return Player{}, persistence.ErrEditConflict
+		case persistence.IsFKViolation(err):
 			// Since 000016 no FK is left on players; the team
 			// existence check is the api handler's, before this write.
-			return Player{}, store.ErrRecordNotFound
+			return Player{}, persistence.ErrRecordNotFound
 		default:
 			return Player{}, err
 		}
@@ -211,7 +211,7 @@ func (s *PlayerStore) Delete(ctx context.Context, id, seasonID int) error {
 	}
 
 	if result.RowsAffected() == 0 {
-		return store.ErrRecordNotFound
+		return persistence.ErrRecordNotFound
 	}
 
 	return nil
@@ -238,8 +238,8 @@ func (s *PlayerStore) ExistsForTeam(ctx context.Context, teamID int) (bool, erro
 func (s *PlayerStore) DeleteForSeason(ctx context.Context, seasonID int) error {
 	result, err := s.pool.Exec(ctx, `DELETE FROM players WHERE season_id = $1`, seasonID)
 	if err != nil {
-		if store.IsDeleteRestricted(err) {
-			return store.ErrRecordInUse
+		if persistence.IsDeleteRestricted(err) {
+			return persistence.ErrRecordInUse
 		}
 		return err
 	}

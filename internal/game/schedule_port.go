@@ -33,12 +33,12 @@ type SchedulePort interface {
 
 	// RoundOpenTx pins the ride's own round OPEN at the write instant
 	// inside the caller's transaction (FOR SHARE on the round row).
-	// store.ErrRecordNotFound when the match is unknown.
+	// persistence.ErrRecordNotFound when the match is unknown.
 	RoundOpenTx(ctx context.Context, tx pgx.Tx, matchID int) (schedule.RoundStatus, error)
 
 	// DestinationOpenTx pins a continuation destination LIVE at the write
 	// instant inside the caller's transaction. Every refusal (unknown,
-	// ended, round closed) is store.ErrRecordNotFound — the caller maps it
+	// ended, round closed) is persistence.ErrRecordNotFound — the caller maps it
 	// to the round-refusal.
 	DestinationOpenTx(ctx context.Context, tx pgx.Tx, matchID int) error
 

@@ -1,9 +1,9 @@
-// Package store holds the storage-layer primitives shared by every domain
+// Package persistence holds the storage-layer primitives shared by every domain
 // package (game, identity): sentinel errors that the API layer translates
 // into HTTP responses, Postgres error-code classifiers, and the pagination
 // primitives that shape list queries. It must stay free of domain types so
 // domains never import each other through it.
-package store
+package persistence
 
 import (
 	"errors"

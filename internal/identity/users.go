@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -105,7 +105,7 @@ func (s *UserStore) Insert(ctx context.Context, user User) (User, error) {
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&user.ID, &user.CreatedAt, &user.RoleID, &user.Version)
 	if err != nil {
 		switch {
-		case store.IsUniqueViolation(err, "users_email_key"):
+		case persistence.IsUniqueViolation(err, "users_email_key"):
 			return User{}, ErrDuplicateEmail
 		default:
 			return User{}, err
@@ -136,7 +136,7 @@ func (s *UserStore) GetByEmail(ctx context.Context, email string) (User, error) 
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return User{}, store.ErrRecordNotFound
+			return User{}, persistence.ErrRecordNotFound
 		default:
 			return User{}, err
 		}
@@ -152,7 +152,7 @@ func (s *UserStore) GetByEmail(ctx context.Context, email string) (User, error) 
 // user_id is only ever the authenticated user's ID).
 func (s *UserStore) Get(ctx context.Context, id int) (User, error) {
 	if id < 1 {
-		return User{}, store.ErrRecordNotFound
+		return User{}, persistence.ErrRecordNotFound
 	}
 
 	query := `
@@ -175,7 +175,7 @@ func (s *UserStore) Get(ctx context.Context, id int) (User, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return User{}, store.ErrRecordNotFound
+			return User{}, persistence.ErrRecordNotFound
 		default:
 			return User{}, err
 		}
@@ -200,10 +200,10 @@ func (s *UserStore) Update(ctx context.Context, user User) (User, error) {
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&user.RoleID, &user.Version)
 	if err != nil {
 		switch {
-		case store.IsUniqueViolation(err, "users_email_key"):
+		case persistence.IsUniqueViolation(err, "users_email_key"):
 			return User{}, ErrDuplicateEmail
 		case errors.Is(err, pgx.ErrNoRows):
-			return User{}, store.ErrEditConflict
+			return User{}, persistence.ErrEditConflict
 		default:
 			return User{}, err
 		}
@@ -239,10 +239,10 @@ func (s *UserStore) UpdateTx(ctx context.Context, tx pgx.Tx, user User) (User, e
 	err := tx.QueryRow(ctx, query, args...).Scan(&user.RoleID, &user.Version)
 	if err != nil {
 		switch {
-		case store.IsUniqueViolation(err, "users_email_key"):
+		case persistence.IsUniqueViolation(err, "users_email_key"):
 			return User{}, ErrDuplicateEmail
 		case errors.Is(err, pgx.ErrNoRows):
-			return User{}, store.ErrEditConflict
+			return User{}, persistence.ErrEditConflict
 		default:
 			return User{}, err
 		}
@@ -291,7 +291,7 @@ func (s *UserStore) getForToken(ctx context.Context, q rowQuerier, tokenScope, t
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			return User{}, store.ErrRecordNotFound
+			return User{}, persistence.ErrRecordNotFound
 		default:
 			return User{}, err
 		}

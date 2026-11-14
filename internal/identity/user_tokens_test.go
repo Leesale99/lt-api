@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	storepkg "lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // --- pure unit tests (no database) ---
@@ -105,7 +105,7 @@ func TestNewAndGetForToken(t *testing.T) {
 		}
 
 		_, err = store.Users.GetForToken(context.Background(), ScopeAuthentication, token.Plaintext)
-		if !errors.Is(err, storepkg.ErrRecordNotFound) {
+		if !errors.Is(err, persistence.ErrRecordNotFound) {
 			t.Errorf("GetForToken with wrong scope: got %v, want ErrRecordNotFound", err)
 		}
 	})
@@ -127,7 +127,7 @@ func TestNewAndGetForToken(t *testing.T) {
 		}
 
 		_, err = store.Users.GetForToken(context.Background(), ScopeAuthentication, token.Plaintext)
-		if !errors.Is(err, storepkg.ErrRecordNotFound) {
+		if !errors.Is(err, persistence.ErrRecordNotFound) {
 			t.Errorf("GetForToken for expired token: got %v, want ErrRecordNotFound", err)
 		}
 	})
@@ -136,7 +136,7 @@ func TestNewAndGetForToken(t *testing.T) {
 		resetUsers(t)
 
 		_, err := store.Users.GetForToken(context.Background(), ScopeAuthentication, "zzzzzzzzzzzzzzzzzzzzzzzzzz")
-		if !errors.Is(err, storepkg.ErrRecordNotFound) {
+		if !errors.Is(err, persistence.ErrRecordNotFound) {
 			t.Errorf("GetForToken for unknown token: got %v, want ErrRecordNotFound", err)
 		}
 	})

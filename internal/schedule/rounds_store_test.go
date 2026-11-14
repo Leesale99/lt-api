@@ -20,7 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"lt-api.aleksrdvn.com/internal/eventbus"
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // closeRoundSQL is the direct-writer close statement the gate-backstop
@@ -201,7 +201,7 @@ func TestMatchDeleteRestricted(t *testing.T) {
 	}
 
 	// The delete actually deleted: the match row is gone.
-	if _, err := NewStore(schedulePool).Matches.Get(ctx, matchID); !errors.Is(err, store.ErrRecordNotFound) {
+	if _, err := NewStore(schedulePool).Matches.Get(ctx, matchID); !errors.Is(err, persistence.ErrRecordNotFound) {
 		t.Fatalf("Get() after delete = %v, want ErrRecordNotFound", err)
 	}
 }
@@ -379,7 +379,7 @@ func TestRoundStore_Close(t *testing.T) {
 		if err == nil {
 			t.Fatal("direct close over unclosed matches = nil, want refusal")
 		}
-		if !store.IsTriggerViolation(err) {
+		if !persistence.IsTriggerViolation(err) {
 			t.Fatalf("direct close = %v, want the rounds_close_gate P0001", err)
 		}
 
@@ -442,7 +442,7 @@ func TestRoundStore_Close_MidTxFailureLeavesNoTrace(t *testing.T) {
 	}
 	// updateRound maps the rounds-gate P0001 to ErrRecordInUse (409),
 	// ADR-007/008 convention.
-	if !errors.Is(err, store.ErrRecordInUse) {
+	if !errors.Is(err, persistence.ErrRecordInUse) {
 		t.Fatalf("Close() = %v, want ErrRecordInUse", err)
 	}
 
@@ -505,7 +505,7 @@ func TestRoundStore_Close_ProvesPostgresRollsBack(t *testing.T) {
 	// The flip under a dead season aborts the statement (and the tx).
 	if _, err := tx.Exec(ctx, `UPDATE schedule.rounds SET status = 'closed', version = version + 1 WHERE id = $1 AND version = 1`, roundID); err == nil {
 		t.Fatal("flip in dead-season tx = nil, want the progress-gate refusal")
-	} else if !store.IsTriggerViolation(err) {
+	} else if !persistence.IsTriggerViolation(err) {
 		t.Fatalf("flip error = %v, want P0001", err)
 	}
 

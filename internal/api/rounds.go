@@ -9,7 +9,7 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/constants"
 	schedule "lt-api.aleksrdvn.com/internal/schedule"
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
 
@@ -35,7 +35,7 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -67,7 +67,7 @@ func (app *Application) createRoundHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrDuplicateRecord):
+		case errors.Is(err, persistence.ErrDuplicateRecord):
 			app.duplicateRecordResponse(w, r)
 			return
 		default:
@@ -100,7 +100,7 @@ func (app *Application) showRoundHandler(w http.ResponseWriter, r *http.Request)
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -159,7 +159,7 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)
@@ -225,11 +225,11 @@ func (app *Application) updateRoundHandler(w http.ResponseWriter, r *http.Reques
 	}
 	if err != nil {
 		switch {
-		case errors.Is(err, store.ErrEditConflict):
+		case errors.Is(err, persistence.ErrEditConflict):
 			app.editConflictResponse(w, r)
-		case errors.Is(err, store.ErrDuplicateRecord):
+		case errors.Is(err, persistence.ErrDuplicateRecord):
 			app.duplicateRecordResponse(w, r)
-		case errors.Is(err, store.ErrRecordInUse):
+		case errors.Is(err, persistence.ErrRecordInUse):
 			// A DB gate refused: rounds_freeze_gate (the update tried to
 			// regress a round with started matches, ADR-008) or
 			// rounds_close_gate (close over unsettled matches, ADR-022).
@@ -269,9 +269,9 @@ func (app *Application) deleteRoundHandler(w http.ResponseWriter, r *http.Reques
 		switch {
 		case errors.Is(err, context.Canceled):
 			return
-		case errors.Is(err, store.ErrRecordInUse):
+		case errors.Is(err, persistence.ErrRecordInUse):
 			app.recordInUseResponse(w, r)
-		case errors.Is(err, store.ErrRecordNotFound):
+		case errors.Is(err, persistence.ErrRecordNotFound):
 			app.notFoundResponse(w, r)
 		default:
 			app.serverErrorResponse(w, r, err)

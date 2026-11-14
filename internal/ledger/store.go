@@ -5,7 +5,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // Store is the Ledger implementation behind the intent seam: the rides
@@ -24,7 +24,7 @@ func NewStore() *Store { return &Store{} }
 // lock and row are one statement, not a two-step lock onto an existing
 // balance). Phase 06 moves the real movement (player balance debit, token
 // account credit) here.
-func (s *Store) LockTokens(_ context.Context, _ store.Querier, _, _, _ int, _, _ decimal.Decimal) error {
+func (s *Store) LockTokens(_ context.Context, _ persistence.Querier, _, _, _ int, _, _ decimal.Decimal) error {
 	return nil
 }
 
@@ -34,7 +34,7 @@ func (s *Store) LockTokens(_ context.Context, _ store.Querier, _, _, _ int, _, _
 // composes correctly even if a read in the same tx already saw a newer
 // value. 0 rows means the ride vanished mid-tx — refuse, never silently
 // pass.
-func (s *Store) AccrueBonus(ctx context.Context, q store.Querier, rideID int, delta decimal.Decimal) error {
+func (s *Store) AccrueBonus(ctx context.Context, q persistence.Querier, rideID int, delta decimal.Decimal) error {
 	tag, err := q.Exec(ctx, `
 		UPDATE rides
 		SET bonus_acc = bonus_acc + $2
@@ -44,7 +44,7 @@ func (s *Store) AccrueBonus(ctx context.Context, q store.Querier, rideID int, de
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return store.ErrRecordNotFound
+		return persistence.ErrRecordNotFound
 	}
 	return nil
 }
@@ -54,7 +54,7 @@ func (s *Store) AccrueBonus(ctx context.Context, q store.Querier, rideID int, de
 // — rides_money_state_coupling (000013) refuses an unlocked|lost row
 // carrying acc, so the money write must precede the state write inside the
 // caller's transaction.
-func (s *Store) ReleaseBonus(ctx context.Context, q store.Querier, rideID int) error {
+func (s *Store) ReleaseBonus(ctx context.Context, q persistence.Querier, rideID int) error {
 	tag, err := q.Exec(ctx, `
 		UPDATE rides
 		SET bonus_acc = 0
@@ -64,7 +64,7 @@ func (s *Store) ReleaseBonus(ctx context.Context, q store.Querier, rideID int) e
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return store.ErrRecordNotFound
+		return persistence.ErrRecordNotFound
 	}
 	return nil
 }
@@ -73,6 +73,6 @@ func (s *Store) ReleaseBonus(ctx context.Context, q store.Querier, rideID int) e
 // the rides row keeps its money columns on a burned arrival (the 000013
 // coupling deliberately excludes burn), and no TB balance exists. Phase 06
 // moves the real movement (token account debit, TB credit) here.
-func (s *Store) Burn(_ context.Context, _ store.Querier, _ int, _ decimal.Decimal) error {
+func (s *Store) Burn(_ context.Context, _ persistence.Querier, _ int, _ decimal.Decimal) error {
 	return nil
 }

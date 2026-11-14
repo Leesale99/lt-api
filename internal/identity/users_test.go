@@ -24,7 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	storepkg "lt-api.aleksrdvn.com/internal/store"
+	"lt-api.aleksrdvn.com/internal/shared/persistence"
 	"lt-api.aleksrdvn.com/internal/testdb"
 	"lt-api.aleksrdvn.com/internal/validator"
 )
@@ -403,8 +403,8 @@ func TestGetByEmail(t *testing.T) {
 		resetUsers(t)
 
 		_, err := store.Users.GetByEmail(context.Background(), "ghost@example.com")
-		if !errors.Is(err, storepkg.ErrRecordNotFound) {
-			t.Fatalf("GetByEmail for unknown email: got %v, want store.ErrRecordNotFound", err)
+		if !errors.Is(err, persistence.ErrRecordNotFound) {
+			t.Fatalf("GetByEmail for unknown email: got %v, want persistence.ErrRecordNotFound", err)
 		}
 	})
 }
@@ -469,12 +469,12 @@ func TestUpdate(t *testing.T) {
 
 		// Replay the caller's update with the now-stale version: the WHERE
 		// clause matches no row, and the store translates that into
-		// store.ErrEditConflict — the sentinel the API layer turns into a 409.
+		// persistence.ErrEditConflict — the sentinel the API layer turns into a 409.
 		user.Version = 1 // stale
 		user.Name = "Loser Of The Race"
 		_, err := store.Users.Update(context.Background(), user)
-		if !errors.Is(err, storepkg.ErrEditConflict) {
-			t.Errorf("Update with stale version: got %v, want store.ErrEditConflict", err)
+		if !errors.Is(err, persistence.ErrEditConflict) {
+			t.Errorf("Update with stale version: got %v, want persistence.ErrEditConflict", err)
 		}
 	})
 
