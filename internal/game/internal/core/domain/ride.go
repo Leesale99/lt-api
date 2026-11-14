@@ -15,7 +15,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 type RideState string

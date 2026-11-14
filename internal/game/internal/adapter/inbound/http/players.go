@@ -15,9 +15,9 @@ import (
 	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
 	"lt-api.aleksrdvn.com/internal/game/internal/core/service"
 	"lt-api.aleksrdvn.com/internal/identity"
-	"lt-api.aleksrdvn.com/internal/shared/httpx"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/httpx"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 // UserDirectory is the identity read this transport performs before writing a

@@ -1,6 +1,6 @@
 // Package idempotency owns the idempotency_keys table: the claim-first
 // single-flight engine every idempotent command shares (ADR-024). It is
-// transverse infrastructure — like internal/shared/persistence, it serves
+// transverse infrastructure — like internal/kernel/persistence, it serves
 // more than one context and owns no business rules of its own — so it lives
 // outside both game and schedule (transverse infra, hoisted out of game by
 // the split).
@@ -12,7 +12,7 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 // ErrIdempotencyConflict rejects a request whose Idempotency-Key was already

@@ -28,7 +28,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"lt-api.aleksrdvn.com/internal/eventbus"
 	gamehttp "lt-api.aleksrdvn.com/internal/game/internal/adapter/inbound/http"
 	"lt-api.aleksrdvn.com/internal/game/internal/adapter/outbound"
 	"lt-api.aleksrdvn.com/internal/game/internal/adapter/outbound/postgres"
@@ -36,6 +35,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/game/internal/core/port"
 	"lt-api.aleksrdvn.com/internal/game/internal/core/service"
 	"lt-api.aleksrdvn.com/internal/idempotency"
+	"lt-api.aleksrdvn.com/internal/kernel/eventbus"
 )
 
 // Module is the game bounded context as the rest of the process sees it. The
@@ -115,7 +115,7 @@ func (m *Module) RegisterRoutes(router RouteRegistrar, gate PermissionGate) {
 // across the wrong way (ADR-028).
 //
 // The delete-side capability speaks GAME's vocabulary — ErrRecordInUse below,
-// re-exported from the core domain — never the shared persistence kernel's.
+// re-exported from the core domain — never the kernel persistence package's.
 // The calendar's port speaks its own model.ErrRecordInUse, so the composition
 // root adapts the two at the boundary (cmd/api's gameRefs); neither module
 // imports the other's sentinels.

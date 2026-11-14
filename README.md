@@ -36,17 +36,22 @@ cmd/api/              Entry point + composition root, in explicit order:
                       Serve. Side files: routes.go (router, 404/405),
                       healthcheck.go, gamerefs.go (schedule↔game seam
                       adapter: the only place both vocabularies meet).
-internal/arch/        Boundary matrix, path-aware (shared:* classes, module
-                      classes collapse nested packages, cmd row):
+internal/arch/        Boundary matrix, path-aware (kernel:*/shared:* classes,
+                      module classes collapse nested packages, cmd row):
                       TestImportBoundaries + TestSharedKernelImportsOnlyShared.
-internal/shared/      Kernel: httpx (transport: JSON envelope/codecs,
+internal/kernel/      Kernel machinery: httpx (transport: JSON envelope/codecs,
                       params, filters, error writers, request context,
-                      middleware incl. ratelimiter), server (process
-                      lifecycle: Serve/shutdown/RunOptions/background
-                      tasks), persistence (Querier, Filters/Metadata,
-                      pg-error classifiers — no shared sentinels), plus
-                      eventbus, validator, logging, mailer, config,
-                      vcs, testdb.
+                      middleware incl. ratelimiter), persistence (Querier,
+                      Filters/Metadata, pg-error classifiers — no shared
+                      sentinels), eventbus, validator. All of it classifies
+                      as kernel:<name> in the boundary matrix.
+internal/shared/      server (process lifecycle: Serve/shutdown/RunOptions/
+                      background tasks) — the one package still here.
+internal/config/,     The rest of the kernel, flat under internal/ and still
+internal/logging/,    classed as shared:<name>: config, logging, mailer, vcs,
+internal/mailer/,     testdb.
+internal/vcs/,
+internal/testdb/
 internal/schedule/    Layered module: facade schedule.go + internal/{model,
                       repository, service, handler}.
 internal/game/        Hexagonal module: facade game.go + internal/core/{domain,
@@ -62,9 +67,11 @@ docs/                 Learning-oriented implementation plan (phases 0–8)
 Bounded contexts sit behind facades: the module root is the only package
 outsiders may import, and everything else lives under
 `internal/<ctx>/internal/` so the layers cannot leak — the privacy is
-compile-time, not convention. `httpx`, `server` and `persistence` are nested
-under `internal/shared/`; the rest of the kernel is flat under `internal/`
-and all of it classifies as `shared:<name>` in the boundary matrix.
+compile-time, not convention. `httpx`, `persistence`, `eventbus` and
+`validator` are the kernel, nested under `internal/kernel/`; `server` stays
+under `internal/shared/`, and the rest of the kernel is flat under
+`internal/`. The moved packages classify as `kernel:<name>`, the rest as
+`shared:<name>`, in the boundary matrix.
 
 Each module owns its own route table (`RegisterRoutes`), and `cmd/api`
 composes them — so the wire surface is identical to the pre-refactor one.

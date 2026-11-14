@@ -30,7 +30,7 @@ import (
 	"errors"
 
 	"lt-api.aleksrdvn.com/internal/identity/internal/model"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
 )
 
 // Mailer is everything identity needs from the outside world's mail

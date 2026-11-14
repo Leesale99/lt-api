@@ -7,7 +7,7 @@ package model
 import (
 	"time"
 
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 type Odds struct {

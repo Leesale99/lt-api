@@ -12,7 +12,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
-	"lt-api.aleksrdvn.com/internal/shared/httpx"
+	"lt-api.aleksrdvn.com/internal/kernel/httpx"
 )
 
 // RideResponse is a ride as the API exposes it (the frozen wire shape).

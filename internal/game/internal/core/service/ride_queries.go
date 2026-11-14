@@ -9,7 +9,7 @@ import (
 	"context"
 
 	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
 )
 
 // RideGet reads one ride — the show use case. domain.ErrNotFound when it does

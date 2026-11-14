@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
 )
 
 // ErrInvalidToken is the verdict a UserLookup returns for a bearer token it

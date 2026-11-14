@@ -16,7 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
 )
 
 // RideRepository stores rides — and only rides. Calendar facts reach the

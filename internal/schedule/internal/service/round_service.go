@@ -4,10 +4,10 @@ import (
 	"context"
 	"log/slog"
 
-	"lt-api.aleksrdvn.com/internal/eventbus"
+	"lt-api.aleksrdvn.com/internal/kernel/eventbus"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/repository"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // RoundService is the round use case surface. Plain CRUD and the Open

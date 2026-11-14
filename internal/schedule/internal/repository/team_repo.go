@@ -8,8 +8,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 type TeamRepository struct {

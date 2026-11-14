@@ -20,10 +20,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"lt-api.aleksrdvn.com/internal/eventbus"
+	"lt-api.aleksrdvn.com/internal/kernel/eventbus"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/repository"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // testRepositories builds the storage set the close-side tests drive over

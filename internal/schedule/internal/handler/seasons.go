@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"strconv"
 
+	"lt-api.aleksrdvn.com/internal/kernel/httpx"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
-	"lt-api.aleksrdvn.com/internal/shared/httpx"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
-	"lt-api.aleksrdvn.com/internal/validator"
 )
 
 func (h *Handler) listSeasons(w http.ResponseWriter, r *http.Request) {

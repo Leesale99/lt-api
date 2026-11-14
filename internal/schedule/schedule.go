@@ -26,7 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"lt-api.aleksrdvn.com/internal/eventbus"
+	"lt-api.aleksrdvn.com/internal/kernel/eventbus"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/handler"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/repository"
@@ -212,7 +212,8 @@ const (
 
 // The model's sentinels, re-exported: callers (game's anti-corruption layer,
 // the E2E suites) map them to their own vocabulary. They are schedule's own —
-// the shared persistence kernel no longer carries record sentinels (phase 6).
+// the kernel's persistence package no longer carries record sentinels (phase
+// 6).
 var (
 	ErrRecordNotFound  = model.ErrRecordNotFound
 	ErrRecordInUse     = model.ErrRecordInUse

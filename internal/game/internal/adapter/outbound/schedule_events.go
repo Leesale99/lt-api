@@ -15,8 +15,8 @@ package outbound
 import (
 	"context"
 
-	"lt-api.aleksrdvn.com/internal/eventbus"
 	"lt-api.aleksrdvn.com/internal/game/internal/core/service"
+	"lt-api.aleksrdvn.com/internal/kernel/eventbus"
 	"lt-api.aleksrdvn.com/internal/schedule"
 )
 

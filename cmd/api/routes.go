@@ -13,8 +13,8 @@ import (
 
 	"lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/identity"
+	"lt-api.aleksrdvn.com/internal/kernel/httpx"
 	"lt-api.aleksrdvn.com/internal/schedule"
-	"lt-api.aleksrdvn.com/internal/shared/httpx"
 	"lt-api.aleksrdvn.com/internal/shared/server"
 )
 

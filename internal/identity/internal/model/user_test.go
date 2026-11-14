@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 // TestValidateRegistration pins the field rules of the only user validator.

@@ -15,7 +15,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
 )
 
 // Ledger is the money seam game consumes. Intent-style names: the caller

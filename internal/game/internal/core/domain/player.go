@@ -3,7 +3,7 @@ package domain
 import (
 	"time"
 
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 // Player is a game entrant scoped to a season — who plays, not who logs in

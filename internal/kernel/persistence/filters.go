@@ -4,7 +4,7 @@ import (
 	"slices"
 	"strings"
 
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 // Filters carries the standard list-query pagination parameters shared by

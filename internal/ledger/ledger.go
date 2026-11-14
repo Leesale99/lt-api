@@ -24,12 +24,12 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
 )
 
 // ErrNotFound is the ledger's own sentinel: a money write that matched no
 // ride row (the row vanished mid-transaction). The ledger owns its vocabulary
-// — the shared persistence kernel carries classifiers and pagination only.
+// — the kernel's persistence package carries classifiers and pagination only.
 var ErrNotFound = errors.New("ledger: record not found")
 
 // Ledger is the money seam game consumes. Intent-style names: the caller

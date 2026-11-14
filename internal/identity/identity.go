@@ -29,8 +29,8 @@ import (
 	"lt-api.aleksrdvn.com/internal/identity/internal/model"
 	"lt-api.aleksrdvn.com/internal/identity/internal/repository"
 	"lt-api.aleksrdvn.com/internal/identity/internal/service"
-	"lt-api.aleksrdvn.com/internal/shared/httpx"
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/httpx"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 // Mailer is the module's mail dependency: the interface declared at the

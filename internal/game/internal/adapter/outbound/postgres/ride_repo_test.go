@@ -18,7 +18,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
 )
 
 func rideFilters(sort string) persistence.Filters {

@@ -19,7 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"lt-api.aleksrdvn.com/internal/eventbus"
+	"lt-api.aleksrdvn.com/internal/kernel/eventbus"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/repository"
 )
 
@@ -39,7 +39,7 @@ type Repositories struct {
 //
 // The pool exists for exactly one reason: ResolveMatch owns a transaction
 // boundary. The bus and logger are the process event exchange and its
-// logger (internal/eventbus) — nil-safe, so a bare service in a unit test
+// logger (internal/kernel/eventbus) — nil-safe, so a bare service in a unit test
 // publishes nothing.
 type Service struct {
 	Seasons *SeasonService

@@ -22,9 +22,9 @@ import (
 	"lt-api.aleksrdvn.com/internal/game/internal/core/port"
 	"lt-api.aleksrdvn.com/internal/game/internal/core/service"
 	"lt-api.aleksrdvn.com/internal/idempotency"
-	"lt-api.aleksrdvn.com/internal/shared/httpx"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/httpx"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 func (h *Handler) showRide(w http.ResponseWriter, r *http.Request) {

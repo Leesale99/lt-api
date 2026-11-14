@@ -9,9 +9,11 @@
 //
 //   - "<module>" — a bounded context (schedule, game, ledger, identity,
 //     idempotency), at ANY depth of its directory tree.
-//   - "shared:<name>" — everything else under internal/: the shared kernel,
-//     both nested (shared/persistence → shared:persistence) and flat
-//     (validator → shared:validator).
+//   - "kernel:<name>" — the kernel machinery under internal/kernel/
+//     (kernel/persistence → kernel:persistence): httpx, persistence,
+//     eventbus, validator.
+//   - "shared:<name>" — everything else under internal/shared/: today only
+//     the server package (shared/server → shared:server).
 //   - "cmd" — the composition root. Phase 6 deleted the api gateway class
 //     with the package: cmd/api now owns the router, the middleware chain and
 //     the healthcheck, so there is no API-layer row to special-case.
@@ -27,38 +29,38 @@
 // The Phase 05 refinements the matrix encodes:
 //
 //   - schedule is the ACL: it owns teams/seasons/rounds/matches, mints their
-//     ids, and may import only the shared kernel (shared:persistence,
-//     shared:validator, shared:httpx) and the event bus it publishes on. It
+//     ids, and may import only the kernel (kernel:persistence,
+//     kernel:validator, kernel:httpx) and the event bus it publishes on. It
 //     must NEVER import game, ledger or identity — the downstream side of the
 //     seam.
 //   - schedule is also the LAYERED module (phase 3): its facade (the root
 //     package) reaches its own internal layers and the kernel, and each layer
-//     has its own row — model → shared:validator; repository →
-//     model/shared:persistence; service → model/repository/shared:eventbus;
-//     handler → model/service/shared:httpx. The layers cannot skip past each
+//     has its own row — model → kernel:validator; repository →
+//     model/kernel:persistence; service → model/repository/kernel:eventbus;
+//     handler → model/service/kernel:httpx. The layers cannot skip past each
 //     other, and no layer can reach the facade's callers.
 //   - game is the HEXAGONAL module (phase 4): its facade (the root package)
 //     reaches its own core and adapters and nothing else; each nested package
-//     has its own row — core/domain → shared:validator; core/port →
-//     domain/shared:persistence; core/service → domain/port; the inbound HTTP
-//     adapter → core/service/domain/port + shared:httpx + the idempotency and
+//     has its own row — core/domain → kernel:validator; core/port →
+//     domain/kernel:persistence; core/service → domain/port; the inbound HTTP
+//     adapter → core/service/domain/port + kernel:httpx + the idempotency and
 //     identity ROOTS (wire-level translation only); the outbound ACL package
 //     is the ONLY game package importing schedule (the anti-corruption layer
 //     and the event translation); the Postgres adapter → core + the
 //     persistence kernel. The facade wires the ledger and idempotency ports
 //     the core declares.
-//   - ledger and eventbus are thin: no domain imports (shared:persistence
+//   - ledger and eventbus are thin: no domain imports (kernel:persistence
 //     only for ledger).
 //   - identity is also a LAYERED module (phase 5): its facade (the root
-//     package) reaches its own internal layers and the shared kernel, and
-//     each layer has its own row — model → shared:validator; repository →
-//     model/shared:persistence; service → model/repository/shared:persistence
+//     package) reaches its own internal layers and the kernel, and
+//     each layer has its own row — model → kernel:validator; repository →
+//     model/kernel:persistence; service → model/repository/kernel:persistence
 //     (it owns the DB budget its store calls are wrapped in);
-//     handler → model/service/shared:httpx/shared:persistence/shared:validator.
+//     handler → model/service/kernel:httpx/kernel:persistence/kernel:validator.
 //     The facade is what httpx's consumer-side lookups are satisfied by, and
 //     it is the only identity package any other class may import.
-//   - cmd/api is the composition root: it wires every module and the shared
-//     kernel, owns the router and the chain, and imports anything. There is
+//   - cmd/api is the composition root: it wires every module and the kernel,
+//     owns the router and the chain, and imports anything. There is
 //     no gateway class between it and the modules (phase 6 deleted the api
 //     package); the only HTTP surface left above the modules is httpx.
 //
@@ -91,10 +93,10 @@ import (
 var modulePath = mustModulePath()
 
 // moduleClasses are the package classes that are NOT kernel: the bounded
-// contexts. Every other internal package classifies as "shared:<name>" (see
-// classOf) — a new module must be registered here to get its own matrix row,
-// so an unregistered package can only ever be treated as kernel (which
-// forbids it from importing any module).
+// contexts. Every other internal package classifies as "kernel:<name>" or
+// "shared:<name>" (see classOf) — a new module must be registered here to get
+// its own matrix row, so an unregistered package can only ever be treated as
+// kernel (which forbids it from importing any module).
 var moduleClasses = map[string]bool{
 	"game":        true,
 	"identity":    true,
@@ -142,8 +144,9 @@ var hexLayers = map[string]map[string]string{
 
 // allowedImports maps a class to the classes it may import. Anything not
 // listed is forbidden; a class absent from the map defaults to: no internal
-// imports. shared:* rows may list only shared:* (pinned by
-// TestSharedKernelImportsOnlyShared): the kernel never reaches a module.
+// imports. shared:* rows may list only shared:* and kernel:* rows only
+// kernel:* (pinned by TestSharedKernelImportsOnlyShared and
+// TestKernelImportsOnlyKernel): the kernel never reaches a module.
 var allowedImports = map[string]map[string]bool{
 	// schedule (layered): the facade reaches its own layers and nothing else
 	// internal; each layer's row is its legal edge set.
@@ -152,34 +155,34 @@ var allowedImports = map[string]map[string]bool{
 		"schedule:model":      true,
 		"schedule:repository": true,
 		"schedule:service":    true,
-		"shared:eventbus":     true,
+		"kernel:eventbus":     true,
 	},
 	// The domain model: entities, validators, events. No storage, no
 	// transport, no bus.
 	"schedule:model": {
-		"shared:validator": true,
+		"kernel:validator": true,
 	},
 	// Storage: SQL and its error classification. It maps rows to model
 	// values; it never publishes (the service owns the event seam).
 	"schedule:repository": {
 		"schedule:model":     true,
-		"shared:persistence": true,
+		"kernel:persistence": true,
 	},
 	// Use cases: they compose repositories, publish post-commit, and speak
 	// the model's vocabulary.
 	"schedule:service": {
 		"schedule:model":      true,
 		"schedule:repository": true,
-		"shared:eventbus":     true,
-		"shared:persistence":  true,
+		"kernel:eventbus":     true,
+		"kernel:persistence":  true,
 	},
 	// The HTTP layer: request shape and wire DTOs over the use cases.
 	"schedule:handler": {
 		"schedule:model":     true,
 		"schedule:service":   true,
-		"shared:httpx":       true,
-		"shared:persistence": true,
-		"shared:validator":   true,
+		"kernel:httpx":       true,
+		"kernel:persistence": true,
+		"kernel:validator":   true,
 	},
 	// game (hexagonal): the facade wires its own layers and the ports'
 	// providers; it reaches no other context's internals (ledger and
@@ -192,20 +195,20 @@ var allowedImports = map[string]map[string]bool{
 		"game:core:port":                 true,
 		"game:core:service":              true,
 		"idempotency":                    true, // the facade wraps the claim engine
-		"shared:eventbus":                true,
-		"shared:persistence":             true, // the calendar capability contract
+		"kernel:eventbus":                true,
+		"kernel:persistence":             true, // the calendar capability contract
 	},
 	// The core domain: entities, validators, the state machine, sentinels. No
 	// storage, no transport, no calendar, no event bus.
 	"game:core:domain": {
-		"shared:validator": true,
+		"kernel:validator": true,
 	},
 	// The consumer-side interfaces. They name the pgx tx type (the documented
 	// pragmatic exception) and the pagination primitives every list crosses
 	// with; nothing else.
 	"game:core:port": {
 		"game:core:domain":   true,
-		"shared:persistence": true,
+		"kernel:persistence": true,
 	},
 	// The use cases: ports and domain, plus the kernel's pagination shape the
 	// list use cases pass through and the validator the merged player row goes
@@ -213,8 +216,8 @@ var allowedImports = map[string]map[string]bool{
 	"game:core:service": {
 		"game:core:domain":   true,
 		"game:core:port":     true,
-		"shared:persistence": true,
-		"shared:validator":   true,
+		"kernel:persistence": true,
+		"kernel:validator":   true,
 	},
 	// The inbound HTTP adapter: the frozen wire DTOs over the use cases, plus
 	// the two module ROOTS it translates at the wire level (idempotency's token
@@ -226,9 +229,9 @@ var allowedImports = map[string]map[string]bool{
 		"game:core:service":  true,
 		"identity":           true,
 		"idempotency":        true,
-		"shared:httpx":       true,
-		"shared:persistence": true,
-		"shared:validator":   true,
+		"kernel:httpx":       true,
+		"kernel:persistence": true,
+		"kernel:validator":   true,
 	},
 	// The outbound anti-corruption layers: THE only game package allowed to
 	// import the calendar. Its types and errors stop here.
@@ -238,34 +241,34 @@ var allowedImports = map[string]map[string]bool{
 		"game:core:service":  true,
 		"idempotency":        true,
 		"schedule":           true,
-		"shared:eventbus":    true,
-		"shared:persistence": true,
+		"kernel:eventbus":    true,
+		"kernel:persistence": true,
 	},
 	// The Postgres adapter: the SQL behind the ports and its error
 	// translation. No calendar, no transport, no use cases.
 	"game:adapter:outbound:postgres": {
 		"game:core:domain":   true,
 		"game:core:port":     true,
-		"shared:persistence": true,
+		"kernel:persistence": true,
 	},
 	"identity": {
 		"identity:handler":    true,
 		"identity:model":      true,
 		"identity:repository": true,
 		"identity:service":    true,
-		"shared:httpx":        true,
-		"shared:validator":    true,
+		"kernel:httpx":        true,
+		"kernel:validator":    true,
 	},
 	// The domain model: entities, validators and the identity sentinels. No
 	// storage, no transport.
 	"identity:model": {
-		"shared:validator": true,
+		"kernel:validator": true,
 	},
 	// Storage: SQL and its error classification (Postgres facts → the model's
 	// sentinels). It maps rows to model values; it never speaks HTTP.
 	"identity:repository": {
 		"identity:model":     true,
-		"shared:persistence": true,
+		"kernel:persistence": true,
 	},
 	// Use cases: the activation transaction and the registration/token
 	// flows (which deliver mail through the Mailer port declared here). The
@@ -274,7 +277,7 @@ var allowedImports = map[string]map[string]bool{
 	"identity:service": {
 		"identity:model":      true,
 		"identity:repository": true,
-		"shared:persistence":  true,
+		"kernel:persistence":  true,
 	},
 	// The HTTP layer: the frozen wire DTOs over the use cases. It draws the
 	// DB budget (persistence.DBTimeout) for the paths whose use case does no
@@ -282,29 +285,29 @@ var allowedImports = map[string]map[string]bool{
 	"identity:handler": {
 		"identity:model":     true,
 		"identity:service":   true,
-		"shared:httpx":       true,
-		"shared:persistence": true,
-		"shared:validator":   true,
+		"kernel:httpx":       true,
+		"kernel:persistence": true,
+		"kernel:validator":   true,
 	},
 	"ledger": {
-		"shared:persistence": true,
+		"kernel:persistence": true,
 	},
 	"idempotency": {
-		"shared:validator": true,
+		"kernel:validator": true,
 	},
 
-	// The shared kernel.
-	"shared:eventbus":    {}, // pure in-proc pub/sub: stdlib only
-	"shared:persistence": {"shared:validator": true},
-	// shared:httpx is the transport shared by every HTTP surface: it reaches
-	// the shared kernel (persistence, validator) and nothing else — no module
+	// The kernel machinery (internal/kernel/).
+	"kernel:eventbus":    {}, // pure in-proc pub/sub: stdlib only
+	"kernel:persistence": {"kernel:validator": true},
+	// kernel:httpx is the transport shared by every HTTP surface: it reaches
+	// the kernel (persistence, validator) and nothing else — no module
 	// may ever be reachable from it (identity arrives as a consumer-side
 	// interface, adapted at the composition boundary). Its per-request list
 	// defaults and sweep interval are local consts; the database budget it
 	// spends on auth/permission lookups comes from the persistence kernel.
-	"shared:httpx": {
-		"shared:persistence": true,
-		"shared:validator":   true,
+	"kernel:httpx": {
+		"kernel:persistence": true,
+		"kernel:validator":   true,
 	},
 	// e2e is the acceptance suite (the composition root in test form): it
 	// composes the real modules over the real Postgres test pools exactly as
@@ -318,9 +321,9 @@ var allowedImports = map[string]map[string]bool{
 		"idempotency":        true,
 		"ledger":             true,
 		"schedule":           true,
-		"shared:eventbus":    true,
-		"shared:httpx":       true,
-		"shared:persistence": true,
+		"kernel:eventbus":    true,
+		"kernel:httpx":       true,
+		"kernel:persistence": true,
 		"shared:server":      true, // the suite drives the process lifecycle
 	},
 
@@ -328,11 +331,11 @@ var allowedImports = map[string]map[string]bool{
 	// handler and knows no module, so it reaches nothing internal — its
 	// shutdown budgets are local consts.
 	"shared:server":    {},
-	"shared:validator": {},
+	"kernel:validator": {},
 	"shared:config": {
 		"shared:vcs":         true,
-		"shared:persistence": true,
-		"shared:validator":   true,
+		"kernel:persistence": true,
+		"kernel:validator":   true,
 		"shared:logging":     true,
 	},
 	"shared:logging": {},
@@ -356,7 +359,7 @@ var testOnlyImports = map[string]map[string]bool{
 		"idempotency":                    true,
 		"ledger":                         true,
 		"schedule":                       true,
-		"shared:eventbus":                true,
+		"kernel:eventbus":                true,
 	},
 	"game:adapter:outbound:postgres": {
 		"game:adapter:outbound": true,
@@ -365,7 +368,7 @@ var testOnlyImports = map[string]map[string]bool{
 }
 
 type edge struct {
-	from     string // class of the importing package ("cmd", "e2e", "<module>" or "shared:<name>")
+	from     string // class of the importing package ("cmd", "e2e", "<module>", "kernel:<name>" or "shared:<name>")
 	to       string // class of the imported package, same scheme
 	file     string // repo-relative file path where the edge appears
 	testOnly bool   // the importing file is a _test.go
@@ -452,15 +455,32 @@ func TestImportBoundaries(t *testing.T) {
 // TestSharedKernelImportsOnlyShared pins the kernel direction: no shared:*
 // row may list a module class, so the kernel can never grow a dependency on a
 // bounded context (the edge check would already reject the import; this names
-// the rule when someone edits the matrix instead).
+// the rule when someone edits the matrix instead). A shared:* row may reach the
+// kernel machinery (kernel:*), but never a module.
 func TestSharedKernelImportsOnlyShared(t *testing.T) {
 	for from, targets := range allowedImports {
 		if !strings.HasPrefix(from, "shared:") {
 			continue
 		}
 		for to := range targets {
-			if !strings.HasPrefix(to, "shared:") {
-				t.Errorf("matrix: %s may not import %s — the shared kernel imports shared:* only", from, to)
+			if !strings.HasPrefix(to, "shared:") && !strings.HasPrefix(to, "kernel:") {
+				t.Errorf("matrix: %s may not import %s — the shared kernel imports shared:*/kernel:* only", from, to)
+			}
+		}
+	}
+}
+
+// TestKernelImportsOnlyKernel pins the same direction for the renamed kernel
+// classes: no kernel:* row may list a module or a shared:* class, so the
+// kernel imports the kernel only (httpx → persistence → validator).
+func TestKernelImportsOnlyKernel(t *testing.T) {
+	for from, targets := range allowedImports {
+		if !strings.HasPrefix(from, "kernel:") {
+			continue
+		}
+		for to := range targets {
+			if !strings.HasPrefix(to, "kernel:") {
+				t.Errorf("matrix: %s may not import %s — the kernel imports kernel:* only", from, to)
 			}
 		}
 	}
@@ -541,8 +561,8 @@ func classify(path, root string) (class string, ok bool) {
 // deeply it nests (internal/schedule/internal/foo is still "schedule"), the
 // acceptance suite is its own class (internal/e2e → "e2e"), and everything
 // else is kernel, named by its first one or two segments
-// (internal/shared/httpx → shared:httpx, internal/validator →
-// shared:validator). The collapse of nested packages into their module class
+// (internal/kernel/httpx → kernel:httpx, internal/shared/server →
+// shared:server). The collapse of nested packages into their module class
 // IS the "modules import module roots only" rule.
 func classOf(below []string) (string, bool) {
 	if len(below) == 0 || below[0] == "" {
@@ -554,6 +574,12 @@ func classOf(below []string) (string, bool) {
 		// defaulting to "shared:e2e", so its (cmd-like) edges are pinned in
 		// their own row and nothing can reach it by accident.
 		return "e2e", true
+	}
+	if below[0] == "kernel" {
+		if len(below) < 2 || below[1] == "" {
+			return "", false // internal/kernel itself holds no packages
+		}
+		return "kernel:" + below[1], true
 	}
 	if below[0] == "shared" {
 		if len(below) < 2 || below[1] == "" {

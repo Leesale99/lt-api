@@ -27,8 +27,8 @@ import (
 	"strings"
 	"testing"
 
-	"lt-api.aleksrdvn.com/internal/shared/httpx"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/httpx"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
 )
 
 // plantPlayerRow inserts a player row and returns its id. Player 1 exists

@@ -3,7 +3,7 @@ package model
 import (
 	"time"
 
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 // SeasonStatus is the lifecycle state of a season.

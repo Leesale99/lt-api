@@ -20,8 +20,8 @@ import (
 	"errors"
 
 	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 // Actor is the authenticated principal a use case runs on behalf of: the user

@@ -12,7 +12,7 @@ import (
 // are fat: every fact a subscriber needs to act is inside the event, so
 // handling needs no joins back into the schedule's tables.
 //
-// Delivery is post-commit, in-process, synchronous (internal/eventbus). A
+// Delivery is post-commit, in-process, synchronous (internal/kernel/eventbus). A
 // crash between the publisher's commit and the publish — or a failing
 // handler — loses the event; that gap is accepted until the Phase 07 sweep
 // / Phase 08 outbox, and every subscriber claims the EventID first

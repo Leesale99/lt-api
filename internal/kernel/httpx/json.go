@@ -18,7 +18,7 @@ import (
 	"strconv"
 	"strings"
 
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 // Envelope is the JSON body shape every handler writes: one or two keys, each

@@ -7,9 +7,9 @@ import (
 	"net/http"
 
 	"lt-api.aleksrdvn.com/internal/identity/internal/model"
-	"lt-api.aleksrdvn.com/internal/shared/httpx"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/httpx"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 func (h *Handler) registerUser(w http.ResponseWriter, r *http.Request) {

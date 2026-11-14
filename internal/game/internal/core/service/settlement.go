@@ -2,7 +2,7 @@ package service
 
 // Settlement (the Game/Schedule split's event seam): game consumes the
 // calendar's MatchResultRecorded and RoundCompleted events — published
-// post-commit, in-process (internal/eventbus) — and settles rides from their
+// post-commit, in-process (internal/kernel/eventbus) — and settles rides from their
 // payloads.
 //
 // The event types below are game's own command vocabulary. The calendar's

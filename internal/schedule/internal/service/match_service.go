@@ -3,9 +3,9 @@ package service
 import (
 	"context"
 
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/repository"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
 )
 
 // MatchService is the match use case surface: pure pass-throughs to the

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 // testToken builds a valid token: the hash must be SHA-256-sized (32 bytes),

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 type Team struct {

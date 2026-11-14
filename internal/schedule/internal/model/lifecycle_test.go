@@ -9,7 +9,7 @@ package model
 import (
 	"testing"
 
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 // assertValidatorErrors compares a validator's errors against the expected

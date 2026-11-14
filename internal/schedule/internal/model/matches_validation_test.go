@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 func TestValidateNewMatch(t *testing.T) {

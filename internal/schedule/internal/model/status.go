@@ -13,7 +13,7 @@ package model
 import (
 	"fmt"
 
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 // checkStatusRegression validates a status transition against the given

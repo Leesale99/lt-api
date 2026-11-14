@@ -10,7 +10,7 @@ package handler
 import (
 	"net/http"
 
-	"lt-api.aleksrdvn.com/internal/shared/httpx"
+	"lt-api.aleksrdvn.com/internal/kernel/httpx"
 )
 
 func (h *Handler) serverError(w http.ResponseWriter, r *http.Request, err error) {

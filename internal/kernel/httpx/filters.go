@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"net/url"
 
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 // ReadListFilters parses the standard list-endpoint query params (page,

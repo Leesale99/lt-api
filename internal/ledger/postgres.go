@@ -5,7 +5,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
 )
 
 // Repository is the Ledger implementation behind the intent seam: the rides

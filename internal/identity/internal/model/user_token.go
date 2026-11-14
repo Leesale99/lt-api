@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"time"
 
-	"lt-api.aleksrdvn.com/internal/validator"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
 const (

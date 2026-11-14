@@ -8,10 +8,10 @@ import (
 	"strconv"
 	"time"
 
+	"lt-api.aleksrdvn.com/internal/kernel/httpx"
+	"lt-api.aleksrdvn.com/internal/kernel/persistence"
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
-	"lt-api.aleksrdvn.com/internal/shared/httpx"
-	"lt-api.aleksrdvn.com/internal/shared/persistence"
-	"lt-api.aleksrdvn.com/internal/validator"
 )
 
 // createMatch is schedule's route (ADR-027): match creation is
