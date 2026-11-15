@@ -172,6 +172,166 @@ func TestStatusVocabularyIsInSync(t *testing.T) {
 	})
 }
 
+// TestStatusRankGatesMirrorGoRanks is the rank drift detector: for every
+// ordered status pair of every schedule vocabulary it probes the DB gate with
+// a fresh minimal fixture and asserts the gate refuses exactly the pairs
+// model.XStatusRegresses calls regressions — with the rank gate's own
+// message, so a refusal from a neighbouring gate (started-freeze, sequence,
+// season-live) cannot stand in for the rank rule. Migration 000019 mirrors
+// the Go rank maps; change one, change both.
+func TestStatusRankGatesMirrorGoRanks(t *testing.T) {
+	requireDB(t)
+
+	ctx := context.Background()
+	cleanup(ctx, t)
+	defer cleanup(ctx, t)
+
+	// newCalendar plants the one shape that isolates the rank rule from the
+	// neighbouring round gates: a fresh live season (no
+	// round_progress_season_not_live) holding only round 1 (max closed round =
+	// 0 = 1-1, no round_sequence_incomplete).
+	newCalendar := func(t *testing.T, roundStatus model.RoundStatus) (seasonID, roundID int) {
+		t.Helper()
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO schedule.seasons (status) VALUES ('in_progress') RETURNING id`).Scan(&seasonID); err != nil {
+			t.Fatalf("plant live season: %v", err)
+		}
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO schedule.rounds (season_id, number, status) VALUES ($1, 1, $2) RETURNING id`,
+			seasonID, roundStatus).Scan(&roundID); err != nil {
+			t.Fatalf("plant round 1 as %s: %v", roundStatus, err)
+		}
+		return seasonID, roundID
+	}
+
+	t.Run("matches", func(t *testing.T) {
+		// Teams only: seed's calendar rows are unused, every probe plants its
+		// own season + round.
+		_, _, homeID, awayID := seed(ctx, t)
+
+		for _, oldStatus := range model.MatchStatuses {
+			for _, newStatus := range model.MatchStatuses {
+				t.Run(fmt.Sprintf("%s_to_%s", oldStatus, newStatus), func(t *testing.T) {
+					seasonID, roundID := newCalendar(t, model.RoundCreated)
+
+					// "Started" is the time fact the started-freeze rule keys on,
+					// and it must not decide this probe: a future starts_at
+					// isolates the rank rule — except when the target is closed,
+					// where the 000005 ended_at stamp (now()) only stays after
+					// starts_at if the match has already started.
+					started := oldStatus == model.MatchInProgress || oldStatus == model.MatchClosed || newStatus == model.MatchClosed
+					startsAt := "now() + interval '1 day'"
+					if started {
+						startsAt = "now() - interval '2 days'"
+					}
+
+					// Old-row shape per matches_status_score_check (score exactly
+					// when in_progress/closed) and matches_ended_at_check
+					// (ended_at exactly when closed, after starts_at).
+					var homeScore, awayScore any
+					endedAt := "NULL"
+					if oldStatus == model.MatchInProgress || oldStatus == model.MatchClosed {
+						homeScore, awayScore = 80, 75
+					}
+					if oldStatus == model.MatchClosed {
+						endedAt = "now() - interval '2 days' + interval '1 hour'"
+					}
+
+					var matchID int
+					err := pool.QueryRow(ctx, fmt.Sprintf(`
+						INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, status, starts_at, home_score, away_score, ended_at)
+						VALUES ($1, $2, $3, $4, 1.5, 2.5, $5, %s, $6, $7, %s)
+						RETURNING id`, startsAt, endedAt),
+						seasonID, roundID, homeID, awayID, oldStatus, homeScore, awayScore).Scan(&matchID)
+					if err != nil {
+						t.Fatalf("plant %s match: %v", oldStatus, err)
+					}
+
+					// New-row shape for the target: score for in_progress/closed;
+					// ended_at kept for closed (the 000005 stamp supplies it on the
+					// transition) and cleared otherwise.
+					var newHome, newAway any
+					if newStatus == model.MatchInProgress || newStatus == model.MatchClosed {
+						newHome, newAway = 80, 75
+					}
+					_, err = pool.Exec(ctx, `
+						UPDATE schedule.matches
+						SET status = $2, home_score = $3, away_score = $4,
+						    ended_at = CASE WHEN $2::text = 'closed' THEN ended_at ELSE NULL END
+						WHERE id = $1`, matchID, newStatus, newHome, newAway)
+
+					assertRankGate(t, err, model.MatchStatusRegresses(oldStatus, newStatus), "match_status_regression")
+				})
+			}
+		}
+	})
+
+	t.Run("rounds", func(t *testing.T) {
+		for _, oldStatus := range model.RoundStatuses {
+			for _, newStatus := range model.RoundStatuses {
+				t.Run(fmt.Sprintf("%s_to_%s", oldStatus, newStatus), func(t *testing.T) {
+					// Planted directly in its old status: round 1 of a live season
+					// is admissible for every vocabulary value (the progress gate
+					// lets an INSERT through once season-live and the sequence
+					// hold), so no other gate is set up to refuse a legal pair.
+					_, roundID := newCalendar(t, oldStatus)
+
+					_, err := pool.Exec(ctx, `UPDATE schedule.rounds SET status = $2 WHERE id = $1`, roundID, newStatus)
+					assertRankGate(t, err, model.RoundStatusRegresses(oldStatus, newStatus), "round_status_regression")
+				})
+			}
+		}
+	})
+
+	t.Run("seasons", func(t *testing.T) {
+		for _, oldStatus := range model.SeasonStatuses {
+			for _, newStatus := range model.SeasonStatuses {
+				t.Run(fmt.Sprintf("%s_to_%s", oldStatus, newStatus), func(t *testing.T) {
+					// Seasons have no INSERT gate, so the fixture row can be
+					// planted in any status; with no matches, season-live is the
+					// only neighbouring check and it never refuses here.
+					var seasonID int
+					if err := pool.QueryRow(ctx,
+						`INSERT INTO schedule.seasons (status) VALUES ($1) RETURNING id`,
+						oldStatus).Scan(&seasonID); err != nil {
+						t.Fatalf("plant %s season: %v", oldStatus, err)
+					}
+
+					_, err := pool.Exec(ctx, `UPDATE schedule.seasons SET status = $2 WHERE id = $1`, seasonID, newStatus)
+					assertRankGate(t, err, model.SeasonStatusRegresses(oldStatus, newStatus), "season_status_regression")
+				})
+			}
+		}
+	})
+}
+
+// assertRankGate pins one probe outcome against the Go rank oracle: a
+// regression must be refused by the rank rule itself (P0001 carrying the
+// entity's distinctive message), and every other ordered pair must be
+// accepted — the fixtures above are shaped to isolate the rank rule, so a
+// coincidental refusal from another gate fails here.
+func assertRankGate(t *testing.T, err error, regresses bool, message string) {
+	t.Helper()
+
+	if !regresses {
+		if err != nil {
+			t.Fatalf("rank-legal status pair refused: %v", err)
+		}
+		return
+	}
+
+	if err == nil {
+		t.Fatalf("rank regression accepted; want P0001 (%s)", message)
+	}
+	var pgErr *pgconn.PgError
+	if !errorsAs(err, &pgErr) {
+		t.Fatalf("want pg error P0001 (%s), got %T %v", message, err, err)
+	}
+	if pgErr.Code != errP0001 || pgErr.Message != message {
+		t.Fatalf("got %s (%s), want P0001 (%s)", pgErr.Code, pgErr.Message, message)
+	}
+}
+
 func TestTeamConstraints(t *testing.T) {
 	requireDB(t)
 
