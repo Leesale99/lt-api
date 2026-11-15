@@ -533,7 +533,10 @@ func TestResolveMatchRaces(t *testing.T) {
 				for j := range errs {
 					go func() {
 						defer wg.Done()
-						_, errs[j] = scheduleSvc.ResolveMatch(ctx, matchID, resolveScore(70, 69), time.Now().Add(-2*time.Hour), version)
+						// The supplied end must be after starts_at (000020 keeps it;
+						// matches_ended_at_check validates the pair): the fixture match
+						// started 30 minutes ago.
+						_, errs[j] = scheduleSvc.ResolveMatch(ctx, matchID, resolveScore(70, 69), time.Now().Add(-time.Minute), version)
 					}()
 				}
 				wg.Wait()
@@ -613,7 +616,9 @@ func TestResolveMatchRaces(t *testing.T) {
 				wg.Add(2)
 				go func() {
 					defer wg.Done()
-					_, resolveErr = scheduleSvc.ResolveMatch(ctx, matchID, resolveScore(70, 69), time.Now().Add(-2*time.Hour), 1)
+					// The supplied end must be after starts_at (000020 keeps it; the
+					// fixture match started 30 minutes ago).
+					_, resolveErr = scheduleSvc.ResolveMatch(ctx, matchID, resolveScore(70, 69), time.Now().Add(-time.Minute), 1)
 				}()
 				go func() {
 					defer wg.Done()

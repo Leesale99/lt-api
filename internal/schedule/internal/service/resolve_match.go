@@ -49,7 +49,9 @@ func (s *Service) ResolveMatch(ctx context.Context, matchID int, score model.Sco
 	// site 1 of the score→state rule; game's settlement derives ride
 	// destinations from this payload and the rides_state_gate re-checks the
 	// same facts against the committed match row, so publisher and
-	// subscriber cannot disagree silently.
+	// subscriber cannot disagree silently. EndedAt is the committed row's
+	// value (ResolveTx returns it), not the request parameter: payload and
+	// row are structurally equal.
 	event := model.MatchResultRecorded{
 		EventID:      model.NewEventID(),
 		MatchID:      match.ID,
@@ -60,7 +62,7 @@ func (s *Service) ResolveMatch(ctx context.Context, matchID int, score model.Sco
 		Score:        match.Score,
 		Odds:         match.Odds,
 		WinnerTeamID: match.Winner(),
-		EndedAt:      endedAt,
+		EndedAt:      *match.EndedAt,
 	}
 	publish(ctx, s.bus, s.log, event)
 
