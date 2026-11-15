@@ -200,9 +200,9 @@ name *which* app layer. When generating `business-rules.md`, map:
 | `refusal.sentinel` | string \| null | in refusal | The domain sentinel the repository/ACL maps to (`ErrInvalidTransition`, …). `null` = unmapped. |
 | `refusal.http` | int \| null | in refusal | Status the handler writes. `null` = falls through to 500. |
 | `fixture` | string \| null | no | The shared change-detector fixture id this rule's copies are pinned to. Every `pinned_by` in the catalog must name this id or another rule's `fixture`. |
-| `verification.unit` | list of strings | yes for `implemented` | `path::TestSymbol` (add `::Subtest` text only if the subtest name is stable). Must exist **today** — grep it. |
-| `verification.e2e` | list of strings | no | Informational pointer to existing E2E coverage. |
-| `verification.gherkin` | list of strings | no | **Reserved** — Phase C. No such files exist yet; leave empty/absent. |
+| `verification.unit` | list of strings | yes for `implemented` (one of three) | `path::TestSymbol` (add `::Subtest` text only if the subtest name is stable). One of `unit`/`e2e`/`gherkin`: **any one** satisfies policy 3. Must exist **today** — grep it. |
+| `verification.e2e` | list of strings | no | `path::TestSymbol` for existing E2E coverage. Counts toward policy 3 exactly like `unit`; a rule proved only by an e2e test is covered. Must exist **today**. |
+| `verification.gherkin` | list of strings | no | `<feature-file>::<scenario name>` under `docs/spec/features/**`; every scenario carries an `@rule:R-...` tag. Counts toward policy 3 like `unit`/`e2e`; policy 10 resolves every pointer against the feature tree. |
 | `expert-ref` | string (path) | required for `specified-only` | The phase document the rule comes from. Omitted where no doc covers the rule (an ADR referenced only in code is not a path that exists in this repo). |
 | `notes` | string (block) | required for `drifted`; required when `authority` ≠ category default | What disagrees, what the catalog believes, what would fix it. Rotted pointers (dead files, deleted tests, moved enforcement) belong here behind a `stale-pointer:` prefix, with `status: implemented`. |
 
@@ -243,7 +243,10 @@ A future `cmd/spec` validator should be able to check all of these mechanically.
    from both (§1 copy policy). Otherwise `status: drifted`.
 8. `authority` ≠ category default ⇒ `notes` present.
 9. `site`/`verification` use `path::Symbol`, never line numbers, never a bare package.
-10. No `verification.gherkin` entries until the feature files exist (Phase C).
+10. Every `verification.gherkin` pointer is `<feature-file>::<scenario name>` and
+    resolves to a real scenario under `docs/spec/features/`; the feature tree is
+    cross-checked in both directions — every `@rule` tag names a catalog rule, and every
+    scenario names exactly one.
 11. `pinned_by` names a fixture declared by some rule's `fixture` field.
 
 ---
