@@ -19,6 +19,7 @@ package e2e
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -963,4 +964,245 @@ func TestRideLockIdempotentHandler(t *testing.T) {
 			t.Errorf("idempotency_keys rows = %d, want 0 (claim rolled back)", keyRows)
 		}
 	})
+}
+
+// rideGateProbeRole is the role planted inline for the missing-code rung of
+// the ladder in TestRideRoutesPermissionGate: it holds no permission codes at
+// all, so an activated account carrying it resolves to the empty set
+// (R-IDENTITY-015) and every gated route refuses it. The two seeded roles
+// cannot stand in — 'admin' holds all eleven codes and 'user' holds
+// players:read and players:write.
+const (
+	rideGateProbeRole  = "ride-gate-probe"
+	rideGateProbeEmail = "ride-gate-probe@example.com"
+	// 26 chars: the length ValidateUserTokenPlaintext demands. Only its
+	// SHA-256 is stored, mirroring the production invariant.
+	rideGateProbeToken = "eeeeeeeeeeeeeeeeeeeeeeeeee"
+)
+
+// plantRideGateProbeCaller plants the code-less role, an activated account
+// carrying it and an authentication token, and returns the token plaintext.
+// reset()'s fixture contract leaves roles and permissions in place (seeded
+// reference data), so the planted role is removed explicitly; the users and
+// user_tokens rows are truncated by the next reset() but are deleted here too,
+// keeping the plant self-contained.
+func plantRideGateProbeCaller(t *testing.T) string {
+	t.Helper()
+
+	ctx := context.Background()
+
+	t.Cleanup(func() {
+		if _, err := testPool.Exec(ctx,
+			`DELETE FROM identity.user_tokens WHERE user_id IN (SELECT id FROM identity.users WHERE email = $1)`,
+			rideGateProbeEmail); err != nil {
+			t.Errorf("cleanup probe token: %v", err)
+		}
+		if _, err := testPool.Exec(ctx,
+			`DELETE FROM identity.users WHERE email = $1`, rideGateProbeEmail); err != nil {
+			t.Errorf("cleanup probe user: %v", err)
+		}
+		if _, err := testPool.Exec(ctx,
+			`DELETE FROM identity.roles WHERE name = $1`, rideGateProbeRole); err != nil {
+			t.Errorf("cleanup probe role: %v", err)
+		}
+	})
+
+	var roleID int
+	if err := testPool.QueryRow(ctx,
+		`INSERT INTO identity.roles (name) VALUES ($1) RETURNING id`, rideGateProbeRole,
+	).Scan(&roleID); err != nil {
+		t.Fatalf("plant probe role: %v", err)
+	}
+
+	// The password hash is never compared — this account only ever
+	// authenticates through the token planted below.
+	var userID int
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO identity.users (name, email, password_hash, activated, role_id)
+		VALUES ('Ride Gate Probe', $1, '\x00'::bytea, true, $2)
+		RETURNING id
+	`, rideGateProbeEmail, roleID).Scan(&userID); err != nil {
+		t.Fatalf("plant probe user: %v", err)
+	}
+
+	hash := sha256.Sum256([]byte(rideGateProbeToken))
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO identity.user_tokens (hash, user_id, expiry, scope)
+		VALUES ($1, $2, now() + interval '1 hour', 'authentication')
+	`, hash[:], userID); err != nil {
+		t.Fatalf("plant probe token: %v", err)
+	}
+
+	return rideGateProbeToken
+}
+
+// rideRouteCase is one /v1/rides* route under the gate. admittedCode and
+// admittedBody are the handler's own answer once the gate opens — the fixture
+// has no rides and no command carries a key, so every route lands on a
+// validation/not-found branch rather than a ride write.
+type rideRouteCase struct {
+	name         string
+	method       string
+	url          string
+	admittedCode int
+	admittedBody []string
+}
+
+// TestRideRoutesPermissionGate pins the permission ladder on all six
+// /v1/rides* routes (misalignment-report §6 item #10): the two reads are gated
+// with players:read and the four commands with players:write. The ladder is
+// anonymous -> 401, unactivated -> 403 (R-IDENTITY-016), activated without the
+// code -> 403 (R-IDENTITY-017), and the standard 'user' role — which holds
+// both players codes — admitted to every route, the product flow the code
+// choice preserves. The gate fires before the handler, so the refused rungs
+// never reach the ride service; the admitted rung asserting the handler's own
+// status is what proves the gate opened rather than refused.
+func TestRideRoutesPermissionGate(t *testing.T) {
+	requireDB(t)
+
+	routes := []rideRouteCase{
+		{
+			name:         "list rides",
+			method:       http.MethodGet,
+			url:          "/v1/rides",
+			admittedCode: http.StatusOK,
+			admittedBody: []string{`"rides": []`},
+		},
+		{
+			name:         "show ride",
+			method:       http.MethodGet,
+			url:          "/v1/rides/1",
+			admittedCode: http.StatusNotFound,
+			admittedBody: []string{"could not be found"},
+		},
+		{
+			name:         "create ride",
+			method:       http.MethodPost,
+			url:          "/v1/rides",
+			admittedCode: http.StatusUnprocessableEntity, // key check first (ADR-024)
+			admittedBody: []string{"idempotency_key", "must be provided"},
+		},
+		{
+			name:         "lock ride",
+			method:       http.MethodPost,
+			url:          "/v1/rides/1/lock",
+			admittedCode: http.StatusUnprocessableEntity,
+			admittedBody: []string{"idempotency_key", "must be provided"},
+		},
+		{
+			name:         "burn ride",
+			method:       http.MethodPost,
+			url:          "/v1/rides/1/burn",
+			admittedCode: http.StatusUnprocessableEntity,
+			admittedBody: []string{"idempotency_key", "must be provided"},
+		},
+		{
+			name:         "unlock ride",
+			method:       http.MethodPost,
+			url:          "/v1/rides/1/unlock",
+			admittedCode: http.StatusUnprocessableEntity,
+			admittedBody: []string{"idempotency_key", "must be provided"},
+		},
+	}
+
+	// The refusal rungs: same expectation on every route, so they live outside
+	// the route table. planted=true means "plant the code-less caller inline".
+	refusals := []struct {
+		name     string
+		token    string // "" = no Authorization header at all
+		planted  bool
+		wantCode int
+		wantBody []string
+	}{
+		{
+			name:     "anonymous caller is refused",
+			wantCode: http.StatusUnauthorized,
+			wantBody: []string{"you must be authenticated"},
+		},
+		{
+			name:     "unactivated account is refused",
+			token:    pendingAuthToken,
+			wantCode: http.StatusForbidden,
+			wantBody: []string{"must be activated"},
+		},
+		{
+			name:     "activated caller without the player code is refused",
+			planted:  true,
+			wantCode: http.StatusForbidden,
+			wantBody: []string{"doesn't have the necessary permissions"},
+		},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			for _, rung := range refusals {
+				t.Run(rung.name, func(t *testing.T) {
+					reset(t)
+
+					token := rung.token
+					if rung.planted {
+						token = plantRideGateProbeCaller(t)
+					}
+
+					app := newTestApplication()
+					req := httptest.NewRequest(route.method, route.url, nil)
+					if token != "" {
+						withAuth(req, token)
+					}
+					rr := httptest.NewRecorder()
+					app.routes().ServeHTTP(rr, req)
+
+					if rr.Code != rung.wantCode {
+						t.Fatalf("got status %d, want %d (body: %s)", rr.Code, rung.wantCode, rr.Body.String())
+					}
+					for _, fragment := range rung.wantBody {
+						if !strings.Contains(rr.Body.String(), fragment) {
+							t.Errorf("body missing %q (body: %s)", fragment, rr.Body.String())
+						}
+					}
+
+					// The gate precedes the handler, so a refused create never
+					// reached the idempotency claim or the insert: reset() ran
+					// first, so the counts are this request's alone.
+					if route.method == http.MethodPost && route.url == "/v1/rides" {
+						var rideRows, keyRows int
+						if err := testPool.QueryRow(context.Background(),
+							`SELECT count(*) FROM game.rides`,
+						).Scan(&rideRows); err != nil {
+							t.Fatalf("count rides: %v", err)
+						}
+						if err := testPool.QueryRow(context.Background(),
+							`SELECT count(*) FROM game.idempotency_keys`,
+						).Scan(&keyRows); err != nil {
+							t.Fatalf("count key rows: %v", err)
+						}
+						if rideRows != 0 || keyRows != 0 {
+							t.Errorf("refused create wrote: %d rides, %d key rows; want 0 and 0", rideRows, keyRows)
+						}
+					}
+				})
+			}
+
+			// The standard 'user' role holds players:read and players:write,
+			// so the gate admits it to all six routes — the standard flow
+			// rides depend on (a regular user locking a ride).
+			t.Run("standard user is admitted", func(t *testing.T) {
+				reset(t)
+				app := newTestApplication()
+
+				req := httptest.NewRequest(route.method, route.url, nil)
+				rr := httptest.NewRecorder()
+				app.routes().ServeHTTP(rr, withAuth(req, userAuthToken))
+
+				if rr.Code != route.admittedCode {
+					t.Fatalf("got status %d, want %d (body: %s)", rr.Code, route.admittedCode, rr.Body.String())
+				}
+				for _, fragment := range route.admittedBody {
+					if !strings.Contains(rr.Body.String(), fragment) {
+						t.Errorf("body missing %q (body: %s)", fragment, rr.Body.String())
+					}
+				}
+			})
+		})
+	}
 }
