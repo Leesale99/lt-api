@@ -130,10 +130,10 @@ audit:
 spec/gen:
 	go run ./cmd/spec gen
 
-## spec/check: validate the catalog against rules.schema.md §3 (report-only until E1 flips --strict)
+## spec/check: validate the catalog against rules.schema.md §3 (--strict: any policy error fails the audit)
 .PHONY: spec/check
 spec/check:
-	go run ./cmd/spec check
+	go run ./cmd/spec check --strict
 
 ## spec/diff: fail if docs/spec/business-rules.md is stale (wired into `make audit`)
 .PHONY: spec/diff
