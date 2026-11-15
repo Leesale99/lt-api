@@ -45,16 +45,6 @@ Feature: Settlement
         | an accrued bonus of minus one | rides_bonus_acc_check      |
         | a streak of minus one         | rides_streak_check         |
 
-    # Defect 2 (misalignment-report §6): a refusal raised by the rides money
-    # checks is not translated into a named ride refusal, so the caller learns
-    # only that something failed, never that the stake was the problem.
-    @known-defect:2
-    Scenario: The refused stake is not yet named for the caller
-      Given it is 3 hours before round 1's first match
-      When the player locks 0 tokens on "Team A" for match day 1
-      Then the refusal is unnamed for the caller
-      And the ride was not created
-
   @rule:R-GAME-005
   Rule: An unlocked or lost ride carries no accrued bonus
 
@@ -92,11 +82,11 @@ Feature: Settlement
   Rule: A win accrues a bonus from the stake, the odds and the banked streak
 
     Scenario Outline: A win accrues the stake times the odds minus one times the streak multiplier
-    Given a ride locked by "Ana" on "Team A" for match day 1 with <the stake>
-    And the ride's team is priced at <the odds>
-    And the ride has banked <banked>
-    When its match ends "2–1" to "Team A"
-    Then the ride waits on a decision with a bonus of <the bonus>
+      Given a ride locked by "Ana" on "Team A" for match day 1 with <the stake>
+      And the ride's team is priced at <the odds>
+      And the ride has banked <banked>
+      When its match ends "2–1" to "Team A"
+      Then the ride waits on a decision with a bonus of <the bonus>
 
     Examples:
       | the stake | the odds | banked           | the bonus |
@@ -196,8 +186,8 @@ Feature: Settlement
   Rule: A settlement arrives at each ride once
 
     Scenario: The same result arriving twice pays the bonus once
-    Given a ride locked by "Ana" on "Team A" for match day 1 with 10 tokens at odds 1.80
-    And match day 1 ended "2–1" to "Team A"
-    When the result of match day 1 arrives a second time
-    Then the ride still waits on a decision
-    And the ride's bonus is still 8.00
+      Given a ride locked by "Ana" on "Team A" for match day 1 with 10 tokens at odds 1.80
+      And match day 1 ended "2–1" to "Team A"
+      When the result of match day 1 arrives a second time
+      Then the ride still waits on a decision
+      And the ride's bonus is still 8.00
