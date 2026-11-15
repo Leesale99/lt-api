@@ -333,6 +333,14 @@ func TestCheckPolicyViolations(t *testing.T) {
 			},
 		},
 		{
+			// Gate B5 added composition-root to the layer enum (cross-context
+			// wiring, distinguished from handler's transport framing).
+			name: "composition-root layer accepted",
+			mutate: func(r *Rule) {
+				r.Enforcement[0].Layer = "composition-root"
+			},
+		},
+		{
 			name: "database authority with notes",
 			mutate: func(r *Rule) {
 				r.Authority = "database"

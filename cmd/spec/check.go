@@ -60,7 +60,7 @@ var (
 	mechanismEnum = enum("constraint", "trigger", "composite-fk")
 	scopeEnum     = enum("row-local", "cross-row", "cross-table")
 	layerEnum     = enum("handler", "validator", "service", "domain", "repository",
-		"db-constraint", "db-trigger")
+		"composition-root", "db-constraint", "db-trigger")
 	roleEnum = enum("authoritative", "defense-in-depth", "advisory-copy")
 )
 

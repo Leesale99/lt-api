@@ -3,7 +3,7 @@
 > Living checklist. The orchestrator updates it at every gate.
 > `docs/spec/rules.schema.md` is the source of truth for the catalog format and enums.
 
-**Current state:** Phase A closed (gate A2 approved); Phase B extraction done (B1–B4) — awaiting gate B5.
+**Current state:** Phase B closed (B5 approved); C-pilot running.
 
 ## Goal
 
@@ -18,7 +18,7 @@ spec, goes red, and cannot land green without satisfying the specification.
 |---|---|
 | 1 | Catalog: YAML canonical (`docs/spec/rules.yaml`) + generated markdown (`docs/spec/business-rules.md`) |
 | 2 | Scenarios bind to module facades over real DB (`testdb`: real migrations, real roles); sabotage steps via Owner pool for DB-authority proofs |
-| 3 | Gherkin scope: business-visible rules only (~45–60 of ~100); mechanical field rules stay unit-tested but catalogued |
+| 3 | Gherkin scope: business-visible rules only (~45–60 of the 108 implemented business-visible rules); mechanical field rules stay unit-tested but catalogued |
 | 4 | Framework: godog; suite in `internal/spec`, runs as plain `go test` |
 | 5 | Repo canonical; vault mirrors + captures Lessons |
 | 6 | ID scheme: `R-<MODULE>-NNN` flat per module (`schedule` \| `game` \| `identity` \| `ledger` \| `kernel` \| `platform`) |
@@ -68,7 +68,8 @@ Audit order after Phase D: `tidy -diff` → `mod verify` → `gofmt` → `vet` �
 - [x] B2 scout: phase docs 00–08 sweep → 17 specified-only fragments + doc→implemented map
 - [x] B3 general: 127-rule catalog (12 seeds + 115 merged, 4 dedupe merges, dense renumbering) + six-section misalignment report (0 drifted, 14 stale-pointer, 19 specified-only, 74/108 undocumented, 9+24 verification gaps, 21 defect candidates)
 - [x] B4 go-worker: `cmd/spec` gen + check (report-only; --strict unwired for Phase D), tests green, business-rules.md generated in sync
-- [ ] B5 **GATE**: user reviews catalog + misalignment report
+- [x] B5 **GATE**: user reviews catalog + misalignment report
+      (approved: dupe policy — one statement per rule, N enforcement sites; kernel owns generic mechanisms, module call-sites become enforcement sites on the kernel rule; C-pilot confirmed)
 
 ### Phase C — Gherkin authoring (harness interleaved)
 - [ ] C1 general: `gherkin-style.md` + pilot features (ride lifecycle, settlement)

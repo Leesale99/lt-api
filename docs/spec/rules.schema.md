@@ -86,6 +86,12 @@ Sub-ordering inside the database: **declarative constraints first**, triggers on
 what a constraint cannot express. Policy never moves into SQL — a pricing formula in
 PL/pgSQL is a rule nobody can see, test or rename.
 
+Seeded reference data takes no mechanism value of its own: rows inserted by an applied
+migration (e.g. `R-IDENTITY-014`'s roles, permission codes and grants) are catalogued as
+`mechanism: constraint`, because what refuses a conflicting seed is the keys and what
+keeps the seeded values true is migration immutability. (Gate B5 — no `seed` /
+`reference-data` value is added.)
+
 ### `scope` — decides constraint vs trigger
 
 | value | meaning |
@@ -99,6 +105,7 @@ PL/pgSQL is a rule nobody can see, test or rename.
 | value | meaning |
 |---|---|
 | `handler` | Transport: DTO validation, status mapping, headers. |
+| `composition-root` | Cross-context wiring / facade binding — the composition-root layer where modules are handed their collaborators (a `cmd/...` wiring function, a facade binding, an ACL adapter chosen at assembly). Distinguished from `handler`, which is transport framing: nothing here sees a request. (Gate B5.) |
 | `validator` | A `ValidateX` function: request shape/bounds arithmetic, called from the handler before the use case. |
 | `service` | Use case: ordering, transaction boundary, idempotency claim. |
 | `domain` | Entity/operation or pure function. |
@@ -172,7 +179,7 @@ name *which* app layer. When generating `business-rules.md`, map:
 
 | field | type | required | notes |
 |---|---|---|---|
-| `id` | string | yes | `R-<MODULE>-NNN`, flat per module, stable once assigned. Never renumber; retired rules are marked, not deleted. |
+| `id` | string | yes | `R-<MODULE>-NNN`, flat per module, stable once assigned. Never renumber. A retired rule's entry is removed from the catalog and recorded in `rules.yaml`'s header note; its id is never reused (gate B5 — supersedes "retired rules are marked, not deleted"). |
 | `title` | string | yes | Short imperative name ("Rides are born locked"). |
 | `statement` | string (block) | yes | 1–3 sentences of business language. What the business demands, no code-speak. |
 | `module` | enum | yes | Owner context of the *rule*, not of every enforcement site. |
@@ -188,7 +195,7 @@ name *which* app layer. When generating `business-rules.md`, map:
 | `enforcement[].role` | enum | yes | §1. |
 | `enforcement[].pinned_by` | string \| null | yes (explicit) | Fixture id. `null` is allowed only with the copy policy above: a `Tie:` sentence for defense-in-depth, nothing needed for advisory-copy. |
 | `refusal` | map \| null | recommended | See §3. Omitted for rules that cannot refuse (pure computation) and for `specified-only` rules whose refusal surface is undesigned. |
-| `refusal.code` | string | in refusal | `P0001`, `23514`, `23503`, `23001`, or `synthetic` (a Go-only refusal with no SQLSTATE). |
+| `refusal.code` | string | in refusal | A 5-character SQLSTATE, or the reserved word `synthetic` (a Go-only refusal with no SQLSTATE). **Illustrative, not a closed list:** `P0001`, `23514`, `23503`, `23001` are the codes the house table below shows most often; any real SQLSTATE (`23505`, `23502`, `22003`, `42501`, …) is valid. `cmd/spec` warns — never errors — on a code outside the illustrative set (gate B5). |
 | `refusal.constraint` | string \| list \| null | in refusal | The named refusal (constraint name, or the name the trigger `RAISE`s). A list when a rule carries several constraints. |
 | `refusal.sentinel` | string \| null | in refusal | The domain sentinel the repository/ACL maps to (`ErrInvalidTransition`, …). `null` = unmapped. |
 | `refusal.http` | int \| null | in refusal | Status the handler writes. `null` = falls through to 500. |
@@ -210,6 +217,10 @@ name *which* app layer. When generating `business-rules.md`, map:
 | Go-only `ErrInvalidRoundPhase` | — | 409 |
 | `ErrRoundNotOpen` (round guard) | — | 409 |
 | unmapped `23514` | — | 500 (a gap: see `R-GAME-004`) |
+
+The table is the house convention's *illustrative* set, not a closed vocabulary: any
+5-character SQLSTATE may be catalogued (gate B5) — the mapping is the rule, the code
+list is the frequency.
 
 ---
 
@@ -335,3 +346,28 @@ model for every future fixture.
    (`docs/spec/` did not exist at all, and no copy of the plan was found by `find`). The
    schema and seed were built from the task brief plus the code. Resolved: `plan.md`
    now exists; its Artifacts list matches this file.
+
+### Gate B5 resolutions
+
+Gate B5 reviewed the catalog and the misalignment report and closed the three schema gaps
+that report filed; the enums are otherwise unchanged since A2.
+
+- **`composition-root` joins the `enforcement[].layer` enum** (§1). Meaning: cross-context
+  wiring / facade binding — the composition-root layer where modules are handed their
+  collaborators; distinguished from `handler`, which is transport framing. Sites that were
+  apologising in their notes as `handler`, `repository`, `service` or `db-constraint` may
+  now use it. `cmd/spec` validates the 8-value layer enum (`composition-root` added).
+- **The refusal-code list is illustrative, not closed** (§2 `refusal.code`). The house
+  list `{P0001, 23514, 23503, 23001}` plus the reserved word `synthetic` is what the
+  mapping table shows most often; any 5-character SQLSTATE is valid, so `23505`, `23502`,
+  `22003` and `42501` stay honestly catalogued. `cmd/spec` warns — never errors — on a
+  code outside the illustrative set; that behaviour matches the decision and is kept.
+- **Seeded reference data keeps `mechanism: constraint`** (§1, mechanism table). No
+  `seed` / `reference-data` value is added: what refuses a conflicting seed is the keys,
+  and migration immutability keeps the seeded values true, so the declarative half is the
+  mechanism. `R-IDENTITY-014`'s roles/permissions/grants stay `constraint`.
+- **Retirement replaces marking** (§2 `id`). A retired rule's entry is removed from the
+  catalog and recorded in `rules.yaml`'s header note; ids are never reused. First use:
+  the gate B5 dupe merges (`R-GAME-019 → R-KERNEL-003`, `R-GAME-022 → R-KERNEL-014` — one
+  statement per rule, the kernel rule owns it, the game call-sites are enforcement sites
+  on it).

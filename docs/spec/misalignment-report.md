@@ -6,27 +6,34 @@ against `docs/spec/rules.yaml`'s 12 seed rules and the frozen schema
 `docs/spec/rules.schema.md`.
 
 Catalog after the merge: **127 rules** — 108 `implemented`, 19 `specified-only`,
-0 `drifted`. Twelve are the untouched seeds; the other 115 come from the fragments, with
-four fragment rules merged away (see the merge notes below the counts) and the doc-sweep
-rules renumbered into each module's dense sequence.
+0 `drifted`; **125 after gate B5's two retirements** (106 `implemented`, 19
+`specified-only`, 0 `drifted` — no rule changed status). Twelve are the untouched seeds;
+the other 115 come from the fragments, with four fragment rules merged away at B3 (see the
+merge notes below the counts) and two more retired at gate B5, and the doc-sweep rules
+renumbered into each module's dense sequence.
 
 | module | implemented | specified-only | total |
 |---|---|---|---|
 | schedule | 30 | 0 | 30 |
-| game | 27 | 7 | 34 |
+| game | 25 | 7 | 32 |
 | identity | 22 | 0 | 22 |
 | ledger | 0 | 7 | 7 |
 | kernel | 14 | 3 | 17 |
 | platform | 15 | 2 | 17 |
+| **total** | **106** | **19** | **125** |
+
+(game's two implemented rules `R-GAME-019` and `R-GAME-022` were retired at gate B5 into
+`R-KERNEL-003` and `R-KERNEL-014` — see the last two merge notes; no other count moved.)
 
 Renumbering and dedupe (the decisions this report's counts depend on):
 
 - **R-SCHEDULE-026 ← R-SCHEDULE-026 + R-GAME-027** (one calendar-delete boundary fact,
   two sweeps). Kept in the schedule slot; module schedule because the deleted side owns
   the delete policy; union of sites; `ErrRecordInUse` → 409. **Freed: R-GAME-027.**
-- **R-KERNEL-002 ← R-KERNEL-002 + R-GAME-019** (the request-digest contract, instantiated
-  at the ride edge). Module kernel; union of sites; game's instantiation site is cited in
-  the notes. **Freed: R-GAME-019.**
+- **R-KERNEL-002 ← R-KERNEL-002 + the game request-identity fragment** (the request-digest
+  contract, instantiated at the ride edge). Module kernel; union of sites; game's
+  instantiation site is cited in the notes. **Freed: a game slot** (the dense renumbering
+  below reused it, so no id is cited here).
 - **R-KERNEL-009 folded into R-IDENTITY-016 and R-IDENTITY-017** (a conjunction of two
   independently falsifiable facts: the activation branch and the exact-code branch). The
   identity rules kept their ids and gained kernel 009's distinctive sites
@@ -41,19 +48,22 @@ Renumbering and dedupe (the decisions this report's counts depend on):
   R-KERNEL-015..017**, **R-PLATFORM-201..202 → R-PLATFORM-016..017** (dense: the frees
   moved these three slots one lower than the brief's nominal 030/016/016).
 - Kept apart on purpose, cross-referenced in their notes: R-GAME-016 (per-ride CAS,
-  repository) vs R-GAME-022 (per-event claim, service); R-GAME-018 (claim-first ordering
+  repository) vs R-KERNEL-014 (per-event claim, service); R-GAME-018 (claim-first ordering
   at the command) vs R-KERNEL-004 (claim commits with the command); R-KERNEL-010 (CORS
   matching) vs R-PLATFORM-005 (allowlist parsing); R-LEDGER-006 (money-operation
   idempotency, unbuilt) vs the implemented HTTP/event idempotency rules; R-GAME-025
   (re-point only on continuation) vs seed R-GAME-003 (terminal freeze); R-GAME-026
   (publisher-language ACL) vs R-PLATFORM-013 (facade/direction).
-- Two further near-duplicate pairs were **not** merged: R-GAME-019 ↔ R-KERNEL-003 (same
-  `Repository.Claim` site, same 409, same tests) and R-GAME-022 ↔ R-KERNEL-014 (same
-  `runEvent` sites, same tests). Each pair is kept as "the kernel contract every future
-  context inherits" plus "the game command's caller-facing statement of it", the merge
-  brief fixed those slots, and both are flagged in the rules' notes — gate B5 should
-  confirm or merge. If B5 merges them, game keeps `019`/`022` (the caller-facing rules) and
-  kernel `003`/`014` become cross-references.
+- Two further near-duplicate pairs were **merged at gate B5** (approved dupe policy: one
+  statement per rule, N enforcement sites — the kernel owns the generic mechanism, and the
+  module call-sites become enforcement sites on the kernel rule): R-GAME-019 ↔
+  R-KERNEL-003 (same `Repository.Claim` site, same 409, same tests) and R-GAME-022 ↔
+  R-KERNEL-014 (same `runEvent` sites, same tests). Kernel keeps the statement — `003` is
+  the claim/replay contract every future context inherits, `014` the event-claim — the
+  game sites and notes moved into it, and both game ids were retired: their entries are
+  removed from the catalog and recorded in `rules.yaml`'s header note, and the ids are
+  never reused. At B3 the two pairs had been kept apart pending this gate; the reviewer
+  took the merge (C-pilot confirmed).
 
 ---
 
@@ -77,14 +87,22 @@ One debatable borderline, recorded here so gate B5 sees it:
   repository, and the DB is a real backstop for the case that carries history — but it is
   the one rule where a missing fixture is the *only* thing between the catalog and a
   second silent copy. Recommendation: a call-set fixture before the rule is called held.
+  **Gate B5 confirmed `implemented` under D2:** no expert document states this rule at all
+  (nothing under `docs/league-tokens-learning-phases/` mentions parents or re-parenting),
+  so there is no doc-vs-code content disagreement — only rot and a coverage gap. It is in
+  §4's no-doc list and §5's e2e-only list, and both stay the finding.
 
 ---
 
-## 2. Doc rot / stale pointers — 14 catalogued `stale-pointer:` notes, plus 3 findings that belong in this report only
+## 2. Doc rot / stale pointers — 14 rules, 14 `stale-pointer:` notes, plus 3 findings that belong in this report only
 
-**Headline: 14 rules carry a `stale-pointer:` note** (2 of them seeds), and 3 further rot
-findings cannot be recorded in the rule a reader would look in (one is a frozen seed, one
-is a doc-internal inconsistency, one is already covered by fact rather than complaint).
+**Headline: 14 rules carry a `stale-pointer:` note — 14 notes in total, one per rule**
+(2 of them seeds). `grep -c 'stale-pointer:' docs/spec/rules.yaml` returns **14**; a bare
+`grep -c 'stale-pointer'` returns **15** because R-GAME-005's note names the convention a
+second time in its own prose ("this `stale-pointer` note surfaces in the Phase B report")
+— a mention, not a second note. And 3 further rot findings cannot be recorded in the rule
+a reader would look in (one is a frozen seed, one is a doc-internal inconsistency, one is
+already covered by fact rather than complaint).
 Applied migrations are immutable, so in every case the fix is the catalog note plus a
 comment at the current site — never a migration rewrite.
 
@@ -173,27 +191,30 @@ refusal surface; each rule's notes say so).
 |---|---|---|
 | R-KERNEL-015 | An event is committed with the change that caused it | no `outbox_events` table and no same-transaction append; delivery is post-commit and in-process |
 | R-KERNEL-016 | A relay delivers committed events and marks them published | no relay/dispatcher and no `published_at` marker |
-| R-KERNEL-017 | Delivery is at-least-once and never claimed exactly-once | the idempotent-consumer half is implemented (R-GAME-022, R-KERNEL-014); the delivery half is at-most-once, so "eventually delivered" cannot hold |
+| R-KERNEL-017 | Delivery is at-least-once and never claimed exactly-once | the idempotent-consumer half is implemented (R-KERNEL-014); the delivery half is at-most-once, so "eventually delivered" cannot hold |
 | R-GAME-033 | A burn is announced as a `ride.burned` event | no `ride.*` event type exists; game is a consumer only (schedule publishes `MatchResultRecorded`/`RoundCompleted`) |
 
 ---
 
-## 4. Implemented rules with no expert-doc backing — 74 of 108
+## 4. Implemented rules with no expert-doc backing — 74 of 106
 
 **Headline: 74 implemented rules are not stated by any phase document** (cross-checked
 against every `covers` line in `/tmp/lt-spec-docmap.yaml`; a rule counts as doc-backed only
 when a doc line states its fact — sharing a migration or a doc section does not count).
 This is a finding about the docs, not an error in the catalog: the sweeps read the code.
 
-Doc-backed implemented rules, for auditability (34): schedule `003, 004, 005, 015, 016,
+Doc-backed implemented rules, for auditability (32): schedule `003, 004, 005, 015, 016,
 019, 021` (phase-02 status vocabulary + the 000008/000014 gates; phase-03 atomic resolve;
 phase-08 post-commit publish); game `001`–`010` (the seeds, each naming its phase-02/03/04/
 05/06/08 source) plus `012`, `013` (phase-03 Register / reference checks), `016`
-(phase-04 CAS), `018`, `019` (phase-03/04 idempotency), `022` (phase-08 consumer claim),
-`023` (phase-05 settlement serialization), `026` (phase-05 publisher language/ACL);
-kernel `003`, `004` (phase-04), `006` (phase-00 validation at the edge), `013`, `014`
-(phase-08 event seam + consumer claim); platform `010` (phase-00 graceful shutdown), `011`
-(phase-07 process lifecycle), `012`, `013` (phase-05 boundaries).
+(phase-04 CAS), `018` (phase-03 idempotency), `023` (phase-05 settlement serialization),
+`026` (phase-05 publisher language/ACL); kernel `003`, `004` (phase-04), `006` (phase-00
+validation at the edge), `013`, `014` (phase-08 event seam + consumer claim); platform
+`010` (phase-00 graceful shutdown), `011` (phase-07 process lifecycle), `012`, `013`
+(phase-05 boundaries). The two game rules retired at gate B5 were doc-backed too: the
+ride/replay statement (phase-03/04 idempotency) now lives in R-KERNEL-003 and the
+settlement event claim (phase-08) in R-KERNEL-014, whose own phase-08 `expert-ref` now
+carries it.
 
 No-doc rules, grouped by module:
 
@@ -228,7 +249,7 @@ catalog has to be accepted as the only specification of that context.
 
 ## 5. Verification gaps — 9 rules with no pointer at all; 24 e2e-only; 12 pointers that do not test the assertion
 
-**Headline: 33 of 108 implemented rules have no unit test; 9 of those have no verification
+**Headline: 33 of 106 implemented rules have no unit test; 9 of those have no verification
 pointer of any kind.** All 9 stay `implemented` per the brief (a coverage gap is not
 disagreement); they are the §3-policy-3 violations the schema self-check reports.
 
@@ -251,6 +272,12 @@ disagreement); they are the §3-policy-3 violations the schema self-check report
 R-SCHEDULE-012, 017, 020, 027, 028, 030 · R-GAME-011, 012, 014, 017, 021 ·
 R-IDENTITY-004, 013, 014, 015, 016, 017, 019 · R-KERNEL-006, 007, 008, 010, 012 ·
 R-PLATFORM-014.
+
+**Count check (gate B5).** (a) and (b) are disjoint, so **33 = 9 + 24 distinct rules** and
+the headline double-counts nothing. Verified against `rules.yaml`: **R-IDENTITY-007 carries
+`verification: {}`** — no unit *and* no e2e pointer — so it is in (a) only and is **not**
+e2e-only. It is the one rule this section names twice, and only because (c) item 2 cites it
+as a rule that *looks* covered; that is a cross-reference, not a second count.
 
 **(c) Pointers that exist but do not exercise the rule's core assertion — 12 findings
 (11 rules plus one cross-reference)**
@@ -334,9 +361,15 @@ Each is a real behaviour a reviewer can check in the tree; severity is a first g
 6. **Season delete is not all-or-nothing — H/M.** `Service.DeleteSeason`
    (`internal/schedule/internal/service/delete_policy.go`) asks game to delete the season's
    players *before* the schedule delete, and only then can the delete gate
-   (R-SCHEDULE-023) refuse. A season that is refused therefore loses its registrations while
-   it survives: the old single-statement cascade was atomic, the composition is not. Only
-   deleteable seasons reach the players step, which narrows but does not close the window.
+   (R-SCHEDULE-023, the `seasons_delete_gate` `BEFORE DELETE` trigger) refuse. A season that
+   is refused therefore loses its registrations while it survives: the old single-statement
+   cascade was atomic, the composition is not. Nothing narrows the window: there is no
+   pre-check — the gate is a trigger that fires on the season `DELETE` itself, so the window
+   is the whole delete path (the season's players are deleted, then the delete can still be
+   refused, losing registrations while the season survives). The code comment at
+   internal/schedule/internal/service/delete_policy.go makes the same wrong "narrows the
+   window" claim; the app code is deliberately untouched (spec-work constraint) — noted
+   here so the next app-side edit fixes both.
 7. **Closed match/round are DB-regressible — H.** The freeze gates refuse only
    created/postponed returns on a *started* match, and `rounds_progress_gate` explicitly
    does not handle regressions. A direct writer (psql, a backfill, a new repository method)
@@ -350,7 +383,7 @@ Each is a real behaviour a reviewer can check in the tree; severity is a first g
    not in the work. A dummy comparison on the unknown-email path closes it.
 9. **Activation endpoint is an account oracle — M (by design, needs a decision).** An unknown
    email at `RequestActivationToken` answers 404 while an already-active account answers 422
-   — deliberate existence disclosure (R-IDENTITY-023's notes). Identity is therefore
+   — deliberate existence disclosure (R-IDENTITY-022's notes). Identity is therefore
    enumeration-resistant on login-in-spirit and not on activation; two endpoints, two
    policies.
 10. **Ride routes are ungated — H (authorization).** No `/v1/rides*` route carries a
@@ -407,24 +440,36 @@ Each is a real behaviour a reviewer can check in the tree; severity is a first g
 
 ---
 
-## Schema gaps observed (for a future gate)
+## Schema gaps observed (three closed at gate B5, one still open)
+
+The first three gaps below were closed at gate B5; the decisions and the schema wording live
+in `docs/spec/rules.schema.md` §6 "Gate B5 resolutions". Kept here so each finding and its
+resolution sit in one trail.
 
 - **`enforcement[].layer` has no composition-root value.** Boundary and wiring sites are
   approximated as `handler` (the facade seam, the HTTP chain), `repository` (the SQL that
   carries a boundary, e.g. `000018`), `service` (the wiring in `cmd/api`) or `db-constraint`
   (schema/role migrations). Three values are doing one job; a `composition-root` layer (or a
   rule-level "layer: n/a") would let these entries stop apologising in their notes.
+  **Closed at B5: `composition-root` added to the layer enum** (cross-context wiring /
+  facade binding — where modules are handed their collaborators; distinguished from
+  `handler`'s transport framing), and `cmd/spec` validates the 8-value enum.
 - **`refusal.code` in schema §2 is illustrative, not closed.** The list is
   `P0001 | 23514 | 23503 | 23001 | synthetic`, but the catalog truthfully records `23505`
   (unique violations, e.g. R-GAME-014, R-IDENTITY-011), `23502` (R-IDENTITY-012's own notes
   on a missing role row), `22003` (odds overflow, §6.2) and `42501` (the context-role
   boundary, R-IDENTITY-021 / R-PLATFORM-012 / R-PLATFORM-015). The reserved word is
   `synthetic` — not `null` — which leaves no honest value for "a real SQLSTATE the house
-  table forgot".
+  table forgot". **Closed at B5: the list is documented as illustrative** — any 5-character
+  SQLSTATE plus `synthetic` is valid; `cmd/spec` keeps warning (never erroring) on codes
+  outside the illustrative set, which is the intended check (the 8 WARN lines above).
 - **No `mechanism` value for seeded reference data.** R-IDENTITY-014 (two roles, eleven
   permission codes, twenty-two grants, inserted by an applied migration and immutable
   thereafter) is catalogued as `mechanism: constraint` because what pins it is the keys plus
   migration immutability. A `seed`/`reference-data` mechanism value would say that directly.
+  **Closed at B5: no new value** — seeded reference data stays `mechanism: constraint` (the
+  keys refuse a conflicting seed, migration immutability keeps the seeded values true), now
+  stated in the schema's mechanism section.
 - **Kernel/platform rules with zero tests strain §3 policy 3.** Policy 3 demands at least
   one verification pointer for every `implemented` rule; nine rules have none, and the honest
   reading is that the policy is about *rules that can be verified today*. Either the policy

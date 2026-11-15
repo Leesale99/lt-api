@@ -14,27 +14,27 @@ the catalog's own invariants are checked by `go run ./cmd/spec check`.
 
 ## Dashboard
 
-**127 rules** across 6 modules.
+**125 rules** across 6 modules.
 
 ### By module
 
 | Module | Rules |
 | --- | ---: |
-| `game` | 34 |
+| `game` | 32 |
 | `identity` | 22 |
 | `kernel` | 17 |
 | `ledger` | 7 |
 | `platform` | 17 |
 | `schedule` | 30 |
-| **total** | **127** |
+| **total** | **125** |
 
 ### By status
 
 | Status | Rules |
 | --- | ---: |
-| `implemented` | 108 |
+| `implemented` | 106 |
 | `specified-only` | 19 |
-| **total** | **127** |
+| **total** | **125** |
 
 ### By category
 
@@ -43,11 +43,11 @@ the catalog's own invariants are checked by `go run ./cmd/spec check`.
 | `boundary` | 7 |
 | `interface` | 22 |
 | `invariant` | 36 |
-| `orchestration` | 33 |
+| `orchestration` | 32 |
 | `persistence-fact` | 3 |
-| `policy` | 25 |
+| `policy` | 24 |
 | `refusal-mapping` | 1 |
-| **total** | **127** |
+| **total** | **125** |
 
 ### By authority
 
@@ -57,9 +57,9 @@ the catalog's own invariants are checked by `go run ./cmd/spec check`.
 | `database` | 32 |
 | `domain` | 8 |
 | `handler` | 25 |
-| `repository` | 15 |
-| `service` | 39 |
-| **total** | **127** |
+| `repository` | 14 |
+| `service` | 38 |
+| **total** | **125** |
 
 ## Module `game`
 
@@ -93,54 +93,7 @@ Every ride command first claims its idempotency key inside its own transaction, 
 
 **Notes**
 
-> Four authoritative sites, one per command: the ordering (claim first, then execute, then store, then commit) is the same statement applied to four disjoint commands, so it is one rule with four sites, not four rules. No refusal: a claim that loses is not a refusal — it returns the recorded answer, which is a success. The recorded answer is the transport's presentation callback output (status + marshaled body), stored byte for byte so the replay is byte-identical, and create's Location header is re-derived from the stored body rather than persisted. The claim table and the single-flight mechanics are the kernel engine's; what this rule owns is that the *game* commands call it first and inside one transaction. Related but distinct: R-KERNEL-004 owns the transactional coupling (the claim commits with the command's effect, or not at all); this rule owns the ordering inside the command, and R-GAME-019 owns what the caller sees on a replay. stale-pointer: phase-04's §"Later, for HTTP commands, add an idempotency key table" is superseded sequencing, not a disagreement — migrations/000010 and this rule's sites are that table. Nothing else in the doc names a path that no longer exists.
-
-#### R-GAME-019 — A repeated request replays, a misused key is refused
-
-`implemented` · `policy` · authority `repository`
-
-A key that has already been used returns the recorded answer when the request matches, and is refused as key misuse when it does not. The caller is never told "conflict" for a genuine retry, and a genuine retry never executes the command again.
-
-**Authority** `repository`
-
-**Enforcement**
-
-| Site | Layer | Role | Pinned by |
-| --- | --- | --- | --- |
-| `internal/kernel/idempotency/idempotency.go::Repository.Claim` | `repository` | `authoritative` | — |
-| `internal/game/internal/adapter/inbound/http/errors.go::Handler.idempotencyConflictResponse` | `handler` | `advisory-copy` | — |
-
-**Refusal** `synthetic` → _(unnamed)_ → `ErrIdempotencyConflict` → `409`
-
-**Verification**
-
-- unit: `internal/game/internal/core/service/idempotency_test.go::TestService_RideLockIdempotency`
-- unit: `internal/game/internal/core/service/idempotency_test.go::TestService_RideCreateIdempotent`
-- e2e: `internal/e2e/rides_test.go::TestCreateRideIdempotentHandler`
-- e2e: `internal/e2e/rides_test.go::TestRideLockIdempotentHandler`
-
-#### R-GAME-022 — Each calendar event is processed once; a replay is a no-op
-
-`implemented` · `orchestration` · authority `service`
-
-A settlement event is claimed by its event identity inside the settlement's own transaction before any ride is read; a delivery of an event that already ran returns success and changes nothing. A settlement that fails rolls its claim back, so the same event can be delivered again and actually run.
-
-**Authority** `service`
-
-**Enforcement**
-
-| Site | Layer | Role | Pinned by |
-| --- | --- | --- | --- |
-| `internal/game/internal/core/service/settlement.go::Service.runEvent` | `service` | `authoritative` | — |
-| `internal/kernel/idempotency/idempotency.go::Repository.Claim` | `repository` | `defense-in-depth` | — |
-
-**Verification**
-
-- unit: `internal/game/internal/core/service/service_test.go::TestService_OnMatchResultRecorded`
-- unit: `internal/game/internal/core/service/service_test.go::TestService_OnRoundCompleted`
-- e2e: `internal/e2e/matches_test.go::TestResolveMatchSettlesRowOnce`
-
-**Expert ref** `docs/league-tokens-learning-phases/phase-08-transactional-outbox-and-events.md`
+> Four authoritative sites, one per command: the ordering (claim first, then execute, then store, then commit) is the same statement applied to four disjoint commands, so it is one rule with four sites, not four rules. No refusal: a claim that loses is not a refusal — it returns the recorded answer, which is a success. The recorded answer is the transport's presentation callback output (status + marshaled body), stored byte for byte so the replay is byte-identical, and create's Location header is re-derived from the stored body rather than persisted. The claim table and the single-flight mechanics are the kernel engine's; what this rule owns is that the *game* commands call it first and inside one transaction. Related but distinct: R-KERNEL-004 owns the transactional coupling (the claim commits with the command's effect, or not at all); this rule owns the ordering inside the command, and the kernel claim rule (R-KERNEL-003) owns what the caller sees on a replay. stale-pointer: phase-04's §"Later, for HTTP commands, add an idempotency key table" is superseded sequencing, not a disagreement — migrations/000010 and this rule's sites are that table. Nothing else in the doc names a path that no longer exists.
 
 ### Entity `player`
 
@@ -689,7 +642,7 @@ When a ride write is refused, the reason is classified in a fixed order — the 
 
 **Notes**
 
-> This is the catalog's first refusal-mapping rule (the category the schema reserves for rules *about* the mapping). The order is: the statement's own SQLSTATEs first (a trigger refusal and the money-state check both mean the state machine refused → 409; a foreign-key refusal is the parent gone → 404), then, for a zero-row write, a follow-up read on the pool: no row → not found, row moved (version, or state no longer the claimed pre-state) → invalid transition, otherwise a wrapped error with no sentinel → 500. Two authoritative classifier sites because the two guarded writes have different pre-states (a decision claims won_pending; an arrival claims its own from-state, which may be locked *or* won_pending) — disjoint cases of one statement. The design point worth preserving: the follow-up read may legally see a snapshot from before the concurrent commit, so the "everything still holds" branch must not be folded into a named refusal — that is the loud error. The round's facts are deliberately absent from this classification: a close that slipped in between the gate and the write is the round refusal, decided before the write (R-GAME-008). Renumbered at merge (was provisional R-GAME-025): R-GAME-019 was folded into R-KERNEL-002 and R-GAME-027 merged into R-SCHEDULE-026, so the game block was renumbered densely. stale-pointer: two comments in the ride adapter still name the old shape — DecisionGuardedTx's doc comment says a destination deleted between the port gate and the write "surfaces as the FK 23503 -> ErrNotFound", while the inline comment two screens down says (correctly) that since 000016 no FK is left on rides and the branch is only the generic race-mapping shape; ride_repo_test.go's comments still cite classifyUpdateRefusal, a symbol that no longer exists (the classifiers are classifyDecisionRefusal, classifyArrivalRefusal and classifyResolveRefusal).
+> This is the catalog's first refusal-mapping rule (the category the schema reserves for rules *about* the mapping). The order is: the statement's own SQLSTATEs first (a trigger refusal and the money-state check both mean the state machine refused → 409; a foreign-key refusal is the parent gone → 404), then, for a zero-row write, a follow-up read on the pool: no row → not found, row moved (version, or state no longer the claimed pre-state) → invalid transition, otherwise a wrapped error with no sentinel → 500. Two authoritative classifier sites because the two guarded writes have different pre-states (a decision claims won_pending; an arrival claims its own from-state, which may be locked *or* won_pending) — disjoint cases of one statement. The design point worth preserving: the follow-up read may legally see a snapshot from before the concurrent commit, so the "everything still holds" branch must not be folded into a named refusal — that is the loud error. The round's facts are deliberately absent from this classification: a close that slipped in between the gate and the write is the round refusal, decided before the write (R-GAME-008). Renumbered at merge (was provisional R-GAME-025): the request-identity fragment went into R-KERNEL-002 and R-GAME-027 merged into R-SCHEDULE-026, so the game block was renumbered densely. stale-pointer: two comments in the ride adapter still name the old shape — DecisionGuardedTx's doc comment says a destination deleted between the port gate and the write "surfaces as the FK 23503 -> ErrNotFound", while the inline comment two screens down says (correctly) that since 000016 no FK is left on rides and the branch is only the generic race-mapping shape; ride_repo_test.go's comments still cite classifyUpdateRefusal, a symbol that no longer exists (the classifiers are classifyDecisionRefusal, classifyArrivalRefusal and classifyResolveRefusal).
 
 #### R-GAME-025 — A ride is re-pointed at another match only by continuing it
 
@@ -760,7 +713,7 @@ The query that collects a closing round's undecided rides is the one shape the d
 
 **Notes**
 
-> A persistence fact, not a business rule: nothing is refused if the index disappears — the sweep just gets slower — which is why the refusal is null and the verification is a functional pointer at the sweep rather than a performance assertion. The stated guarantee is a matching obligation in one direction: the index (`match_id`, where the state is the undecided one) serves the sweep only while the sweep keeps that predicate — a query that started filtering, say, on a joined round id would silently lose the index. The other consumer the index was measured for is gone. stale-pointer: migration 000009's header says the predicate serves "the rounds_close_gate EXISTS backstop and the auto-unlock/auto-burn UPDATE ... FROM". Both moved: 000014 dropped rounds_close_gate's unresolved-rides check (undecided rides in a closing round are now the designed intermediate state) and the auto-unlock statement left the close transaction for game's settlement handler in internal/game (000014's header says so explicitly). The index still holds and still serves the query it serves; only the prose naming its consumers is stale. The applied migration is immutable, so the fix is this note plus a comment at the current query site, not a migration rewrite. Renumbered at merge (was provisional R-GAME-029): R-GAME-019 was folded into R-KERNEL-002 and R-GAME-027 merged into R-SCHEDULE-026, so the game block was renumbered densely.
+> A persistence fact, not a business rule: nothing is refused if the index disappears — the sweep just gets slower — which is why the refusal is null and the verification is a functional pointer at the sweep rather than a performance assertion. The stated guarantee is a matching obligation in one direction: the index (`match_id`, where the state is the undecided one) serves the sweep only while the sweep keeps that predicate — a query that started filtering, say, on a joined round id would silently lose the index. The other consumer the index was measured for is gone. stale-pointer: migration 000009's header says the predicate serves "the rounds_close_gate EXISTS backstop and the auto-unlock/auto-burn UPDATE ... FROM". Both moved: 000014 dropped rounds_close_gate's unresolved-rides check (undecided rides in a closing round are now the designed intermediate state) and the auto-unlock statement left the close transaction for game's settlement handler in internal/game (000014's header says so explicitly). The index still holds and still serves the query it serves; only the prose naming its consumers is stale. The applied migration is immutable, so the fix is this note plus a comment at the current query site, not a migration rewrite. Renumbered at merge (was provisional R-GAME-029): the request-identity fragment went into R-KERNEL-002 and R-GAME-027 merged into R-SCHEDULE-026, so the game block was renumbered densely.
 
 #### R-GAME-028 — Taking the tokens and creating the ride are one operation
 
@@ -1391,11 +1344,15 @@ A subscriber records the event's identity before it writes anything, so an event
 | `internal/game/internal/core/service/settlement.go::Service.runEvent` | `service` | `authoritative` | — |
 | `internal/game/internal/core/service/settlement.go::Service.OnMatchResultRecorded` | `service` | `authoritative` | — |
 | `internal/game/internal/core/service/settlement.go::Service.OnRoundCompleted` | `service` | `authoritative` | — |
+| `internal/kernel/idempotency/idempotency.go::Repository.Claim` | `repository` | `defense-in-depth` | — |
 
 **Verification**
 
 - unit: `internal/game/internal/core/service/service_test.go::TestService_OnMatchResultRecorded`
 - unit: `internal/game/internal/core/service/service_test.go::TestService_OnRoundCompleted`
+- e2e: `internal/e2e/matches_test.go::TestResolveMatchSettlesRowOnce`
+
+**Expert ref** `docs/league-tokens-learning-phases/phase-08-transactional-outbox-and-events.md`
 
 ### Entity `http_request`
 
