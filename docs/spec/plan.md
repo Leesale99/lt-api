@@ -3,7 +3,7 @@
 > Living checklist. The orchestrator updates it at every gate.
 > `docs/spec/rules.schema.md` is the source of truth for the catalog format and enums.
 
-**Current state:** Phase D running — awaiting gate D2 (CI green incl. spec).
+**Current state:** Phase E complete — awaiting gate E5 (sabotage demo reviewed by user).
 
 ## Goal
 
@@ -84,13 +84,14 @@ Audit order after Phase D: `tidy -diff` → `mod verify` → `gofmt` → `vet` �
 
 ### Phase D — Automation & CI
 - [x] D1 go-worker: `audit` extended; CI green run (`spec/gen --diff` + `spec/check` now precede the test step; policy 3 counts gherkin pointers, so the gap-rule count fell 9 → 7 — the two identity rules proved by scenarios; the 7 remaining carry no verification of any kind)
-- [ ] D2 **GATE**: green audit incl. spec on CI
+- [x] D2 **GATE**: green audit incl. spec on CI (green: run 43752035522 via draft PR #8)
 
 ### Phase E — Enforcement closure
-- [ ] E1 go-worker: `spec check` strict (unverified rule fails audit)
-- [ ] E2 general: `docs/spec/README.md` + AGENTS.md rule-change protocol
-- [ ] E3 librarian: vault mirror + Lessons; file Deferred/docker-compose
-- [ ] E4 go-worker: sabotage demo (one violation per layer → audit catches each)
+- [x] E0 go-worker: close the 7 verification gaps — R-KERNEL-005/011, R-PLATFORM-006/007/009/011/015 gain verification.unit pointers to new probes (identity db-budget tracer tests, RecoverPanic httptest, mailer config/retry/jitter/cancel, three server-timeout wire probes, background-survival probe, testdb context-role hook probe); tests only
+- [x] E1 go-worker: `spec check` strict (unverified rule fails audit) (--strict in `make spec/check`; 0 errors, 8 pre-existing warnings; full `make audit` green)
+- [x] E2 general: `docs/spec/README.md` + AGENTS.md rule-change protocol (+ rules.schema.md three-pointer verification prose)
+- [x] E3 librarian: vault mirror + Lessons; file Deferred/docker-compose (Design + Lessons notes and the docker-compose Deferred item written via the Obsidian tool)
+- [x] E4 go-worker: sabotage demo (one violation per layer → audit catches each) (five layers red → reverted in a throwaway copy; zero commits: bogus enum → checker · orphan @rule tag → cross-validation · deleted pointer → --strict · loosened validator check → unit test · dropped SET ROLE hook → testdb probe)
 - [ ] E5 **GATE**: demo passes → pipeline is the executable specification
 
 ### Phase F — Pilot: Phase 06 ledger, spec-first
