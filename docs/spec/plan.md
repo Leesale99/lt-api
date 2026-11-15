@@ -72,8 +72,8 @@ Audit order after Phase D: `tidy -diff` → `mod verify` → `gofmt` → `vet` �
       (approved: dupe policy — one statement per rule, N enforcement sites; kernel owns generic mechanisms, module call-sites become enforcement sites on the kernel rule; C-pilot confirmed)
 
 ### Phase C — Gherkin authoring (harness interleaved)
-- [ ] C1 general: `gherkin-style.md` + pilot features (ride lifecycle, settlement)
-- [ ] C2 go-worker: `internal/spec` skeleton (TestMain + testdb + DSL + sabotage) + pilot
+- [x] C1 general: `gherkin-style.md` + pilot features (ride lifecycle, settlement)
+- [x] C2 go-worker: `internal/spec` skeleton (TestMain + testdb + DSL + sabotage) + pilot
       steps + Makefile targets; researcher pins godog/yaml versions first
 - [ ] C3 **GATE**: pilot readability ("could a non-Go reader verify intent?")
 - [ ] C4 general×3: features per capability (schedule lifecycle/freeze; identity

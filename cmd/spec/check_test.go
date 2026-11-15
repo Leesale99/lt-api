@@ -265,14 +265,9 @@ func TestCheckPolicyViolations(t *testing.T) {
 			wantPolicy: "9-site-ref", wantErrors: 1,
 			wantMessage: "uses a line number",
 		},
-		{
-			name: "gherkin reserved",
-			mutate: func(r *Rule) {
-				r.Verification.Gherkin = []string{"docs/spec/features/kernel/thing.feature::Scenario"}
-			},
-			wantPolicy: "10-gherkin", wantErrors: 1,
-			wantMessage: "reserved for Phase C",
-		},
+		// The gherkin pointer policy (10-gherkin) is exercised against real
+		// feature files in gherkin_test.go — it needs the parser, not just the
+		// catalog.
 		{
 			name: "undeclared fixture",
 			mutate: func(r *Rule) {

@@ -23,6 +23,9 @@
 //   - "e2e" — the acceptance suite (internal/e2e): flat, test-only, and the
 //     composition root in test form, so it gets its own cmd-like row instead
 //     of collapsing into "shared:e2e".
+//   - "spec" — the executable-specification suite (internal/spec): flat,
+//     test-only, and the second composition root in test form (godog over the
+//     same modules, no server), so it gets its own row for the same reason.
 //
 // The kernel is a set of context-agnostic technical capabilities: each owns
 // no business rules, never imports a module, and serves any context that
@@ -343,6 +346,21 @@ var allowedImports = map[string]map[string]bool{
 		"platform:server":    true, // the suite drives the process lifecycle
 	},
 
+	// The specification suite: the modules composed over real Postgres, in
+	// test form (internal/spec). It drives the modules' own route tables and
+	// the settlement event seam in-process — no server, no middleware chain —
+	// so it reaches the modules and the kernel edge they publish/listen on,
+	// and nothing else.
+	"spec": {
+		"game":               true,
+		"identity":           true,
+		"ledger":             true,
+		"schedule":           true,
+		"kernel:eventbus":    true,
+		"kernel:httpx":       true,
+		"kernel:idempotency": true,
+	},
+
 	// The platform (internal/platform/): process-level technical packages.
 	// None reaches a module; today none reaches even the kernel (config's vcs
 	// helper is inlined, and the server/logging/mailer packages use stdlib and
@@ -475,7 +493,7 @@ func TestImportBoundaries(t *testing.T) {
 // composition root may reach a module.
 func TestNonModulesNeverImportModules(t *testing.T) {
 	for from, targets := range allowedImports {
-		if from == "e2e" || isModuleClass(from) {
+		if from == "e2e" || from == "spec" || isModuleClass(from) {
 			continue
 		}
 		for to := range targets {
@@ -623,6 +641,12 @@ func classOf(below []string) (string, bool) {
 		// defaulting to "shared:e2e", so its (cmd-like) edges are pinned in
 		// their own row and nothing can reach it by accident.
 		return "e2e", true
+	}
+	if below[0] == "spec" {
+		// The executable-specification suite: flat, non-module, test-only,
+		// and the second composition root in test form (no server). Its own
+		// class keeps its module edges pinned in their own row.
+		return "spec", true
 	}
 	if below[0] == "kernel" {
 		if len(below) < 2 || below[1] == "" {

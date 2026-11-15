@@ -1598,6 +1598,8 @@
       - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_InsertAndGet
     e2e:
       - internal/e2e/rides_test.go::TestCreateRideHandler
+    gherkin:
+      - docs/spec/features/game/ride_lifecycle.feature::A new ride is born locked
   expert-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
   notes: >
     The insert half of the gate is a trigger, not a CHECK: the predicate is
@@ -1646,6 +1648,8 @@
       - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
     e2e:
       - internal/e2e/rides_test.go::TestRideCommandHandlers
+    gherkin:
+      - docs/spec/features/game/ride_lifecycle.feature::A won match leaves the ride waiting on a decision
   expert-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
   notes: >
     The graph is OLD-vs-NEW, so it must live in the trigger (check 3 of
@@ -1690,6 +1694,8 @@
     unit:
       - internal/game/internal/core/domain/ride_test.go::TestRide_TerminalStates
       - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+    gherkin:
+      - docs/spec/features/game/ride_lifecycle.feature::A burned ride accepts no further command
   expert-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
   notes: >
     Trigger check 1. The domain copy is the absence of any entry for a terminal state
@@ -1738,6 +1744,8 @@
       - internal/game/internal/core/domain/ride_validation_test.go::TestValidateRide
     e2e:
       - internal/e2e/rides_test.go::TestCreateRideHandler
+    gherkin:
+      - docs/spec/features/game/settlement.feature::A stake of nothing is refused and no ride is born
   notes: >
     Four CHECKs, one rule: the bounds are the same kind of fact, so they are catalogued
     together (constraint names stay individually mappable). The Go copy covers only
@@ -1793,6 +1801,8 @@
       - internal/game/internal/core/domain/ride_test.go::TestRide_Unlock
       - internal/game/internal/core/domain/ride_test.go::TestRide_Lost
       - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+    gherkin:
+      - docs/spec/features/game/settlement.feature::Unlocking a won ride forfeits the bonus it accrued
   notes: >
     stale-pointer: the rule holds — the CHECK is enforced, mapped by constraint name to
     ErrInvalidTransition (409), and probed by TestRideMoneyStateCoupling — but migration
@@ -1848,6 +1858,8 @@
     unit:
       - internal/game/internal/core/domain/ride_bonus_test.go::TestCalculateBonus
       - internal/game/internal/core/service/service_test.go::TestService_OnMatchResultRecorded
+    gherkin:
+      - docs/spec/features/game/settlement.feature::A win accrues the stake times the odds minus one times the streak multiplier
   notes: >
     One formula, two entry points: BonusDelta is the one match's increment (what the
     ledger's AccrueBonus applies) and CalculateBonus is delta + acc (what the in-memory
@@ -1915,6 +1927,8 @@
       - internal/game/internal/core/service/service_test.go::TestService_RideCommandPhaseRejection
     e2e:
       - internal/e2e/rides_test.go::TestRideCommandHandlers
+    gherkin:
+      - docs/spec/features/game/ride_lifecycle.feature::A lock attempt inside the last hour before kickoff is refused
   notes: >
     Six authoritative sites on purpose: the window is per command, and each command
     states its own (they are disjoint cases, not copies of one statement). The
@@ -1977,6 +1991,8 @@
       - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx
     e2e:
       - internal/e2e/rides_test.go::TestCreateRideHandler
+    gherkin:
+      - docs/spec/features/game/settlement.feature::A command after the round has closed is refused and writes nothing
   notes: >
     The decision is the service's (every command must run the gate inside its own unit
     of work, before its write); the *guarantee* is the FOR SHARE row lock in schedule's
@@ -2033,6 +2049,8 @@
     unit:
       - internal/game/internal/core/service/service_test.go::TestService_OnRoundCompleted
       - internal/game/internal/core/service/rides_concurrency_test.go::TestSettlementHandlersSerializeOnTheRound
+    gherkin:
+      - docs/spec/features/game/settlement.feature::A completing round unlocks the ride still waiting on a decision
   expert-ref: docs/league-tokens-learning-phases/phase-08-transactional-outbox-and-events.md
   notes: >
     Authority is the service, not the domain, and that is a deliberate deviation from
@@ -2092,6 +2110,8 @@
       - internal/schedule/internal/model/matches_winner_test.go::TestWinner
       - internal/game/internal/core/service/service_test.go::TestService_OnMatchResultRecorded
       - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+    gherkin:
+      - docs/spec/features/game/settlement.feature::Each ride arrives where the committed result puts it
   expert-ref: docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md
   notes: >
     stale-pointer: the rule holds and is fixture-pinned (scoreStateRule: three score
@@ -2445,6 +2465,8 @@
       - internal/game/internal/core/service/service_test.go::TestService_OnRoundCompleted
     e2e:
       - internal/e2e/matches_test.go::TestResolveMatchSettlesRowOnce
+    gherkin:
+      - docs/spec/features/game/settlement.feature::The same result arriving twice pays the bonus once
   notes: >
     Authority is the repository, which deviates from the orchestration default
     (service) on purpose: the use case decides *which* rides are candidates, but
@@ -2871,6 +2893,8 @@
     unit:
       - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
       - internal/game/internal/core/domain/ride_test.go::TestRide_Lock
+    gherkin:
+      - docs/spec/features/game/ride_lifecycle.feature::Continuing moves the won ride onto its next match
   notes: >
     Trigger check 2 of the same function that carries R-GAME-002 (the state
     graph) and R-GAME-003 (terminal freeze), but a separate rule: the predicate

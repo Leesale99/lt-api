@@ -1,7 +1,8 @@
 // Command spec generates the business-rule catalog's Markdown view and checks
 // the catalog against its own invariants (docs/spec/rules.schema.md §3).
 //
-// It is deliberately stdlib-only (plus yaml.v3): the catalog is a documentation
+// It is deliberately thin (the standard library, yaml.v3 for the catalog and the
+// gherkin parser for the feature files): the catalog is a documentation
 // artifact, not a service, and the tool must run on any checkout.
 package main
 

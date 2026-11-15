@@ -36,8 +36,9 @@ var policies = []policy{
 	{"7-copy-policy", "non-authoritative sites tied by pinned_by or a Tie: note"},
 	{"8-authority-default", "authority ≠ category default ⇒ notes"},
 	{"9-site-ref", "path::Symbol, never a bare path or a line number"},
-	{"10-gherkin", "no verification.gherkin before Phase C"},
+	{"10-gherkin", "verification.gherkin resolves to a real scenario"},
 	{"11-fixture", "pinned_by names a declared fixture"},
+	{"12-features", "feature files parse; every scenario names exactly one known rule"},
 	{"refusal", "refusal code sanity"},
 }
 
@@ -170,7 +171,10 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	}
 
 	findings := collectFindings(catalog, root)
-	printFindings(stdout, *rulesPath, catalog, findings)
+	gherkinFindings, index := collectGherkin(catalog, root)
+	findings = append(findings, gherkinFindings...)
+	sortFindings(findings)
+	printFindings(stdout, *rulesPath, catalog, findings, index)
 
 	errorsFound, _ := countFindings(findings)
 	if *strict && errorsFound > 0 {
@@ -200,7 +204,6 @@ func collectFindings(catalog Catalog, root string) []Finding {
 		c.checkCopyPolicy(rule)
 		c.checkAuthorityDefault(rule)
 		c.checkSiteReferences(rule)
-		c.checkGherkin(rule)
 		c.checkFixtureRefs(rule)
 		c.checkRefusal(rule)
 	}
@@ -430,13 +433,6 @@ func (c *checker) checkSiteReferences(rule Rule) {
 	}
 }
 
-// policy 10: feature files do not exist yet (Phase C).
-func (c *checker) checkGherkin(rule Rule) {
-	for _, entry := range rule.Verification.Gherkin {
-		c.errorf("10-gherkin", rule.ID, "verification.gherkin entry %q is reserved for Phase C", entry)
-	}
-}
-
 // policy 11: every pinned_by names a fixture some rule declares.
 func (c *checker) checkFixtureRefs(rule Rule) {
 	for _, site := range rule.Enforcement {
@@ -565,7 +561,7 @@ func countFindings(findings []Finding) (errorsFound, warnings int) {
 	return errorsFound, warnings
 }
 
-func printFindings(w io.Writer, rulesPath string, catalog Catalog, findings []Finding) {
+func printFindings(w io.Writer, rulesPath string, catalog Catalog, findings []Finding, index *featureIndex) {
 	statusCounts := map[string]int{}
 	for _, rule := range catalog {
 		statusCounts[rule.Status]++
@@ -582,6 +578,12 @@ func printFindings(w io.Writer, rulesPath string, catalog Catalog, findings []Fi
 	}
 
 	for _, p := range policies {
+		// The feature tree's findings are printed by the gherkin section
+		// below (one place for the feature cross-validation); the summary
+		// table still counts them by policy.
+		if p.ID == policyGherkinPointer || p.ID == policyGherkinFeature {
+			continue
+		}
 		group := grouped[p.ID]
 		if len(group) == 0 {
 			continue
@@ -601,6 +603,8 @@ func printFindings(w io.Writer, rulesPath string, catalog Catalog, findings []Fi
 		}
 		fmt.Fprint(w, "\n")
 	}
+
+	printGherkinSection(w, index, findings)
 
 	if len(findings) == 0 {
 		fmt.Fprint(w, "No findings — the catalog satisfies docs/spec/rules.schema.md §3.\n\n")

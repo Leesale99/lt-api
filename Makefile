@@ -41,6 +41,11 @@ test/unit:
 test/db:
 	go test ./... -v
 
+## test/spec: run the godog suite against real Postgres (skips without LT_API_TEST_DSN)
+.PHONY: test/spec
+test/spec:
+	go test ./internal/spec/...
+
 ## db/seed: reset and seed the dev database with the canonical dummy data (run db/migrations/up first)
 .PHONY: db/seed
 db/seed: confirm
