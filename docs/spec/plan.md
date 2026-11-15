@@ -3,7 +3,7 @@
 > Living checklist. The orchestrator updates it at every gate.
 > `docs/spec/rules.schema.md` is the source of truth for the catalog format and enums.
 
-**Current state:** Phase B + C-pilot closed (gates B5, C3 approved). Phase G (H-defect fixes) running. C-fanout (C4–C6) runs AFTER Phase G — schedule scenarios must be authored against fixed behavior.
+**Current state:** Phase B + C-pilot closed (gates B5, C3 approved). Phase G (H-defect fixes) done — G1–G6 complete, awaiting the G7 gate. C-fanout (C4–C6) runs AFTER Phase G — schedule scenarios must be authored against fixed behavior.
 
 ## Goal
 
@@ -102,17 +102,17 @@ Scope: misalignment-report §6 items #10, #11, #1, #6, #7 — nothing else. §6 
 renumber over-strictness) explicitly stays out. Runs BEFORE the C-fanout so scenarios are
 authored against fixed behavior.
 
-- [ ] G1 §6-#10: gate all six `/v1/rides*` routes with permission codes (codes from 000004
+- [x] G1 §6-#10: gate all six `/v1/rides*` routes with permission codes (codes from 000004
       seed / phase docs; new migration only if a code must be added); e2e 401/403/200 tests
-- [ ] G2 §6-#11: settle payouts from the committed match odds, not the event payload
+- [x] G2 §6-#11: settle payouts from the committed match odds, not the event payload
       (resultAgreement path); pinned by test; catalog R-GAME-010 updated
-- [ ] G3 §6-#1: make `ended_at` semantics doc-backed and consistent (trigger vs flow;
+- [x] G3 §6-#1: make `ended_at` semantics doc-backed and consistent (trigger vs flow;
       fix the test that locks the discrepancy; align R-SCHEDULE-020/021)
-- [ ] G4 §6-#6: season delete all-or-nothing in one transaction; refused delete leaves
+- [x] G4 §6-#6: season delete all-or-nothing in one transaction; refused delete leaves
       registrations intact; test
-- [ ] G5 §6-#7: closed match/round status non-regressible at DB level — gate mirrors the
+- [x] G5 §6-#7: closed match/round status non-regressible at DB level — gate mirrors the
       Go status-rank logic (drift-test tie-in); migration 000019; no #5 over-strictness
-- [ ] G6 catalog + report maintenance: update rules.yaml per fixes (annotate resolved
+- [x] G6 catalog + report maintenance: update rules.yaml per fixes (annotate resolved
       stale-pointers, don't delete); untag fixed `@known-defect` scenarios; mark §6 items
       Fixed; regenerate business-rules.md; full audit green
 - [ ] G7 **GATE**: user reviews behavior changes + migrations (HANDOFF=confirm)

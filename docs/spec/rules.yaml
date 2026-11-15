@@ -146,56 +146,76 @@
   entity: season
   category: policy
   status: implemented
-  authority: domain
-  mechanism: null
+  authority: database
+  mechanism: trigger
   scope: row-local
   enforcement:
+    - site: migrations/000019_add_status_rank_gates.up.sql
+      layer: db-trigger
+      role: authoritative
+      pinned_by: null
     - site: internal/schedule/internal/model/status.go::checkStatusRegression
       layer: domain
-      role: authoritative
+      role: advisory-copy
       pinned_by: null
     - site: internal/schedule/internal/model/season.go::ValidateSeasonUpdate
       layer: validator
-      role: authoritative
+      role: advisory-copy
       pinned_by: null
     - site: internal/schedule/internal/model/round.go::ValidateRoundUpdate
       layer: validator
-      role: authoritative
+      role: advisory-copy
       pinned_by: null
     - site: internal/schedule/internal/model/match.go::ValidateMatchUpdate
       layer: validator
-      role: authoritative
+      role: advisory-copy
       pinned_by: null
   refusal:
-    code: synthetic
-    constraint: null
-    sentinel: null
-    http: 422
+    code: P0001
+    constraint:
+      - match_status_regression
+      - round_status_regression
+      - season_status_regression
+    sentinel: ErrRecordInUse
+    http: 409
   fixture: null
   verification:
     unit:
       - internal/schedule/internal/model/lifecycle_test.go::TestValidateSeasonUpdate
       - internal/schedule/internal/model/lifecycle_test.go::TestValidateRoundUpdate
       - internal/schedule/internal/model/matches_validation_test.go::TestValidateMatchUpdate
+      - internal/schedule/internal/repository/constraints_test.go::TestStatusRankGatesMirrorGoRanks
+      - internal/schedule/internal/repository/gates_test.go::TestRoundFreezeGate
+      - internal/schedule/internal/repository/gates_test.go::TestSeasonFreezeGate
     e2e:
       - internal/e2e/rounds_test.go::TestUpdateRoundHandler
       - internal/e2e/matches_test.go::TestUpdateMatchHandler
   notes: >
     One rule, three vocabularies: each entity owns a rank map and the shared
-    checkStatusRegression rejects a lower rank (disjoint cases, one statement;
+    statusRegresses verdict rejects a lower rank (disjoint cases, one statement;
     the generic signature makes a cross-vocabulary comparison a compile error).
-    The rank maps are why a same-status rewrite passes. This rule's authority is
-    the domain and NOT the database, which is the interesting part: the freeze
-    gates (R-SCHEDULE-005) only refuse created/postponed returns on a *started*
-    match, so a direct writer can still move a closed match back to in_progress,
-    or a closed round with no started matches back to open — the repository's
-    own gate tests prove the round case succeeds ("round without started matches
-    can regress from closed to open"). The advisory rank check is therefore the
-    only thing holding the closed-is-terminal half of the rule. stale-pointer:
-    migration 000008's header ("Regressions ... are NOT gated here — they belong to
-    rounds_freeze_gate, which already refuses them") overstates the gate: it
-    refuses them only once a match of the round has started. Without the app
-    check an illegal update surfaces as a 409; with it, as this rule's 422.
+    The rank maps are why a same-status rewrite passes. Since migration 000019
+    the database is the authoritative home: the three gate functions mirror the
+    Go ranks and refuse every regression with the three P0001 names
+    (match_status_regression / round_status_regression /
+    season_status_regression), including a closed match moved back to
+    in_progress, a closed round with nothing started moved back to open, and a
+    live season moved back a stage — all reachable by a direct writer before.
+    The rank check runs BEFORE the started-freeze rule, so a row tripping both
+    reports the rank message deterministically. The Go rank maps stay the
+    authority the DB copies must not drift from: the model's three exported
+    StatusRegresses functions are the oracle and the drift matrix
+    (TestStatusRankGatesMirrorGoRanks) probes every ordered status pair,
+    asserting the exact rank message on regressions and acceptance elsewhere
+    (fixtures isolate the rank rule from the freeze / season-live / sequence
+    gates). The advisory validators still run first, so the API path keeps its
+    friendly 422 and the DB's 409 is reachable only by writers that skip them.
+    stale-pointer: migration 000008's header ("Regressions ... are NOT gated
+    here — they belong to rounds_freeze_gate, which already refuses them")
+    overstates the gate — resolved by 000019: it refused regressions only once a
+    match of the round had started, and the rank half now lives in the same
+    function's 000019 body, so the 000008 header is historical, not current;
+    000008 is applied and stays byte-identical.
 
 - id: R-SCHEDULE-004
   title: The status vocabularies are closed sets shared by code and database
@@ -275,6 +295,10 @@
       layer: db-trigger
       role: authoritative
       pinned_by: null
+    - site: migrations/000019_add_status_rank_gates.up.sql
+      layer: db-trigger
+      role: authoritative
+      pinned_by: null
   refusal:
     code: P0001
     constraint:
@@ -302,7 +326,16 @@
     maps it by SQLSTATE, not by name (persistence.IsTriggerViolation), to
     ErrRecordInUse, and the handlers answer 409 with the "hierarchy cannot move
     to an earlier stage" message. Known asymmetry: a return to in_progress is
-    not in the gates' condition, so only R-SCHEDULE-003 refuses it.
+    not in the gates' condition, so only R-SCHEDULE-003 refuses it. The split is
+    explicit since 000019: these three functions own the started half (a started
+    match may not become created/postponed; a round or season with a started
+    match may not become created/open) and the same functions now also carry
+    R-SCHEDULE-003's rank half, checked first and raising its own names
+    (match_status_regression / round_status_regression /
+    season_status_regression); both halves can refuse the same started row, so
+    the order is the contract: a rank refusal never reports the started message.
+    Two migration sites for the same functions: 000001 created them, 000019 holds
+    their current bodies (000014's two-site pattern).
 
 - id: R-SCHEDULE-006
   title: A match carries a score exactly while it is playing or finished
@@ -398,9 +431,11 @@
 - id: R-SCHEDULE-008
   title: The end of a match is stamped once by the database
   statement: |
-    The end time of a match is the database's own observation, written on the
-    single transition into closed and never rewritten afterwards. Editing a
-    finished match cannot move its end time.
+    The end time of a match is written once, on the single transition into
+    closed, and never rewritten afterwards. The resolve flow supplies the match's
+    actual end time — a client fact the time policy (R-SCHEDULE-020) validates —
+    and the database keeps it; when a writer supplies no end time, the database
+    stamps its own clock. Editing a finished match cannot move its end time.
   module: schedule
   entity: match
   category: invariant
@@ -410,6 +445,10 @@
   scope: cross-row
   enforcement:
     - site: migrations/000005_add_matches_ended_at.up.sql
+      layer: db-trigger
+      role: authoritative
+      pinned_by: null
+    - site: migrations/000020_respect_supplied_match_ended_at.up.sql
       layer: db-trigger
       role: authoritative
       pinned_by: null
@@ -423,20 +462,20 @@
   notes: >
     matches_set_ended_at_on_close assigns NEW.ended_at := now() when NEW.status
     becomes closed and OLD.status was not — OLD-vs-NEW, so a trigger, and
-    INSERT-only tails are out of its reach. **Defect (recorded, not catalogued
-    as drift):** the resolve script's UPDATE writes the caller's ended_at in the
-    same statement (MatchRepository.ResolveTx sets ended_at = $3), and this
-    trigger immediately overwrites it with now(). The committed row therefore
-    holds now() while (a) ResolveTx returns the request's value in memory, so the
-    HTTP response echoes a time the row does not hold, and (b)
-    MatchResultRecorded.EndedAt carries the request's value into settlement.
-    TestResolveMatchHandler asserts the echoed "2020-01-01T12:00:00Z", which
-    locks the discrepancy in; no test reads ended_at back from the row on the
-    resolve path. Either the trigger should respect a supplied ended_at on the
-    resolve transition, or the resolve body should stop accepting one — but the
-    service's whole time policy (R-SCHEDULE-020) currently validates a value
-    that is then discarded. Verification gap: nothing pins the stamp-once half
-    (a second edit of a closed match is not probed).
+    INSERT-only tails are out of its reach. Its current body is 000020's (two
+    sites, 000014's pattern: 000005 created the function, 000020 replaced the
+    body). **Resolved (Phase G, §6 item #1):** the trigger keeps a supplied
+    NEW.ended_at on the transition into closed and stamps now() only when it is
+    NULL (000020's body), so the committed row holds the validated value rather
+    than the database's clock. ResolveTx returns the row's ended_at through
+    RETURNING instead of a pre-seeded request copy, and the HTTP 200 plus the
+    post-commit MatchResultRecorded echo the row's values. A direct writer that
+    closes without an end time still gets the database's now() backstop, which is
+    the half this rule keeps for writers that do not know the fact. The old
+    discrepancy is fixed and pinned end to end: TestResolveMatchHandler asserts
+    the echoed value AND reads the committed row back to it. Verification gap:
+    the stamp-once half is unchanged — nothing probes a second edit of a closed
+    match.
     No refusal of its own: the stamp is a write the database performs, not a predicate, so
     nothing is refused and the field stays null — the refusals around it belong to
     R-SCHEDULE-003 (closed is final) and R-SCHEDULE-021 (the guarded resolve).
@@ -748,6 +787,10 @@
       layer: db-trigger
       role: authoritative
       pinned_by: null
+    - site: migrations/000019_add_status_rank_gates.up.sql
+      layer: db-trigger
+      role: authoritative
+      pinned_by: null
   refusal:
     code: P0001
     constraint:
@@ -766,7 +809,11 @@
     transition (created -> open/closed, open -> closed) and on any renumbering of
     a row (OLD.number IS DISTINCT FROM NEW.number), which is what stops a writer
     from renaming its way around the order. Both halves read sibling rows
-    (seasons, sibling rounds), so a trigger. Two findings. (1) Verification gap:
+    (seasons, sibling rounds), so a trigger. Two migration sites, because the
+    function's current body is 000019's: 000008 created it, and 000019 gave the
+    same function R-SCHEDULE-003's rank half — round_status_regression — checked
+    before this gate's own two, so the rank message wins when both could fire
+    (that name belongs to R-SCHEDULE-003's refusal list, not this one's). Two findings. (1) Verification gap:
     the season-live half is pinned by the close test, the *sequence* half has no
     direct test anywhere — the two schedule suites instead disable the trigger to
     build fixtures ("rounds_progress_gate requires an unbroken closed sequence,
@@ -828,7 +875,12 @@
     matches, so the only way a round closes is that its matches were resolved
     first, by any writer. The replay half of the ride story is in
     R-SCHEDULE-019 (close no longer refuses over undecided rides — a round with
-    undecided rides closes fine).
+    undecided rides closes fine). stale-pointer resolved: 000008's header claimed
+    regressions "are NOT gated here", which was true only for this function's
+    sibling (rounds_block_illegal_progress); that function gained its third
+    definition in 000019 (R-SCHEDULE-003's rank half), while this rule's
+    rounds_close_gate is byte-identical since 000014, so the overstatement is
+    historical, not current; 000008 stays unedited as an applied migration.
 
 - id: R-SCHEDULE-017
   title: Opening a round starts its season
@@ -1011,8 +1063,9 @@
     shape the validator produces, which is the pre-split wire contract. No unit
     test covers the service door (the service test suite is close-only); the e2e
     case "ended_at in the future" is the only pointer. See R-SCHEDULE-008: the
-    value this rule validates is then overwritten by the ended_at trigger, so the
-    policy currently guards a number that is not stored.
+    value this rule validates is the one the ended_at trigger keeps on the resolve
+    transition (000020 respects a supplied end), so the policy guards a number
+    that is actually stored and echoed.
 
 - id: R-SCHEDULE-021
   title: A match is resolved once, against the version the caller holds
@@ -1071,7 +1124,11 @@
     status code. stale-pointer: ResolveMatch's comment still says the payload's
     winner "is re-checked ... through the rides_state_gate", but 000017 removed
     that cross-context check from the trigger; the re-check is now game's
-    resultAgreement in Go (R-GAME-010).
+    resultAgreement in Go (R-GAME-010). The guarded UPDATE's RETURNING now
+    carries ended_at, so ResolveTx returns the committed row rather than a
+    pre-seeded request copy; the whole 200 body (and the post-commit
+    MatchResultRecorded) is the row's values, which makes future trigger drift
+    visible at the wire.
 
 - id: R-SCHEDULE-022
   title: A round's gameplay phase follows its match times
@@ -1145,6 +1202,7 @@
     e2e:
       - internal/e2e/rounds_test.go::TestDeleteRoundHandler
       - internal/e2e/seasons_test.go::TestDeleteSeasonHandler
+      - internal/e2e/seasons_test.go::TestDeleteSeasonRefusalKeepsSeasonPlayers
   notes: >
     Two delete gates, one statement (the round level and the season level, taken
     from ADR-007 one level up); both ask the same time fact as the freeze gates
@@ -1155,7 +1213,14 @@
     that exposure, ADR-007 "one level up"). Refusal UX defect: the handlers write
     the *referential* message ("the record is referenced by other records and
     cannot be deleted") for these two gates, which are about durability, not
-    references; a client cannot tell "still in use" from "this is history".
+    references; a client cannot tell "still in use" from "this is history". The
+    season half composes with R-SCHEDULE-026/R-SCHEDULE-027: the season DELETE is
+    the refuse point of an all-or-nothing transaction that has already deleted
+    the season's players through game (migration 000021), so a gate refusal rolls
+    the registrations back instead of leaving the season alive without them — the
+    misalignment-report §6 item #6 defect, closed in Phase G. Two refusals end
+    that same tx: this gate's P0001 and game's rides_player_id_fkey 23503; both
+    arrive as ErrRecordInUse (409).
 
 - id: R-SCHEDULE-024
   title: Deleting a season or a round takes its matches with it
@@ -1288,11 +1353,15 @@
       layer: repository
       role: defense-in-depth
       pinned_by: null
-    - site: internal/game/internal/adapter/outbound/postgres/player_repo.go::PlayerRepository.DeleteForSeason
+    - site: internal/game/internal/adapter/outbound/postgres/player_repo.go::PlayerRepository.DeleteForSeasonTx
       layer: repository
       role: defense-in-depth
       pinned_by: null
     - site: migrations/000016_drop_cross_context_foreign_keys.up.sql
+      layer: db-constraint
+      role: defense-in-depth
+      pinned_by: null
+    - site: migrations/000021_add_game_delete_players_for_season.up.sql
       layer: db-constraint
       role: defense-in-depth
       pinned_by: null
@@ -1309,14 +1378,18 @@
       - internal/e2e/matches_test.go::TestDeleteMatchHandler
       - internal/e2e/teams_test.go::TestDeleteTeamHandler
       - internal/e2e/seasons_test.go::TestDeleteSeasonHandler
+      - internal/e2e/seasons_test.go::TestDeleteSeasonRefusalKeepsSeasonPlayers
   notes: >
     Merged rule (Phase B3): the calendar sweep (provisional R-SCHEDULE-026) and the
     game sweep (provisional R-GAME-027) found one boundary fact from its two ends, so
     it is one rule with the union of sites — module schedule, because the side that
     performs the delete owns the delete policy, and game's slots are freed for dense
     renumbering. The decision is per record (team: player favourites and rides;
-    match: rides; season: its registrations and their rides) and all three are
-    ordered "ask, then delete", which is why the authority is the use case. The
+    match: rides; season: its registrations and their rides) and the order is the
+    record's own: team and match ask game, then delete; a season deletes its
+    registrations through game first and the season row second, both inside
+    schedule's one transaction (000021's definer function +
+    SeasonRepository.DeleteTx), which is why the authority is the use case. The
     question is asked through GameUsage, a consumer-side port declared in schedule's
     service package so that game -> schedule stays the only legal import direction;
     the composition root adapts game's facade to it (cmd/api/gamerefs.go::gameRefs)
@@ -1334,16 +1407,20 @@
     so a ride locked or a player created between the read and the write slips
     through — accepted, and exactly the window the old delete-then-FK flow had; (2) an
     unwired port is a 500 (errGameRefsNotWired), not a refusal. The game-side EXISTS
-    queries and DeleteForSeason are facts, not decisions (Tie: they cannot drift into
+    queries and DeleteForSeasonTx are facts, not decisions (Tie: they cannot drift into
     a wrong answer without failing the calendar's own delete test), and the composed
     check cannot silently disappear because the port is required at wiring time.
     TestMatchDeleteRestricted is the deliberate opposite assertion — it proves the
     store no longer refuses, pinning the boundary that this policy is the only thing
-    holding the rule. The season half of the rule is unpinned end to end: no test
-    plants rides before a season delete. The row-outcome half of the season path (the
-    players really go with the season, and a refused delete leaves them already gone)
-    stays R-SCHEDULE-027; the durability gates stay R-SCHEDULE-023 and the same-context
-    team half R-SCHEDULE-025. stale-pointer: 000016's header still describes the
+    holding the rule. The season half is pinned end to end since Phase G4:
+    TestDeleteSeasonRefusalKeepsSeasonPlayers plants a ride on one registration
+    (this rule's game-side refusal) and a started match (R-SCHEDULE-023's gate),
+    and asserts the 409 and that the registrations survive — the same one
+    transaction rolls both refusals back, so a refused season delete cannot leave
+    the season alive with its players already gone. The row-outcome half of the
+    season path (the players really go with the season, and a refused delete rolls
+    them back) stays R-SCHEDULE-027; the durability gates stay R-SCHEDULE-023 and
+    the same-context team half R-SCHEDULE-025. stale-pointer: 000016's header still describes the
     replacement as "the api layer (api holds the identity store)" and "the api
     season-delete handler" / "PlayerStore"; internal/api no longer exists — the delete
     policies are internal/schedule/internal/service/delete_policy.go, the adapter is
@@ -1389,12 +1466,11 @@
     (1) Verification gap: no test asserts that a season's players are actually
     deleted with it — TestDeleteSeasonHandler only checks the status code for the
     created-season case, and TestDeleteCreatedSeasonHandler counts seasons and
-    rounds, not players. (2) Accepted gap, stated at the site: the players are
-    deleted before the season, so a season whose delete is then refused
-    (R-SCHEDULE-023's delete gate) leaves its players already gone — the old
-    single-statement cascade was all-or-nothing, and this composition is not.
-    Only deleteable seasons reach the players step, which narrows the window but
-    does not close it.
+    rounds, not players. (2) Atomicity: the players are deleted before the season
+    row, and both live in schedule's one transaction (migration 000021's definer
+    function): a season whose delete is then refused (R-SCHEDULE-023's gate)
+    rolls the player delete back with it, so the row outcome and the atomicity are
+    both the old cascade's.
 
 - id: R-SCHEDULE-028
   title: An update only lands on the version the caller was shown
@@ -2112,6 +2188,7 @@
       - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
     gherkin:
       - docs/spec/features/game/settlement.feature::Each ride arrives where the committed result puts it
+      - docs/spec/features/game/settlement.feature::A settlement that misreports the odds is refused and pays nothing
   expert-ref: docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md
   notes: >
     stale-pointer: the rule holds and is fixture-pinned (scoreStateRule: three score
@@ -2134,6 +2211,14 @@
     removes — so the same refusal now happens in Go inside the same transaction, before
     the arrival write. The two historical refusal names survive as text in the Go
     errors (ride_result_scores_missing / ride_result_disagreement) with no SQLSTATE.
+    Since Phase G (§6 item #11) the committed snapshot the agreement re-reads also
+    carries the odds: the payload's rate claim is verified against it (refusal text
+    ride_result_odds_disagreement, the same ErrInvalidTransition + rollback as the
+    other two refusals), and the payout rate is read from the committed row with
+    the side picked by the committed team assignment (a side-swapping payload that
+    passed a bare pair-compare could not misprice a won ride). The loud refusal is
+    this rule's claim-refusal pattern applied to the rate, and R-GAME-026's
+    "unverified"/"loud error" language is the same choice.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2975,10 +3060,9 @@
     role holds CRUD on its own schema only, everything in the calendar's schema
     is denied, and the two write-instant guards are SECURITY DEFINER functions
     the game role may only execute — schedule's SQL, schedule's owner, the
-    caller's transaction. Scope limit worth recording: the committed match
-    snapshot game re-reads carries teams and scores but no odds, so the bonus's
-    odds still come from the event payload unverified (the destination is
-    verified, the payout rate is not).
+    caller's transaction. Since Phase G (§6 item #11) the committed snapshot also
+    carries the odds and the payload's rate claim is verified against it
+    (R-GAME-010), so nothing the settlement consumes arrives unverified any more.
     Renumbered at merge (was provisional R-GAME-028): the request-identity fragment went into R-KERNEL-002 and R-GAME-027 merged into R-SCHEDULE-026, so the game block was renumbered densely.
     Related: R-PLATFORM-013 is the general rule (contexts depend one way and meet only at
     facades); this one is the publisher-language/ACL half at game's edge — a distinct,
@@ -3972,6 +4056,7 @@
     unit: []
     e2e:
       - internal/e2e/auth_test.go::TestRequirePermissionMiddleware
+      - internal/e2e/rides_test.go::TestRideRoutesPermissionGate
   notes: >
     Authority deviates from the policy default (domain) because the matrix is data, not a
     computation: the eleven codes, the two roles and the twenty-two grants are rows an
@@ -3989,9 +4074,13 @@
     TestRequirePermissionMiddleware exercises the matrix (it pins that the user role carries
     teams:read and lacks teams:write), and a new migration re-seeding the roles would keep
     it green. Coverage gap: no test asserts the code count, the exact grant sets, or that the
-    running service cannot mutate them. Note also that ride endpoints (internal/game's
-    /v1/rides routes) carry no permission code at all, so the eleven-code vocabulary does
-    not describe them.
+    running service cannot mutate them. The ride surface names no ride-specific code —
+    the vocabulary stays closed at eleven — and since Phase G (§6 item #10) the six
+    /v1/rides routes are gated with players:read (the two reads) and players:write
+    (the four commands): the ride surface is the player domain's action surface (a
+    ride spends a named player's tokens), and players:write is the only write code
+    the standard user role holds, so the lock flow stays open to an activated
+    standard user.
 
 - id: R-IDENTITY-015
   title: A caller's permissions are its role's, resolved on every request
@@ -4064,6 +4153,7 @@
     unit: []
     e2e:
       - internal/e2e/auth_test.go::TestRequirePermissionMiddleware
+      - internal/e2e/rides_test.go::TestRideRoutesPermissionGate
   notes: >
     The rule is identity's (activation is identity's fact) but it is enforced in the
     platform: the permission middleware consults the activation flag the authentication
@@ -4073,12 +4163,13 @@
     domain holds no operation that refuses work on an unactivated account; the flag is
     carried, not consulted, below the transport. The fact travels a chain worth naming:
     users.activated (000002, NOT NULL) → model.User.Activated → httpx.AuthUser.Activated
-    (built by identity.Module.UserForToken) → this branch. Because the branch is inside
-    RequirePermission, the rule does not cover any route without a gate: today the ride
-    reads and every ride command in internal/game are registered with no permission gate at
-    all, so an unactivated — or anonymous — caller can reach them. That is a coverage
-    boundary of this rule, not a drift of it, and it should be listed in the Phase B
-    misalignment report. Ordering is deliberate: activation is checked before the role's
+    (built by identity.Module.UserForToken) → this branch. The rule covers exactly the
+    routes that carry a gate — and since Phase G (§6 item #10) every internal/game route
+    does (the six /v1/rides routes name players:read / players:write), so an unactivated
+    — or anonymous — caller is refused there too, before the handler runs and before any
+    idempotency key is claimed; the Phase B coverage boundary this note recorded is
+    closed, and the registrations that carry the gates are naming sites catalogued on
+    R-IDENTITY-017. Ordering is deliberate: activation is checked before the role's
     permissions are read, so an unactivated account never causes a permission query, and the
     refusal is 403 with "your user account must be activated to access this resource" —
     distinct from the missing-permission message (R-IDENTITY-017) and from the 401 an
@@ -4120,6 +4211,10 @@
       layer: handler
       role: authoritative
       pinned_by: null
+    - site: internal/game/internal/adapter/inbound/http/routes.go::Handler.RegisterRoutes
+      layer: handler
+      role: defense-in-depth
+      pinned_by: null
   refusal:
     code: synthetic
     constraint: null
@@ -4130,6 +4225,7 @@
     unit: []
     e2e:
       - internal/e2e/auth_test.go::TestRequirePermissionMiddleware
+      - internal/e2e/rides_test.go::TestRideRoutesPermissionGate
   notes: >
     Authority is the handler, deviating from the policy default (domain): authorization is
     a transport verdict here — the module route tables compose each handler with its code
@@ -4147,9 +4243,18 @@
     write code. Handler-level second asks (players:write:any) read the same carried set
     through httpx.GetPermissions, which returns an empty set when the gate never ran — so a
     handler that asks beyond its route's code silently sees "no permission" rather than an
-    error. Verification gap: the rule is only exercised end to end; there is no unit test of
+    error. Tie: the module route tables name the code each route requires
+    (gate("players:write", ...)), and a registration that drops its gate leaves
+    the route ungated rather than mis-coded — the e2e ladder
+    (TestRideRoutesPermissionGate plus the /v1/teams rungs in
+    TestRequirePermissionMiddleware) fails first on the anonymous and unactivated
+    rungs, which would receive a handler status instead of 401/403; same shape as
+    R-IDENTITY-016's accepted Tie on httpx.AuthenticationRequired. Verification
+    gap: the rule is only exercised end to end; there is no unit test of
     the middleware with a fake lookup, so a change to the gate's order or its carried set is
-    only caught by the two-route e2e matrix.
+    only caught by the e2e matrix — the two /v1/teams rungs plus the six-route
+    /v1/rides ladder (anonymous, unactivated, code-less role, admitted standard
+    user).
     Folded at merge: provisional R-KERNEL-009 (the permission-gate ladder) contributes the
     carried-set and refusal-name sites here — httpx.Permissions.Include is the exact-match
     lookup a handler asks with, and it is also what makes the carried set usable beyond
@@ -6057,7 +6162,7 @@
       layer: service
       role: authoritative
       pinned_by: null
-    - site: cmd/api/gamerefs.go::gameRefs.DeletePlayersForSeason
+    - site: cmd/api/gamerefs.go::gameRefs.DeletePlayersForSeasonTx
       layer: service
       role: authoritative
       pinned_by: null

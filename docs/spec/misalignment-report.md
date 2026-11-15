@@ -331,7 +331,9 @@ Each is a real behaviour a reviewer can check in the tree; severity is a first g
    (c) `TestResolveMatchHandler` asserts the echoed `2020-01-01T12:00:00Z`, locking the
    discrepancy in; (d) the time policy R-SCHEDULE-020 validates a value that is then thrown
    away. Not drift (the rule states the stamp, not the echo) — recorded in R-SCHEDULE-008's
-   notes.
+   notes. **Fixed** in Phase G (e657011): the trigger keeps a supplied `ended_at` on the
+   transition into closed (migration 000020) and `ResolveTx` returns the committed row's
+   value via `RETURNING`, so the 200 and `MatchResultRecorded` echo what the row holds.
 2. **Unmapped SQLSTATEs surface as 500 — M, several paths.** Schedule: `23514` from any of
    the match/team/round/season CHECKs, `22003` from an odds value over 99.99, and `23503` at
    match INSERT (the update path maps it, the insert does not) all fall through to
@@ -369,14 +371,18 @@ Each is a real behaviour a reviewer can check in the tree; severity is a first g
    refused, losing registrations while the season survives). The code comment at
    internal/schedule/internal/service/delete_policy.go makes the same wrong "narrows the
    window" claim; the app code is deliberately untouched (spec-work constraint) — noted
-   here so the next app-side edit fixes both.
+   here so the next app-side edit fixes both. **Fixed** in Phase G (b837e69): game's player
+   delete for a season is a SECURITY DEFINER function (migration 000021) called on
+   schedule's own transaction, so a refused season delete rolls the registrations back.
 7. **Closed match/round are DB-regressible — H.** The freeze gates refuse only
    created/postponed returns on a *started* match, and `rounds_progress_gate` explicitly
    does not handle regressions. A direct writer (psql, a backfill, a new repository method)
    can move a closed match back to `in_progress` or a closed round with no started matches
    back to `open`. The advisory rank validator is the only guard, so the "closed is final"
    half of R-SCHEDULE-003 is a policy, not an invariant — the schema's own
-   database-vs-repository test says that is not enough for history.
+   database-vs-repository test says that is not enough for history. **Fixed** in Phase G
+   (c4459cc): migration 000019 gives the three gate functions the rank half, mirroring the
+   Go rank maps and refusing every regression with the three `P0001` rank names.
 8. **Login timing asymmetry — M (enumeration).** `Service.Authenticate` returns before any
    bcrypt comparison when the email is unknown, so the two "invalid credentials" paths have
    measurably different latency; the equivalence R-IDENTITY-018 claims holds in the refusal,
@@ -390,11 +396,15 @@ Each is a real behaviour a reviewer can check in the tree; severity is a first g
    permission code (R-IDENTITY-014's notes), and `RequirePermission` is where the activation
    check lives (R-IDENTITY-016), so an unactivated — or anonymous — caller reaches ride
    creates and commands. Combined with the next item, anonymous callers can spend a named
-   player's tokens.
+   player's tokens. **Fixed** in Phase G (876ca23): the six `/v1/rides*` routes are gated
+   with `players:read` (the two reads) and `players:write` (the four commands).
 11. **Bonus odds come from an unverified event payload — H/M.** Game verifies the
    *destination* against the committed result (`resultAgreement`) but takes the payout rate
    from `MatchResultRecorded`; the committed match snapshot game re-reads carries teams and
-   scores but no odds (R-GAME-026's notes). A wrong payload rate is paid.
+   scores but no odds (R-GAME-026's notes). A wrong payload rate is paid. **Fixed** in Phase
+   G (e4ff4d9): `resultAgreement` verifies the payload's odds against the committed snapshot
+   (`ride_result_odds_disagreement`) and the bonus is paid at the committed rate for the
+   committed side.
 12. **Player user-reference check is optional and mislabelled — M.** The only user-existence
    check lives in the handler, runs only when `h.users != nil`, and reports its failure on
    the `favorite_team_id` field (`internal/game/internal/adapter/inbound/http/players.go`).
