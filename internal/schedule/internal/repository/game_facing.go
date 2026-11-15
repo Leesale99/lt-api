@@ -119,11 +119,13 @@ func (g *GameFacing) DestinationOpenTx(ctx context.Context, tx pgx.Tx, matchID i
 // Match returns the committed facts of one match — the read behind game's
 // result-agreement check (the app-level translation of the old
 // rides_state_gate check 5, migration 000017): the settlement handlers
-// verify the event payload against the committed scores before arriving a
-// ride on won_pending|lost. The scores are committed by the time game
-// sees them (publish is post-commit, and ResolveMatch refuses a
-// re-resolution), so a plain pool read — schedule pool, schedule_app — is
-// the right snapshot; no in-tx read is needed.
+// verify the event payload against the committed scores and the committed
+// odds before arriving a ride on won_pending|lost and paying its bonus. The
+// whole snapshot is committed by the time game sees it (publish is
+// post-commit, and ResolveMatch refuses a re-resolution, so the scores and
+// the odds the resolve wrote come from the same committed row), so a plain
+// pool read — schedule pool, schedule_app — is the right snapshot; no in-tx
+// read is needed.
 func (g *GameFacing) Match(ctx context.Context, matchID int) (model.Match, error) {
 	return g.matches.Get(ctx, matchID)
 }

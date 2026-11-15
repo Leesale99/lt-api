@@ -174,6 +174,18 @@ Feature: Settlement
       And the ride is still locked
       And the ride carries no bonus
 
+    # The destination here agrees with the committed result; only the rate the
+    # bonus would be paid at is misreported. The rate is a claim like the
+    # destination, so it is verified against the committed odds and refused
+    # when it disagrees — nothing is paid at a rate the match does not carry.
+    Scenario: A settlement that misreports the odds is refused and pays nothing
+      Given a ride locked by "Ana" on "Team A" for match day 1 with 10 tokens
+      And match day 1 ended "2–1" to "Team A"
+      When the settlement reports match day 1's odds for "Team A" as 9.99
+      Then the settlement is refused as an illegal transition
+      And the ride is still locked
+      And the ride carries no bonus
+
     Scenario: A draw crowns nobody
       Given a ride locked by "Ana" on "Team A" for match day 1 with 10 tokens
       When match day 1 ends "1–1"

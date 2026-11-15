@@ -2,7 +2,7 @@ package port
 
 // The calendar port: the narrow slice of the schedule context the ride
 // domain consumes (ADR-028). Its vocabulary is game's own — Phase,
-// MatchSnapshot, NextMatch, Team, Season — and its errors are game's
+// MatchSnapshot (Score, Odds), NextMatch, Team, Season — and its errors are game's
 // sentinels, so the core never learns the calendar's types. The
 // anti-corruption layer at adapter/outbound (schedule_acl.go) is the one game
 // package that translates schedule's facade into this port.
@@ -10,8 +10,8 @@ package port
 // What game may NOT do against the calendar: raw SQL against
 // matches/rounds (the guarded statements live on the calendar's side), and
 // deriving ride outcomes from calendar rows (the settlement payloads carry
-// them; MatchSnapshot exists only to re-verify a payload against the
-// committed result).
+// them; MatchSnapshot exists only to re-verify a payload — its destination
+// and its odds claim — against the committed result).
 
 import (
 	"context"
@@ -37,14 +37,24 @@ type Score struct {
 	Away *int
 }
 
+// Odds is a committed match's odds pair (the calendar's numeric pair in
+// game's vocabulary). It is read from the committed match, never from a
+// settlement payload: the payload's own rate is only a claim to verify.
+type Odds struct {
+	Home float64
+	Away float64
+}
+
 // MatchSnapshot is the committed facts of one match — the input of the
 // result-agreement check the settlement handler runs (the app-level
-// enforcement of the old rides_state_gate check 5, migration 000017).
+// enforcement of the old rides_state_gate check 5, migration 000017): the
+// team assignment, the final score and the odds the bonus is paid at.
 type MatchSnapshot struct {
 	ID         int
 	HomeTeamID int
 	AwayTeamID int
 	Score      Score
+	Odds       Odds
 }
 
 // Team is one team's identity — the read behind ride create's team reference
@@ -88,7 +98,8 @@ type Schedule interface {
 	DestinationOpenTx(ctx context.Context, tx pgx.Tx, matchID int) error
 
 	// Match returns the committed facts of one match — the input of the
-	// result-agreement check. domain.ErrNotFound when the match is unknown.
+	// result-agreement check: the committed team assignment, score and odds.
+	// domain.ErrNotFound when the match is unknown.
 	Match(ctx context.Context, matchID int) (MatchSnapshot, error)
 
 	// Team reports one team's existence. domain.ErrNotFound when unknown.

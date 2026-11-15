@@ -39,6 +39,7 @@ func registerSettlementSteps(sc *godog.ScenarioContext) {
 
 	// The settlement's agreement refusal.
 	sc.Step(`^the settlement reports match day ([0-9]+) as a win for "([^"]+)"$`, settlementReportsWin)
+	sc.Step(`^the settlement reports match day ([0-9]+)'s odds for "([^"]+)" as ([0-9.]+)$`, settlementReportsOdds)
 	sc.Step(`^the settlement is refused as an illegal transition$`, settlementRefusedAsIllegalTransition)
 	sc.Step(`^the ride on "([^"]+)" waits on a decision$`, rideOnTeamWaitsOnDecision)
 	sc.Step(`^the ride on "([^"]+)" is lost$`, rideOnTeamIsLost)
@@ -357,6 +358,48 @@ func settlementReportsWin(ctx context.Context, matchDay, team string) (context.C
 		WinnerTeamID: &claimed,
 		EndedAt:      now(),
 	}
+	w.lastEventErr = w.app.publishResult(ctx, event)
+	return stepOK(ctx)
+}
+
+// settlementReportsOdds delivers the committed result with one claim rewritten:
+// the claimed team's rate, and nothing else. The destination agrees with the
+// committed scores, so only the odds half of the agreement check can refuse it.
+func settlementReportsOdds(ctx context.Context, matchDay, team, odds string) (context.Context, error) {
+	w := worldFrom(ctx)
+	day, err := strconv.Atoi(matchDay)
+	if err != nil {
+		return stepFailed(ctx, err)
+	}
+	matchID, ok := w.matchDays[day]
+	if !ok {
+		return stepFailed(ctx, fmt.Errorf("match day %d was never built", day))
+	}
+	event, err := w.committedEvent(ctx, matchID)
+	if err != nil {
+		return stepFailed(ctx, err)
+	}
+	claimedTeam, ok := w.teams[team]
+	if !ok {
+		return stepFailed(ctx, fmt.Errorf("team %q was never built", team))
+	}
+	claimed, err := strconv.ParseFloat(odds, 64)
+	if err != nil {
+		return stepFailed(ctx, fmt.Errorf("odds %q: %w", odds, err))
+	}
+
+	// Only the claimed side's rate moves; the other side keeps the committed
+	// figure, so the refusal is about the reported rate, not a wholesale
+	// payload the settlement could dismiss as a translation bug.
+	switch claimedTeam {
+	case event.HomeTeamID:
+		event.Odds.Home = claimed
+	case event.AwayTeamID:
+		event.Odds.Away = claimed
+	default:
+		return stepFailed(ctx, fmt.Errorf("team %q plays no side of match day %d", team, day))
+	}
+
 	w.lastEventErr = w.app.publishResult(ctx, event)
 	return stepOK(ctx)
 }
