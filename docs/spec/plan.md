@@ -3,7 +3,7 @@
 > Living checklist. The orchestrator updates it at every gate.
 > `docs/spec/rules.schema.md` is the source of truth for the catalog format and enums.
 
-**Current state:** Phase B closed (B5 approved); C-pilot running.
+**Current state:** Phase B + C-pilot closed (gates B5, C3 approved). Phase G (H-defect fixes) running. C-fanout (C4–C6) runs AFTER Phase G — schedule scenarios must be authored against fixed behavior.
 
 ## Goal
 
@@ -75,7 +75,7 @@ Audit order after Phase D: `tidy -diff` → `mod verify` → `gofmt` → `vet` �
 - [x] C1 general: `gherkin-style.md` + pilot features (ride lifecycle, settlement)
 - [x] C2 go-worker: `internal/spec` skeleton (TestMain + testdb + DSL + sabotage) + pilot
       steps + Makefile targets; researcher pins godog/yaml versions first
-- [ ] C3 **GATE**: pilot readability ("could a non-Go reader verify intent?")
+- [x] C3 **GATE**: pilot readability ("could a non-Go reader verify intent?") — approved; two polish items carried into C-fanout: rewrite/repoint the `@known-defect:2` pilot scenario (premise doesn't hold at the create route) and fix R-GAME-006 outline step indentation
 - [ ] C4 general×3: features per capability (schedule lifecycle/freeze; identity
       authz+activation; game players+idempotency)
 - [ ] C5 go-worker×3: step impls, red→green (local DSN)
@@ -96,6 +96,29 @@ Audit order after Phase D: `tidy -diff` → `mod verify` → `gofmt` → `vet` �
 ### Phase F — Pilot: Phase 06 ledger, spec-first
 Separate roadmap effort; uses this pipeline (scenarios red before implementation).
 R-LEDGER-001/002 in the seed catalog are the first two entries of this phase.
+
+### Phase G — H-defect fixes (user-queued at C3)
+Scope: misalignment-report §6 items #10, #11, #1, #6, #7 — nothing else. §6 #5 (created-round
+renumber over-strictness) explicitly stays out. Runs BEFORE the C-fanout so scenarios are
+authored against fixed behavior.
+
+- [ ] G1 §6-#10: gate all six `/v1/rides*` routes with permission codes (codes from 000004
+      seed / phase docs; new migration only if a code must be added); e2e 401/403/200 tests
+- [ ] G2 §6-#11: settle payouts from the committed match odds, not the event payload
+      (resultAgreement path); pinned by test; catalog R-GAME-010 updated
+- [ ] G3 §6-#1: make `ended_at` semantics doc-backed and consistent (trigger vs flow;
+      fix the test that locks the discrepancy; align R-SCHEDULE-020/021)
+- [ ] G4 §6-#6: season delete all-or-nothing in one transaction; refused delete leaves
+      registrations intact; test
+- [ ] G5 §6-#7: closed match/round status non-regressible at DB level — gate mirrors the
+      Go status-rank logic (drift-test tie-in); migration 000019; no #5 over-strictness
+- [ ] G6 catalog + report maintenance: update rules.yaml per fixes (annotate resolved
+      stale-pointers, don't delete); untag fixed `@known-defect` scenarios; mark §6 items
+      Fixed; regenerate business-rules.md; full audit green
+- [ ] G7 **GATE**: user reviews behavior changes + migrations (HANDOFF=confirm)
+
+Migration numbering: G5 → 000019; G3 → 000020 only if the trigger changes. Applied
+migrations are never edited.
 
 ## Deferred / backlog (out of scope here)
 
