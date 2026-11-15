@@ -3,7 +3,7 @@
 > Living checklist. The orchestrator updates it at every gate.
 > `docs/spec/rules.schema.md` is the source of truth for the catalog format and enums.
 
-**Current state:** Phase B + C-pilot closed (gates B5, C3 approved). Phase G (H-defect fixes) done — G1–G6 complete, awaiting the G7 gate. C-fanout (C4–C6) runs AFTER Phase G — schedule scenarios must be authored against fixed behavior.
+**Current state:** C-fanout complete — awaiting gate C7.
 
 ## Goal
 
@@ -76,10 +76,9 @@ Audit order after Phase D: `tidy -diff` → `mod verify` → `gofmt` → `vet` �
 - [x] C2 go-worker: `internal/spec` skeleton (TestMain + testdb + DSL + sabotage) + pilot
       steps + Makefile targets; researcher pins godog/yaml versions first
 - [x] C3 **GATE**: pilot readability ("could a non-Go reader verify intent?") — approved; two polish items carried into C-fanout: rewrite/repoint the `@known-defect:2` pilot scenario (premise doesn't hold at the create route) and fix R-GAME-006 outline step indentation
-- [ ] C4 general×3: features per capability (schedule lifecycle/freeze; identity
-      authz+activation; game players+idempotency)
-- [ ] C5 go-worker×3: step impls, red→green (local DSN)
-- [ ] C6 general: vocabulary cross-review + coverage report
+- [x] C4 general×3: features per capability (schedule lifecycle/freeze; identity authz+activation; game players+idempotency) (schedule 25 rules / 61 scenarios, identity 11 / 22, game remainder 6 + kernel guest R-KERNEL-003 / 17; defect 2 repointed to the player-delete surface)
+- [x] C5 go-worker×3: step impls, red→green (local DSN) (167 scenarios green; the @known-defect:2 finding reproduces under SPEC_KNOWN_DEFECTS=1)
+- [x] C6 general: vocabulary cross-review + coverage report (docs/spec/coverage.md: 55 of 106 implemented rules carry scenarios — inside the locked 45–60 band)
 - [ ] C7 **GATE**: readability sample + coverage numbers
 
 ### Phase D — Automation & CI
@@ -115,7 +114,7 @@ authored against fixed behavior.
 - [x] G6 catalog + report maintenance: update rules.yaml per fixes (annotate resolved
       stale-pointers, don't delete); untag fixed `@known-defect` scenarios; mark §6 items
       Fixed; regenerate business-rules.md; full audit green
-- [ ] G7 **GATE**: user reviews behavior changes + migrations (HANDOFF=confirm)
+- [x] G7 **GATE**: user reviews behavior changes + migrations (approved; migrations 000019–000021 merged at 6006ae6)
 
 Migration numbering: G5 → 000019; G3 → 000020 only if the trigger changes. Applied
 migrations are never edited.
