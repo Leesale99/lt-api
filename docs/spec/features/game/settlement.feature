@@ -89,7 +89,9 @@ Feature: Settlement
       Then the write is refused by rides_money_state_coupling
 
   @rule:R-GAME-006
-  Scenario Outline: A win accrues the stake times the odds minus one times the streak multiplier
+  Rule: A win accrues a bonus from the stake, the odds and the banked streak
+
+    Scenario Outline: A win accrues the stake times the odds minus one times the streak multiplier
     Given a ride locked by "Ana" on "Team A" for match day 1 with <the stake>
     And the ride's team is priced at <the odds>
     And the ride has banked <banked>
@@ -179,7 +181,9 @@ Feature: Settlement
       And the ride carries no bonus
 
   @rule:R-GAME-016
-  Scenario: The same result arriving twice pays the bonus once
+  Rule: A settlement arrives at each ride once
+
+    Scenario: The same result arriving twice pays the bonus once
     Given a ride locked by "Ana" on "Team A" for match day 1 with 10 tokens at odds 1.80
     And match day 1 ended "2–1" to "Team A"
     When the result of match day 1 arrives a second time
