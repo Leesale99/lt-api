@@ -3,7 +3,7 @@
 > Living checklist. The orchestrator updates it at every gate.
 > `docs/spec/rules.schema.md` is the source of truth for the catalog format and enums.
 
-**Current state:** Phase E complete — awaiting gate E5 (sabotage demo reviewed by user).
+**Current state:** PROJECT COMPLETE — the executable-specification pipeline is live on main (PR #8 merged 167c804). Open follow-ups: Phase F ledger pilot (spec-first, uses this pipeline), docker-compose for local Postgres (vault Deferred), small tidy-ups (R-SCHEDULE-001 missing @rule tag, mailer.go jitter comment, checker trailer cosmetics).
 
 ## Goal
 
@@ -92,7 +92,7 @@ Audit order after Phase D: `tidy -diff` → `mod verify` → `gofmt` → `vet` �
 - [x] E2 general: `docs/spec/README.md` + AGENTS.md rule-change protocol (+ rules.schema.md three-pointer verification prose)
 - [x] E3 librarian: vault mirror + Lessons; file Deferred/docker-compose (Design + Lessons notes and the docker-compose Deferred item written via the Obsidian tool)
 - [x] E4 go-worker: sabotage demo (one violation per layer → audit catches each) (five layers red → reverted in a throwaway copy; zero commits: bogus enum → checker · orphan @rule tag → cross-validation · deleted pointer → --strict · loosened validator check → unit test · dropped SET ROLE hook → testdb probe)
-- [ ] E5 **GATE**: demo passes → pipeline is the executable specification
+- [x] E5 **GATE**: demo passes → pipeline is the executable specification (approved; PR #8 merged by user at 167c804)
 
 ### Phase F — Pilot: Phase 06 ledger, spec-first
 Separate roadmap effort; uses this pipeline (scenarios red before implementation).
