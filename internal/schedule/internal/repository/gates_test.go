@@ -170,19 +170,21 @@ func TestRoundFreezeGate(t *testing.T) {
 			wantCode: errP0001,
 		},
 		{
-			name: "round without started matches can regress from closed to open",
+			// 000019: the rank rule refuses this even with nothing started —
+			// "closed is final" is a DB invariant, not only the validators'.
+			name: "round without started matches cannot regress from closed to open",
 			prepare: func(ctx context.Context, t *testing.T, f fixture) {
 				mustExec(ctx, t, `UPDATE schedule.rounds SET status = 'closed' WHERE id = $1`, f.round)
 			},
 			query:    `UPDATE schedule.rounds SET status = 'open' WHERE id = $1`,
 			args:     func(f fixture) []any { return []any{f.round} },
-			wantCode: "",
+			wantCode: errP0001,
 		},
 		{
-			name:     "open round without started matches can return to created",
+			name:     "open round without started matches cannot return to created",
 			query:    `UPDATE schedule.rounds SET status = 'created' WHERE id = $1`,
 			args:     func(f fixture) []any { return []any{f.round} },
-			wantCode: "",
+			wantCode: errP0001,
 		},
 	})
 }
@@ -213,10 +215,12 @@ func TestSeasonFreezeGate(t *testing.T) {
 			wantCode: errP0001,
 		},
 		{
-			name:     "season without started matches can regress from in_progress to open",
+			// 000019: in_progress → open is a rank regression; nothing has to
+			// have started for the season gate to refuse it.
+			name:     "season without started matches cannot regress from in_progress to open",
 			query:    `UPDATE schedule.seasons SET status = 'open' WHERE id = $1`,
 			args:     func(f fixture) []any { return []any{f.season} },
-			wantCode: "",
+			wantCode: errP0001,
 		},
 	})
 }
@@ -231,22 +235,37 @@ func TestSeasonDeleteGateRejectsMatchHistory(t *testing.T) {
 		{
 			name: "open season with a started match cannot be deleted",
 			prepare: func(ctx context.Context, t *testing.T, f fixture) {
-				// Open first (no started matches yet, so the freeze gate allows
-				// it), then insert the started match under the open season.
-				mustExec(ctx, t, `UPDATE schedule.seasons SET status = 'open' WHERE id = $1`, f.season)
-				insertMatchRow(ctx, t, startedMatchSQL, f)
+				// The seeded season is in_progress, and since 000019 a season
+				// cannot regress to open — so the fixture plants a fresh open
+				// season (INSERT carries no season gate; the vocabulary drift
+				// test uses the same shape), then a started match under it. Its
+				// own status does not refuse the delete; the started match does.
+				var seasonID int
+				if err := pool.QueryRow(ctx,
+					`INSERT INTO schedule.seasons (status) VALUES ('open') RETURNING id`).Scan(&seasonID); err != nil {
+					t.Fatalf("plant open season: %v", err)
+				}
+				var roundID int
+				if err := pool.QueryRow(ctx,
+					`INSERT INTO schedule.rounds (season_id, number, status) VALUES ($1, 1, 'created') RETURNING id`,
+					seasonID).Scan(&roundID); err != nil {
+					t.Fatalf("plant round: %v", err)
+				}
+				insertMatchRow(ctx, t, startedMatchSQL, fixture{season: seasonID, round: roundID, home: f.home, away: f.away})
 			},
-			query:    `DELETE FROM schedule.seasons WHERE id = $1`,
-			args:     func(f fixture) []any { return []any{f.season} },
+			query:    `DELETE FROM schedule.seasons WHERE status = 'open'`,
+			args:     func(f fixture) []any { return nil },
 			wantCode: errP0001,
 		},
 		{
 			name: "open season without started matches can still be deleted",
 			prepare: func(ctx context.Context, t *testing.T, f fixture) {
-				mustExec(ctx, t, `UPDATE schedule.seasons SET status = 'open' WHERE id = $1`, f.season)
+				// Same fresh-open-season shape, history-free: only the started
+				// half of the delete gate is exercised.
+				mustExec(ctx, t, `INSERT INTO schedule.seasons (status) VALUES ('open')`)
 			},
-			query:    `DELETE FROM schedule.seasons WHERE id = $1`,
-			args:     func(f fixture) []any { return []any{f.season} },
+			query:    `DELETE FROM schedule.seasons WHERE status = 'open'`,
+			args:     func(f fixture) []any { return nil },
 			wantCode: "",
 		},
 	})

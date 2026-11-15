@@ -812,6 +812,39 @@ func TestService_OnMatchResultRecorded(t *testing.T) {
 			t.Errorf("ride = %s/v%d, want untouched locked/v1 (the tx rolled back)", got.State, got.Version)
 		}
 	})
+	t.Run("a payload misreporting the odds is refused and pays nothing", func(t *testing.T) {
+		gameSvc, _ := newTestService()
+		matchID, roundID, seasonID := scoreClosedMatch(ctx, t, 3, 1)
+		var homeID, awayID int
+		if err := pool.QueryRow(ctx, `SELECT home_team_id, away_team_id FROM schedule.matches WHERE id = $1`, matchID).Scan(&homeID, &awayID); err != nil {
+			t.Fatalf("read match: %v", err)
+		}
+		homeRide := plantRide(ctx, t, matchID, homeID, domain.RideLocked, decimal.Zero, 1)
+
+		// The payload claims the right winner but a wrong rate: the committed
+		// row prices the home side at 1.75, the payload at 9.99. The rate is
+		// a claim like the destination, so the settlement must refuse it
+		// rather than pay it — the bonus is paid at the COMMITTED odds, and a
+		// payload rate game cannot find in the committed match is a loud
+		// error, never a rate to use (a stale or lying publisher is a bug).
+		event := eventResult("evt-lying-odds", matchID, roundID, seasonID, homeID, awayID, 3, 1)
+		event.Odds = schedule.Odds{Home: 9.99, Away: 2.20}
+		err := gameSvc.OnMatchResultRecorded(ctx, outbound.TranslateMatchResultRecorded(event))
+		if !errors.Is(err, domain.ErrInvalidTransition) {
+			t.Fatalf("OnMatchResultRecorded(misreported odds) = %v, want domain.ErrInvalidTransition", err)
+		}
+
+		got, err := gameSvc.RideGet(ctx, homeRide.ID)
+		if err != nil {
+			t.Fatalf("Get(): %v", err)
+		}
+		if got.State != domain.RideLocked || got.Version != 1 {
+			t.Errorf("ride = %s/v%d, want untouched locked/v1 (the tx rolled back)", got.State, got.Version)
+		}
+		if !got.Acc.IsZero() {
+			t.Errorf("ride acc = %s, want 0 (nothing accrued, the payload rate was never paid)", got.Acc)
+		}
+	})
 }
 
 // TestService_OnRoundCompleted pins the round settlement (eventual

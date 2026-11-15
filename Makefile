@@ -41,6 +41,11 @@ test/unit:
 test/db:
 	go test ./... -v
 
+## test/spec: run the godog suite against real Postgres (skips without LT_API_TEST_DSN)
+.PHONY: test/spec
+test/spec:
+	go test ./internal/spec/...
+
 ## db/seed: reset and seed the dev database with the canonical dummy data (run db/migrations/up first)
 .PHONY: db/seed
 db/seed: confirm
@@ -102,7 +107,9 @@ tidy:
 # features and misreports them as errors (e.g. generic methods in go1.27).
 GOFMT := $(shell go env GOROOT)/bin/gofmt
 
-## audit: run quality control checks (fails on any unformatted file)
+## audit: run quality control checks (fails on any unformatted file, stale spec or
+## spec-check error). The chain is the pipeline's single gate: gofmt → vet →
+## staticcheck → spec freshness → spec check → the whole test tree (unit, spec, db).
 .PHONY: audit
 audit:
 	go mod tidy -diff
@@ -110,7 +117,28 @@ audit:
 	@test -z "$$( $(GOFMT) -l $$(git ls-files '*.go' | grep -v '^vendor/') )" || ( $(GOFMT) -l $$(git ls-files '*.go' | grep -v '^vendor/'); exit 1)
 	go vet ./...
 	go tool staticcheck ./...
+	$(MAKE) spec/diff
+	$(MAKE) spec/check
 	go test -race -vet=off ./...
+
+# ============================================================================================================================ #
+# SPEC CATALOG
+# ============================================================================================================================ #
+
+## spec/gen: regenerate docs/spec/business-rules.md from the canonical catalog
+.PHONY: spec/gen
+spec/gen:
+	go run ./cmd/spec gen
+
+## spec/check: validate the catalog against rules.schema.md §3 (--strict: any policy error fails the audit)
+.PHONY: spec/check
+spec/check:
+	go run ./cmd/spec check --strict
+
+## spec/diff: fail if docs/spec/business-rules.md is stale (wired into `make audit`)
+.PHONY: spec/diff
+spec/diff:
+	go run ./cmd/spec gen --diff
 
 # ============================================================================================================================ #
 # BUILD

@@ -8,6 +8,8 @@ package service
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
+
 	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
 	"lt-api.aleksrdvn.com/internal/kernel/persistence"
 )
@@ -48,9 +50,11 @@ func (s *Service) RidesExistForMatch(ctx context.Context, matchID int) (bool, er
 	return s.rides.ExistsForMatch(ctx, matchID)
 }
 
-// DeletePlayersForSeason deletes every player of the season
-// (players_season_id_fkey's old CASCADE half). domain.ErrRecordInUse when a
-// ride still references one of them (the same-context rides_player_id_fkey).
-func (s *Service) DeletePlayersForSeason(ctx context.Context, seasonID int) error {
-	return s.players.DeleteForSeason(ctx, seasonID)
+// DeletePlayersForSeasonTx deletes every player of the season
+// (players_season_id_fkey's old CASCADE half) on the calendar's transaction:
+// the season row and its registrations are one atomic operation again.
+// domain.ErrRecordInUse when a ride still references one of them (the
+// same-context rides_player_id_fkey).
+func (s *Service) DeletePlayersForSeasonTx(ctx context.Context, tx pgx.Tx, seasonID int) error {
+	return s.players.DeleteForSeasonTx(ctx, tx, seasonID)
 }

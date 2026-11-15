@@ -53,6 +53,16 @@ var migFiles = []string{
 	"../../../../migrations/000016_drop_cross_context_foreign_keys.up.sql",
 	"../../../../migrations/000017_app_level_result_agreement.up.sql",
 	"../../../../migrations/000018_context_roles.up.sql",
+	// 000019 adds the status-rank half to the three gate functions: the
+	// repository gate/drift tests probe it directly, so the chain must carry
+	// it.
+	"../../../../migrations/000019_add_status_rank_gates.up.sql",
+	// 000020 makes the ended_at stamp keep a supplied end time (the resolve
+	// flow's actual end) and only stamp now() when none is supplied; 000021
+	// adds the game-side definer delete behind the season delete. The chain
+	// runs the full production series.
+	"../../../../migrations/000020_respect_supplied_match_ended_at.up.sql",
+	"../../../../migrations/000021_add_game_delete_players_for_season.up.sql",
 }
 
 // PostgreSQL error codes (see pgerrcode; inlined to avoid the extra dependency).

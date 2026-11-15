@@ -51,8 +51,9 @@ func (h *Handler) UseIdentity(users UserDirectory) {
 	h.users = users
 }
 
-// RegisterRoutes installs game's routes — paths, methods and middleware
-// order are the pre-refactor api/routes.go's, unchanged.
+// RegisterRoutes installs game's routes — paths and methods are the
+// pre-refactor api/routes.go's, and every route carries its permission gate
+// (the rides note below records why the ride surface takes the player codes).
 func (h *Handler) RegisterRoutes(router RouteRegistrar, gate PermissionGate) {
 	// Players
 	router.HandlerFunc(http.MethodGet, "/v1/players", gate("players:read", h.listPlayers))
@@ -61,13 +62,22 @@ func (h *Handler) RegisterRoutes(router RouteRegistrar, gate PermissionGate) {
 	router.HandlerFunc(http.MethodPatch, "/v1/seasons/:id/players/:player_id", gate("players:write", h.updatePlayer))
 	router.HandlerFunc(http.MethodDelete, "/v1/seasons/:id/players/:player_id", gate("players:write", h.deletePlayer))
 
-	// Rides. The ride reads carry no permission gate (pre-refactor shape);
-	// every ride command is idempotent (ADR-024) and runs through one shared
-	// handler that takes the endpoint tag for the dedup identity.
-	router.HandlerFunc(http.MethodGet, "/v1/rides", h.listRides)
-	router.HandlerFunc(http.MethodGet, "/v1/rides/:id", h.showRide)
-	router.HandlerFunc(http.MethodPost, "/v1/rides", h.createRide)
-	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/lock", h.rideCommand("POST /v1/rides/:id/lock", h.svc.RideLock))
-	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/burn", h.rideCommand("POST /v1/rides/:id/burn", h.svc.RideBurn))
-	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/unlock", h.rideCommand("POST /v1/rides/:id/unlock", h.svc.RideUnlock))
+	// Rides. The reads are gated with players:read and every command with
+	// players:write — no ride code exists to name instead: migration 000004
+	// seeds exactly eleven codes and the phase docs define no ride permission
+	// vocabulary. The ride surface is the player domain's action surface (a
+	// ride spends a named player's tokens), so it is gated with that domain's
+	// codes, and players:write is the only write code the standard 'user' role
+	// holds — gating the commands with it keeps an activated standard user
+	// able to lock rides, the product's core flow, while an anonymous or
+	// unactivated caller is refused before the handler runs. Every ride
+	// command is idempotent (ADR-024) and runs through one shared handler that
+	// takes the endpoint tag for the dedup identity; the gate wraps that
+	// handler, order: gate then handler.
+	router.HandlerFunc(http.MethodGet, "/v1/rides", gate("players:read", h.listRides))
+	router.HandlerFunc(http.MethodGet, "/v1/rides/:id", gate("players:read", h.showRide))
+	router.HandlerFunc(http.MethodPost, "/v1/rides", gate("players:write", h.createRide))
+	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/lock", gate("players:write", h.rideCommand("POST /v1/rides/:id/lock", h.svc.RideLock)))
+	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/burn", gate("players:write", h.rideCommand("POST /v1/rides/:id/burn", h.svc.RideBurn)))
+	router.HandlerFunc(http.MethodPost, "/v1/rides/:id/unlock", gate("players:write", h.rideCommand("POST /v1/rides/:id/unlock", h.svc.RideUnlock)))
 }

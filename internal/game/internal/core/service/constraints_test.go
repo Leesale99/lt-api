@@ -74,6 +74,12 @@ var migFiles = []string{
 	"../../../../../migrations/000016_drop_cross_context_foreign_keys.up.sql",
 	"../../../../../migrations/000017_app_level_result_agreement.up.sql",
 	"../../../../../migrations/000018_context_roles.up.sql",
+	// 000019-000021: the full production chain continues — the status-rank
+	// gates, the ended_at stamp that keeps a supplied end time, and the
+	// game-side definer delete.
+	"../../../../../migrations/000019_add_status_rank_gates.up.sql",
+	"../../../../../migrations/000020_respect_supplied_match_ended_at.up.sql",
+	"../../../../../migrations/000021_add_game_delete_players_for_season.up.sql",
 }
 
 // PostgreSQL error codes (see pgerrcode; inlined to avoid the extra dependency).

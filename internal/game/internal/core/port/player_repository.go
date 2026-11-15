@@ -8,6 +8,8 @@ package port
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
+
 	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
 	"lt-api.aleksrdvn.com/internal/kernel/persistence"
 )
@@ -35,9 +37,11 @@ type PlayerRepository interface {
 	// half of the calendar's team-delete refusal.
 	ExistsForTeam(ctx context.Context, teamID int) (bool, error)
 
-	// DeleteForSeason deletes every player registered in the season — the
-	// game half of the calendar's season-delete cascade. A ride still
+	// DeleteForSeasonTx deletes every player registered in the season ON THE
+	// CALLER'S TRANSACTION — the game half of the calendar's season delete.
+	// The caller (schedule) owns the tx because the season row and its
+	// registrations must commit or roll back together. A ride still
 	// referencing a player trips rides_player_id_fkey (a same-context FK):
 	// domain.ErrRecordInUse, the refusal the old cascade produced.
-	DeleteForSeason(ctx context.Context, seasonID int) error
+	DeleteForSeasonTx(ctx context.Context, tx pgx.Tx, seasonID int) error
 }

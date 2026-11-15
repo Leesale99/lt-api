@@ -116,7 +116,8 @@ func (a *ScheduleACL) DestinationOpenTx(ctx context.Context, tx pgx.Tx, matchID 
 	return translate(a.api.DestinationOpenTx(ctx, tx, matchID))
 }
 
-// Match returns the committed facts of one match.
+// Match returns the committed facts of one match: the team assignment, the
+// final score and the odds — one snapshot, one read.
 func (a *ScheduleACL) Match(ctx context.Context, matchID int) (port.MatchSnapshot, error) {
 	match, err := a.api.Match(ctx, matchID)
 	if err != nil {
@@ -130,6 +131,10 @@ func (a *ScheduleACL) Match(ctx context.Context, matchID int) (port.MatchSnapsho
 		Score: port.Score{
 			Home: match.Score.Home,
 			Away: match.Score.Away,
+		},
+		Odds: port.Odds{
+			Home: match.Odds.Home,
+			Away: match.Odds.Away,
 		},
 	}, nil
 }

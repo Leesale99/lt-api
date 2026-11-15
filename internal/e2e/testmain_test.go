@@ -74,6 +74,18 @@ func TestMain(m *testing.M) {
 		"../../migrations/000016_drop_cross_context_foreign_keys.up.sql",
 		"../../migrations/000017_app_level_result_agreement.up.sql",
 		"../../migrations/000018_context_roles.up.sql",
+		// 000019: the status-rank gates — the DB now refuses match/round/
+		// season regressions, so the advisory 422 is not the only guard. The
+		// API path reaches the 422 first; the direct fixtures here stay legal.
+		"../../migrations/000019_add_status_rank_gates.up.sql",
+		// 000020: the ended_at stamp keeps a supplied end time (the resolve
+		// flow's actual end) and only stamps now() when none is supplied —
+		// the E2E resolve test reads the row back against the echoed value.
+		"../../migrations/000020_respect_supplied_match_ended_at.up.sql",
+		// 000021: the game-side definer delete behind the season delete
+		// policy — the E2E season tests exercise it over the role pools
+		// 000018 creates.
+		"../../migrations/000021_add_game_delete_players_for_season.up.sql",
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "test database setup: %v\n", err)

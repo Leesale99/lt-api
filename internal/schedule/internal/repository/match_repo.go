@@ -331,6 +331,12 @@ func (r *MatchRepository) NextForTeam(ctx context.Context, teamID int) (model.Ma
 // blocked write re-reads and re-evaluates on lock release (EvalPlanQual),
 // so 0 rows means the race was lost or the facts never held — classified
 // by classifyResolveRefusal, not guessed.
+//
+// The returned match echoes the committed row: ended_at is read back through
+// RETURNING rather than pre-seeded from the argument (000020 keeps a supplied
+// end time, but the row — not the request — is what the response reports, so
+// any future trigger drift shows up in the response instead of hiding behind
+// an in-memory copy).
 func (r *MatchRepository) ResolveTx(ctx context.Context, tx pgx.Tx, matchID int, score model.Score, endedAt time.Time, version int) (model.Match, error) {
 	query := `
 		UPDATE matches
@@ -340,19 +346,19 @@ func (r *MatchRepository) ResolveTx(ctx context.Context, tx pgx.Tx, matchID int,
 			SELECT 1
 			FROM rounds r
 			WHERE r.id = matches.round_id AND r.status = 'open')
-		RETURNING created_at, starts_at, season_id, round_id, status, home_team_id, away_team_id, home_odds, away_odds, version
+		RETURNING created_at, starts_at, ended_at, season_id, round_id, status, home_team_id, away_team_id, home_odds, away_odds, version
 	`
 	args := []any{score.Home, score.Away, endedAt, matchID, version}
 
 	match := model.Match{
-		ID:      matchID,
-		Score:   score,
-		EndedAt: &endedAt,
+		ID:    matchID,
+		Score: score,
 	}
 
 	err := tx.QueryRow(ctx, query, args...).Scan(
 		&match.CreatedAt,
 		&match.StartsAt,
+		&match.EndedAt,
 		&match.SeasonID,
 		&match.RoundID,
 		&match.Status,
@@ -374,6 +380,15 @@ func (r *MatchRepository) ResolveTx(ctx context.Context, tx pgx.Tx, matchID int,
 		default:
 			return model.Match{}, err
 		}
+	}
+
+	// Normalize the row's instant to UTC before it is echoed: pgx hands back
+	// timestamptz in the session's zone, so without this the same row would
+	// serialize as a different offset per host even though the instant is
+	// unchanged. The response reports the row, in the wire's UTC spelling.
+	if match.EndedAt != nil {
+		utc := match.EndedAt.UTC()
+		match.EndedAt = &utc
 	}
 
 	return match, nil

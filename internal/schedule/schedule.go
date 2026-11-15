@@ -130,7 +130,9 @@ func (m *Module) DestinationOpenTx(ctx context.Context, tx pgx.Tx, matchID int) 
 }
 
 // Match returns the committed facts of one match — the input of the
-// result-agreement check the settlement handlers run.
+// result-agreement check the settlement handlers run. The snapshot is the
+// model's Match row as committed: the team assignment, the final score and
+// the odds the bonus is paid at.
 func (m *Module) Match(ctx context.Context, matchID int) (Match, error) {
 	return m.port.Match(ctx, matchID)
 }

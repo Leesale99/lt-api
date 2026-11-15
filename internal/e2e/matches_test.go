@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Fixed future timestamp for happy-path bodies: starts_at must be in the
@@ -587,25 +588,35 @@ func TestResolveMatchHandler(t *testing.T) {
 	requireDB(t)
 
 	tests := []struct {
-		name     string
-		url      string
-		seed     string
-		body     string
-		wantCode int
-		wantBody []string
+		name        string
+		url         string
+		seed        string
+		body        string
+		wantCode    int
+		wantBody    []string
+		wantRowTime string // when set, the committed row's ended_at must equal this
+		rowMatchID  int    // the row to read back (the seeded match)
 	}{
 		{
 			// Round 3 is the fixture's open round; the seed (a started
-			// in-progress match) becomes match id 12 after reset's 11.
+			// in-progress match) becomes match id 12 after reset's 11. starts_at
+			// is placed before the body's ended_at: since 000020 keeps the
+			// supplied end, matches_ended_at_check (ended_at > starts_at) sees
+			// the real pair rather than the old now() stamp.
 			name: "resolves a started match in an open round",
 			seed: `INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at)
-			       VALUES (1, 3, 1, 2, 1.5, 2.5, 70, 69, 'in_progress', now() - interval '1 hour')`,
+			       VALUES (1, 3, 1, 2, 1.5, 2.5, 70, 69, 'in_progress', '2020-01-01T10:00:00Z')`,
 			url:      "/v1/seasons/1/matches/12/resolve",
 			body:     `{"ended_at":"2020-01-01T12:00:00Z","score":{"home":80,"away":79},"version":1}`,
 			wantCode: http.StatusOK,
 			// The response echoes the ended_at the request sent, under the same
-			// "ended_at" key (request and response are symmetric).
-			wantBody: []string{`"status": "closed"`, `"home": 80`, `"away": 79`, `"version": 2`, `"ended_at": "2020-01-01T12:00:00Z"`},
+			// "ended_at" key (request and response are symmetric), and — since
+			// 000020 keeps a supplied end time — the committed row holds that
+			// same value: the echo is verified against a read-back, not locked
+			// in by itself.
+			wantBody:    []string{`"status": "closed"`, `"home": 80`, `"away": 79`, `"version": 2`, `"ended_at": "2020-01-01T12:00:00Z"`},
+			wantRowTime: "2020-01-01T12:00:00Z",
+			rowMatchID:  12,
 		},
 		{
 			// Match 1 is the canonical closed match: the store classifies the
@@ -715,6 +726,22 @@ func TestResolveMatchHandler(t *testing.T) {
 					t.Errorf("body missing %q (body: %s)", fragment, rr.Body.String())
 				}
 			}
+
+			if tt.wantRowTime != "" {
+				// The echo must be the row, not an in-memory copy: read the
+				// committed ended_at back and pin it to the echoed value. This is
+				// the assertion that turns the old request-echo discrepancy into
+				// a locked-in consistency (R-SCHEDULE-008).
+				var rowEndedAt time.Time
+				err := testPool.QueryRow(context.Background(),
+					`SELECT ended_at FROM schedule.matches WHERE id = $1`, tt.rowMatchID).Scan(&rowEndedAt)
+				if err != nil {
+					t.Fatalf("read back ended_at: %v", err)
+				}
+				if got := rowEndedAt.UTC().Format(time.RFC3339); got != tt.wantRowTime {
+					t.Errorf("row ended_at = %s, want %s (the echoed value must be the stored one)", got, tt.wantRowTime)
+				}
+			}
 		})
 	}
 }
@@ -732,7 +759,7 @@ func TestResolveMatchSettlesRowOnce(t *testing.T) {
 
 	if _, err := testPool.Exec(context.Background(),
 		`INSERT INTO schedule.matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, status, starts_at)
-		 VALUES (1, 3, 1, 2, 1.5, 2.5, 70, 69, 'in_progress', now() - interval '1 hour')`); err != nil {
+		 VALUES (1, 3, 1, 2, 1.5, 2.5, 70, 69, 'in_progress', '2020-01-01T10:00:00Z')`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 

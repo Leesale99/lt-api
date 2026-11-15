@@ -1,0 +1,376 @@
+# Business-rule catalog — schema
+
+`docs/spec/rules.yaml` is the **canonical, hand-edited** catalog of the project's
+business rules. `docs/spec/business-rules.md` (later phase) is **generated** from it —
+never edit that file.
+
+The catalog exists so that every rule answers three questions in one place:
+
+1. **What kind of rule is it** and therefore **who is the single authority** (the
+   decision owner) for it.
+2. **Where is it enforced today** — the sites, and whether each site is the authority
+   or a copy that must be tied back to it.
+3. **How do we know it still holds** — the tests that exist *today*, and the expert
+   document the rule came from.
+
+Vocabulary follows the vault's lessons: *Four kinds of rule decide where logic lives*,
+*Source of truth per invariant*, *A rule with two enforcement points has zero*, and
+*Tactical design heuristics*.
+
+> **Naming note.** `repository` (the vault Lessons call this layer *store*; the Go type
+> was renamed `Store` → `Repository` in the modular-monolith refactor).
+
+---
+
+## 1. Frozen enums
+
+### `category` — what kind of rule (decides the default authority)
+
+| value | one-line meaning | default authority |
+|---|---|---|
+| `invariant` | Must always be true, whoever writes. Unrepairable data if unchecked. | `database` |
+| `policy` | Is this allowed / computed correctly *right now* (phase windows, bonus math). | `domain` |
+| `orchestration` | Order, transaction boundary, idempotency claim, what must precede what. | `service` |
+| `interface` | The request is framed correctly (present, parseable, shape/score arithmetic). | `handler` |
+| `persistence-fact` | Store-stamped fact, not a business decision (id, `created_at`, `version`). | `repository` |
+| `refusal-mapping` | Which named refusal a violation produces (code → sentinel → status), and in what order causes are classified. | per rule |
+| `boundary` | Cross-context hygiene: no cross-context SQL/joins/triggers/FKs; events in the publisher's language, ACL at each edge. | composition root |
+
+The one reading test: *what breaks if nobody checks this rule?* Unrepairable wrong data
+reachable by any writer → database. A caller acting before it is allowed, or a formula
+that changes with the product → domain (checked **at the service door** for any caller).
+Ordering/locking/atomicity mechanics → **repository**. Request framing → handler.
+
+### `authority` — the single decision owner (exactly one per rule)
+
+| value | meaning |
+|---|---|
+| `database` | A constraint or a trigger refuses the write. |
+| `domain` | The domain operation / pure function decides; callers may not bypass it. |
+| `service` | The use case decides the order and the transaction boundary. |
+| `repository` | The repository executes the atomic write and its write-instant gates. |
+| `composition-root` | Cross-context wiring: which facade/ACL each context receives and the direction of every dependency. |
+| `handler` | The transport frames and refuses the request. |
+
+`category` names the **default**; `authority` records the **actual** decision owner.
+A rule whose authority deviates from its category's default MUST say why in `notes`.
+Deviations are the interesting entries — they are where a rule migrated across a
+boundary (e.g. `R-GAME-010` left the database because its trigger read another
+context's table).
+
+#### Database vs repository authority
+
+Both refuse a forbidden write, but by different means, and the difference decides what
+proves the rule.
+
+| | `database` | `repository` |
+|---|---|---|
+| **path dependence** | **Path-independent**: the CHECK / trigger / unique / composite-FK fires on every write from any path — the application, `psql`, a future service, a backfill script. | **Path-dependent**: the predicate, CAS, `FOR SHARE` or guard-function call lives inside specific repository code paths. A *new* query that forgets the guard bypasses the rule silently. |
+| **verification** | A sabotage scenario that attempts the forbidden write through the Owner pool, bypassing application code entirely, and asserts the refusal. | Call-set pinning fixtures that prove every writing query in the repository includes the guard, so a new ungated path fails a test. |
+
+Choose `database` whenever the predicate can be stated row-locally without policy: it
+is the only authority that survives a writer you have not written yet. Choose
+`repository` when the predicate needs Go (cross-context facts, an ordering decision, a
+computed value) — and pay for it with a call-set fixture, because the guards are only
+as good as the set of queries that remember to call them.
+
+### `mechanism` — only when `authority: database`
+
+| value | meaning |
+|---|---|
+| `constraint` | `CHECK` / `NOT NULL` / `UNIQUE` / `FK` — row-local, declarative, preferred. |
+| `trigger` | Only what a constraint cannot say: cross-row reads, `OLD` vs `NEW`, `INSERT`-only predicates, in-tx sequencing. |
+| `composite-fk` | Cross-table consistency without procedural code. |
+
+Sub-ordering inside the database: **declarative constraints first**, triggers only for
+what a constraint cannot express. Policy never moves into SQL — a pricing formula in
+PL/pgSQL is a rule nobody can see, test or rename.
+
+Seeded reference data takes no mechanism value of its own: rows inserted by an applied
+migration (e.g. `R-IDENTITY-014`'s roles, permission codes and grants) are catalogued as
+`mechanism: constraint`, because what refuses a conflicting seed is the keys and what
+keeps the seeded values true is migration immutability. (Gate B5 — no `seed` /
+`reference-data` value is added.)
+
+### `scope` — decides constraint vs trigger
+
+| value | meaning |
+|---|---|
+| `row-local` | The predicate references only `NEW` — a `CHECK` can express it. |
+| `cross-row` | Needs `OLD`, a sibling row, or a group aggregate. |
+| `cross-table` | Needs another table's facts. In a modular monolith that is usually a boundary smell — see `boundary`. |
+
+### `enforcement[].layer` — where the site lives
+
+| value | meaning |
+|---|---|
+| `handler` | Transport: DTO validation, status mapping, headers. |
+| `composition-root` | Cross-context wiring / facade binding — the composition-root layer where modules are handed their collaborators (a `cmd/...` wiring function, a facade binding, an ACL adapter chosen at assembly). Distinguished from `handler`, which is transport framing: nothing here sees a request. (Gate B5.) |
+| `validator` | A `ValidateX` function: request shape/bounds arithmetic, called from the handler before the use case. |
+| `service` | Use case: ordering, transaction boundary, idempotency claim. |
+| `domain` | Entity/operation or pure function. |
+| `repository` | Repository/adapter or the write-instant SQL gate it calls (row locks, `FOR SHARE`, guarded `UPDATE ... WHERE`). |
+| `db-constraint` | A declarative constraint in a migration. |
+| `db-trigger` | A trigger function in a migration. |
+
+### `enforcement[].role`
+
+| value | meaning |
+|---|---|
+| `authoritative` | This site **is** the decision, for the rule's one authority layer. Repeated only for disjoint cases (one per command's phase window; total vs delta of one formula). |
+| `defense-in-depth` | A data-carrying copy. Trusted only while something ties it to the authority: `pinned_by`, or a `Tie:` sentence in `notes` showing it cannot drift silently (the authority refuses the wrong copy). |
+| `advisory-copy` | Caller-facing pre-check that only improves the refusal shape (a clean 409/422 instead of an error-path 500). The authority still refuses; drift is a UX divergence, never a data one. |
+
+**Copy policy.** Exactly one `authority` layer. A non-authoritative site is allowed only
+if it names what ties it to the authority:
+
+- `pinned_by: <fixture>` — a shared change-detector fixture (see §4), **or**
+- `pinned_by: null` **and** a `notes` sentence (the catalog convention is a sentence
+  beginning `Tie:`) showing the copy cannot drift silently: **defense-in-depth** must
+  fail loudly at the authority (wrong copy ⇒ the constraint/trigger refuses and its own
+  test fails first); **advisory-copy** is exempt by definition — it only shapes the
+  refusal, the authority still refuses the write.
+
+If neither holds for a data-carrying copy, the entry is a second copy of the rule —
+which the vault counts as zero. Record it as `status: drifted` and name the missing
+fixture in `notes`.
+
+### `status`
+
+| value | meaning |
+|---|---|
+| `implemented` | The rule holds in code today, every named site exists, and at least one verification pointer exists. |
+| `specified-only` | Designed in a phase document; no code yet. `expert-ref` required, no `enforcement`, no `verification`. |
+| `drifted` | The rule's **content** disagrees between the expert docs and actual behavior: the code refuses what the doc allows (or vice versa), the formula/window/ordering differs, or a data-carrying copy has no tie. `notes` says what disagrees and which side the catalog believes. `notes` required. |
+
+**Rot is not drift.** A *rotted pointer* — a change-detector naming a dead file, a
+comment pointing at a deleted test, enforcement that moved away from where the docs
+claim it lives — does NOT make a rule `drifted`: its content still holds. Keep `status:
+implemented` and record the rot in `notes` behind a `stale-pointer:` prefix. Both
+`drifted` rules and every `stale-pointer` note MUST be surfaced in the Phase B
+misalignment report.
+
+Applied migrations are immutable history; when rot is caused by stale prose in an
+applied migration, the fix is the catalog (and a comment at the current site), not a
+rewrite of the migration.
+
+### `module`
+
+`schedule` | `game` | `identity` | `ledger` | `kernel` | `platform`
+
+### Mapping to the plan's coarser enums (see A2 open questions)
+
+The plan sketch used `authority: db|app|both` and `layer: validator|domain|service|db|middleware`.
+This schema uses the taxonomy's five-value authority and six-value layer because they
+name *which* app layer. When generating `business-rules.md`, map:
+
+| coarse | this schema |
+|---|---|
+| `authority: db` | `database` |
+| `authority: app` | `domain` \| `service` \| `repository` \| `composition-root` \| `handler` (the actual value) |
+| `authority: both` | not a valid state: one `authority` + N `enforcement` entries |
+| `layer: validator` | `validator` (own value as of A2; use `handler` for inline DTO checks) |
+| `layer: db` | `db-constraint` or `db-trigger` |
+| `layer: middleware` | `handler` |
+
+---
+
+## 2. Fields
+
+| field | type | required | notes |
+|---|---|---|---|
+| `id` | string | yes | `R-<MODULE>-NNN`, flat per module, stable once assigned. Never renumber. A retired rule's entry is removed from the catalog and recorded in `rules.yaml`'s header note; its id is never reused (gate B5 — supersedes "retired rules are marked, not deleted"). |
+| `title` | string | yes | Short imperative name ("Rides are born locked"). |
+| `statement` | string (block) | yes | 1–3 sentences of business language. What the business demands, no code-speak. |
+| `module` | enum | yes | Owner context of the *rule*, not of every enforcement site. |
+| `entity` | string | yes | Table or aggregate the rule is about (`ride`, `balance`, `journal_entry`). |
+| `category` | enum | yes | §1. |
+| `status` | enum | yes | §1. |
+| `authority` | enum | yes | Exactly one. |
+| `mechanism` | enum \| null | iff `authority: database` | §1. |
+| `scope` | enum \| null | required for `authority: database`; optional elsewhere | §1. Outside the database it records the predicate's *shape*, which is often the reason the rule left the DB (`R-GAME-010`: `cross-table` is exactly why 000017 moved it to Go). |
+| `enforcement` | list | yes (may be empty only for `specified-only`) | Each item: `site`, `layer`, `role`, `pinned_by`. |
+| `enforcement[].site` | string | yes | Go: `path::Symbol` (`internal/game/internal/core/domain/ride.go::Ride.Create`). SQL: the migration id (`migrations/000012_add_rides_insert_state_gate.up.sql`). **Never line numbers.** |
+| `enforcement[].layer` | enum | yes | §1. |
+| `enforcement[].role` | enum | yes | §1. |
+| `enforcement[].pinned_by` | string \| null | yes (explicit) | Fixture id. `null` is allowed only with the copy policy above: a `Tie:` sentence for defense-in-depth, nothing needed for advisory-copy. |
+| `refusal` | map \| null | recommended | See §3. Omitted for rules that cannot refuse (pure computation) and for `specified-only` rules whose refusal surface is undesigned. |
+| `refusal.code` | string | in refusal | A 5-character SQLSTATE, or the reserved word `synthetic` (a Go-only refusal with no SQLSTATE). **Illustrative, not a closed list:** `P0001`, `23514`, `23503`, `23001` are the codes the house table below shows most often; any real SQLSTATE (`23505`, `23502`, `22003`, `42501`, …) is valid. `cmd/spec` warns — never errors — on a code outside the illustrative set (gate B5). |
+| `refusal.constraint` | string \| list \| null | in refusal | The named refusal (constraint name, or the name the trigger `RAISE`s). A list when a rule carries several constraints. |
+| `refusal.sentinel` | string \| null | in refusal | The domain sentinel the repository/ACL maps to (`ErrInvalidTransition`, …). `null` = unmapped. |
+| `refusal.http` | int \| null | in refusal | Status the handler writes. `null` = falls through to 500. |
+| `fixture` | string \| null | no | The shared change-detector fixture id this rule's copies are pinned to. Every `pinned_by` in the catalog must name this id or another rule's `fixture`. |
+| `verification.unit` | list of strings | yes for `implemented` (one of three) | `path::TestSymbol` (add `::Subtest` text only if the subtest name is stable). One of `unit`/`e2e`/`gherkin`: **any one** satisfies policy 3. Must exist **today** — grep it. |
+| `verification.e2e` | list of strings | no | `path::TestSymbol` for existing E2E coverage. Counts toward policy 3 exactly like `unit`; a rule proved only by an e2e test is covered. Must exist **today**. |
+| `verification.gherkin` | list of strings | no | `<feature-file>::<scenario name>` under `docs/spec/features/**`; every scenario carries an `@rule:R-...` tag. Counts toward policy 3 like `unit`/`e2e`; policy 10 resolves every pointer against the feature tree. |
+| `expert-ref` | string (path) | required for `specified-only` | The phase document the rule comes from. Omitted where no doc covers the rule (an ADR referenced only in code is not a path that exists in this repo). |
+| `notes` | string (block) | required for `drifted`; required when `authority` ≠ category default | What disagrees, what the catalog believes, what would fix it. Rotted pointers (dead files, deleted tests, moved enforcement) belong here behind a `stale-pointer:` prefix, with `status: implemented`. |
+
+### Refusal mapping (house convention)
+
+| DB surface | repository/ACL translation | HTTP |
+|---|---|---|
+| trigger `P0001` | `domain.ErrInvalidTransition` | 409 |
+| `23514` on `rides_money_state_coupling` | `domain.ErrInvalidTransition` (mapped **by constraint name**, the other `rides` CHECKs fall through) | 409 |
+| `23001` (RESTRICT delete) | `domain.ErrRecordInUse` (schedule's FK machinery) | 409 |
+| `23503` FK violation | `domain.ErrNotFound` (game's birth INSERT: unknown parent) or `ErrRecordInUse` (a RESTRICT delete) | 404 / 409 |
+| Go-only `ErrInvalidRoundPhase` | — | 409 |
+| `ErrRoundNotOpen` (round guard) | — | 409 |
+| unmapped `23514` | — | 500 (a gap: see `R-GAME-004`) |
+
+The table is the house convention's *illustrative* set, not a closed vocabulary: any
+5-character SQLSTATE may be catalogued (gate B5) — the mapping is the rule, the code
+list is the frequency.
+
+---
+
+## 3. Policies (the catalog's own invariants)
+
+A future `cmd/spec` validator should be able to check all of these mechanically.
+
+1. `id` matches `^R-[A-Z]+-\d{3}$` and is unique; per-module numbering is flat.
+2. Every rule has exactly one `category`, one `status`, one `authority`.
+3. `status: implemented` ⇒ at least one `enforcement` site **and** at least one
+   `verification` pointer, and every `verification` path/symbol exists today.
+4. `status: specified-only` ⇒ `expert-ref` present, `enforcement: []`, no
+   `verification`, and no `refusal` unless the expert doc names one.
+5. `status: drifted` ⇒ `notes` present, naming the disagreement. A `notes` block may
+   carry the `stale-pointer:` prefix only when `status: implemented`.
+6. `authority: database` ⇒ `mechanism` non-null and `scope` non-null. Any other
+   authority ⇒ `mechanism` null (`scope` may still be set, see §2).
+7. Every `enforcement` entry with `role` ≠ `authoritative` carries `pinned_by`
+   (non-null) **or** a `Tie:` sentence in the rule's `notes`. `advisory-copy` is exempt
+   from both (§1 copy policy). Otherwise `status: drifted`.
+8. `authority` ≠ category default ⇒ `notes` present.
+9. `site`/`verification` use `path::Symbol`, never line numbers, never a bare package.
+10. Every `verification.gherkin` pointer is `<feature-file>::<scenario name>` and
+    resolves to a real scenario under `docs/spec/features/`; the feature tree is
+    cross-checked in both directions — every `@rule` tag names a catalog rule, and every
+    scenario names exactly one.
+11. `pinned_by` names a fixture declared by some rule's `fixture` field.
+
+---
+
+## 4. Fixtures (change detectors)
+
+A rule's guarantees are only real if each copy names the others and a change fails
+exactly one place first. A **fixture** is a table of shared test vectors that every copy
+of a rule is run against, so a drift in any one copy fails a test.
+
+Today: `scoreStateRule` (`internal/game/internal/core/service/score_state_rule_test.go`) —
+three score pairings (`3–1`, `1–3`, `2–2`) × both sides, asserted against the publisher's
+`Match.Winner`, the settlement payload derivation, and the enforcement check. It is the
+model for every future fixture.
+
+---
+
+## 5. How to add a rule
+
+1. **Find the authority.** Ask what kind of rule it is (table in §1). Write the
+   `statement` in business language — if it needs code-speak, it is probably two rules.
+2. **Read the code, not the docs, for `enforcement`.** Resolve every site against
+   `main` today (`grep` the symbol, `ls` the migration). Migration headers and old
+   comments are the most common source of stale pointers — verify, then record what you
+   verified.
+3. **Decide each site's `role`.** One authority layer; everything else is a copy that
+   needs `pinned_by` or a loud-refusal note.
+4. **Name the refusal.** SQLSTATE → constraint/raise name → sentinel → HTTP status.
+   If the refusal is unmapped, record `sentinel: null` and say so in `notes`.
+5. **Point at tests that exist.** `grep -rn "func TestName" ...` before writing the
+   pointer. If none exists, the rule is `drifted` (or `implemented` with the gap in
+   `notes` when the gap is coverage, not disagreement).
+6. **Assign the next id** for that module; never reuse or renumber.
+7. **Validate** (whichever tool exists on the machine — `python3` has no `yaml`
+   module on a stock macOS Python, so `ruby`'s stdlib `psych` is the reliable one):
+   ```sh
+   ruby -ryaml -e 'p YAML.safe_load(File.read("docs/spec/rules.yaml")).size'
+   python3 -c "import yaml; yaml.safe_load(open('docs/spec/rules.yaml'))"
+   ```
+8. **Check the checklist** in §3 by hand (until `cmd/spec` exists).
+
+---
+
+## 6. Open decisions (user gate A2)
+
+> **Resolved at gate A2** (D1–D6). D1 — keep the taxonomy enum, rename `store` →
+> `repository`. D2 — `drifted` is content-only; rotted pointers keep `implemented` with
+> a `stale-pointer:` note. D3 — add the `validator` layer and the `composition-root`
+> authority (items 2 and 5; the SQL guard functions of item 6 stay `repository`).
+> D4 — the granularity principle of item 7 is the catalog's working rule. D5 —
+> `refusal` stays a field on every rule; the `refusal-mapping` category stays reserved
+> (item 4). D6 — the `R-GAME-004` verification gap is consciously deferred to Phase B
+> (item 8). Item 9 is moot: `docs/spec/plan.md` now exists.
+
+1. **`authority` enum conflict.** This schema uses the taxonomy's
+   `database|domain|service|repository|handler` (plus `composition-root` for boundary
+   rules); the phase plan sketch had `db|app|both`.
+   `both` cannot coexist with "exactly one authority" — the plan's own note says one
+   authority plus N enforcement entries. Mapping is documented in §1. **D1: confirmed**
+   — the five-value enum (plus `composition-root`) is what `cmd/spec` should validate
+   in Phase B.
+2. **`boundary` rules have no authority value.** The taxonomy says such a rule's
+   authority is the *composition root*.
+   **D3: `composition-root` added to the authority enum** (see §1); boundary rules use it
+   and cite ADR-028 in `notes`.
+3. **Does stale prose in an applied migration count as `drifted`?**
+   **D2: no.** `drifted` means the rule's *content* disagrees between expert docs and
+   actual behavior. Rotted pointers (change-detectors naming dead files, comments
+   pointing at deleted tests, enforcement moved away from where docs claim) keep
+   `status: implemented` and are recorded in `notes` with a `stale-pointer:` prefix;
+   `R-GAME-005` and `R-GAME-010` were reclassified accordingly. Both `drifted` rules and
+   `stale-pointer` notes surface in the Phase B misalignment report — attention comes
+   from the report, not from a falsely unhealthy status.
+4. **`refusal-mapping` as category vs field.** `refusal` is a field on every rule; the
+   taxonomy also makes `refusal-mapping` a *category* (rules whose subject is the
+   mapping and its classification order, e.g. the repository's
+   round-status → version/state → predicate ordering, where a no-cause read is a loud
+   error). **D5: keep the field on every rule; the category stays reserved** for a rule
+   *about* the mapping. No such rule is seeded yet.
+5. **`layer` enum vs the plan's `validator|middleware`.** **D3: `validator` added** to
+   the layer enum (§1); `middleware` maps to `handler`. Existing entries keep their
+   current layer until `cmd/spec` is able to check a migrated `R-GAME-004` second site.
+6. **DB guard functions have no layer value.** `round_open_guard` /
+   `destination_open_guard` are `SECURITY DEFINER` SQL functions that take the row lock
+   inside the caller's transaction. They stay `layer: repository` (the taxonomy's
+   "ordering/locking/atomicity mechanics → repository") even though the code is SQL;
+   a new `db-function` value is not added (D1/D3).
+7. **How coarse should one rule be?** **D4: the principle below is adopted** — one rule
+   per authority, split when the authority differs. I split "transitions **and** phase gates" (one
+   candidate in the plan) into `R-GAME-002` (the graph, DB authority) and `R-GAME-007`
+   (the windows, domain authority) because the authorities differ — the catalog's whole
+   point. Similarly `R-GAME-007` and `R-GAME-008` list one authoritative site per ride
+   command (disjoint cases) rather than four rules. **D4: adopted** as the catalog's
+   granularity principle.
+8. **Verification gap on `R-GAME-004`.** No test probes the four `rides` CHECKs
+   directly (only `TestValidateRide` and the request edge), and an unmapped `23514`
+   surfaces as 500. **D6: deferred** — the gap is recorded knowingly (the catalog notes
+   it) and a direct-DB constraints test / fixture lands in Phase B.
+9. **`docs/spec/plan.md` did not exist in the repo** when this catalog was written
+   (`docs/spec/` did not exist at all, and no copy of the plan was found by `find`). The
+   schema and seed were built from the task brief plus the code. Resolved: `plan.md`
+   now exists; its Artifacts list matches this file.
+
+### Gate B5 resolutions
+
+Gate B5 reviewed the catalog and the misalignment report and closed the three schema gaps
+that report filed; the enums are otherwise unchanged since A2.
+
+- **`composition-root` joins the `enforcement[].layer` enum** (§1). Meaning: cross-context
+  wiring / facade binding — the composition-root layer where modules are handed their
+  collaborators; distinguished from `handler`, which is transport framing. Sites that were
+  apologising in their notes as `handler`, `repository`, `service` or `db-constraint` may
+  now use it. `cmd/spec` validates the 8-value layer enum (`composition-root` added).
+- **The refusal-code list is illustrative, not closed** (§2 `refusal.code`). The house
+  list `{P0001, 23514, 23503, 23001}` plus the reserved word `synthetic` is what the
+  mapping table shows most often; any 5-character SQLSTATE is valid, so `23505`, `23502`,
+  `22003` and `42501` stay honestly catalogued. `cmd/spec` warns — never errors — on a
+  code outside the illustrative set; that behaviour matches the decision and is kept.
+- **Seeded reference data keeps `mechanism: constraint`** (§1, mechanism table). No
+  `seed` / `reference-data` value is added: what refuses a conflicting seed is the keys,
+  and migration immutability keeps the seeded values true, so the declarative half is the
+  mechanism. `R-IDENTITY-014`'s roles/permissions/grants stay `constraint`.
+- **Retirement replaces marking** (§2 `id`). A retired rule's entry is removed from the
+  catalog and recorded in `rules.yaml`'s header note; ids are never reused. First use:
+  the gate B5 dupe merges (`R-GAME-019 → R-KERNEL-003`, `R-GAME-022 → R-KERNEL-014` — one
+  statement per rule, the kernel rule owns it, the game call-sites are enforcement sites
+  on it).

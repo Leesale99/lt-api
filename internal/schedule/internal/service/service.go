@@ -37,10 +37,12 @@ type Repositories struct {
 // handlers drive, plus the use cases that span entities (ResolveMatch,
 // UpdateRound, the delete policies).
 //
-// The pool exists for exactly one reason: ResolveMatch owns a transaction
-// boundary. The bus and logger are the process event exchange and its
-// logger (internal/kernel/eventbus) — nil-safe, so a bare service in a unit test
-// publishes nothing.
+// The pool exists for the transaction boundaries the use cases own:
+// ResolveMatch (the guarded score write) and DeleteSeason (the composed
+// season delete — the season's players through game and the season row, one
+// transaction, so a refusal rolls both back). The bus and logger are the
+// process event exchange and its logger (internal/kernel/eventbus) — nil-safe,
+// so a bare service in a unit test publishes nothing.
 type Service struct {
 	Seasons *SeasonService
 	Rounds  *RoundService

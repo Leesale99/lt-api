@@ -11,6 +11,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jackc/pgx/v5"
+
 	"lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/schedule"
 )
@@ -30,12 +32,14 @@ func (g gameRefs) RidesExistForMatch(ctx context.Context, matchID int) (bool, er
 	return g.game.RidesExistForMatch(ctx, matchID)
 }
 
-// DeletePlayersForSeason replays the game half of the season-delete cascade.
-// A ride still referencing one of the players is game's record-in-use
-// refusal; the calendar's policy and handler only know their own sentinel, so
-// the translation happens here.
-func (g gameRefs) DeletePlayersForSeason(ctx context.Context, seasonID int) error {
-	err := g.game.DeletePlayersForSeason(ctx, seasonID)
+// DeletePlayersForSeasonTx replays the game half of the season-delete
+// cascade on schedule's transaction (game's definer function, migration
+// 000021), so the season row and its registrations commit or roll back
+// together. A ride still referencing one of the players is game's
+// record-in-use refusal; the calendar's policy and handler only know their
+// own sentinel, so the translation happens here.
+func (g gameRefs) DeletePlayersForSeasonTx(ctx context.Context, tx pgx.Tx, seasonID int) error {
+	err := g.game.DeletePlayersForSeasonTx(ctx, tx, seasonID)
 	if errors.Is(err, game.ErrRecordInUse) {
 		return schedule.ErrRecordInUse
 	}

@@ -21,7 +21,9 @@ package service
 //   - payload-driven: ride outcomes are derived from the event's facts, never
 //     from a join into the calendar's tables. The committed match is still the
 //     source of truth: the result agreement check below re-reads it through
-//     the port, so a wrong payload cannot corrupt rides;
+//     the port, so a wrong payload cannot corrupt rides — not its destination
+//     and not the rate its bonus is paid at (the committed snapshot carries
+//     both).
 //   - no phase gates: settlement is system-initiated. The Go phase checks
 //     (ride.WonPending's MatchPhase, ride.Unlock's DecisionPhase) are the
 //     PLAYER commands' guards; the transitions themselves are the DB
@@ -91,7 +93,10 @@ type MatchResultRecorded struct {
 	HomeTeamID int
 	AwayTeamID int
 	Score      Score
-	Odds       Odds
+	// Odds is the payload's claim about the committed rate. It is verified
+	// against the committed match before anything is paid, never used on its
+	// own; the side pick uses the committed team assignment.
+	Odds Odds
 	// WinnerTeamID crowns the result (nil on a draw).
 	WinnerTeamID *int
 }
@@ -119,7 +124,7 @@ func (s *Service) OnMatchResultRecorded(ctx context.Context, event MatchResultRe
 		}
 
 		for _, ride := range rides {
-			if err := s.settleRideFromResult(ctx, tx, ride, event.HomeTeamID, event.AwayTeamID, event.WinnerTeamID, event.Odds); err != nil {
+			if err := s.settleRideFromResult(ctx, tx, ride, event.WinnerTeamID, event.Odds); err != nil {
 				return err
 			}
 		}
@@ -148,7 +153,7 @@ func (s *Service) OnRoundCompleted(ctx context.Context, event RoundCompleted) er
 				return err
 			}
 			for _, ride := range rides {
-				if err := s.settleRideFromResult(ctx, tx, ride, result.HomeTeamID, result.AwayTeamID, result.WinnerTeamID, result.Odds); err != nil {
+				if err := s.settleRideFromResult(ctx, tx, ride, result.WinnerTeamID, result.Odds); err != nil {
 					return err
 				}
 			}
@@ -196,8 +201,9 @@ func (s *Service) OnRoundCompleted(ctx context.Context, event RoundCompleted) er
 // the enforcement home, and the calendar's Match.Winner is site 1, all tied
 // by score_state_rule_test.go): won iff the result crowns the ride's team,
 // lost otherwise (a draw crowns no winner). Then the agreement check, the
-// transition and the money intents.
-func (s *Service) settleRideFromResult(ctx context.Context, tx pgxTx, ride domain.Ride, homeTeamID, awayTeamID int, winner *int, odds Odds) error {
+// transition and the money intents — the bonus paid at the COMMITTED odds,
+// never the payload's.
+func (s *Service) settleRideFromResult(ctx context.Context, tx pgxTx, ride domain.Ride, winner *int, claimedOdds Odds) error {
 	destination := domain.RideLost
 	if winner != nil && *winner == ride.TeamID {
 		destination = domain.RideWonPending
@@ -206,17 +212,18 @@ func (s *Service) settleRideFromResult(ctx context.Context, tx pgxTx, ride domai
 	// Result agreement (the app-level enforcement home of the old
 	// rides_state_gate check 5 — migration 000017 moved it out of the DB with
 	// the cross-context read it needed): the payload never decides alone. The
-	// committed match is re-read (see the port method) and the destination
-	// must agree with ITS scores, under the same two refusals the trigger
-	// raised: scores missing, destination disagreeing. A lying payload fails
-	// here and the whole settlement transaction rolls back —
-	// ErrInvalidTransition, the same error the adapter maps the trigger's
-	// P0001 refusals to.
+	// committed match is re-read (see the port method) and both of the
+	// payload's claims are checked against it — the destination against ITS
+	// scores, the odds against ITS odds — under the same refusals the trigger
+	// raised plus the one for the rate: scores missing, destination
+	// disagreeing, odds disagreeing. A lying payload fails here and the whole
+	// settlement transaction rolls back — ErrInvalidTransition, the same
+	// error the adapter maps the trigger's P0001 refusals to.
 	committed, err := s.schedule.Match(ctx, ride.MatchID)
 	if err != nil {
 		return err
 	}
-	if err := resultAgreement(ride, destination, committed); err != nil {
+	if err := resultAgreement(ride, destination, committed, claimedOdds); err != nil {
 		return err
 	}
 
@@ -233,8 +240,11 @@ func (s *Service) settleRideFromResult(ctx context.Context, tx pgxTx, ride domai
 	}
 
 	if destination == domain.RideWonPending {
-		// The win accrues the bonus at the ride's team odds.
-		matchOdds, err := teamOdds(ride.TeamID, homeTeamID, awayTeamID, odds)
+		// The win accrues the bonus at the ride's team odds — read off the
+		// COMMITTED snapshot, teams and rate both: a payload that swapped
+		// the sides could otherwise pass the odds-pair check and still hand
+		// the ride the other team's rate.
+		matchOdds, err := teamOdds(ride.TeamID, committed.HomeTeamID, committed.AwayTeamID, committed.Odds)
 		if err != nil {
 			return err
 		}
@@ -248,14 +258,17 @@ func (s *Service) settleRideFromResult(ctx context.Context, tx pgxTx, ride domai
 
 // resultAgreement is the score→state rule's enforcement home (site 3 of 3;
 // the calendar's Winner site 1, the payload derivation site 2, all tied by
-// score_state_rule_test.go): the destination a locked ride arrives on must
-// agree with the COMMITTED match result — won_pending requires the ride's
-// team to have won, lost requires it not to have won, and scores must be
-// there. The exact translation of rides_state_gate's check 5 (migrations/
-// 000011, moved to the app level by 000017): the refusals keep the trigger's
-// two names in their text, and both surface as ErrInvalidTransition (ADR-018:
-// the match is the single source of truth, no writer may disagree with it).
-func resultAgreement(ride domain.Ride, destination domain.RideState, committed port.MatchSnapshot) error {
+// score_state_rule_test.go): the settlement payload's claims must agree with
+// the COMMITTED match — the destination a locked ride arrives on follows the
+// committed scores (won_pending requires the ride's team to have won, lost
+// requires it not to have won, and scores must be there), and the rate the
+// bonus is paid at must be the committed odds, not a rate the payload invented.
+// The refusals keep the historical trigger names in their text
+// (ride_result_scores_missing / ride_result_disagreement) plus their odds
+// sibling (ride_result_odds_disagreement), and all three surface as
+// ErrInvalidTransition (ADR-018: the match is the single source of truth, no
+// writer may disagree with it).
+func resultAgreement(ride domain.Ride, destination domain.RideState, committed port.MatchSnapshot, claimedOdds Odds) error {
 	if committed.Score.Home == nil || committed.Score.Away == nil {
 		return fmt.Errorf("ride %d arrival refused: match %d carries no scores (ride_result_scores_missing): %w",
 			ride.ID, committed.ID, domain.ErrInvalidTransition)
@@ -269,12 +282,20 @@ func resultAgreement(ride domain.Ride, destination domain.RideState, committed p
 			ride.ID, destination, committed.ID, domain.ErrInvalidTransition)
 	}
 
+	// The rate is a claim like the destination: the payload's odds pair must
+	// BE the committed pair. A rate game cannot match is a loud error, not a
+	// rate to use (a stale or lying publisher is a bug, never a fact).
+	if claimedOdds.Home != committed.Odds.Home || claimedOdds.Away != committed.Odds.Away {
+		return fmt.Errorf("ride %d arrival refused: the payload odds %.2f/%.2f disagree with the committed odds %.2f/%.2f of match %d (ride_result_odds_disagreement): %w",
+			ride.ID, claimedOdds.Home, claimedOdds.Away, committed.Odds.Home, committed.Odds.Away, committed.ID, domain.ErrInvalidTransition)
+	}
+
 	return nil
 }
 
-// teamOdds picks the ride's team side of the payload odds. A ride whose team
-// is on neither side is corrupt data — refuse rather than guess.
-func teamOdds(teamID, homeTeamID, awayTeamID int, odds Odds) (decimal.Decimal, error) {
+// teamOdds picks the ride's team side of the committed odds. A ride whose
+// team is on neither side is corrupt data — refuse rather than guess.
+func teamOdds(teamID, homeTeamID, awayTeamID int, odds port.Odds) (decimal.Decimal, error) {
 	switch teamID {
 	case homeTeamID:
 		return decimal.NewFromFloat(odds.Home), nil

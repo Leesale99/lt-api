@@ -147,7 +147,12 @@ func (r *SeasonRepository) GetAll(ctx context.Context, id int, status model.Seas
 	return seasons, metadata, nil
 }
 
-func (r *SeasonRepository) Delete(ctx context.Context, id int) error {
+// DeleteTx removes the season ON THE CALLER'S TRANSACTION, so the delete can
+// share its atomicity with the game half of the composition (the season's
+// players, deleted through game first — service.DeleteSeason). DeleteSeason
+// owns that transaction; nothing else deletes a season, which is why there is
+// no pool-opening variant.
+func (r *SeasonRepository) DeleteTx(ctx context.Context, tx pgx.Tx, id int) error {
 	if id < 1 {
 		return model.ErrRecordNotFound
 	}
@@ -157,7 +162,7 @@ func (r *SeasonRepository) Delete(ctx context.Context, id int) error {
 		WHERE id = $1
 	`
 
-	result, err := r.pool.Exec(ctx, query, id)
+	result, err := tx.Exec(ctx, query, id)
 	if err != nil {
 		// P0001 comes from the seasons delete gate (ADR-007 + ADR-008):
 		// in_progress/closed seasons and open seasons with match history are
