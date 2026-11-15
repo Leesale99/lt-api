@@ -30,6 +30,10 @@ github.com/jackc/puddle/v2/internal/genstack
 # github.com/julienschmidt/httprouter v1.3.0
 ## explicit; go 1.7
 github.com/julienschmidt/httprouter
+# github.com/kr/text v0.2.0
+## explicit
+# github.com/rogpeppe/go-internal v1.16.0
+## explicit; go 1.25
 # github.com/shopspring/decimal v1.4.0
 ## explicit; go 1.10
 github.com/shopspring/decimal
@@ -101,6 +105,9 @@ golang.org/x/tools/internal/stdlib
 golang.org/x/tools/internal/typeparams
 golang.org/x/tools/internal/typesinternal
 golang.org/x/tools/internal/versions
+# gopkg.in/yaml.v3 v3.0.1
+## explicit
+gopkg.in/yaml.v3
 # honnef.co/go/tools v0.8.2
 ## explicit; go 1.26.0
 honnef.co/go/tools/analysis/callcheck

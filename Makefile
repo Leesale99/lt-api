@@ -113,6 +113,25 @@ audit:
 	go test -race -vet=off ./...
 
 # ============================================================================================================================ #
+# SPEC CATALOG
+# ============================================================================================================================ #
+
+## spec/gen: regenerate docs/spec/business-rules.md from the canonical catalog
+.PHONY: spec/gen
+spec/gen:
+	go run ./cmd/spec gen
+
+## spec/check: validate the catalog against rules.schema.md §3 (report-only)
+.PHONY: spec/check
+spec/check:
+	go run ./cmd/spec check
+
+## spec/diff: fail if docs/spec/business-rules.md is stale (audit wiring lands in Phase D)
+.PHONY: spec/diff
+spec/diff:
+	go run ./cmd/spec gen --diff
+
+# ============================================================================================================================ #
 # BUILD
 # ============================================================================================================================ #
 
