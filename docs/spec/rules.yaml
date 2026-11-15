@@ -5124,7 +5124,10 @@
       pinned_by: null
   refusal: null
   fixture: null
-  verification: {}
+  verification:
+    unit:
+      - internal/identity/internal/service/db_budget_test.go::TestRegisterHashesOutsideDBBudget
+      - internal/identity/internal/service/db_budget_test.go::TestAuthenticateComparesOutsideDBBudget
   notes: >
     Stated in the kernel (one constant, one comment: "a database budget, not a request
     budget") and split into place by the use cases: Register hashes first and shares one
@@ -5137,11 +5140,11 @@
     enforcement. Tie: the middleware sites wrap exactly one store lookup each, so no
     CPU-bound work can leak into their window, and every call site (the middleware, every
     module handler, both identity use cases) draws the one constant, so the budget's value
-    cannot drift between modules. VERIFICATION GAP: nothing asserts that the
-    crypto stays outside the window — the rule holds by code reading only, and a
-    regression (a handler that wraps a crypto path, or a service that moves the hash
-    inside dbCtx) passes the whole suite. Silent-refusal surface: an exceeded budget
-    surfaces as a 500, not as a named refusal.
+    cannot drift between modules. Two probes now pin the service half: Register's
+    bcrypt hash and Authenticate's comparison are asserted to run while no database
+    budget is open, so a regression that moves either inside dbCtx fails a test.
+    Silent-refusal surface: an exceeded budget surfaces as a 500, not as a named
+    refusal.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # kernel — validator, persistence (list framing)
@@ -5411,17 +5414,17 @@
     sentinel: null
     http: 500
   fixture: null
-  verification: {}
+  verification:
+    unit:
+      - internal/kernel/httpx/middleware_test.go::TestRecoverPanicAnswersServerError
   notes: >
     RecoverPanic sits outermost in the chain (R-PLATFORM-014), so it also catches
     failures raised by the other middleware, and it sets Connection: close before
     writing. ServerError is the single 500 writer for every non-domain failure path
     (middleware lookups, unmapped repository errors), which is why an unmapped
-    23514/42501 surfaces as the same generic message. VERIFICATION GAP: nothing anywhere
-    exercises RecoverPanic — grepping the whole test tree finds no recover, no panic
-    fixture and no 500-with-Connection-close assertion; the only 500 tests are handler
-    error-path tests that never enter the middleware. A regression that leaked the panic
-    value into the body would pass the suite.
+    23514/42501 surfaces as the same generic message. A middleware probe now pins it:
+    a panic raised in the chain is answered 500 with the generic message and
+    Connection: close, and the body carries no panic value or stack.
     Renumbered at merge (was provisional R-KERNEL-012): R-KERNEL-009 was folded into R-IDENTITY-016/R-IDENTITY-017.
 
 - id: R-KERNEL-012
@@ -5956,15 +5959,18 @@
     sentinel: ErrMissingCredentials
     http: null
   fixture: null
-  verification: {}
+  verification:
+    unit:
+      - internal/platform/mailer/mailer_test.go::TestNewRefusesIncompleteConfig
+      - internal/platform/mailer/mailer_test.go::TestNewAcceptsCompleteConfig
+      - internal/platform/mailer/mailer_test.go::TestSendFailureIsNotConfigError
   notes: >
     Refusal happens at construction, and the composition root builds the mailer *before*
     it dials any database, so a configuration error fails before a connection error (that
     ordering is main's, and it is what makes this a boot rule rather than a first-send
-    surprise). VERIFICATION GAP: platform:mailer
-    has no test file at all — ErrMissingCredentials, the client options and the retry
-    ladder are entirely unpinned; the e2e and identity suites substitute a no-op mailer,
-    so no test ever constructs the real one. Recorded asymmetry for the report: the check
+    surprise). The mailer suite now constructs the real adapter: it pins the boot
+    refusal for each missing setting and pins that a delivery failure is not reported
+    as a configuration error. Recorded asymmetry for the report: the check
     is non-empty only — a sender string that is not an address passes here and fails at
     the first send.
 
@@ -5989,17 +5995,23 @@
       pinned_by: null
   refusal: null
   fixture: null
-  verification: {}
+  verification:
+    unit:
+      - internal/platform/mailer/mailer_test.go::TestSendRetriesBoundedAttempts
+      - internal/platform/mailer/mailer_test.go::TestSendJitterIsRandomized
+      - internal/platform/mailer/mailer_test.go::TestSendStopsOnCancellation
   notes: >
     Authority deviates from the category default (policy → domain): the retry decision
     belongs to the delivery adapter, and no domain operation participates. The numbers
     are the code's, not a phase document's: three total attempts, base 500ms doubling per
-    attempt, full jitter (sleep = random(0, base·2^attempt)), no sleep after the last
+    attempt, jitter added on top of the base (sleep = base·2^attempt + random(0,
+    base·2^attempt), i.e. in [base·2^attempt, 2·base·2^attempt)), no sleep after the last
     attempt, and the cancellation check before each redial and inside each sleep. The
     final error returned is the transport error of the last attempt — the refusal surface
     is a worker-side log line, not an HTTP status (a delivery is booked on the server's
-    background tracker, never on the request path). VERIFICATION GAP: no test — the
-    ladder, the jitter and the cancellation path are unexercised.
+    background tracker, never on the request path). The mailer suite now pins the
+    ladder: three bounded attempts, a jitter that varies between runs, and a cancelled
+    context that stops the sleep.
     No refusal: a delivery failure is retried and then logged on the server's background
     tracker, never answered to a client, so there is no status to name.
 
@@ -6070,12 +6082,16 @@
       pinned_by: null
   refusal: null
   fixture: null
-  verification: {}
+  verification:
+    unit:
+      - internal/platform/server/server_test.go::TestServeReadTimeoutClosesSilentConnection
+      - internal/platform/server/server_test.go::TestServeWriteTimeoutClosesStreamingResponse
+      - internal/platform/server/server_test.go::TestServeIdleTimeoutClosesKeepAlive
   notes: >
     The three values are written once, where the server is built, and are not configurable
-    — a deployment cannot tune them today. VERIFICATION GAP: no test asserts any of the
-    three timeouts (the platform server suite exercises the shutdown lifecycle only, via
-    an injected server), so a removed or lengthened timeout is invisible. Refusal surface
+    — a deployment cannot tune them today. The server suite now pins all three: a silent
+    reader, a stalled streaming write and an idle keep-alive connection are each closed
+    at their bound, so a removed or lengthened timeout fails a test. Refusal surface
     is null on purpose: exceeding a write deadline truncates the response and closes the
     connection; there is no named refusal.
 
@@ -6156,16 +6172,17 @@
       pinned_by: null
   refusal: null
   fixture: null
-  verification: {}
+  verification:
+    unit:
+      - internal/platform/server/server_test.go::TestBackgroundPanicIsContainedAndRecorded
   notes: >
     Authority deviates from the category default (policy → domain): the decision is a
     lifecycle mechanic owned by the process host, with no domain participant. The
     composition root is the other site because booking is explicit there — the identity
     module receives the tracker and the rate-limiter sweep is booked before serving
     starts, so the drain cannot miss it. The panicking task is logged with its value and
-    no stack. VERIFICATION GAP: the containment is untested; the only background test
-    asserts the wait budget (TestBackgroundTaskBudgetBoundsWait), not that a panicking
-    task is survived.
+    no stack. The server suite now pins the containment: a panicking background task is
+    recorded and the process keeps serving, and the wait budget keeps its own test.
     No refusal: containment is about surviving a failure, not refusing a request.
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6380,7 +6397,9 @@
     sentinel: null
     http: null
   fixture: null
-  verification: {}
+  verification:
+    unit:
+      - internal/testdb/context_roles_test.go::TestContextPoolsRunAsContextRole
   notes: >
     Authority deviates from the category default (boundary → composition-root): the
     database half of the boundary is R-PLATFORM-012's, while this is a connection
@@ -6390,13 +6409,12 @@
     what lets the stores keep unqualified SQL (role-level settings apply at session start,
     not on SET ROLE, so the hook must carry both), and each pool is built from its own
     per-context URL override or from the server's. The migration runner and the seed keep
-    unrestricted connections that are never handed to a repository. VERIFICATION GAP — the
-    most consequential one in this sweep: no test exercises the hook. The boundary suite
-    connects as the three roles directly, so if openContextPool stopped issuing SET ROLE,
-    or a fourth context were wired to the wrong pool, the whole suite would stay green
-    while production ran every context as the owner, with the boundary gone. A call-set
-    fixture asserting the hook ran, or an e2e proving a context cannot read a foreign
-    schema through its own pool, would pin it.
+    unrestricted connections that are never handed to a repository. The harness now pins
+    the hook's shape: its ContextPool — the deliberate structural copy of cmd/api's
+    openContextPool — is asserted to run every context's statements as that context's
+    role, so a dropped SET ROLE or a mis-wired pool fails a test. The residual stands:
+    production's own hook is verified by structural identity with that copy, not by a
+    direct test.
 
 
 # ─────────────────────────────────────────────────────────────────────────────

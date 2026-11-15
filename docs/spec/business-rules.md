@@ -1307,6 +1307,11 @@ A request's storage work is measured by one budget of three seconds, and that bu
 | `internal/kernel/httpx/middleware.go::Middleware.Authenticate` | `handler` | `defense-in-depth` | — |
 | `internal/kernel/httpx/middleware.go::Middleware.RequirePermission` | `handler` | `defense-in-depth` | — |
 
+**Verification**
+
+- unit: `internal/identity/internal/service/db_budget_test.go::TestRegisterHashesOutsideDBBudget`
+- unit: `internal/identity/internal/service/db_budget_test.go::TestAuthenticateComparesOutsideDBBudget`
+
 ### Entity `domain_event`
 
 #### R-KERNEL-013 — An event is a post-commit, same-process notification
@@ -1420,6 +1425,10 @@ A failure inside the request chain is answered with the generic server-error mes
 | `internal/kernel/httpx/errors.go::ServerError` | `handler` | `authoritative` | — |
 
 **Refusal** `synthetic` → _(unnamed)_ → _(unmapped)_ → `500`
+
+**Verification**
+
+- unit: `internal/kernel/httpx/middleware_test.go::TestRecoverPanicAnswersServerError`
 
 #### R-KERNEL-012 — A request body is read under a one-megabyte cap
 
@@ -1866,6 +1875,10 @@ The connection pool a context is given runs every one of its statements as that 
 
 **Refusal** `42501` → _(unnamed)_ → _(unmapped)_ → _(falls through to 500)_
 
+**Verification**
+
+- unit: `internal/testdb/context_roles_test.go::TestContextPoolsRunAsContextRole`
+
 ### Entity `cors_origin`
 
 #### R-PLATFORM-005 — The cross-origin allowlist holds bare origins, never a wildcard
@@ -1907,6 +1920,12 @@ If the outbound mail settings are incomplete — no host, no credentials, no sen
 
 **Refusal** `synthetic` → _(unnamed)_ → `ErrMissingCredentials` → _(falls through to 500)_
 
+**Verification**
+
+- unit: `internal/platform/mailer/mailer_test.go::TestNewRefusesIncompleteConfig`
+- unit: `internal/platform/mailer/mailer_test.go::TestNewAcceptsCompleteConfig`
+- unit: `internal/platform/mailer/mailer_test.go::TestSendFailureIsNotConfigError`
+
 #### R-PLATFORM-007 — A failed delivery is retried a bounded number of times, then reported
 
 `implemented` · `policy` · authority `service`
@@ -1920,6 +1939,12 @@ One email delivery is attempted at most three times, with a growing pause betwee
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
 | `internal/platform/mailer/mailer.go::Mailer.Send` | `service` | `authoritative` | — |
+
+**Verification**
+
+- unit: `internal/platform/mailer/mailer_test.go::TestSendRetriesBoundedAttempts`
+- unit: `internal/platform/mailer/mailer_test.go::TestSendJitterIsRandomized`
+- unit: `internal/platform/mailer/mailer_test.go::TestSendStopsOnCancellation`
 
 ### Entity `http_request`
 
@@ -1957,6 +1982,12 @@ The HTTP server bounds how long it will spend on a connection: a read must finis
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
 | `internal/platform/server/server.go::Server.Serve` | `handler` | `authoritative` | — |
+
+**Verification**
+
+- unit: `internal/platform/server/server_test.go::TestServeReadTimeoutClosesSilentConnection`
+- unit: `internal/platform/server/server_test.go::TestServeWriteTimeoutClosesStreamingResponse`
+- unit: `internal/platform/server/server_test.go::TestServeIdleTimeoutClosesKeepAlive`
 
 ### Entity `log_stream`
 
@@ -2023,6 +2054,10 @@ Work that runs after a response has been sent — a mail delivery, a background 
 | --- | --- | --- | --- |
 | `internal/platform/server/server.go::Server.Background` | `service` | `authoritative` | — |
 | `cmd/api/main.go::main` | `service` | `authoritative` | — |
+
+**Verification**
+
+- unit: `internal/platform/server/server_test.go::TestBackgroundPanicIsContainedAndRecorded`
 
 ### Entity `worker`
 
