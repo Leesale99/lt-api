@@ -75,8 +75,11 @@ func (s *StringList) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-// Verification points at tests that exist today. Gherkin is reserved for
-// Phase C and must stay empty (policy 10).
+// Verification points at proofs that exist today: Go tests (unit, e2e) by
+// `path::TestSymbol`, and executable scenarios by
+// `<feature-file-path>::<scenario name>` (cross-validated by policy 10). Any one
+// of the three satisfies policy 3; unit and e2e are additionally resolved
+// symbol-by-symbol.
 type Verification struct {
 	Unit    []string `yaml:"unit"`
 	E2E     []string `yaml:"e2e"`

@@ -250,16 +250,19 @@ func (c *checker) checkEnums(rule Rule) {
 	}
 }
 
-// policy 3: implemented needs at least one site and one verification pointer,
-// and every named path/symbol exists today. Sites are checked for every status
+// policy 3: implemented needs at least one site and at least one verification
+// pointer — a unit test, an e2e test or an executable scenario — and every
+// named Go path/symbol exists today. Gherkin pointers are resolved against the
+// feature tree by policy 10, not here. Sites are checked for every status
 // (non-implemented rules must not carry any, which policy 4 reports).
 func (c *checker) checkImplemented(rule Rule) {
 	if rule.Status == statusImplemented {
 		if len(rule.Enforcement) == 0 {
 			c.errorf("3-implemented", rule.ID, "implemented rule has no enforcement site")
 		}
-		if len(verificationPointers(rule.Verification)) == 0 {
-			c.errorf("3-implemented", rule.ID, "implemented rule has no verification pointer (unit or e2e)")
+		if !hasVerification(rule.Verification) {
+			c.errorf("3-implemented", rule.ID,
+				"implemented rule has no verification pointer (unit, e2e or gherkin)")
 		}
 	}
 
@@ -470,11 +473,21 @@ func (c *checker) checkRefusal(rule Rule) {
 	}
 }
 
+// verificationPointers returns the Go test pointers (unit and e2e). Their
+// format is `path::Symbol`, which policy 9 validates here.
 func verificationPointers(v Verification) []string {
 	pointers := make([]string, 0, len(v.Unit)+len(v.E2E))
 	pointers = append(pointers, v.Unit...)
 	pointers = append(pointers, v.E2E...)
 	return pointers
+}
+
+// hasVerification reports whether a rule carries any verification at all. A
+// business-visible rule proved by an executable scenario is verified: the
+// gherkin pointer's `<feature-file>::<scenario name>` form is cross-validated by
+// policy 10 (gherkin.go), so policy 3 only requires that one exists.
+func hasVerification(v Verification) bool {
+	return len(verificationPointers(v)) > 0 || len(v.Gherkin) > 0
 }
 
 func isLineNumber(symbol string) bool {

@@ -68,6 +68,35 @@ func TestCheckPolicyViolations(t *testing.T) {
 			wantMessage: "no verification pointer",
 		},
 		{
+			// Policy 3 counts every proof: a business-visible rule proved by an
+			// executable scenario needs no Go test pointer.
+			name: "gherkin pointer alone satisfies policy 3",
+			mutate: func(r *Rule) {
+				r.Verification = Verification{
+					Gherkin: []string{"docs/spec/features/kernel/thing.feature::A thing always is a thing"},
+				}
+			},
+		},
+		{
+			name: "e2e pointer alone satisfies policy 3",
+			mutate: func(r *Rule) {
+				r.Verification = Verification{E2E: []string{"internal/kernel/thing/thing_test.go::TestDo"}}
+			},
+		},
+		{
+			// A gherkin pointer is a proof, not a shield: the Go pointers that
+			// are present are still resolved against the tree.
+			name: "gherkin pointer does not mask a dead unit pointer",
+			mutate: func(r *Rule) {
+				r.Verification = Verification{
+					Unit:    []string{"internal/kernel/thing/nope_test.go::TestDo"},
+					Gherkin: []string{"docs/spec/features/kernel/thing.feature::A thing always is a thing"},
+				}
+			},
+			wantPolicy: "3-implemented", wantErrors: 1,
+			wantMessage: "verification path",
+		},
+		{
 			name: "verification path missing",
 			mutate: func(r *Rule) {
 				r.Verification = Verification{Unit: []string{"internal/kernel/thing/nope_test.go::TestDo"}}

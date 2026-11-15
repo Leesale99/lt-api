@@ -188,6 +188,31 @@ func TestCollectGherkinReports(t *testing.T) {
 	}
 }
 
+func TestPolicy3AcceptsGherkinOnlyVerification(t *testing.T) {
+	repo := gherkinRepo(t, "features/happy/ride.feature")
+
+	// An implemented, business-visible rule proved only by a scenario: policy 3
+	// is satisfied by the gherkin pointer, and policy 10 resolves it.
+	rule := baseRule()
+	rule.Verification = Verification{
+		Gherkin: []string{"docs/spec/features/happy/ride.feature::A new ride is born locked"},
+	}
+	// The feature file tags two rules; both must exist for the tag to resolve.
+	second := baseRule()
+	second.ID = "R-KERNEL-002"
+	second.Verification = Verification{
+		Gherkin: []string{"docs/spec/features/happy/ride.feature::A lost match ends the ride"},
+	}
+	catalog := Catalog{rule, second}
+
+	findings := collectFindings(catalog, repo.root)
+	gherkinFindings, _ := collectGherkin(catalog, repo.root)
+	findings = append(findings, gherkinFindings...)
+	if len(findings) != 0 {
+		t.Fatalf("gherkin-only verification produced findings:\n%s", describeFindings(findings))
+	}
+}
+
 func TestPrintGherkinSectionReportsCoverage(t *testing.T) {
 	repo := gherkinRepo(t, "features/happy/ride.feature")
 

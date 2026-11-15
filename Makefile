@@ -107,7 +107,9 @@ tidy:
 # features and misreports them as errors (e.g. generic methods in go1.27).
 GOFMT := $(shell go env GOROOT)/bin/gofmt
 
-## audit: run quality control checks (fails on any unformatted file)
+## audit: run quality control checks (fails on any unformatted file, stale spec or
+## spec-check error). The chain is the pipeline's single gate: gofmt → vet →
+## staticcheck → spec freshness → spec check → the whole test tree (unit, spec, db).
 .PHONY: audit
 audit:
 	go mod tidy -diff
@@ -115,6 +117,8 @@ audit:
 	@test -z "$$( $(GOFMT) -l $$(git ls-files '*.go' | grep -v '^vendor/') )" || ( $(GOFMT) -l $$(git ls-files '*.go' | grep -v '^vendor/'); exit 1)
 	go vet ./...
 	go tool staticcheck ./...
+	$(MAKE) spec/diff
+	$(MAKE) spec/check
 	go test -race -vet=off ./...
 
 # ============================================================================================================================ #
@@ -126,12 +130,12 @@ audit:
 spec/gen:
 	go run ./cmd/spec gen
 
-## spec/check: validate the catalog against rules.schema.md §3 (report-only)
+## spec/check: validate the catalog against rules.schema.md §3 (report-only until E1 flips --strict)
 .PHONY: spec/check
 spec/check:
 	go run ./cmd/spec check
 
-## spec/diff: fail if docs/spec/business-rules.md is stale (audit wiring lands in Phase D)
+## spec/diff: fail if docs/spec/business-rules.md is stale (wired into `make audit`)
 .PHONY: spec/diff
 spec/diff:
 	go run ./cmd/spec gen --diff

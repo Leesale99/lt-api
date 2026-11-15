@@ -3,7 +3,7 @@
 > Living checklist. The orchestrator updates it at every gate.
 > `docs/spec/rules.schema.md` is the source of truth for the catalog format and enums.
 
-**Current state:** C-fanout complete — awaiting gate C7.
+**Current state:** Phase D running — awaiting gate D2 (CI green incl. spec).
 
 ## Goal
 
@@ -25,6 +25,7 @@ spec, goes red, and cannot land green without satisfying the specification.
 | 7 | Enforcement sites: `path::Symbol` (Go) or migration id (SQL) — never line numbers |
 | 8 | Base: `main` @ `d157aa1` (post PR #7 merge). Local `LT_API_TEST_DSN` available to workers |
 | 9 | Catalog enums (category / authority / mechanism / scope / layer / role / status / module) are frozen in `docs/spec/rules.schema.md`, derived from the vault Lessons vocabulary — that doc is authoritative for values |
+| 10 | Branching: all pipeline work lives on `feature/executable-specification`; CI verifies the branch; a single PR to `main` lands the finished pipeline |
 
 ## Artifacts
 
@@ -79,10 +80,10 @@ Audit order after Phase D: `tidy -diff` → `mod verify` → `gofmt` → `vet` �
 - [x] C4 general×3: features per capability (schedule lifecycle/freeze; identity authz+activation; game players+idempotency) (schedule 25 rules / 61 scenarios, identity 11 / 22, game remainder 6 + kernel guest R-KERNEL-003 / 17; defect 2 repointed to the player-delete surface)
 - [x] C5 go-worker×3: step impls, red→green (local DSN) (167 scenarios green; the @known-defect:2 finding reproduces under SPEC_KNOWN_DEFECTS=1)
 - [x] C6 general: vocabulary cross-review + coverage report (docs/spec/coverage.md: 55 of 106 implemented rules carry scenarios — inside the locked 45–60 band)
-- [ ] C7 **GATE**: readability sample + coverage numbers
+- [x] C7 **GATE**: readability sample + coverage numbers (approved on user 'continue'; readability samples live in docs/spec/features/** — revision on request)
 
 ### Phase D — Automation & CI
-- [ ] D1 go-worker: `audit` extended; CI green run
+- [x] D1 go-worker: `audit` extended; CI green run (`spec/gen --diff` + `spec/check` now precede the test step; policy 3 counts gherkin pointers, so the gap-rule count fell 9 → 7 — the two identity rules proved by scenarios; the 7 remaining carry no verification of any kind)
 - [ ] D2 **GATE**: green audit incl. spec on CI
 
 ### Phase E — Enforcement closure
