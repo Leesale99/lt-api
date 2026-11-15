@@ -126,6 +126,8 @@
       - internal/schedule/internal/model/matches_validation_test.go::TestValidateNewMatch
     e2e:
       - internal/e2e/matches_test.go::TestCreateMatchHandler
+    gherkin:
+      - docs/spec/features/schedule/fixtures.feature::A fixture cannot be announced for a kickoff that has arrived
   notes: >
     The clock is injected (ValidateNewMatch takes `now`) so the boundary is
     testable without sleeping; the three cases — past, exactly now, one second
@@ -190,6 +192,8 @@
     e2e:
       - internal/e2e/rounds_test.go::TestUpdateRoundHandler
       - internal/e2e/matches_test.go::TestUpdateMatchHandler
+    gherkin:
+      - docs/spec/features/schedule/lifecycle.feature::A closed match cannot go back to running
   notes: >
     One rule, three vocabularies: each entity owns a rank map and the shared
     statusRegresses verdict rejects a lower rank (disjoint cases, one statement;
@@ -263,6 +267,8 @@
       - internal/schedule/internal/model/matches_validation_test.go::TestValidateNewMatch
     e2e:
       - internal/e2e/rounds_test.go::TestUpdateRoundHandler
+    gherkin:
+      - docs/spec/features/schedule/lifecycle.feature::A status the league never defined cannot be stored
   notes: >
     Three CHECKs of one kind, one rule (per-constraint CHECKs of a kind are
     enforcement sites, not near-duplicate rules). The Go slices (SeasonStatuses,
@@ -315,6 +321,8 @@
       - internal/schedule/internal/repository/gates_test.go::TestSeasonFreezeGate
     e2e:
       - internal/e2e/matches_test.go::TestPostponeStartedMatchFrozen
+    gherkin:
+      - docs/spec/features/schedule/lifecycle.feature::A started match cannot be postponed
   notes: >
     Three triggers over one shared fact ("has a match of this row's subtree
     started?") — matches_freeze_gate keys on OLD.starts_at, the round and season
@@ -374,6 +382,8 @@
       - internal/schedule/internal/repository/constraints_test.go::TestMatchConstraints
       - internal/schedule/internal/model/matches_validation_test.go::TestValidateNewMatch
       - internal/schedule/internal/model/matches_validation_test.go::TestValidateMatchUpdate
+    gherkin:
+      - docs/spec/features/schedule/fixtures.feature::The database refuses a score that does not fit the match
   notes: >
     Four CHECKs, one statement: the score/status matrix and the three bounds are
     the same kind of fact, so they are catalogued together with the constraint
@@ -416,6 +426,8 @@
   verification:
     unit:
       - internal/schedule/internal/repository/constraints_test.go::TestMatchConstraints
+    gherkin:
+      - docs/spec/features/schedule/fixtures.feature::The database refuses an end that does not fit the match
   notes: >
     One biconditional CHECK: (status = 'closed') = (ended_at IS NOT NULL), plus
     ended_at > starts_at. ended_at is nullable by necessity (000005 could not
@@ -459,6 +471,8 @@
       - internal/schedule/internal/repository/constraints_test.go::TestMatchConstraints
     e2e:
       - internal/e2e/matches_test.go::TestResolveMatchHandler
+    gherkin:
+      - docs/spec/features/schedule/fixtures.feature::The end the organiser resolved with is the end the calendar keeps
   notes: >
     matches_set_ended_at_on_close assigns NEW.ended_at := now() when NEW.status
     becomes closed and OLD.status was not — OLD-vs-NEW, so a trigger, and
@@ -518,6 +532,8 @@
     unit:
       - internal/schedule/internal/repository/constraints_test.go::TestMatchConstraints
       - internal/schedule/internal/model/matches_validation_test.go::TestValidateNewMatch
+    gherkin:
+      - docs/spec/features/schedule/fixtures.feature::The database refuses a fixture priced at evens or below
   notes: >
     Two halves, one operand contract (ADR-021's scale chain: bonus_acc scale 4 =
     tokens 0 + odds 2 + streak-rate budget 2). The bound half is a real
@@ -565,6 +581,8 @@
   verification:
     unit:
       - internal/schedule/internal/repository/constraints_test.go::TestMatchConstraints
+    gherkin:
+      - docs/spec/features/schedule/fixtures.feature::The organiser cannot announce a club against itself
   notes: >
     A one-line row-local CHECK, mirrored in validateMatchShape for a clean 422.
     The app copy is not unit-tested (TestValidateNewMatch has no same-team case),
@@ -606,6 +624,8 @@
       - internal/schedule/internal/repository/constraints_test.go::TestMatchConstraints
     e2e:
       - internal/e2e/matches_test.go::TestCreateMatchHandler
+    gherkin:
+      - docs/spec/features/schedule/fixtures.feature::The database refuses a fixture moved into another season
   notes: >
     The mechanism is the pair rounds_season_id_id_key UNIQUE (season_id, id) +
     matches_season_id_round_id_fkey — a composite FK, i.e. cross-table
@@ -709,6 +729,8 @@
     e2e:
       - internal/e2e/rounds_test.go::TestUpdateRoundHandler
       - internal/e2e/rounds_test.go::TestCreateRoundHandler
+    gherkin:
+      - docs/spec/features/schedule/fixtures.feature::The database refuses a round numbered outside the fixture list
   notes: >
     The bound is duplicated as calendar vocabulary in model.RoundsPerSeason = 38
     (the same constant the close flow reads as "is this the season's last
@@ -756,6 +778,8 @@
     e2e:
       - internal/e2e/rounds_test.go::TestCreateRoundDuplicateNumber
       - internal/e2e/rounds_test.go::TestUpdateRoundHandler
+    gherkin:
+      - docs/spec/features/schedule/fixtures.feature::The organiser cannot add a second round 1
   notes: >
     The uniqueness is scoped to the season (UNIQUE (season_id, number)), which is
     the whole point: season 2's round 1 does not collide with season 1's. Both
@@ -804,6 +828,8 @@
       - internal/schedule/internal/service/rounds_close_test.go::TestRoundClose_MidTxFailureLeavesNoTrace
     e2e:
       - internal/e2e/rounds_test.go::TestUpdateRoundHandler
+    gherkin:
+      - docs/spec/features/schedule/lifecycle.feature::The database refuses a round opened behind an unclosed predecessor
   notes: >
     rounds_progress_gate fires on INSERT beyond created, on every forward
     transition (created -> open/closed, open -> closed) and on any renumbering of
@@ -864,6 +890,8 @@
       - internal/schedule/internal/service/rounds_close_test.go::TestRoundClose
     e2e:
       - internal/e2e/rounds_test.go::TestUpdateRoundHandler
+    gherkin:
+      - docs/spec/features/schedule/lifecycle.feature::The database refuses a close over a match still running
   notes: >
     rounds_close_gate fires only on a transition INTO closed (a
     state-preserving rewrite of an already-closed round passes), then asks
@@ -916,6 +944,8 @@
     e2e:
       - internal/e2e/rounds_test.go::TestOpenRoundStartsSeason
       - internal/e2e/rounds_test.go::TestOpenRoundSeasonFlipIsIdempotent
+    gherkin:
+      - docs/spec/features/schedule/lifecycle.feature::Opening round 1 starts the season
   notes: >
     The decision is split by nature and the catalog gives it to the service: the
     created -> open transition must be *dispatched* to Open rather than to the
@@ -958,6 +988,8 @@
   verification:
     unit:
       - internal/schedule/internal/service/rounds_close_test.go::TestRoundClose
+    gherkin:
+      - docs/spec/features/schedule/lifecycle.feature::Closing round thirty-eight closes the season
   notes: >
     Authority deviates from the orchestration default (service) because both the
     last-round predicate (round.Number == model.RoundsPerSeason) and the atomic
@@ -1050,6 +1082,8 @@
     unit: []
     e2e:
       - internal/e2e/matches_test.go::TestResolveMatchHandler
+    gherkin:
+      - docs/spec/features/schedule/resolve.feature::A result ending in the future is refused
   notes: >
     Authority deviates from the policy default (domain) deliberately: the rule
     is checked at the *use-case door*, before any transaction is opened, so every
@@ -1106,6 +1140,8 @@
     e2e:
       - internal/e2e/matches_test.go::TestResolveMatchHandler
       - internal/e2e/matches_test.go::TestResolveMatchSettlesRowOnce
+    gherkin:
+      - docs/spec/features/schedule/resolve.feature::A result written against an outdated reading is refused
   notes: >
     Authority deviates from the orchestration default (service) because the
     predicate needs the write instant: it is spelled as the UPDATE's own WHERE
@@ -1155,6 +1191,8 @@
   verification:
     unit:
       - internal/schedule/internal/model/round_phase_test.go::TestPhase
+    gherkin:
+      - docs/spec/features/schedule/resolve.feature::A lock landing exactly an hour before kickoff is refused
   notes: >
     A pure derivation from two real-world facts (earliest start, latest end of
     the round's matches) — no state of its own, so nothing can drift and nothing
@@ -1203,6 +1241,8 @@
       - internal/e2e/rounds_test.go::TestDeleteRoundHandler
       - internal/e2e/seasons_test.go::TestDeleteSeasonHandler
       - internal/e2e/seasons_test.go::TestDeleteSeasonRefusalKeepsSeasonPlayers
+    gherkin:
+      - docs/spec/features/schedule/deletion.feature::The database refuses to delete a round with a started match
   notes: >
     Two delete gates, one statement (the round level and the season level, taken
     from ADR-007 one level up); both ask the same time fact as the freeze gates
@@ -1248,6 +1288,8 @@
     e2e:
       - internal/e2e/rounds_test.go::TestDeleteOpenRoundCascadesMatches
       - internal/e2e/seasons_test.go::TestDeleteCreatedSeasonHandler
+    gherkin:
+      - docs/spec/features/schedule/deletion.feature::Deleting a season takes its rounds and fixtures with it
   notes: >
     The cascade is three FK behaviours doing the work (rounds_season_id_fkey and
     matches_season_id_fkey / matches_round_id_fkey, all ON DELETE CASCADE), so it
@@ -1299,6 +1341,8 @@
     e2e:
       - internal/e2e/teams_test.go::TestDeleteTeamHandler
       - internal/e2e/teams_test.go::TestDeleteUnreferencedTeamHandler
+    gherkin:
+      - docs/spec/features/schedule/deletion.feature::A team a fixture names cannot be deleted
   notes: >
     ON DELETE RESTRICT (not NO ACTION) on both sides of matches, with the intent
     spelled out in 000001: "we don't want to delete matches history if we delete
@@ -1379,6 +1423,8 @@
       - internal/e2e/teams_test.go::TestDeleteTeamHandler
       - internal/e2e/seasons_test.go::TestDeleteSeasonHandler
       - internal/e2e/seasons_test.go::TestDeleteSeasonRefusalKeepsSeasonPlayers
+    gherkin:
+      - docs/spec/features/schedule/deletion.feature::A match a ride still sits on cannot be deleted
   notes: >
     Merged rule (Phase B3): the calendar sweep (provisional R-SCHEDULE-026) and the
     game sweep (provisional R-GAME-027) found one boundary fact from its two ends, so
@@ -1455,6 +1501,8 @@
     unit: []
     e2e:
       - internal/e2e/seasons_test.go::TestDeleteSeasonHandler
+    gherkin:
+      - docs/spec/features/schedule/deletion.feature::A deleted season takes its registrations with it
   notes: >
     The shape is a replayed cascade: players.season_id -> seasons was ON DELETE
     CASCADE until 000016 dropped the cross-context FK, so the policy reproduces
@@ -1523,6 +1571,8 @@
       - internal/e2e/matches_test.go::TestUpdateMatchHandler
       - internal/e2e/teams_test.go::TestUpdateTeamHandler
       - internal/e2e/seasons_test.go::TestUpdateSeasonHandler
+    gherkin:
+      - docs/spec/features/schedule/deletion.feature::An edit written against an outdated reading is refused
   notes: >
     Authority deviates from the orchestration default (service) because the
     guarantee is the `AND version = $n` clause inside each UPDATE and the 0-row
@@ -2267,6 +2317,8 @@
     e2e:
       - internal/e2e/players_test.go::TestUpdatePlayerOwnership
       - internal/e2e/players_test.go::TestDeletePlayerHandler
+    gherkin:
+      - docs/spec/features/game/players.feature::A change to someone else's registration is refused
   notes: >
     Authority is the service, which deviates from the policy default (domain):
     ownership is a use-case fact — the domain Player knows its UserID but not
@@ -2319,6 +2371,8 @@
     e2e:
       - internal/e2e/players_test.go::TestCreatePlayerHandler
       - internal/e2e/players_test.go::TestUpdatePlayerOwnership
+    gherkin:
+      - docs/spec/features/game/players.feature::A registration made in a season belongs to the member who made it
   notes: >
     Authority is the service (deviation from the policy default of domain,
     because the fact is "who is asking" — the Actor, which the domain never
@@ -2377,6 +2431,8 @@
     e2e:
       - internal/e2e/players_test.go::TestCreatePlayerHandler
       - internal/e2e/players_test.go::TestUpdatePlayerHandler
+    gherkin:
+      - docs/spec/features/game/players.feature::A registration naming a team the calendar does not carry is refused
   notes: >
     Category boundary (the cross-context FKs came out in 000016 so the
     composition moved into the use cases), but authority is the service, not the
@@ -2433,6 +2489,8 @@
     unit: []
     e2e:
       - internal/e2e/players_test.go::TestCreatePlayerDuplicateRegistration
+    gherkin:
+      - docs/spec/features/game/players.feature::A second registration in the same season is refused as a duplicate
   notes: >
     The uniqueness is (season_id, user_id); the mapping in the adapter keys on
     the constraint name, so a rename turns the 409 into a 500 — that is why the
@@ -2616,6 +2674,8 @@
     unit: []
     e2e:
       - internal/e2e/players_test.go::TestUpdatePlayerHandler
+    gherkin:
+      - docs/spec/features/game/players.feature::An edit claiming a version the registration has moved past is refused as a conflict
   notes: >
     Authority is the service (deviation from the policy default of domain): the
     comparison is against a version the caller claims, which is request-shaped,
@@ -2675,6 +2735,8 @@
     e2e:
       - internal/e2e/rides_test.go::TestCreateRideIdempotentHandler
       - internal/e2e/rides_test.go::TestRideLockIdempotentHandler
+    gherkin:
+      - docs/spec/features/game/idempotency.feature::A retry under the same key comes back with the recorded answer
   expert-ref: docs/league-tokens-learning-phases/phase-04-concurrency-and-idempotency.md
   notes: >
     Four authoritative sites, one per command: the ordering (claim first, then
@@ -3681,7 +3743,9 @@
       pinned_by: null
   refusal: null
   fixture: null
-  verification: {}
+  verification:
+    gherkin:
+      - docs/spec/features/identity/account.feature::Her activation token is good for three days
   notes: >
     Authority is the service, deviating from the policy default (domain) because the
     window is a property of the use case that mints the token, not of the token entity:
@@ -3733,6 +3797,8 @@
       - internal/identity/internal/repository/user_token_repo_test.go::TestNewAndGetForToken
     e2e:
       - internal/e2e/auth_test.go::TestAuthenticateMiddleware
+    gherkin:
+      - docs/spec/features/identity/account.feature::A key past its day is refused exactly as one that never existed
   notes: >
     Repository authority: the decision is a predicate on the token row (scope and expiry)
     that needs the fingerprint argument, so it can only live in the lookup SQL — and being
@@ -3786,6 +3852,8 @@
     unit:
       - internal/identity/internal/service/activation_test.go::TestActivate
       - internal/identity/internal/repository/user_token_repo_test.go::TestDeleteAllForUser
+    gherkin:
+      - docs/spec/features/identity/account.feature::The same activation token cannot be spent twice
   notes: >
     Orchestration, service authority, no deviation: the rule spans two repositories, so no
     single repository can own it, and the service holds the pool precisely to open that
@@ -3903,6 +3971,8 @@
       - internal/identity/internal/repository/user_repo_test.go::TestGetByEmail
     e2e:
       - internal/e2e/users_test.go::TestRegisterUserHandlerDuplicateIsolatedFromValidation
+    gherkin:
+      - docs/spec/features/identity/account.feature::An email already taken in another case is refused as a duplicate
   notes: >
     Database authority: one unique index on a citext column, so the refusal survives every
     writer (the app, psql, a future service, a backfill) and the case-insensitivity is a
@@ -3954,7 +4024,9 @@
     sentinel: null
     http: 400
   fixture: null
-  verification: {}
+  verification:
+    gherkin:
+      - docs/spec/features/identity/account.feature::A registration arrives holding the standard user role
   notes: >
     Authority is the repository, deviating from the policy default (domain): the role is
     decided by the INSERT itself, which resolves `(SELECT id FROM roles WHERE name =
@@ -4057,6 +4129,8 @@
     e2e:
       - internal/e2e/auth_test.go::TestRequirePermissionMiddleware
       - internal/e2e/rides_test.go::TestRideRoutesPermissionGate
+    gherkin:
+      - docs/spec/features/identity/access.feature::The standard user may read the calendar and manage her own player
   notes: >
     Authority deviates from the policy default (domain) because the matrix is data, not a
     computation: the eleven codes, the two roles and the twenty-two grants are rows an
@@ -4154,6 +4228,8 @@
     e2e:
       - internal/e2e/auth_test.go::TestRequirePermissionMiddleware
       - internal/e2e/rides_test.go::TestRideRoutesPermissionGate
+    gherkin:
+      - docs/spec/features/identity/access.feature::An unactivated account is refused at every gated page
   notes: >
     The rule is identity's (activation is identity's fact) but it is enforced in the
     platform: the permission middleware consults the activation flag the authentication
@@ -4226,6 +4302,8 @@
     e2e:
       - internal/e2e/auth_test.go::TestRequirePermissionMiddleware
       - internal/e2e/rides_test.go::TestRideRoutesPermissionGate
+    gherkin:
+      - docs/spec/features/identity/access.feature::A code the standard user's role half carries is refused
   notes: >
     Authority is the handler, deviating from the policy default (domain): authorization is
     a transport verdict here — the module route tables compose each handler with its code
@@ -4291,6 +4369,8 @@
   verification:
     unit:
       - internal/identity/internal/model/user_test.go::TestPasswordHashRoundTrip
+    gherkin:
+      - docs/spec/features/identity/access.feature::An unknown email is refused as an invalid credential
   notes: >
     Authority is the service, deviating from the policy default (domain): the equivalence is
     created by the use case — an unknown email is translated into the same sentinel a wrong
@@ -4349,6 +4429,8 @@
     e2e:
       - internal/e2e/users_test.go::TestRegisterUserHandlerSuccessState
       - internal/e2e/users_test.go::TestRegisterUserHandler
+    gherkin:
+      - docs/spec/features/identity/account.feature::A newly registered account arrives unactivated
   notes: >
     Authority is the service, deviating from the invariant default (database): the flag is
     set by the use case — Register overwrites whatever the caller put on the entity with
@@ -4506,6 +4588,8 @@
   verification:
     unit:
       - internal/identity/internal/service/activation_test.go::TestActivate
+    gherkin:
+      - docs/spec/features/identity/account.feature::An activated account cannot collect another activation mail
   notes: >
     Authority is the service, deviating from the policy default (domain): the refusal is a
     use-case verdict taken on a row read (is this account already active?) before any token
@@ -4907,6 +4991,8 @@
     e2e:
       - internal/e2e/rides_test.go::TestRideLockIdempotentHandler
       - internal/e2e/rides_test.go::TestCreateRideIdempotentHandler
+    gherkin:
+      - docs/spec/features/game/idempotency.feature::The same key on a different command is refused, never replayed
   notes: >
     Authority deviates from the category default (policy → domain): the decision is not
     a business policy but a stored-fact comparison — "does this key already name a
