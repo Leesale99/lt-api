@@ -26,6 +26,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	gamehttp "lt-api.aleksrdvn.com/internal/game/internal/adapter/inbound/http"
@@ -138,13 +139,19 @@ func (m *Module) RidesExistForMatch(ctx context.Context, matchID int) (bool, err
 	return m.svc.RidesExistForMatch(ctx, matchID)
 }
 
-// DeletePlayersForSeason deletes every player of the season
-// (players_season_id_fkey's old CASCADE half). A ride still referencing one of
-// them keeps the old cascade's refusal: ErrRecordInUse (game's), which the
-// composition adapter turns into the calendar's own in-use sentinel — the same
-// 409 the blocked cascade produced.
-func (m *Module) DeletePlayersForSeason(ctx context.Context, seasonID int) error {
-	return m.svc.DeletePlayersForSeason(ctx, seasonID)
+// DeletePlayersForSeasonTx deletes every player of the season
+// (players_season_id_fkey's old CASCADE half) on the calendar's transaction:
+// the season row and its registrations are one atomic operation again, the
+// shape the pre-000016 cascade had. The statement is game's SECURITY DEFINER
+// function (migration 000021) — schedule's pool has no privilege on
+// game.players, so game's SQL runs as the schema owner inside schedule's tx.
+//
+// A ride still referencing one of the players keeps the old cascade's
+// refusal: ErrRecordInUse (game's), which the composition adapter turns into
+// the calendar's own in-use sentinel — the same 409 the blocked cascade
+// produced.
+func (m *Module) DeletePlayersForSeasonTx(ctx context.Context, tx pgx.Tx, seasonID int) error {
+	return m.svc.DeletePlayersForSeasonTx(ctx, tx, seasonID)
 }
 
 // The core's sentinels, re-exported for the composition boundary: the

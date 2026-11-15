@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/julienschmidt/httprouter"
 
@@ -111,8 +112,8 @@ func (g specGameRefs) RidesExistForMatch(ctx context.Context, matchID int) (bool
 	return g.game.RidesExistForMatch(ctx, matchID)
 }
 
-func (g specGameRefs) DeletePlayersForSeason(ctx context.Context, seasonID int) error {
-	err := g.game.DeletePlayersForSeason(ctx, seasonID)
+func (g specGameRefs) DeletePlayersForSeasonTx(ctx context.Context, tx pgx.Tx, seasonID int) error {
+	err := g.game.DeletePlayersForSeasonTx(ctx, tx, seasonID)
 	if errors.Is(err, game.ErrRecordInUse) {
 		return schedule.ErrRecordInUse
 	}

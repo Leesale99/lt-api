@@ -216,21 +216,26 @@ func (r *PlayerRepository) ExistsForTeam(ctx context.Context, teamID int) (bool,
 	return exists, err
 }
 
-// DeleteForSeason deletes every player registered in the season — the game
-// half of the calendar's season-delete cascade (000016: the FK CASCADE is
-// gone with the cross-context FKs, so the season's players go through game
-// before the season row; the row outcome is the old cascade's). A ride still
-// referencing a player trips rides_player_id_fkey — a same-context FK — so a
-// season that owns rides is refused: domain.ErrRecordInUse, the 409 the old
-// cascade produced.
-func (r *PlayerRepository) DeleteForSeason(ctx context.Context, seasonID int) error {
-	result, err := r.pool.Exec(ctx, `DELETE FROM players WHERE season_id = $1`, seasonID)
+// DeleteForSeasonTx deletes every player registered in the season ON THE
+// CALLER'S TRANSACTION — the game half of the calendar's season-delete
+// cascade (000016: the FK CASCADE is gone with the cross-context FKs, so the
+// season's players go through game inside the season's own tx; the row
+// outcome is the old cascade's, and so is the atomicity).
+//
+// The statement is game's SECURITY DEFINER function (migration 000021): the
+// caller is schedule's pool, which has no privilege on game.players, so the
+// function runs as the game schema's owner inside this transaction and
+// returns nothing. A ride still referencing a player trips
+// rides_player_id_fkey — a same-context FK — so a season that owns rides is
+// refused: domain.ErrRecordInUse, the 409 the old cascade produced.
+func (r *PlayerRepository) DeleteForSeasonTx(ctx context.Context, tx pgx.Tx, seasonID int) error {
+	_, err := tx.Exec(ctx, `SELECT game.delete_players_for_season($1)`, seasonID)
 	if err != nil {
 		if persistence.IsDeleteRestricted(err) {
 			return domain.ErrRecordInUse
 		}
 		return err
 	}
-	_ = result
+
 	return nil
 }

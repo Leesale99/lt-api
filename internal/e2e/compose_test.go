@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/julienschmidt/httprouter"
 
 	"lt-api.aleksrdvn.com/internal/game"
@@ -126,8 +127,8 @@ func (g testGameRefs) RidesExistForMatch(ctx context.Context, matchID int) (bool
 	return g.game.RidesExistForMatch(ctx, matchID)
 }
 
-func (g testGameRefs) DeletePlayersForSeason(ctx context.Context, seasonID int) error {
-	err := g.game.DeletePlayersForSeason(ctx, seasonID)
+func (g testGameRefs) DeletePlayersForSeasonTx(ctx context.Context, tx pgx.Tx, seasonID int) error {
+	err := g.game.DeletePlayersForSeasonTx(ctx, tx, seasonID)
 	if errors.Is(err, game.ErrRecordInUse) {
 		return schedule.ErrRecordInUse
 	}

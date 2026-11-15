@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jackc/pgx/v5"
+
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 )
 
@@ -25,8 +27,12 @@ type GameUsage interface {
 	RidesExistForTeam(ctx context.Context, teamID int) (bool, error)
 	// RidesExistForMatch reports whether any ride rides on the match.
 	RidesExistForMatch(ctx context.Context, matchID int) (bool, error)
-	// DeletePlayersForSeason deletes every player of the season.
-	DeletePlayersForSeason(ctx context.Context, seasonID int) error
+	// DeletePlayersForSeasonTx deletes every player of the season ON THE
+	// CALLER'S TRANSACTION — the game context's half of the season delete.
+	// It takes schedule's tx so that the registrations and the season row
+	// commit or roll back together: the season delete is all-or-nothing
+	// again (the pre-000016 cascade was one statement).
+	DeletePlayersForSeasonTx(ctx context.Context, tx pgx.Tx, seasonID int) error
 }
 
 // errGameRefsNotWired is the composition fault: the delete policies cannot
@@ -88,25 +94,44 @@ func (s *Service) DeleteMatch(ctx context.Context, matchID, seasonID int) error 
 	return s.matches.Delete(ctx, matchID, seasonID)
 }
 
-// DeleteSeason removes a season, replaying the game half of the old cascade
-// first. players_season_id_fkey's CASCADE is gone with the cross-context FKs
-// (migration 000016), so the season's players are deleted through game BEFORE
-// the season. The row outcome is the old cascade's, and the old refusals keep
-// their surfaces: a ride still referencing a player trips
-// rides_player_id_fkey (a same-context FK) → ErrRecordInUse → the 409 the
-// handler writes, exactly what the blocked cascade produced. The accepted
-// gap: if the season delete itself then fails, the players are already gone
-// (the old flow deleted everything or nothing in one statement). Only
-// deleteable seasons (no started matches — the seasons_delete_gate) reach the
-// players step.
+// DeleteSeason removes a season and its registrations in ONE transaction,
+// replaying the game half of the old cascade first. players_season_id_fkey's
+// CASCADE is gone with the cross-context FKs (migration 000016), so the
+// season's players are deleted through game BEFORE the season row — on this
+// service's transaction (game's side is a SECURITY DEFINER function,
+// migration 000021, executing as the game schema's owner inside this tx).
+//
+// All-or-nothing, like the cascade it replaces: two authoritative database
+// refusals can end this tx, and both roll it back whole.
+//   - rides_player_id_fkey (game-internal, RESTRICT, 23503): a ride still
+//     references one of the players. Asked first, so a season that owns rides
+//     is refused before its own row is touched.
+//   - seasons_delete_gate (BEFORE DELETE, P0001, R-SCHEDULE-023): the season
+//     is in_progress/closed or has a started match. It fires on the season
+//     DELETE itself, i.e. after the players step — inside this same tx, so
+//     the refusal takes the player delete with it instead of leaving the
+//     season alive with its registrations gone.
+//
+// Both arrive as ErrRecordInUse → the same 409 the blocked cascade produced.
 func (s *Service) DeleteSeason(ctx context.Context, id int) error {
 	if s.usage == nil {
 		return errGameRefsNotWired
 	}
 
-	if err := s.usage.DeletePlayersForSeason(ctx, id); err != nil {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
 		return err
 	}
 
-	return s.seasons.Delete(ctx, id)
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	if err := s.usage.DeletePlayersForSeasonTx(ctx, tx, id); err != nil {
+		return err
+	}
+
+	if err := s.seasons.DeleteTx(ctx, tx, id); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }
