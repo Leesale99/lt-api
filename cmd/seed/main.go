@@ -19,7 +19,7 @@ import (
 // no pairing repeats. Rounds 1-4 are closed (past, fake results); round 5 is
 // open (first upcoming); rounds 6-8 are created. 20 players are fake
 // registered users of the game (2 favorite fans per team), not real athletes. Deliberately independent of the test
-// fixture in internal/api/seed_test.go — dev data and test data serve
+// fixture in internal/e2e/seed_test.go — dev data and test data serve
 // different purposes.
 //
 //go:embed seed.sql
@@ -81,7 +81,10 @@ func run(ctx context.Context, logger *slog.Logger, dsn string, reset bool) error
 	defer func() { _ = tx.Rollback(ctx) }() // noop after Commit (ErrTxClosed)
 
 	if reset {
-		if _, err := tx.Exec(ctx, `TRUNCATE matches, players, rounds, seasons, teams RESTART IDENTITY CASCADE`); err != nil {
+		// The tables live in their context schemas (000015) — the names are
+		// qualified. The seed runs as the migration runner (owner), so the
+		// cross-schema TRUNCATE ... CASCADE needs no extra privileges.
+		if _, err := tx.Exec(ctx, `TRUNCATE schedule.matches, game.players, schedule.rounds, schedule.seasons, schedule.teams RESTART IDENTITY CASCADE`); err != nil {
 			return fmt.Errorf("truncate: %w", err)
 		}
 	}
@@ -103,11 +106,11 @@ func run(ctx context.Context, logger *slog.Logger, dsn string, reset bool) error
 func anyTableHasRows(ctx context.Context, conn *pgx.Conn) (bool, error) {
 	var nonEmpty bool
 	err := conn.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM matches)
-		    OR EXISTS (SELECT 1 FROM players)
-		    OR EXISTS (SELECT 1 FROM rounds)
-		    OR EXISTS (SELECT 1 FROM seasons)
-		    OR EXISTS (SELECT 1 FROM teams)
+		SELECT EXISTS (SELECT 1 FROM schedule.matches)
+		    OR EXISTS (SELECT 1 FROM game.players)
+		    OR EXISTS (SELECT 1 FROM schedule.rounds)
+		    OR EXISTS (SELECT 1 FROM schedule.seasons)
+		    OR EXISTS (SELECT 1 FROM schedule.teams)
 	`).Scan(&nonEmpty)
 	if err != nil {
 		return false, fmt.Errorf("check for existing rows: %w", err)

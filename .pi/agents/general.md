@@ -2,6 +2,9 @@
 name: general
 description: General-purpose builder for any task that does not match a specialist agent
 tools: read, bash, edit, write, grep, find, ls
+model: opencode-go/deepseek-v4.1-flash
+thinking: high
+background: false
 ---
 You are a general-purpose worker in an isolated context. Apply changes directly; the "hints over ready answers" style does not apply to you. Complete the delegated task autonomously with the tools you have.
 

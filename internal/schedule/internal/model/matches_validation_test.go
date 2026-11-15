@@ -1,0 +1,321 @@
+package model
+
+// Unit tests for the match validators: pure logic, no database, microseconds.
+// The `now` argument is injected, so every case controls the clock instead of
+// racing against time.Now() — that is the whole point of the signature.
+
+import (
+	"testing"
+	"time"
+
+	"lt-api.aleksrdvn.com/internal/kernel/validator"
+)
+
+func TestValidateNewMatch(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+
+	i := func(n int) *int { return &n }
+
+	// Closed matches must carry an ended_at; the mutation cases that flip the
+	// status to closed set it (and only it) so they test one rule at a time.
+	endsAt := now.Add(48 * time.Hour) // after the fixture's starts_at (now+24h)
+	setEnded := func(m *Match) { m.EndedAt = &endsAt }
+
+	valid := func() Match {
+		return Match{
+			SeasonID:   1,
+			RoundID:    1,
+			HomeTeamID: 1,
+			AwayTeamID: 2,
+			Status:     MatchCreated,
+			StartsAt:   now.Add(24 * time.Hour),
+			Odds:       Odds{Home: 1.5, Away: 2.5},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		mutate   func(m *Match)
+		wantErrs map[string]string // field -> first error message; empty = valid
+	}{
+		{
+			name:     "valid created match",
+			mutate:   func(m *Match) {},
+			wantErrs: map[string]string{},
+		},
+		// Shape-valid, but new matches can never carry a non-created status:
+		// these cases pin the create-time status rule on top of the shape core.
+		{
+			name: "closed match with score is rejected on create",
+			mutate: func(m *Match) {
+				m.Status = MatchClosed
+				setEnded(m)
+				m.Score = Score{Home: i(88), Away: i(79)}
+			},
+			wantErrs: map[string]string{"status": "new matches can only have status created"},
+		},
+		{
+			name: "in_progress match at 0-0 is rejected on create",
+			mutate: func(m *Match) {
+				m.Status = MatchInProgress
+				m.Score = Score{Home: i(0), Away: i(0)}
+			},
+			wantErrs: map[string]string{"status": "new matches can only have status created"},
+		},
+
+		// Score pair rule: both nil or both set.
+		{
+			name: "home score without away score",
+			mutate: func(m *Match) {
+				m.Status = MatchClosed
+				setEnded(m)
+				m.Score = Score{Home: i(88), Away: nil}
+			},
+			wantErrs: map[string]string{"score": "must contain both home and away values or neither", "status": "new matches can only have status created"},
+		},
+		{
+			name: "away score without home score",
+			mutate: func(m *Match) {
+				m.Status = MatchClosed
+				setEnded(m)
+				m.Score = Score{Home: nil, Away: i(79)}
+			},
+			wantErrs: map[string]string{"score": "must contain both home and away values or neither", "status": "new matches can only have status created"},
+		},
+
+		// Non-negative scores.
+		{
+			name: "negative home score",
+			mutate: func(m *Match) {
+				m.Status = MatchClosed
+				setEnded(m)
+				m.Score = Score{Home: i(-1), Away: i(79)}
+			},
+			wantErrs: map[string]string{"score": "must not be negative", "status": "new matches can only have status created"},
+		},
+		{
+			name: "negative away score",
+			mutate: func(m *Match) {
+				m.Status = MatchClosed
+				setEnded(m)
+				m.Score = Score{Home: i(88), Away: i(-1)}
+			},
+			wantErrs: map[string]string{"score": "must not be negative", "status": "new matches can only have status created"},
+		},
+
+		// Status/score matrix: in_progress and closed require a score.
+		{
+			name: "in_progress without score",
+			mutate: func(m *Match) {
+				m.Status = MatchInProgress
+			},
+			wantErrs: map[string]string{"score": "must be provided when the match is in progress or closed", "status": "new matches can only have status created"},
+		},
+		{
+			name: "closed without score",
+			mutate: func(m *Match) {
+				m.Status = MatchClosed
+				setEnded(m)
+			},
+			wantErrs: map[string]string{"score": "must be provided when the match is in progress or closed", "status": "new matches can only have status created"},
+		},
+
+		// Status/score matrix: created and postponed forbid a score.
+		{
+			name: "created with score",
+			mutate: func(m *Match) {
+				m.Status = MatchCreated
+				m.Score = Score{Home: i(1), Away: i(0)}
+			},
+			wantErrs: map[string]string{"score": "must not be set before the match is in progress or closed"},
+		},
+		{
+			name: "postponed match without score is rejected on create",
+			mutate: func(m *Match) {
+				m.Status = MatchPostponed
+			},
+			wantErrs: map[string]string{"status": "new matches can only have status created"},
+		},
+		{
+			name: "postponed with score",
+			mutate: func(m *Match) {
+				m.Status = MatchPostponed
+				m.Score = Score{Home: i(1), Away: i(0)}
+			},
+			wantErrs: map[string]string{"score": "must not be set before the match is in progress or closed", "status": "new matches can only have status created"},
+		},
+
+		// starts_at: required and strictly after the injected now.
+		{
+			name: "starts_at missing",
+			mutate: func(m *Match) {
+				m.StartsAt = time.Time{}
+			},
+			wantErrs: map[string]string{"starts_at": "must be provided"},
+		},
+		{
+			name: "starts_at in the past",
+			mutate: func(m *Match) {
+				m.StartsAt = now.Add(-1 * time.Second)
+			},
+			wantErrs: map[string]string{"starts_at": "must be in the future"},
+		},
+		{
+			name: "starts_at exactly now",
+			mutate: func(m *Match) {
+				m.StartsAt = now
+			},
+			wantErrs: map[string]string{"starts_at": "must be in the future"},
+		},
+		{
+			name: "starts_at just after now",
+			mutate: func(m *Match) {
+				m.StartsAt = now.Add(1 * time.Second)
+			},
+			wantErrs: map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			match := valid()
+			tt.mutate(&match)
+
+			v := validator.New()
+			ValidateNewMatch(v, match, now)
+
+			assertValidatorErrors(t, v, tt.wantErrs)
+		})
+	}
+}
+
+func TestValidateMatchUpdate(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+
+	i := func(n int) *int { return &n }
+
+	scored := func(h, a int) Score { return Score{Home: i(h), Away: i(a)} }
+
+	// Each case controls both the stored match (old) and the proposed update
+	// (new). A started match with starts_at in the past is the realistic
+	// baseline for updates — that is exactly what creation forbids.
+	// Statuses used: created/postponed (pre-start pair), in_progress, closed.
+	tests := []struct {
+		name     string
+		old      func(m *Match)
+		mutate   func(m *Match)
+		wantErrs map[string]string
+	}{
+		{
+			name: "starts_at in the past is accepted",
+			old:  func(m *Match) {},
+			mutate: func(m *Match) {
+				m.Odds = Odds{Home: 2.0, Away: 3.0}
+			},
+			wantErrs: map[string]string{},
+		},
+		{
+			name: "created to in_progress with a score",
+			old:  func(m *Match) {},
+			mutate: func(m *Match) {
+				m.Status = MatchInProgress
+				m.Score = scored(1, 0)
+			},
+			wantErrs: map[string]string{},
+		},
+		{
+			name: "created to postponed",
+			old:  func(m *Match) {},
+			mutate: func(m *Match) {
+				m.Status = MatchPostponed
+			},
+			wantErrs: map[string]string{},
+		},
+		{
+			name: "postponed back to created",
+			old: func(m *Match) {
+				m.Status = MatchPostponed
+			},
+			mutate: func(m *Match) {
+				m.Status = MatchCreated
+			},
+			wantErrs: map[string]string{},
+		},
+		{
+			name: "in_progress back to created",
+			old: func(m *Match) {
+				m.Status = MatchInProgress
+				m.Score = scored(1, 0)
+			},
+			mutate: func(m *Match) {
+				m.Status = MatchCreated
+				m.Score = Score{}
+			},
+			wantErrs: map[string]string{"status": "cannot move to an earlier stage of the match lifecycle"},
+		},
+		{
+			name: "in_progress to postponed",
+			old: func(m *Match) {
+				m.Status = MatchInProgress
+				m.Score = scored(1, 0)
+			},
+			mutate: func(m *Match) {
+				m.Status = MatchPostponed
+				m.Score = Score{}
+			},
+			wantErrs: map[string]string{"status": "cannot move to an earlier stage of the match lifecycle"},
+		},
+		{
+			name: "closed to created",
+			old: func(m *Match) {
+				m.Status = MatchClosed
+				m.EndedAt = &now
+				m.Score = scored(3, 2)
+			},
+			mutate: func(m *Match) {
+				m.Status = MatchCreated
+				m.Score = Score{}
+			},
+			wantErrs: map[string]string{"status": "cannot be changed after the match is closed"},
+		},
+		{
+			name: "closed stays closed",
+			old: func(m *Match) {
+				m.Status = MatchClosed
+				m.EndedAt = &now
+				m.Score = scored(3, 2)
+			},
+			mutate: func(m *Match) {
+				m.Score = scored(4, 2)
+			},
+			wantErrs: map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := func() Match {
+				return Match{
+					SeasonID:   1,
+					RoundID:    1,
+					HomeTeamID: 1,
+					AwayTeamID: 2,
+					Status:     MatchCreated,
+					StartsAt:   now.Add(-2 * time.Hour),
+					Odds:       Odds{Home: 1.5, Away: 2.5},
+				}
+			}
+
+			old := base()
+			tt.old(&old)
+
+			match := old
+			tt.mutate(&match)
+
+			v := validator.New()
+			ValidateMatchUpdate(v, old, match)
+
+			assertValidatorErrors(t, v, tt.wantErrs)
+		})
+	}
+}

@@ -1,12 +1,15 @@
 // Package testdb sets up a throwaway PostgreSQL database for integration
 // tests.
 //
-// Conventions shared by every consumer (internal/api, internal/game):
+// Conventions shared by every consumer (internal/e2e,
+// internal/game):
 //
 //   - The DSN comes from LT_API_TEST_DSN and points at the test database,
 //     which does NOT need to exist. The role in the DSN only needs LOGIN +
-//     CREATEDB: the harness creates the database itself (and therefore owns
-//     it, and therefore may drop it). Nothing else is granted.
+//     CREATEDB and CREATEROLE (migration 000018 creates the per-context
+//     roles): the harness creates the database itself (and therefore owns
+//     it, and therefore may drop it). Nothing else is
+//     granted.
 //   - CREATE/DROP DATABASE must run outside a transaction, so they go through
 //     a separate connection to the "postgres" maintenance database on the
 //     same server, using the same credentials.
@@ -16,6 +19,11 @@
 //   - The database is dropped and recreated on every run: migrations are part
 //     of what integration tests exercise, so the schema is always built from
 //     the migration files, never inherited from a previous run.
+//   - The harness hands out FOUR pools: Owner (the DSN role —
+//     fixture planting, direct constraint probes, the api composition root's
+//     reset) and one per context role (schedule_app / game_app /
+//     identity_app, via SET ROLE on every connection — see ContextPool), so
+//     the store tests exercise the real privilege regime.
 package testdb
 
 import (
@@ -31,14 +39,31 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// DB carries the pools a test suite runs against: Owner for fixtures and
+// direct probes, one restricted pool per context role for the stores.
+type DB struct {
+	Owner    *pgxpool.Pool
+	Schedule *pgxpool.Pool
+	Game     *pgxpool.Pool
+	Identity *pgxpool.Pool
+}
+
+// Context role names — the same the server wiring uses; they exist only
+// after migration 000018, which every suite applies.
+const (
+	RoleSchedule = "schedule_app"
+	RoleGame     = "game_app"
+	RoleIdentity = "identity_app"
+)
+
 // Setup drops and recreates the test database for the given suite, applies
-// each migration file in order, and returns a connection pool plus a teardown
-// function that closes the pool and drops the database.
+// each migration file in order, and returns the pools plus a teardown
+// function that closes them and drops the database.
 //
 // dsn points at the test database (the name is used as a prefix; the actual
 // database is <name>_<suite>). suite must be a short identifier unique to the
 // calling test package, e.g. "api" or "game".
-func Setup(ctx context.Context, dsn, suite string, migrationFiles ...string) (*pgxpool.Pool, func(), error) {
+func Setup(ctx context.Context, dsn, suite string, migrationFiles ...string) (*DB, func(), error) {
 	u, err := url.Parse(dsn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse test DSN: %w", err)
@@ -86,22 +111,76 @@ func Setup(ctx context.Context, dsn, suite string, migrationFiles ...string) (*p
 		_ = conn.Close(ctx)
 	}
 
-	pool, err := pgxpool.New(ctx, dsnWithName(dsn, dbName))
+	owner, err := pgxpool.New(ctx, dsnWithName(dsn, dbName))
 	if err != nil {
-		return nil, nil, fmt.Errorf("connect pool to %s: %w", dbName, err)
+		return nil, nil, fmt.Errorf("connect owner pool to %s: %w", dbName, err)
+	}
+
+	schedulePool, err := ContextPool(ctx, dsn, dbName, RoleSchedule)
+	if err != nil {
+		owner.Close()
+		return nil, nil, fmt.Errorf("connect schedule pool to %s: %w", dbName, err)
+	}
+	gamePool, err := ContextPool(ctx, dsn, dbName, RoleGame)
+	if err != nil {
+		owner.Close()
+		schedulePool.Close()
+		return nil, nil, fmt.Errorf("connect game pool to %s: %w", dbName, err)
+	}
+	identityPool, err := ContextPool(ctx, dsn, dbName, RoleIdentity)
+	if err != nil {
+		owner.Close()
+		schedulePool.Close()
+		gamePool.Close()
+		return nil, nil, fmt.Errorf("connect identity pool to %s: %w", dbName, err)
 	}
 
 	teardown := func() {
-		pool.Close()
+		owner.Close()
+		schedulePool.Close()
+		gamePool.Close()
+		identityPool.Close()
 		admin, err := connect(context.Background(), dsn, "postgres", false)
 		if err != nil {
-			return // pool already closed; nothing else to clean up
+			return // pools already closed; nothing else to clean up
 		}
 		_, _ = admin.Exec(context.Background(), drop)
 		_ = admin.Close(context.Background())
 	}
 
-	return pool, teardown, nil
+	return &DB{
+		Owner:    owner,
+		Schedule: schedulePool,
+		Game:     gamePool,
+		Identity: identityPool,
+	}, teardown, nil
+}
+
+// ContextPool opens a pool whose every connection runs SET ROLE <role> —
+// the same post-connect hook the server wiring uses (migration 000018
+// created the roles and granted them exactly their own schema). Store
+// tests run against these pools so the privilege regime the boundary
+// rests on is exercised, not just the SQL. dbName is the database Setup
+// created (the DSN's name + "_" + suite).
+func ContextPool(ctx context.Context, dsn, dbName, role string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(dsnWithName(dsn, dbName))
+	if err != nil {
+		return nil, err
+	}
+	// SET ROLE + SET search_path pair exactly like the server's
+	// post-connect hook: role-level ALTER ROLE settings apply only at
+	// session start, never on SET ROLE, so the hook carries both.
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		if _, err := conn.Exec(ctx, "SET ROLE "+role); err != nil {
+			return fmt.Errorf("SET ROLE %s: %w", role, err)
+		}
+		schema := strings.TrimSuffix(role, "_app")
+		if _, err := conn.Exec(ctx, "SET search_path = "+schema+", public"); err != nil {
+			return fmt.Errorf("SET search_path %s: %w", schema, err)
+		}
+		return nil
+	}
+	return pgxpool.NewWithConfig(ctx, cfg)
 }
 
 // describeConnectError turns a failed connection to the maintenance database

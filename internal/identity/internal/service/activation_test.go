@@ -1,0 +1,223 @@
+package service
+
+// Tests for the activation use case (Service.Activate, ADR-025): the token
+// lookup, the activated flip and the activation-token cleanup must behave
+// as one unit of persistence.
+//
+// Integration tests against the same "identity_service" suite database as
+// the other service tests. The rollback case forces the LAST statement of
+// the transaction to fail with a test-only trigger — the only way to inject
+// a deterministic mid-transaction failure with no production seam — and then
+// asserts NOTHING was written: the flag flip rolled back with the cleanup.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"testing"
+	"time"
+
+	"lt-api.aleksrdvn.com/internal/identity/internal/model"
+)
+
+// plantActivatableUser inserts an unactivated user with one fresh activation
+// token and returns both.
+func plantActivatableUser(t *testing.T, h harness) (model.User, model.UserToken) {
+	t.Helper()
+
+	user, err := h.users.Insert(context.Background(), mustUser("Alice", fmt.Sprintf("alice-%d@example.com", time.Now().UnixNano()), "pa55word123"))
+	if err != nil {
+		t.Fatalf("seed insert: %v", err)
+	}
+
+	token, err := h.tokens.New(context.Background(), user.ID, time.Hour, model.ScopeActivation)
+	if err != nil {
+		t.Fatalf("seed token: %v", err)
+	}
+
+	return user, token
+}
+
+// assertUserState reads the user's persisted (activated, version) pair.
+func assertUserState(t *testing.T, userID int) (bool, int) {
+	t.Helper()
+
+	var activated bool
+	var version int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT activated, version FROM identity.users WHERE id = $1`, userID).Scan(&activated, &version); err != nil {
+		t.Fatalf("read user: %v", err)
+	}
+
+	return activated, version
+}
+
+func TestActivate(t *testing.T) {
+	requireDB(t)
+	h := newHarness()
+
+	t.Run("happy path: flip and cleanup commit together", func(t *testing.T) {
+		resetUsers(t)
+		user, token := plantActivatableUser(t, h)
+
+		got, err := h.svc.Activate(context.Background(), token.Plaintext)
+		if err != nil {
+			t.Fatalf("Activate: %v", err)
+		}
+
+		if !got.Activated {
+			t.Errorf("returned user activated = false, want true")
+		}
+		if got.Version != user.Version+1 {
+			t.Errorf("returned version = %d, want %d", got.Version, user.Version+1)
+		}
+
+		// Both halves persisted: the flag is set AND the token is gone.
+		activated, version := assertUserState(t, user.ID)
+		if activated != true || version != user.Version+1 {
+			t.Fatalf("persisted (activated, version) = (%v, %d), want (true, %d)", activated, version, user.Version+1)
+		}
+
+		var tokens int
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT count(*) FROM identity.user_tokens WHERE user_id = $1 AND scope = $2`, user.ID, model.ScopeActivation).Scan(&tokens); err != nil {
+			t.Fatal(err)
+		}
+		if tokens != 0 {
+			t.Errorf("activation tokens after activate = %d, want 0", tokens)
+		}
+	})
+
+	t.Run("unknown, expired or out-of-scope token is ErrNotFound", func(t *testing.T) {
+		resetUsers(t)
+		user, _ := plantActivatableUser(t, h)
+
+		if _, err := h.svc.Activate(context.Background(), "ZZZZZZZZZZZZZZZZZZZZZZZZZZ"); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("Activate(unknown) = %v, want ErrNotFound", err)
+		}
+
+		expired, err := h.tokens.New(context.Background(), user.ID, -time.Minute, model.ScopeActivation)
+		if err != nil {
+			t.Fatalf("seed expired token: %v", err)
+		}
+		if _, err := h.svc.Activate(context.Background(), expired.Plaintext); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("Activate(expired) = %v, want ErrNotFound", err)
+		}
+
+		// The refusals wrote nothing: still unactivated at the planted version.
+		activated, version := assertUserState(t, user.ID)
+		if activated != false || version != user.Version {
+			t.Fatalf("failed activation touched the row: (%v, %d), want (false, %d)", activated, version, user.Version)
+		}
+	})
+
+	t.Run("a failed cleanup rolls the flip back — nothing is left behind", func(t *testing.T) {
+		resetUsers(t)
+		user, token := plantActivatableUser(t, h)
+
+		// Test-only failure injection: forbid deleting from user_tokens.
+		// This is the deterministic stand-in for the crash the invariant
+		// exists for — the UPDATE has landed (in the tx), then the DELETE
+		// fails, and the commit must never happen.
+		if _, err := testPool.Exec(context.Background(), `
+			CREATE FUNCTION test_forbid_token_delete() RETURNS trigger AS $$
+			BEGIN
+				RAISE EXCEPTION 'test: activation token delete forbidden' USING ERRCODE = 'P0001';
+			END $$ LANGUAGE plpgsql`); err != nil {
+			t.Fatalf("create forbid function: %v", err)
+		}
+		t.Cleanup(func() {
+			_, _ = testPool.Exec(context.Background(), `DROP TRIGGER IF EXISTS test_forbid_token_delete ON identity.user_tokens`)
+			_, _ = testPool.Exec(context.Background(), `DROP FUNCTION IF EXISTS test_forbid_token_delete()`)
+		})
+		if _, err := testPool.Exec(context.Background(), `
+			CREATE TRIGGER test_forbid_token_delete BEFORE DELETE ON identity.user_tokens
+			FOR EACH ROW EXECUTE FUNCTION test_forbid_token_delete()`); err != nil {
+			t.Fatalf("create forbid trigger: %v", err)
+		}
+
+		_, err := h.svc.Activate(context.Background(), token.Plaintext)
+		if err == nil {
+			t.Fatal("Activate() = nil error, want the injected failure")
+		}
+
+		// The invariant under test: the flip did NOT survive. A non-atomic
+		// writer would leave activated=true with the token still present.
+		activated, version := assertUserState(t, user.ID)
+		if activated != false || version != user.Version {
+			t.Fatalf("partial write survived the rollback: (activated, version) = (%v, %d), want (false, %d)", activated, version, user.Version)
+		}
+
+		var tokens int
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT count(*) FROM identity.user_tokens WHERE user_id = $1 AND scope = $2`, user.ID, model.ScopeActivation).Scan(&tokens); err != nil {
+			t.Fatal(err)
+		}
+		if tokens != 1 {
+			t.Errorf("activation tokens after rollback = %d, want 1 (the token must survive too)", tokens)
+		}
+	})
+
+	t.Run("two concurrent activations activate exactly once", func(t *testing.T) {
+		resetUsers(t)
+
+		h := newHarness()
+		user, token1 := plantActivatableUser(t, h)
+
+		// A second fresh token for the same user: two independent
+		// activations, same guarded write target.
+		token2, err := h.tokens.New(context.Background(), user.ID, time.Hour, model.ScopeActivation)
+		if err != nil {
+			t.Fatalf("seed second token: %v", err)
+		}
+
+		var (
+			wg     sync.WaitGroup
+			errs   = make([]error, 2)
+			builds = []string{token1.Plaintext, token2.Plaintext}
+		)
+		wg.Add(2)
+		for i := range builds {
+			go func(i int) {
+				defer wg.Done()
+				_, errs[i] = h.svc.Activate(context.Background(), builds[i])
+			}(i)
+		}
+		wg.Wait()
+
+		// Every outcome is legal in exactly one of two shapes: committed
+		// (nil), losing the version race (ErrEditConflict), or reading a
+		// snapshot that predates the winner's token cleanup (ErrNotFound).
+		// Any other error is a bug.
+		winners := 0
+		for _, err := range errs {
+			switch {
+			case err == nil:
+				winners++
+			case errors.Is(err, model.ErrEditConflict), errors.Is(err, model.ErrNotFound):
+				// A legal loser.
+			default:
+				t.Fatalf("Activate() = %v, want nil, ErrEditConflict or ErrNotFound", err)
+			}
+		}
+		if winners == 0 {
+			t.Fatalf("no activation committed (errs: %v)", errs)
+		}
+
+		// Exactly-once on the row: one flip, one version bump, no tokens.
+		activated, version := assertUserState(t, user.ID)
+		if activated != true || version != user.Version+1 {
+			t.Fatalf("persisted (activated, version) = (%v, %d), want (true, %d) — a double bump or missed flip is a lost exactly-once", activated, version, user.Version+1)
+		}
+
+		var tokens int
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT count(*) FROM identity.user_tokens WHERE user_id = $1 AND scope = $2`, user.ID, model.ScopeActivation).Scan(&tokens); err != nil {
+			t.Fatal(err)
+		}
+		if tokens != 0 {
+			t.Errorf("activation tokens after the race = %d, want 0", tokens)
+		}
+	})
+}
