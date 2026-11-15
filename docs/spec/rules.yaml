@@ -1,0 +1,651 @@
+# docs/spec/rules.yaml
+#
+# CANONICAL, HAND-EDITED business-rule catalog. The field-by-field schema, the
+# frozen enums, the catalog's own invariants and the "how to add a rule" recipe
+# live in docs/spec/rules.schema.md.
+#
+# docs/spec/business-rules.md is GENERATED from this file — do not edit it.
+#
+# Do not guess: every `site` and every `verification` pointer below was resolved
+# against the working tree on main, not against an earlier recon snapshot.
+# Sites are `path::Symbol` (Go) or the migration id (SQL); never line numbers.
+#
+# Enums are frozen in docs/spec/rules.schema.md as approved at gate A2: authority is
+# database|domain|service|repository|composition-root|handler, layer is
+# handler|validator|service|domain|repository|db-constraint|db-trigger (the vault Lessons
+# call the repository layer *store*; the Go type was renamed Store → Repository).
+#
+# Validate with (either):
+#   python3 -c "import yaml; yaml.safe_load(open('docs/spec/rules.yaml'))"
+#   ruby -ryaml -e 'p YAML.safe_load(File.read("docs/spec/rules.yaml")).size'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# game — ride state machine
+# ─────────────────────────────────────────────────────────────────────────────
+
+- id: R-GAME-001
+  title: Rides are born locked
+  statement: |
+    A ride may only come into existence in the locked state. Every other state is
+    reachable only through a transition the state gate checks, so no writer — the
+    application, a migration script, a test shortcut — can plant a ride directly in
+    won_pending, burned, unlocked or lost.
+  module: game
+  entity: ride
+  category: invariant
+  status: implemented
+  authority: database
+  mechanism: trigger
+  scope: row-local
+  enforcement:
+    - site: migrations/000012_add_rides_insert_state_gate.up.sql
+      layer: db-trigger
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/core/domain/ride.go::Ride.Create
+      layer: domain
+      role: defense-in-depth
+      pinned_by: null
+  refusal:
+    code: P0001
+    constraint: ride_insert_requires_locked_state
+    sentinel: ErrInvalidTransition
+    http: 409
+  fixture: null
+  verification:
+    unit:
+      - internal/game/internal/core/domain/ride_test.go::TestRide_Create
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_InsertAndGet
+    e2e:
+      - internal/e2e/rides_test.go::TestCreateRideHandler
+  expert-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
+  notes: >
+    The insert half of the gate is a trigger, not a CHECK: the predicate is
+    INSERT-only ("state = 'locked'"), and a CHECK would also refuse the UPDATEs that
+    reach the other four states. The Go site is not a second check — Ride.Create
+    *constructs* the initial state (overwriting whatever the caller supplied, acc and
+    streak included). Tie: Ride.Create fails loudly — it never drifts silently, because a
+    wrong copy makes 000012 refuse the INSERT (409) and TestRide_Create fails first. No
+    shared fixture exists between the two sites, hence pinned_by: null.
+
+- id: R-GAME-002
+  title: Ride state transitions follow the five-state graph
+  statement: |
+    A ride moves only along the legal graph: locked → won_pending or lost;
+    won_pending → locked (continuation), burned or unlocked. No other state change is
+    possible for any writer.
+  module: game
+  entity: ride
+  category: invariant
+  status: implemented
+  authority: database
+  mechanism: trigger
+  scope: row-local
+  enforcement:
+    - site: migrations/000017_app_level_result_agreement.up.sql
+      layer: db-trigger
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/core/domain/ride.go::transitions
+      layer: domain
+      role: defense-in-depth
+      pinned_by: null
+    - site: internal/game/internal/core/domain/ride.go::canTransition
+      layer: domain
+      role: defense-in-depth
+      pinned_by: null
+  refusal:
+    code: P0001
+    constraint: ride_state_transition_illegal
+    sentinel: ErrInvalidTransition
+    http: 409
+  fixture: null
+  verification:
+    unit:
+      - internal/game/internal/core/domain/ride_test.go::TestRide_InvalidTransitions
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+    e2e:
+      - internal/e2e/rides_test.go::TestRideCommandHandlers
+  expert-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
+  notes: >
+    The graph is OLD-vs-NEW, so it must live in the trigger (check 3 of
+    rides_block_illegal_transition, unchanged since 000006, re-created verbatim by
+    000017 as game.rides_block_illegal_transition). The domain's `transitions` map is
+    the same graph in Go, used by every command guard; it is a copy that fails loud
+    (the trigger refuses the write, TestRide_InvalidTransitions fails first).
+    `canTransition` is the lookup, listed separately because a change to the map alone
+    would not show up in a diff of the command methods. Tie: both Go sites fail loudly —
+    they never drift silently, because the trigger refuses the arrival and the refused
+    ride's own test fails first.
+
+- id: R-GAME-003
+  title: Terminal rides are frozen
+  statement: |
+    A burned, lost or unlocked ride is final: its state never changes again and it is
+    never re-pointed at another match. A state-preserving rewrite of the row is not a
+    transition and is allowed.
+  module: game
+  entity: ride
+  category: invariant
+  status: implemented
+  authority: database
+  mechanism: trigger
+  scope: row-local
+  enforcement:
+    - site: migrations/000017_app_level_result_agreement.up.sql
+      layer: db-trigger
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/core/domain/ride.go::canTransition
+      layer: domain
+      role: defense-in-depth
+      pinned_by: null
+  refusal:
+    code: P0001
+    constraint: ride_terminal_state_frozen
+    sentinel: ErrInvalidTransition
+    http: 409
+  fixture: null
+  verification:
+    unit:
+      - internal/game/internal/core/domain/ride_test.go::TestRide_TerminalStates
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+  expert-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
+  notes: >
+    Trigger check 1. The domain copy is the absence of any entry for a terminal state
+    in `transitions` (canTransition returns false), so the refusal surfaces as
+    ErrInvalidTransition from the command, and the repository's UPDATE would be refused
+    with the same 409. The same check also freezes match_id on terminal rides, which is
+    why the "state-preserving full-row rewrite" carve-out is part of the rule. Tie: the
+    domain site fails loudly — it never drifts silently, because a terminal ride that
+    accepted a transition would be refused by the trigger and TestRide_TerminalStates
+    fails first.
+
+- id: R-GAME-004
+  title: Ride money columns stay in their domain
+  statement: |
+    A ride carries a positive whole token stake, a positive base price captured at lock
+    time, a non-negative accumulated bonus and a non-negative streak. There is no
+    representable ride with zero or negative money.
+  module: game
+  entity: ride
+  category: invariant
+  status: implemented
+  authority: database
+  mechanism: constraint
+  scope: row-local
+  enforcement:
+    - site: migrations/000006_create_rides_table.up.sql
+      layer: db-constraint
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/core/domain/ride.go::ValidateRide
+      layer: domain
+      role: advisory-copy
+      pinned_by: null
+  refusal:
+    code: "23514"
+    constraint:
+      - rides_tokens_locked_check
+      - rides_base_at_lock_check
+      - rides_bonus_acc_check
+      - rides_streak_check
+    sentinel: null
+    http: null
+  fixture: null
+  verification:
+    unit:
+      - internal/game/internal/core/domain/ride_validation_test.go::TestValidateRide
+    e2e:
+      - internal/e2e/rides_test.go::TestCreateRideHandler
+  notes: >
+    Four CHECKs, one rule: the bounds are the same kind of fact, so they are catalogued
+    together (constraint names stay individually mappable). The Go copy covers only
+    `tokens_locked` and only to give a clean 422 at the request edge; base_at_lock is
+    server-stamped from the ledger's token lookup (a stub today — the ride handler
+    hard-codes the base), and acc/streak are written by the ledger and the domain, never
+    by the request, so there is nothing for the handler to validate there. Two recorded
+    gaps: (a) no test probes the four CHECKs directly — TestValidateRide pins only the
+    app copy, so the two sides are not tied by a shared fixture; (b) a 23514 from any of
+    the four CHECKs is unmapped in the repository, so a caller that reaches it gets a
+    500, not a 422/409. A fixture (moneyBoundsRule: 5 vectors, run through ValidateRide
+    and through direct SQL) closes both.
+
+- id: R-GAME-005
+  title: Unlocked and lost rides carry no accrued bonus
+  statement: |
+    An unlocked or lost ride forfeits everything it accrued: its accumulated bonus is
+    zero at the moment it reaches that state. A burned ride keeps the bonus it accrued,
+    because the tokens and the bonus are fulfilled as TB.
+  module: game
+  entity: ride
+  category: invariant
+  status: implemented
+  authority: database
+  mechanism: constraint
+  scope: row-local
+  enforcement:
+    - site: migrations/000013_add_rides_money_state_coupling.up.sql
+      layer: db-constraint
+      role: authoritative
+      pinned_by: null
+    - site: internal/ledger/postgres.go::Repository.ReleaseBonus
+      layer: repository
+      role: defense-in-depth
+      pinned_by: null
+    - site: internal/game/internal/core/domain/ride.go::Ride.Unlock
+      layer: domain
+      role: defense-in-depth
+      pinned_by: null
+    - site: internal/game/internal/core/domain/ride.go::Ride.Lost
+      layer: domain
+      role: defense-in-depth
+      pinned_by: null
+  refusal:
+    code: "23514"
+    constraint: rides_money_state_coupling
+    sentinel: ErrInvalidTransition
+    http: 409
+  fixture: null
+  verification:
+    unit:
+      - internal/game/internal/core/service/constraints_test.go::TestRideMoneyStateCoupling
+      - internal/game/internal/core/domain/ride_test.go::TestRide_Unlock
+      - internal/game/internal/core/domain/ride_test.go::TestRide_Lost
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+  notes: >
+    stale-pointer: the rule holds — the CHECK is enforced, mapped by constraint name to
+    ErrInvalidTransition (409), and probed by TestRideMoneyStateCoupling — but migration
+    000013's change-detector prose no longer describes the code. It names the domain
+    copies as "(internal/game/rides.go)", the persistence copy as
+    "rideAutoUnlockSQL's bonus_acc = 0 (internal/game/rounds.go)" and the DB probe as
+    "(internal/game/constraints_test.go)". None of those paths exist after the
+    modular-monolith refactor: the domain operations are in
+    internal/game/internal/core/domain/ride.go, the copy that actually reaches the row
+    is internal/ledger/postgres.go::Repository.ReleaseBonus (the repository's UPDATE
+    deliberately omits every money column), and the probe is
+    internal/game/internal/core/service/constraints_test.go. The rule's content is
+    unchanged, so the status stays `implemented` (gate A2 / D2: rot is not drift); the
+    applied migration is immutable, so the fix is a comment at the current sites, not a
+    migration rewrite, and this `stale-pointer` note surfaces in the Phase B
+    misalignment report alongside every `drifted` rule. Second finding: the domain
+    copies zero an in-memory Acc that the repository never persists, so they are
+    documentation of intent — the load-bearing copies are the CHECK and the ledger's
+    release-before-flip order.
+    Tie: the ReleaseBonus and domain copies fail loudly — they never drift silently,
+    because the CHECK refuses an unlocked/lost row carrying acc (23514 → 409) and
+    TestRideMoneyStateCoupling pins the refusal name. A shared fixture (moneyStateRule:
+    unlocked/lost/burned × acc 0/100, run through the ledger seam and direct SQL) would
+    tie them without relying on the refusal.
+
+- id: R-GAME-006
+  title: A win accrues tokens × (odds − 1) × (1 + 0.20 × streak)
+  statement: |
+    Winning a ride accrues a bonus equal to the locked tokens, multiplied by the
+    team's decimal odds minus one, multiplied by a streak multiplier of
+    one plus twenty percent for each consecutive win already banked. A loss or an
+    unlock forfeits the whole accrued amount; the formula changes with the product, so
+    it lives in the domain and never in SQL.
+  module: game
+  entity: ride
+  category: policy
+  status: implemented
+  authority: domain
+  mechanism: null
+  scope: null
+  enforcement:
+    - site: internal/game/internal/core/domain/ride.go::BonusDelta
+      layer: domain
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/core/domain/ride.go::CalculateBonus
+      layer: domain
+      role: authoritative
+      pinned_by: null
+  refusal: null
+  fixture: null
+  verification:
+    unit:
+      - internal/game/internal/core/domain/ride_bonus_test.go::TestCalculateBonus
+      - internal/game/internal/core/service/service_test.go::TestService_OnMatchResultRecorded
+  notes: >
+    One formula, two entry points: BonusDelta is the one match's increment (what the
+    ledger's AccrueBonus applies) and CalculateBonus is delta + acc (what the in-memory
+    ride shows). They are listed as two authoritative sites because the accrual total
+    and the delta must never disagree — BonusDelta is the statement, CalculateBonus
+    delegates to it. The ledger owns the write, not the arithmetic (its AccrueBonus
+    takes the delta). streakRate is a ≤2-dp decimal by contract (ADR-021): widening it
+    re-opens silent rounding, and bonus_acc's scale assumes the budget. No phase
+    document covers this rule; the contract lives in the code comments and ADR-021, so
+    expert-ref is omitted rather than pointed at a doc that does not state it.
+
+- id: R-GAME-007
+  title: Each ride command opens only in its phase window
+  statement: |
+    Creating a ride is allowed only before the round's first match; recording a win or a
+    loss only while the round's matches are running; continuing, burning or unlocking
+    only after the last match of the round has ended. A command issued in the wrong
+    window is refused and changes nothing.
+  module: game
+  entity: ride
+  category: policy
+  status: implemented
+  authority: domain
+  mechanism: null
+  scope: null
+  enforcement:
+    - site: internal/game/internal/core/domain/ride.go::Ride.Create
+      layer: domain
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/core/domain/ride.go::Ride.WonPending
+      layer: domain
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/core/domain/ride.go::Ride.Lost
+      layer: domain
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/core/domain/ride.go::Ride.Lock
+      layer: domain
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/core/domain/ride.go::Ride.Burn
+      layer: domain
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/core/domain/ride.go::Ride.Unlock
+      layer: domain
+      role: authoritative
+      pinned_by: null
+  refusal:
+    code: synthetic
+    constraint: null
+    sentinel: ErrInvalidRoundPhase
+    http: 409
+  fixture: null
+  verification:
+    unit:
+      - internal/game/internal/core/domain/ride_test.go::TestRide_Create
+      - internal/game/internal/core/domain/ride_test.go::TestRide_WonPending
+      - internal/game/internal/core/domain/ride_test.go::TestRide_Lost
+      - internal/game/internal/core/domain/ride_test.go::TestRide_Lock
+      - internal/game/internal/core/domain/ride_test.go::TestRide_Burn
+      - internal/game/internal/core/domain/ride_test.go::TestRide_Unlock
+      - internal/game/internal/core/service/service_test.go::TestService_RideCommandPhaseRejection
+    e2e:
+      - internal/e2e/rides_test.go::TestRideCommandHandlers
+  notes: >
+    Six authoritative sites on purpose: the window is per command, and each command
+    states its own (they are disjoint cases, not copies of one statement). The
+    `transitions` map supplies the state half of the guard; the phase constant each
+    guard compares against supplies the window. The phase *value* is the calendar's
+    (schedule derives it from real-world match times through the anti-corruption layer);
+    that derivation is a schedule rule, not this one. The refusal is Go-only
+    (ErrInvalidRoundPhase, 409) precisely so it stays distinguishable from a state
+    refusal — the two are different client-facing errors.
+
+- id: R-GAME-008
+  title: A ride write requires an open round at the write instant
+  statement: |
+    A ride command may only write while the round it touches is open, and that fact is
+    pinned at the moment of the write: the calendar's share-locked guard runs inside the
+    command's transaction, so a concurrent round close either commits before the command
+    reads (and the command is refused) or waits for it.
+  module: game
+  entity: ride
+  category: orchestration
+  status: implemented
+  authority: service
+  mechanism: null
+  scope: null
+  enforcement:
+    - site: internal/game/internal/core/service/ride_commands.go::Service.RideCreate
+      layer: service
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/core/service/ride_commands.go::Service.RideLock
+      layer: service
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/core/service/ride_commands.go::Service.RideBurn
+      layer: service
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/core/service/ride_commands.go::Service.RideUnlock
+      layer: service
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/adapter/outbound/schedule_acl.go::ScheduleACL.RoundOpenTx
+      layer: repository
+      role: defense-in-depth
+      pinned_by: null
+    - site: migrations/000018_context_roles.up.sql
+      layer: repository
+      role: defense-in-depth
+      pinned_by: null
+  refusal:
+    code: synthetic
+    constraint: null
+    sentinel: ErrRoundNotOpen
+    http: 409
+  fixture: null
+  verification:
+    unit:
+      - internal/game/internal/core/service/rides_concurrency_test.go::TestService_RideLockRacesRoundClose
+      - internal/game/internal/core/service/rides_concurrency_test.go::TestService_RideCreateRacesRoundClose
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx
+    e2e:
+      - internal/e2e/rides_test.go::TestCreateRideHandler
+  notes: >
+    The decision is the service's (every command must run the gate inside its own unit
+    of work, before its write); the *guarantee* is the FOR SHARE row lock in schedule's
+    own SECURITY DEFINER functions (round_open_guard / destination_open_guard, 000018),
+    which is why the guard is listed as defense-in-depth at the repository layer: Postgres
+    executes it, but the ordering decision — gate before write, same transaction — is
+    the use case's. The advisory phase read (PhaseForMatch) proves nothing and is not
+    listed. Tie: the two repository sites fail loudly — they never drift silently, because
+    the command cannot commit an ungated write without losing the serialization the race
+    tests (TestService_RideCreateRacesRoundClose / RideLockRacesRoundClose) assert. The
+    one silent failure mode is structural: a NEW ride command that forgets to call the
+    gate writes without the lock, and no fixture pins the call set.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# game — round settlement (the event seam)
+# ─────────────────────────────────────────────────────────────────────────────
+
+- id: R-GAME-009
+  title: Round completion force-resolves undecided rides
+  statement: |
+    When a round completes, every ride still waiting on a decision is resolved by the
+    system: on rounds one to thirty-seven it is unlocked and the accrued bonus is
+    released; on the season's final round it is burned and the accrued bonus is kept,
+    because a chase option no longer exists. Still-locked rides of the round's matches
+    are settled first, and all of it happens in the one claimed settlement transaction.
+  module: game
+  entity: ride
+  category: policy
+  status: implemented
+  authority: service
+  mechanism: null
+  scope: null
+  enforcement:
+    - site: internal/game/internal/core/service/settlement.go::Service.OnRoundCompleted
+      layer: service
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/core/service/settlement.go::Service.runEvent
+      layer: service
+      role: defense-in-depth
+      pinned_by: null
+    - site: internal/schedule/internal/service/round_lifecycle.go::RoundService.Close
+      layer: service
+      role: authoritative
+      pinned_by: null
+  refusal:
+    code: P0001
+    constraint: null
+    sentinel: ErrInvalidTransition
+    http: 409
+  fixture: null
+  verification:
+    unit:
+      - internal/game/internal/core/service/service_test.go::TestService_OnRoundCompleted
+      - internal/game/internal/core/service/rides_concurrency_test.go::TestSettlementHandlersSerializeOnTheRound
+  expert-ref: docs/league-tokens-learning-phases/phase-08-transactional-outbox-and-events.md
+  notes: >
+    Authority is the service, not the domain, and that is a deliberate deviation from
+    the policy default: settlement is system-initiated, so the domain commands'
+    DecisionPhase guards (R-GAME-007) do not apply — the settlement writes go through
+    the same DB transition graph as every other writer, via guarded arrivals. The
+    final-round fact is the publisher's (RoundService.Close derives IsFinal from
+    closed.Number == model.RoundsPerSeason) and reaches game only in the payload, which
+    is why two contexts' services appear as authoritative sites: each owns one half of
+    the fact across the event seam. runEvent is listed because the ordering is
+    load-bearing — claim the event id, take the per-round settlement lock, then read
+    rides: without it two settlement handlers of one round race and the second reads a
+    stale snapshot (TestSettlementHandlersSerializeOnTheRound). Tie: runEvent fails
+    loudly — it never drifts silently, because a dropped claim lets a replay re-run the
+    arrivals, which the state gate then refuses (P0001 → 409). Refusal surface: the
+    force-resolve arrivals can only fail on the state gate (P0001 → ErrInvalidTransition,
+    409). The accepted crash gap (close committed, settlement not yet run) is
+    deliberately not a rule — it is swept in Phase 07.
+
+- id: R-GAME-010
+  title: A settled ride agrees with the committed match result
+  statement: |
+    A locked ride may only arrive at won_pending when the committed result of its match
+    crowns the ride's team, and at lost when it does not; a draw crowns nobody. A
+    settlement payload that claims the wrong destination is refused and the whole
+    settlement transaction rolls back.
+  module: game
+  entity: ride
+  category: invariant
+  status: implemented
+  authority: service
+  mechanism: null
+  scope: cross-table
+  enforcement:
+    - site: internal/game/internal/core/service/settlement.go::resultAgreement
+      layer: service
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/core/service/settlement.go::Service.settleRideFromResult
+      layer: service
+      role: defense-in-depth
+      pinned_by: scoreStateRule
+    - site: internal/schedule/internal/model/match.go::Match.Winner
+      layer: domain
+      role: defense-in-depth
+      pinned_by: scoreStateRule
+  refusal:
+    code: synthetic
+    constraint: null
+    sentinel: ErrInvalidTransition
+    http: 409
+  fixture: scoreStateRule
+  verification:
+    unit:
+      - internal/game/internal/core/service/score_state_rule_test.go::TestWinnerScoreStateRule
+      - internal/game/internal/core/service/score_state_rule_test.go::TestScoreStateRuleDB
+      - internal/schedule/internal/model/matches_winner_test.go::TestWinner
+      - internal/game/internal/core/service/service_test.go::TestService_OnMatchResultRecorded
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+  expert-ref: docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md
+  notes: >
+    stale-pointer: the rule holds and is fixture-pinned (scoreStateRule: three score
+    pairings × both sides, asserted against all three encodings), but the three
+    change-detector comments that lead a reader between them are stale. 000011 and
+    000013 name "Match.Winner (internal/game/matches.go)" and "the CASE in
+    RideStore.UpdateAllForMatchTx (internal/game/rides.go)", and 000017 says the check
+    verifies "through the SchedulePort (Store.MatchResultTx)"; after the
+    modular-monolith refactor the site is internal/schedule/internal/model/match.go::Match.Winner,
+    the payload derivation is settlement.go::Service.settleRideFromResult (there is no
+    CASE in SQL any more), the enforcement is settlement.go::resultAgreement, and the
+    port method is Schedule.Match. internal/schedule/internal/model/match.go's own
+    comment still points at "internal/game/score_state_rule_test.go", which no longer
+    exists either. The rule's content is unchanged, so the status stays `implemented`
+    (gate A2 / D2: a rotted pointer is not drift); fix the comments at the current
+    sites (do not rewrite applied migrations), and this note surfaces in the Phase B
+    misalignment report. Authority is the service, deviating from the invariant
+    default on purpose: 000017 moved the check out of rides_state_gate because the
+    trigger read schedule's matches table — the cross-context read the boundary rule
+    removes — so the same refusal now happens in Go inside the same transaction, before
+    the arrival write. The two historical refusal names survive as text in the Go
+    errors (ride_result_scores_missing / ride_result_disagreement) with no SQLSTATE.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ledger — money movement authority (specified, not built)
+# ─────────────────────────────────────────────────────────────────────────────
+
+- id: R-LEDGER-001
+  title: No balance goes negative
+  statement: |
+    A player's currency or token balance can never fall below zero. A debit that would
+    overdraw is refused before any journal entry or balance projection is written, so a
+    negative balance is not a repairable state — it is unrepresentable.
+  module: ledger
+  entity: balance
+  category: invariant
+  status: specified-only
+  authority: database
+  mechanism: constraint
+  scope: row-local
+  enforcement: []
+  refusal: null
+  fixture: null
+  verification: {}
+  expert-ref: docs/league-tokens-learning-phases/phase-06-ledger-and-accounting.md
+  notes: >
+    Specified only. No balance table exists yet: the ledger's Repository currently
+    persists the rides row's bonus_acc and nothing else, and LockTokens/Burn are
+    intent seams that write nothing. The design intent from phase 06 is the ledger as
+    the single authority for balance mutation ("game should never UPDATE
+    ledger.balances"), which puts the *decision* in the ledger operation and the
+    *refusal* in the row: a NOT NULL + CHECK (balance >= 0) per balance row, plus the
+    ledger's pre-check for a clean client-facing refusal. Refusal surface undesigned —
+    either a ledger sentinel (409) or a validation error (422); decide when the
+    accounts/journal tables land.
+
+- id: R-LEDGER-002
+  title: Every money movement posts a balanced journal pair
+  statement: |
+    Every movement of money is recorded as a pair of journal entries whose debits equal
+    their credits, in the same transaction as the balance projection update. A
+    single-sided entry never commits, so the journal always explains every balance.
+  module: ledger
+  entity: journal_entry
+  category: invariant
+  status: specified-only
+  authority: database
+  mechanism: trigger
+  scope: cross-row
+  enforcement: []
+  refusal: null
+  fixture: null
+  verification: {}
+  expert-ref: docs/league-tokens-learning-phases/phase-06-ledger-and-accounting.md
+  notes: >
+    Specified only (phase 06: double-entry idea + "the ledger owns journal
+    consistency"). Scope is cross-row — the predicate is "the entries of one journal
+    group sum to zero", which no row-local CHECK can express, so the taxonomy's
+    sub-order points at a deferred constraint trigger (or a schema in which entries can
+    only be appended in pairs, with the sum exposed as a view). Recorded here as
+    cross-row precisely so nobody tries to write it as a CHECK on a single row.
+    Refusal surface undesigned.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Deliberately NOT catalogued yet (next additions, in rough order of value)
+#
+# - idempotent ride commands (claim-first, one transaction) — orchestration/service,
+#   implemented; tests exist (service/idempotency_test.go, e2e idempotency handlers).
+# - bound cross-context references (no cross-context FK; ExistsForMatch/Team at the
+#   delete sites) — boundary/composition_root, implemented; `composition-root` joined
+#   the authority enum at gate A2 (D3), so this can be catalogued with `authority:
+#   composition-root` in Phase B.
+# - match_id re-points only on continuation — invariant/db (trigger check 2).
+# - round lifecycle gates (season live, unbroken sequence, close needs closed matches)
+#   — schedule module, implemented, tested in internal/schedule/internal/repository.
+# - refusal classification order in the ride repository (round status → version/state →
+#   predicate; a no-cause read is a loud error) — refusal-mapping/repository, implemented.
+# ─────────────────────────────────────────────────────────────────────────────
