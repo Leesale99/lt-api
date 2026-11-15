@@ -405,6 +405,12 @@ func matchDayEnds(ctx context.Context, matchDay, score, _ string) (context.Conte
 	if err := w.resolveMatchDay(ctx, matchID, home, away); err != nil {
 		return stepFailed(ctx, err)
 	}
+	// A result that ends the round's last live match leaves the round in its
+	// decision window: the ends move the decision lag into the past so the
+	// window the semantics derive is open (see placeRoundEndBehindLastMatch).
+	if err := w.placeRoundEndBehindLastMatch(ctx, matchID, 2*time.Hour); err != nil {
+		return stepFailed(ctx, err)
+	}
 	return stepOK(ctx)
 }
 

@@ -1,9 +1,11 @@
 package spec
 
 // The composition root: the same modules cmd/api/main.go builds, over the
-// per-context pools internal/testdb opened, with no server and no middleware
-// chain. See doc.go for why the modules' route tables are the entry point a
-// facade step drives.
+// per-context pools internal/testdb opened, with no server. Two entry points
+// hang off it: the bare router the ride and calendar steps drive (no
+// middleware chain — see doc.go), and the authenticated router the identity
+// steps drive, carrying the same route tables behind the real
+// Authenticate → RequirePermission chain.
 
 import (
 	"bytes"
@@ -15,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,15 +36,19 @@ import (
 )
 
 // specApp is the process the scenarios run against: the modules, the bus they
-// share, the owner pool the fixtures and sabotage writes use, and the router
-// carrying the modules' own route tables.
+// share, the owner pool the fixtures and sabotage writes use, the mailer the
+// identity module mails through, and the two routers carrying the modules' own
+// route tables — bare (pilot/calendar steps) and authenticated (identity
+// steps).
 type specApp struct {
 	Bus      *eventbus.Bus
 	Schedule *schedule.Module
 	Game     *game.Module
 	Identity *identity.Module
 	Owner    *pgxpool.Pool
+	Mail     *specMailer
 	router   *httprouter.Router
+	gated    http.Handler
 	results  *resultRecorder
 	seq      *sequence
 }
@@ -60,7 +67,8 @@ func composeSpecApplication(db *testdb.DB) error {
 
 	scheduleModule := schedule.NewModule(db.Schedule, bus, log)
 	ledgerRepo := ledger.New()
-	identityModule := identity.NewModule(db.Identity, nopMailer{})
+	mailer := &specMailer{}
+	identityModule := identity.NewModule(db.Identity, mailer)
 
 	gameModule := game.NewModule(db.Game, scheduleModule, ledgerRepo, idempotency.New(), bus, log)
 	gameModule.UseIdentity(identityModule)
@@ -72,9 +80,26 @@ func composeSpecApplication(db *testdb.DB) error {
 	// published — the event a duplicate-delivery step replays.
 	eventbus.Subscribe(bus, recorder.record)
 
+	// The bare router: the modules' route tables with no middleware chain (see
+	// doc.go). The ride and calendar steps call it.
 	router := httprouter.New()
 	scheduleModule.RegisterRoutes(router, allowAll)
 	gameModule.RegisterRoutes(router, allowAll)
+
+	// The authenticated router: the same route tables behind the chain
+	// cmd/api/routes.go builds — Authenticate resolving the bearer token
+	// through the identity module, then each route's RequirePermission gate
+	// resolving the role's codes through the same module. The identity module's
+	// own pre-authentication routes carry no gate, exactly as in production.
+	chain := &httpx.Middleware{
+		Logger:      log,
+		Users:       identityModule,
+		Permissions: identityModule,
+	}
+	gatedRouter := httprouter.New()
+	scheduleModule.RegisterRoutes(gatedRouter, chain.RequirePermission)
+	gameModule.RegisterRoutes(gatedRouter, chain.RequirePermission)
+	identityModule.RegisterRoutes(gatedRouter, log)
 
 	app = &specApp{
 		Bus:      bus,
@@ -82,7 +107,9 @@ func composeSpecApplication(db *testdb.DB) error {
 		Game:     gameModule,
 		Identity: identityModule,
 		Owner:    db.Owner,
+		Mail:     mailer,
 		router:   router,
+		gated:    chain.RecoverPanic(chain.Authenticate(gatedRouter)),
 		results:  recorder,
 		seq:      &sequence{},
 	}
@@ -120,10 +147,59 @@ func (g specGameRefs) DeletePlayersForSeasonTx(ctx context.Context, tx pgx.Tx, s
 	return err
 }
 
-// nopMailer stands in for the SMTP client: nothing leaves the process.
-type nopMailer struct{}
+// specMailer is the identity module's mail transport: what the service mails
+// is HELD instead of delivered, so a scenario reads the activation token the
+// way the member reads it from her mail (identity/account.feature's
+// Background). The service dispatches inline (no background runner is
+// installed in this process), so a Send is recorded before the handler that
+// booked it answers.
+type specMailer struct {
+	mu    sync.Mutex
+	mails []specMail
+}
 
-func (nopMailer) Send(_ context.Context, _ string, _ string, _ any) error { return nil }
+// specMail is one held delivery: who it was for, which template carried it and
+// the token it carried ("" for a mail that carries none).
+type specMail struct {
+	Recipient string
+	Template  string
+	Token     string
+}
+
+func (m *specMailer) Send(_ context.Context, recipient string, templateFile string, data any) error {
+	mail := specMail{Recipient: recipient, Template: templateFile}
+	if fields, ok := data.(map[string]any); ok {
+		mail.Token, _ = fields["activationToken"].(string)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mails = append(m.mails, mail)
+	return nil
+}
+
+// reset empties the held mail — the per-scenario reset's second half (the
+// database is reset by the Before hook, the mail here).
+func (m *specMailer) reset() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mails = nil
+}
+
+// to lists the held mail addressed to recipient, oldest first (the address
+// compares case-insensitively, as the store's citext column does).
+func (m *specMailer) to(recipient string) []specMail {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var held []specMail
+	for _, mail := range m.mails {
+		if strings.EqualFold(mail.Recipient, recipient) {
+			held = append(held, mail)
+		}
+	}
+	return held
+}
 
 // resultRecorder keeps every match-result payload the calendar publishes, so a
 // scenario can deliver the same event again (the settlement's claim makes the
@@ -179,6 +255,20 @@ func (r wireResponse) envelope() map[string]json.RawMessage {
 	return out
 }
 
+// refusalFields returns the field map a validation refusal carries
+// ({"error": {"email": "…"}}) — nil when the refusal names no field.
+func (r wireResponse) refusalFields() map[string]string {
+	raw, ok := r.envelope()["error"]
+	if !ok {
+		return nil
+	}
+	var fields map[string]string
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil
+	}
+	return fields
+}
+
 // call drives one module route in-process: a recorder instead of a connection,
 // the principal the wire handlers read supplied directly (no middleware chain),
 // and the modules' own route table as the handler.
@@ -209,6 +299,38 @@ func (a *specApp) call(method, path string, body any, headers map[string]string)
 
 	recorder := httptest.NewRecorder()
 	a.router.ServeHTTP(recorder, req)
+
+	return &wireResponse{Status: recorder.Code, Body: recorder.Body.Bytes()}, nil
+}
+
+// callGated drives one module route through the REAL middleware chain: the
+// bearer credential the caller presents ("" is anonymous) is resolved by
+// httpx.Authenticate through the identity module, and the route's own
+// RequirePermission gate resolves the principal's role codes the same way. A
+// refused request is an ordinary wireResponse — the refusal steps read it.
+func (a *specApp) callGated(method, path string, body any, headers map[string]string, bearer string) (*wireResponse, error) {
+	var payload []byte
+	if body != nil {
+		var err error
+		payload, err = json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("marshal %s %s body: %w", method, path, err)
+		}
+	}
+
+	req := httptest.NewRequest(method, path, bytes.NewReader(payload))
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	recorder := httptest.NewRecorder()
+	a.gated.ServeHTTP(recorder, req)
 
 	return &wireResponse{Status: recorder.Code, Body: recorder.Body.Bytes()}, nil
 }

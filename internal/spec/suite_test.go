@@ -1,7 +1,8 @@
 package spec
 
 // The godog suite's registration: one hook that builds a fresh world per
-// scenario, and the three step families (ride lifecycle, settlement, database
+// scenario, and the six step families (ride lifecycle, settlement, the
+// calendar, who may act, registrations and idempotent commands, database
 // sabotage).
 
 import (
@@ -24,6 +25,9 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 
 	registerRideSteps(sc)
 	registerSettlementSteps(sc)
+	registerScheduleSteps(sc)
+	registerIdentitySteps(sc)
+	registerGamePlayerSteps(sc)
 	registerSabotageSteps(sc)
 }
 

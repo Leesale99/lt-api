@@ -206,7 +206,21 @@ func writeRefusedBy(ctx context.Context, object string) (context.Context, error)
 				pgErr.Code, pgErr.Message, pgErr.ConstraintName, object))
 		}
 	default:
-		return stepFailed(ctx, fmt.Errorf("no database object %q in the ride surface", object))
+		if raises, ok := scheduleGateRaises[object]; ok {
+			if pgErr.Code != "P0001" || !raises[pgErr.Message] {
+				return stepFailed(ctx, fmt.Errorf("the write was refused by %s (%s), want %s",
+					pgErr.Code, pgErr.Message, object))
+			}
+			return stepOK(ctx)
+		}
+		if code, ok := scheduleConstraintCodes[object]; ok {
+			if pgErr.Code != code || pgErr.ConstraintName != object {
+				return stepFailed(ctx, fmt.Errorf("the write was refused by %s (%s on %q), want %s",
+					pgErr.Code, pgErr.Message, pgErr.ConstraintName, object))
+			}
+			return stepOK(ctx)
+		}
+		return stepFailed(ctx, fmt.Errorf("no database object %q in the ride or calendar surface", object))
 	}
 
 	return stepOK(ctx)
@@ -218,6 +232,60 @@ var stateGateRaises = map[string]bool{
 	"ride_terminal_state_frozen":                   true,
 	"ride_match_id_immutable_outside_continuation": true,
 	"ride_state_transition_illegal":                true,
+}
+
+// scheduleGateRaises is the calendar's gate vocabulary: each trigger and the
+// RAISE names it can produce (migrations/000001, 000008 and 000019 — the
+// trigger keeps its name while a later migration replaces its body). Triggers
+// fire in name order, which is why a round's close gate speaks before its
+// freeze gate before its progress gate.
+var scheduleGateRaises = map[string]map[string]bool{
+	"matches_freeze_gate": {
+		"match_status_regression":                true,
+		"started_match_blocks_status_regression": true,
+	},
+	"rounds_progress_gate": {
+		"round_status_regression":        true,
+		"round_progress_season_not_live": true,
+		"round_sequence_incomplete":      true,
+	},
+	"rounds_freeze_gate": {
+		"started_match_blocks_round_regression": true,
+	},
+	"rounds_close_gate": {
+		"round_close_has_unclosed_matches": true,
+		"round_close_has_unresolved_rides": true,
+	},
+	"rounds_delete_gate": {
+		"round_lifecycle_blocks_delete": true,
+	},
+	"seasons_freeze_gate": {
+		"season_status_regression":               true,
+		"started_match_blocks_season_regression": true,
+	},
+	"seasons_delete_gate": {
+		"season_lifecycle_blocks_delete": true,
+	},
+}
+
+// scheduleConstraintCodes is the declarative half: the constraint a calendar
+// sabotage write trips and the SQLSTATE it arrives with — CHECK (23514),
+// foreign key (23503), unique (23505).
+var scheduleConstraintCodes = map[string]string{
+	"seasons_status_check":            "23514",
+	"rounds_status_check":             "23514",
+	"rounds_number_check":             "23514",
+	"matches_status_check":            "23514",
+	"matches_status_score_check":      "23514",
+	"matches_score_complete_check":    "23514",
+	"matches_home_score_check":        "23514",
+	"matches_away_score_check":        "23514",
+	"matches_ended_at_check":          "23514",
+	"matches_home_odds_check":         "23514",
+	"matches_away_odds_check":         "23514",
+	"matches_teams_differ_check":      "23514",
+	"matches_season_id_round_id_fkey": "23503",
+	"rounds_season_id_number_key":     "23505",
 }
 
 // refusalNames asserts the raised name (P0001) or the constraint name (a CHECK

@@ -129,7 +129,7 @@ func TestKnownDefectNotes(t *testing.T) {
 	joined := strings.Join(notes, "\n")
 	for _, want := range []string{
 		"KNOWN-DEFECT 2 (misalignment-report §6.2)",
-		"\"The refused stake is not yet named for the caller\"",
+		"\"A player still carrying rides is refused without a named reason\"",
 		"— skipped",
 	} {
 		if !strings.Contains(joined, want) {
