@@ -227,6 +227,13 @@ func (w *world) holdMatchDay(ctx context.Context, roundNo, matchDay int, home, a
 // clockBeforeFirstMatch moves the round's matches so that now sits lead before
 // the round's first kickoff — the ActionPhase window (or, at 30 minutes, the
 // match phase).
+//
+// A match that is still created with a kickoff ahead takes the UPDATE (a
+// same-status rewrite, rank 0 → 0). A match that has already been started or
+// closed, or whose kickoff has already passed, is planted at created instead:
+// 000019 refuses the backward UPDATE (match_status_regression) and 000001
+// refuses a created rewrite over a past kickoff
+// (started_match_blocks_status_regression).
 func (w *world) clockBeforeFirstMatch(ctx context.Context, roundNo int, lead time.Duration) error {
 	matches, err := w.roundMatches(ctx, roundNo)
 	if err != nil {
@@ -234,7 +241,20 @@ func (w *world) clockBeforeFirstMatch(ctx context.Context, roundNo int, lead tim
 	}
 	for i, matchID := range matches {
 		startsAt := now().Add(lead + time.Duration(i)*time.Hour)
-		err := w.exec(ctx, `
+		status, kickoff, err := w.matchLifecycle(ctx, matchID)
+		if err != nil {
+			return err
+		}
+		if status != "created" || !kickoff.After(now()) {
+			if err := w.replantMatch(ctx, matchID, matchShape{
+				status:   "created",
+				startsAt: startsAt,
+			}); err != nil {
+				return err
+			}
+			continue
+		}
+		err = w.exec(ctx, `
 			UPDATE schedule.matches
 			SET starts_at = $2, status = 'created', home_score = NULL, away_score = NULL
 			WHERE id = $1
@@ -242,6 +262,89 @@ func (w *world) clockBeforeFirstMatch(ctx context.Context, roundNo int, lead tim
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// matchLifecycle reads the two facts a fixture's rewind decision needs: the
+// match's lifecycle status and its kickoff.
+func (w *world) matchLifecycle(ctx context.Context, matchID int) (string, time.Time, error) {
+	var (
+		status   string
+		startsAt time.Time
+	)
+	if err := w.app.Owner.QueryRow(ctx,
+		`SELECT status, starts_at FROM schedule.matches WHERE id = $1`, matchID).
+		Scan(&status, &startsAt); err != nil {
+		return "", time.Time{}, fmt.Errorf("read match %d lifecycle: %w", matchID, err)
+	}
+	return status, startsAt, nil
+}
+
+// matchShape is a match's lifecycle shape as a fixture plants it: the columns
+// the status/score/end CHECKs couple. A nil score or a nil end is a SQL NULL.
+type matchShape struct {
+	status   string
+	startsAt time.Time
+	home     *int
+	away     *int
+	endedAt  *time.Time
+}
+
+// replantMatch writes a match into the given lifecycle shape by planting the
+// row — DELETE, then INSERT with the same id — instead of updating it.
+//
+// Why: 000019's status-rank gates make a closed match final for UPDATE, and the
+// fixtures do need to walk one backwards (several scenarios re-resolve a match
+// whose committed result they are about to rewrite; "the last match has not
+// ended" un-closes one). INSERT is not rank-gated — a fresh row has no earlier
+// stage — and every CHECK is satisfied because the caller supplies a complete
+// shape: in_progress/closed carry both scores, closed carries ended_at >
+// starts_at, created/postponed carry neither.
+//
+// The id is re-supplied explicitly (OVERRIDING SYSTEM VALUE), so the planted
+// row keeps its identity: rides already planted against the match keep reading
+// through their match_id (rides.match_id has carried no FK since 000016, so
+// nothing cascades) and the world's id maps stay valid.
+func (w *world) replantMatch(ctx context.Context, matchID int, shape matchShape) error {
+	var (
+		seasonID, roundID, homeTeamID, awayTeamID int
+		homeOdds, awayOdds                        string
+		createdAt                                 time.Time
+		version                                   int
+	)
+	err := w.app.Owner.QueryRow(ctx, `
+		SELECT season_id, round_id, home_team_id, away_team_id,
+		       home_odds::text, away_odds::text, created_at, version
+		FROM schedule.matches WHERE id = $1
+	`, matchID).Scan(&seasonID, &roundID, &homeTeamID, &awayTeamID,
+		&homeOdds, &awayOdds, &createdAt, &version)
+	if err != nil {
+		return fmt.Errorf("read match %d to replant it: %w", matchID, err)
+	}
+
+	tx, err := w.app.Owner.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin replanting match %d: %w", matchID, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `DELETE FROM schedule.matches WHERE id = $1`, matchID); err != nil {
+		return fmt.Errorf("unplant match %d: %w", matchID, err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO schedule.matches
+			(id, created_at, starts_at, season_id, round_id, home_team_id, away_team_id,
+			 home_odds, away_odds, home_score, away_score, status, ended_at, version)
+		OVERRIDING SYSTEM VALUE
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+	`, matchID, createdAt, shape.startsAt, seasonID, roundID, homeTeamID, awayTeamID,
+		homeOdds, awayOdds, shape.home, shape.away, shape.status, shape.endedAt, version); err != nil {
+		return fmt.Errorf("replant match %d as %s: %w", matchID, shape.status, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit replanting match %d: %w", matchID, err)
 	}
 	return nil
 }
@@ -349,10 +452,28 @@ func (w *world) teamName(teamID int) string {
 }
 
 // startMatch puts a match in play: started, scored (the schema's in-progress
-// shape), not yet ended — the state ResolveTx demands. It is also how the fixture
-// rewinds a match whose committed result the scenario is about to rewrite (the
-// freeze gates only refuse a return to created/postponed).
+// shape), not yet ended — the state ResolveTx demands. It is also how the
+// fixture rewinds a match whose committed result the scenario is about to
+// rewrite.
+//
+// A created/postponed match walks forward and an in-progress one is rewritten
+// in place (same rank) — both legal UPDATEs. A closed match is planted at
+// in_progress instead: 000019 makes it final for UPDATE (match_status_
+// regression), while an INSERT is not rank-gated.
 func (w *world) startMatch(ctx context.Context, matchID int) error {
+	status, _, err := w.matchLifecycle(ctx, matchID)
+	if err != nil {
+		return err
+	}
+	if status == "closed" {
+		home, away := 0, 0
+		return w.replantMatch(ctx, matchID, matchShape{
+			status:   "in_progress",
+			startsAt: now().Add(-6 * time.Hour),
+			home:     &home,
+			away:     &away,
+		})
+	}
 	return w.exec(ctx, `
 		UPDATE schedule.matches
 		SET starts_at = now() - interval '6 hours', status = 'in_progress',
@@ -423,7 +544,9 @@ func (w *world) scoreFor(ctx context.Context, matchID int, team string) (home, a
 }
 
 // reopenLastMatch makes the round's last match live again — "the last match of
-// round 1 has not ended".
+// round 1 has not ended". It is a rewind out of closed, so the match is planted
+// at in_progress (000019 refuses the backward UPDATE; INSERT is not gated); the
+// row keeps its id and its kickoff.
 func (w *world) reopenLastMatch(ctx context.Context, roundNo int) error {
 	matches, err := w.roundMatches(ctx, roundNo)
 	if err != nil {
@@ -432,11 +555,25 @@ func (w *world) reopenLastMatch(ctx context.Context, roundNo int) error {
 	if len(matches) == 0 {
 		return fmt.Errorf("round %d has no matches", roundNo)
 	}
+	matchID := matches[len(matches)-1]
+	status, kickoff, err := w.matchLifecycle(ctx, matchID)
+	if err != nil {
+		return err
+	}
+	if status == "closed" {
+		home, away := 0, 0
+		return w.replantMatch(ctx, matchID, matchShape{
+			status:   "in_progress",
+			startsAt: kickoff,
+			home:     &home,
+			away:     &away,
+		})
+	}
 	return w.exec(ctx, `
 		UPDATE schedule.matches
 		SET status = 'in_progress', home_score = 0, away_score = 0, ended_at = NULL
 		WHERE id = $1
-	`, matches[len(matches)-1])
+	`, matchID)
 }
 
 // closeRoundWithoutSettlement closes a round the way a crashed close would leave
