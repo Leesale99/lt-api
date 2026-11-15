@@ -99,8 +99,8 @@ func registerIdentitySteps(sc *godog.ScenarioContext) {
 
 	// The lifetime a credential is minted with.
 	sc.Step(`^her activation token is good for three days$`, herActivationTokenIsGoodForThreeDays)
-	sc.Step(`^her key is good for one day$`, herKeyIsGoodForOneDay)
-	sc.Step(`^her key from an earlier sign-in has passed its one day$`, herKeyHasPassedItsOneDay)
+	sc.Step(`^her sign-in token is good for one day$`, herKeyIsGoodForOneDay)
+	sc.Step(`^her earlier sign-in token has passed its one day$`, herKeyHasPassedItsOneDay)
 
 	// Signing in.
 	sc.Step(`^the member "([^"]+)" signs in with her password$`, theMemberSignsInWithHerPassword)
@@ -118,7 +118,7 @@ func registerIdentitySteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the member "([^"]+)" renames the player "([^"]+)"$`, theMemberRenamesThePlayer)
 	sc.Step(`^the visitor opens the list of seasons$`, theVisitorOpensTheListOfSeasons)
 	sc.Step(`^the member "([^"]+)" opens the list of seasons with the activation token from her(?: (first|second))? mail$`, theMemberOpensSeasonsWithAnActivationToken)
-	sc.Step(`^the member "([^"]+)" opens the list of seasons with that key$`, theMemberOpensSeasonsWithThatKey)
+	sc.Step(`^the member "([^"]+)" opens the list of seasons with that sign-in token$`, theMemberOpensSeasonsWithThatKey)
 	sc.Step(`^the page is refused as unauthenticated$`, thePageIsRefusedAsUnauthenticated)
 	sc.Step(`^she is refused as an unactivated account$`, sheIsRefusedAsAnUnactivatedAccount)
 	sc.Step(`^she is refused as a permission she does not hold$`, sheIsRefusedAsAPermissionSheDoesNotHold)

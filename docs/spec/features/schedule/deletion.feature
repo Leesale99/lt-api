@@ -1,9 +1,9 @@
 @schedule
 Feature: Removing calendar records
   The calendar can be tidied: a fixture announced by mistake, a round that never
-  happened, a club that never played. History cannot be tidied — a record whose
+  happened, a team that never played. History cannot be tidied — a record whose
   matches have started is durable — and nothing the game still leans on
-  disappears under it: a club a player favours, a match someone rode, a season
+  disappears under it: a team a player favours, a match someone rode, a season
   whose registrations still carry rides.
 
   A delete that is allowed takes the record's children with it, so the calendar
@@ -76,7 +76,7 @@ Feature: Removing calendar records
       And round 1 is no longer on the calendar
       And match day 2 is no longer on the calendar
 
-  # A club's references sit on both sides of the context boundary: the fixtures
+  # A team's references sit on both sides of the context boundary: the fixtures
   # that name it are the calendar's own, while the players who favour it and the
   # rides on it are the game's, asked through the delete policy. The rule is one
   # decision at the calendar's delete, so it is proved there.

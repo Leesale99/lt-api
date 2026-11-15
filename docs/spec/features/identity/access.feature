@@ -87,7 +87,7 @@ Feature: Who may act
   Rule: Two roles and eleven permission codes are seeded reference data
 
     # Nothing in the running service adds, removes or re-grants a permission: the
-    # matrix is rows an applied migration seeds, read-only to the application. A
+    # matrix is data an applied migration seeds, read-only to the application. A
     # wrong matrix is fixed by a new migration, so this is asserted as the data
     # it is, not through a page.
     Scenario: The standard user may read the calendar and manage her own player

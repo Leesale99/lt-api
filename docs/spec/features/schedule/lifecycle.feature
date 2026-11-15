@@ -8,7 +8,7 @@ Feature: Season and round lifecycle
   The calendar also refuses to be a step ahead of itself. A round only goes
   live under a live season and behind an unbroken sequence of closed rounds, and
   it only closes once every fixture in it has a result. Opening a round starts
-  its season, and closing the thirty-eighth round is the season's own last step.
+  its season, and closing round 38 is the season's own last step.
 
   Background:
     Given a season is on the calendar
@@ -41,7 +41,7 @@ Feature: Season and round lifecycle
 
     # The rank half runs first inside the match gate, so a closed match that
     # would also trip the started-match freeze reports the lifecycle break.
-    Scenario: A closed match sent back to created reports the rank, not the freeze
+    Scenario: A closed match sent back to created names its status regression
       Given round 1 is open
       And match day 1 has been played out "2–1"
       When the Owner pool tries to send the closed match day 1 back to "created"
@@ -60,10 +60,10 @@ Feature: Season and round lifecycle
     Scenario Outline: A status the league never defined cannot be stored
       Given round 1 holds match day 1: "Team A" against "Team B"
       When the Owner pool tries to set <the record> to the status "cancelled"
-      Then the write is refused by <constraint>
+      Then the write is refused by <database object>
 
       Examples:
-        | the record  | constraint           |
+        | the record  | database object      |
         | the season  | seasons_status_check |
         | round 2     | rounds_status_check  |
         | match day 1 | matches_status_check |
@@ -99,7 +99,7 @@ Feature: Season and round lifecycle
 
   # The calendar answers every refused lifecycle write with one shared conflict
   # (misalignment-report §6.4), so the scenarios below assert the refusal and the
-  # row that did not move rather than a name the caller never hears.
+  # record that did not move rather than a name the caller never hears.
   @rule:R-SCHEDULE-015
   Rule: A round goes live only under a live season and in order
 
@@ -166,8 +166,8 @@ Feature: Season and round lifecycle
   @rule:R-SCHEDULE-018
   Rule: Closing the last round closes the season
 
-    Scenario: Closing round thirty-eight closes the season
-      Given the season's fixture list runs to thirty-eight rounds
+    Scenario: Closing round 38 closes the season
+      Given the season's fixture list runs to 38 rounds
       And rounds 1 to 37 have opened and closed in order
       And round 38 is open
       When the organiser closes round 38
@@ -175,7 +175,7 @@ Feature: Season and round lifecycle
       And the season reads closed
 
     Scenario: Closing a round before the last leaves the season running
-      Given the season's fixture list runs to thirty-eight rounds
+      Given the season's fixture list runs to 38 rounds
       And rounds 1 to 36 have opened and closed in order
       And round 37 is open
       When the organiser closes round 37

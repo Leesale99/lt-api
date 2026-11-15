@@ -60,9 +60,8 @@ const idempotencyConflictMessage = "this idempotency key was already used with a
 // the feature's name for a refusal and the sentence the caller reads stay one
 // fact.
 var (
-	notPermitted   = refusalOf(httpx.Forbidden)
-	absentRecord   = refusalOf(httpx.NotFound)
-	refusedByStale = refusalOf(httpx.EditConflict)
+	notPermitted = refusalOf(httpx.Forbidden)
+	absentRecord = refusalOf(httpx.NotFound)
 )
 
 func registerGamePlayerSteps(sc *godog.ScenarioContext) {
@@ -75,9 +74,9 @@ func registerGamePlayerSteps(sc *godog.ScenarioContext) {
 
 	// What a person may do to a registration.
 	sc.Step(`^the (owner|second member|administrator) changes (?:her registration|"([^"]+)"'s registration) to favour "([^"]+)"$`, actorChangesRegistration)
-	sc.Step(`^the (owner|second member|administrator) changes (?:her registration|"([^"]+)"'s registration) to favour "([^"]+)", claiming the version as it read when she last looked$`, actorChangesRegistrationClaimingVersion)
+	sc.Step(`^the (owner|second member|administrator) changes (?:her registration|"([^"]+)"'s registration) to favour "([^"]+)", claiming the version she last read$`, actorChangesRegistrationClaimingVersion)
 	sc.Step(`^the (owner|second member|administrator) withdraws (?:her registration|"([^"]+)"'s registration)$`, actorWithdrawsRegistration)
-	sc.Step(`^the owner's registration has moved to "([^"]+)" since she last looked at it$`, theOwnersRegistrationMoved)
+	sc.Step(`^the owner's registration has moved to "([^"]+)" since she last read it$`, theOwnersRegistrationMoved)
 
 	// What a registration reads.
 	sc.Step(`^the registration belongs to the second member$`, registrationBelongsToSecondMember)
@@ -92,12 +91,14 @@ func registerGamePlayerSteps(sc *godog.ScenarioContext) {
 	// The ride command that reaches outside the calendar.
 	sc.Step(`^the player locks ([0-9]+) tokens on a team the calendar does not carry for match day ([0-9]+)$`, playerLocksOnAbsentTeam)
 
-	// The refusals.
-	sc.Step(`^the registration is refused on its favourite team$`, registrationRefusedOnFavouriteTeam)
+	// The refusals. A stale version claim is named the same way here as on the
+	// calendar ("the command is refused as a stale reading"), so the scenario
+	// uses steps_schedule_test.go's named-conflict step rather than a second
+	// spelling of the same refusal.
+	sc.Step(`^the refusal names the favourite team as the field to change$`, refusalNamesFavouriteTeamAsTheFieldToChange)
 	sc.Step(`^the registration is refused as an unknown season$`, registrationRefusedAsUnknownSeason)
 	sc.Step(`^the command is refused as someone else's registration$`, commandRefusedAsSomeoneElsesRegistration)
 	sc.Step(`^the command is refused as an unknown team$`, commandRefusedAsUnknownTeam)
-	sc.Step(`^the command is refused as a conflict$`, commandRefusedAsConflict)
 
 	// The key a command travels under.
 	sc.Step(`^the player locks ([0-9]+) tokens on "([^"]+)" for match day ([0-9]+) under her key "([^"]+)"$`, playerLocksUnderHerKey)
@@ -730,7 +731,7 @@ func (w *world) registrationsHeldBy(ctx context.Context, memberName, name string
 
 // --- the refusals ----------------------------------------------------------
 
-func registrationRefusedOnFavouriteTeam(ctx context.Context) (context.Context, error) {
+func refusalNamesFavouriteTeamAsTheFieldToChange(ctx context.Context) (context.Context, error) {
 	w := worldFrom(ctx)
 	if w.last == nil {
 		return stepFailed(ctx, fmt.Errorf("no request has been made in this scenario"))
@@ -755,10 +756,6 @@ func commandRefusedAsSomeoneElsesRegistration(ctx context.Context) (context.Cont
 
 func commandRefusedAsUnknownTeam(ctx context.Context) (context.Context, error) {
 	return refusalAsserted(ctx, absentRecord, "an unknown team")
-}
-
-func commandRefusedAsConflict(ctx context.Context) (context.Context, error) {
-	return refusalAsserted(ctx, refusedByStale, "a conflict")
 }
 
 func refusalAsserted(ctx context.Context, name namedRefusal, what string) (context.Context, error) {

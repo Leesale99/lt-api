@@ -58,16 +58,16 @@ Feature: Account registration and activation
       Then she is signed in
 
   @rule:R-IDENTITY-007
-  Rule: Activation tokens live three days, authentication tokens one day
+  Rule: Activation tokens live three days, sign-in tokens one day
 
     Scenario: Her activation token is good for three days
       When the visitor registers as "Ana" with the email "ana@example.com"
       Then her activation token is good for three days
 
-    Scenario: A signed-in key is good for one day
+    Scenario: A sign-in token is good for one day
       Given a member is activated as "Ana" with the email "ana@example.com"
       When the member "Ana" signs in with her password
-      Then her key is good for one day
+      Then her sign-in token is good for one day
 
   @rule:R-IDENTITY-008
   Rule: A credential only works for what it was minted for, while it is fresh
@@ -76,15 +76,15 @@ Feature: Account registration and activation
     # the lookup answers "no such credential", so the refusal of every one of
     # them is the same refusal — and it is the one a never-minted credential
     # receives.
-    Scenario: An activation token is not a sign-in key
+    Scenario: An activation token does not sign anyone in
       Given a member is registered as "Ana" with the email "ana@example.com"
       When the member "Ana" opens the list of seasons with the activation token from her mail
       Then the page is refused as unauthenticated
 
-    Scenario: A key past its day is refused exactly as one that never existed
+    Scenario: A sign-in token past its day is refused exactly as one that never existed
       Given a member is activated as "Ana" with the email "ana@example.com"
-      And her key from an earlier sign-in has passed its one day
-      When the member "Ana" opens the list of seasons with that key
+      And her earlier sign-in token has passed its one day
+      When the member "Ana" opens the list of seasons with that sign-in token
       Then the page is refused as unauthenticated
 
   @rule:R-IDENTITY-009

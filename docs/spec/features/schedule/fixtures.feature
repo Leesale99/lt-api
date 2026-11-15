@@ -1,11 +1,11 @@
 @schedule
 Feature: The fixture calendar
-  A fixture is an announcement: these two clubs meet, at this hour, in this
+  A fixture is an announcement: these two teams meet, at this hour, in this
   round, at these odds. The calendar is strict about what an announcement may
-  say — the kickoff must still be ahead, the two clubs must differ, the round
+  say — the kickoff must still be ahead, the two teams must differ, the round
   must belong to the fixture's own season, the price must be above evens —
-  because the rest of the product reads these rows as facts: the phase windows,
-  the bonus arithmetic, the settlement.
+  because the rest of the product reads these fixtures as facts: the phase
+  windows, the bonus arithmetic, the settlement.
 
   A match carries a score exactly while it is being played or finished, and only
   a finished match has an end. The database holds those shapes so that no
@@ -51,10 +51,10 @@ Feature: The fixture calendar
 
     Scenario Outline: The database refuses a score that does not fit the match
       When the Owner pool tries to store a match day that is <the shape>
-      Then the write is refused by <constraint>
+      Then the write is refused by <database object>
 
       Examples:
-        | the shape                                      | constraint                   |
+        | the shape                                      | database object              |
         | created with a full-time score of 2–1          | matches_status_score_check   |
         | postponed with a full-time score of 2–1        | matches_status_score_check   |
         | in progress with no score at all               | matches_status_score_check   |
@@ -112,10 +112,10 @@ Feature: The fixture calendar
     Scenario Outline: The database refuses a fixture priced at evens or below
       Given round 1 holds match day 1: "Team A" against "Team B" at odds 1.80
       When the Owner pool tries to price match day 1 at <the price> for the <the side> side
-      Then the write is refused by <constraint>
+      Then the write is refused by <database object>
 
       Examples:
-        | the price | the side | constraint              |
+        | the price | the side | database object         |
         | 1.00      | home     | matches_home_odds_check |
         | 1.00      | away     | matches_away_odds_check |
         | 0.90      | home     | matches_home_odds_check |
@@ -129,12 +129,12 @@ Feature: The fixture calendar
   @rule:R-SCHEDULE-010
   Rule: A team never plays itself
 
-    Scenario: The organiser cannot announce a club against itself
+    Scenario: The organiser cannot announce a team against itself
       When the organiser schedules match day 1 in round 1: "Team A" against "Team A"
       Then the command is refused as the same team on both sides
       And the calendar holds no match day 1
 
-    Scenario: The database refuses a fixture with one club on both sides
+    Scenario: The database refuses a fixture with one team on both sides
       When the Owner pool tries to store a match day with "Team A" on both sides
       Then the write is refused by matches_teams_differ_check
 

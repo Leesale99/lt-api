@@ -582,7 +582,7 @@
     unit:
       - internal/schedule/internal/repository/constraints_test.go::TestMatchConstraints
     gherkin:
-      - docs/spec/features/schedule/fixtures.feature::The organiser cannot announce a club against itself
+      - docs/spec/features/schedule/fixtures.feature::The organiser cannot announce a team against itself
   notes: >
     A one-line row-local CHECK, mirrored in validateMatchShape for a clean 422.
     The app copy is not unit-tested (TestValidateNewMatch has no same-team case),
@@ -989,7 +989,7 @@
     unit:
       - internal/schedule/internal/service/rounds_close_test.go::TestRoundClose
     gherkin:
-      - docs/spec/features/schedule/lifecycle.feature::Closing round thirty-eight closes the season
+      - docs/spec/features/schedule/lifecycle.feature::Closing round 38 closes the season
   notes: >
     Authority deviates from the orchestration default (service) because both the
     last-round predicate (round.Number == model.RoundsPerSeason) and the atomic
@@ -2675,7 +2675,7 @@
     e2e:
       - internal/e2e/players_test.go::TestUpdatePlayerHandler
     gherkin:
-      - docs/spec/features/game/players.feature::An edit claiming a version the registration has moved past is refused as a conflict
+      - docs/spec/features/game/players.feature::An edit claiming a version the registration has moved past is refused as a stale reading
   notes: >
     Authority is the service (deviation from the policy default of domain): the
     comparison is against a version the caller claims, which is request-shaped,
@@ -3798,7 +3798,7 @@
     e2e:
       - internal/e2e/auth_test.go::TestAuthenticateMiddleware
     gherkin:
-      - docs/spec/features/identity/account.feature::A key past its day is refused exactly as one that never existed
+      - docs/spec/features/identity/account.feature::A sign-in token past its day is refused exactly as one that never existed
   notes: >
     Repository authority: the decision is a predicate on the token row (scope and expiry)
     that needs the fingerprint argument, so it can only live in the lookup SQL — and being

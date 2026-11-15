@@ -28,7 +28,7 @@ func registerScheduleSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^another season is on the calendar$`, anotherSeasonIsOnTheCalendar)
 	sc.Step(`^round ([0-9]+) is on the calendar$`, roundIsOnTheCalendar)
 	sc.Step(`^the teams "([^"]+)", "([^"]+)" and "([^"]+)" are on the calendar$`, teamsAreOnTheCalendar)
-	sc.Step(`^the season's fixture list runs to thirty-eight rounds$`, fixtureListRunsToThirtyEightRounds)
+	sc.Step(`^the season's fixture list runs to 38 rounds$`, fixtureListRunsToThirtyEightRounds)
 	sc.Step(`^round ([0-9]+) is open$`, roundIsOpen)
 	sc.Step(`^the organiser has declared the season open$`, organiserDeclaresSeasonOpen)
 	sc.Step(`^rounds ([0-9]+) to ([0-9]+) have opened and closed in order$`, roundsOpenedAndClosedInOrder)

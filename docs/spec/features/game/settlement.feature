@@ -35,15 +35,15 @@ Feature: Settlement
 
     Scenario Outline: The database refuses a ride carrying money outside its domain
       When the Owner pool tries to insert a locked ride with <an amount outside the domain>
-      Then the write is refused by <constraint>
+      Then the write is refused by <database object>
 
       Examples:
-        | an amount outside the domain  | constraint                 |
-        | a stake of zero tokens        | rides_tokens_locked_check  |
-        | a stake of minus five tokens  | rides_tokens_locked_check  |
-        | a base price of zero          | rides_base_at_lock_check   |
-        | an accrued bonus of minus one | rides_bonus_acc_check      |
-        | a streak of minus one         | rides_streak_check         |
+        | an amount outside the domain  | database object           |
+        | a stake of zero tokens        | rides_tokens_locked_check |
+        | a stake of minus five tokens  | rides_tokens_locked_check |
+        | a base price of zero          | rides_base_at_lock_check  |
+        | an accrued bonus of minus one | rides_bonus_acc_check     |
+        | a streak of minus one         | rides_streak_check        |
 
   @rule:R-GAME-005
   Rule: An unlocked or lost ride carries no accrued bonus
@@ -62,7 +62,7 @@ Feature: Settlement
       Then the ride is lost
       And the ride carries no bonus
 
-    # A burn fulfils the stake and the bonus as TB, so the row keeps its
+    # A burn fulfils the stake and the bonus as TB, so the ride keeps its
     # accrual: the coupling that zeroes the bonus covers unlocked and lost only.
     Scenario: A burned ride keeps the bonus it accrued
       Given a ride locked by "Ana" on "Team A" for match day 1 with 10 tokens at odds 1.80
@@ -88,11 +88,11 @@ Feature: Settlement
       When its match ends "2–1" to "Team A"
       Then the ride waits on a decision with a bonus of <the bonus>
 
-    Examples:
-      | the stake | the odds | banked           | the bonus |
-      | 10 tokens | 1.80     | no earlier win   | 8.00      |
-      | 10 tokens | 1.80     | one earlier win  | 9.60      |
-      | 20 tokens | 2.50     | no earlier win   | 30.00     |
+      Examples:
+        | the stake | the odds | banked          | the bonus |
+        | 10 tokens | 1.80     | no earlier win  | 8.00      |
+        | 10 tokens | 1.80     | one earlier win | 9.60      |
+        | 20 tokens | 2.50     | no earlier win  | 30.00     |
 
   @rule:R-GAME-008
   Rule: A ride write needs an open round at the write instant
