@@ -174,7 +174,7 @@ layer, because the database refuses the write itself.
 ## 9. `@known-defect:<item>` — the red scenario that is a finding
 
 A scenario that is **red because of a catalogued defect** in
-`docs/spec/misalignment-report.md` §6 carries, in addition to its `@rule` tag,
+`docs/spec/history/misalignment-report.md` §6 carries, in addition to its `@rule` tag,
 `@known-defect:<item>` — the §6 item number, e.g. `@known-defect:2` for the unmapped
 SQLSTATEs that surface as an unnamed server error.
 
@@ -218,44 +218,11 @@ instead of invented as a step.
 
 ## 11. Step inventory the pilot features standardized
 
-```text
-Given  the season "<name>" has <n> rounds
-Given  the teams "<a>", "<b>" and "<c>" play in "<name>"
-Given  the player "<name>" is registered in "<name>" with <n> tokens
-Given  round <n> holds match day <n>: "<team>" against "<team>" [at odds <x>]
-Given  it is <n> hours|minutes before|after round <n>'s first|last match
-Given  a ride locked by "<player>" on "<team>" for match day <n> with <n> tokens [at odds <x>]
-Given  a ride waiting on a decision for "<team>" on match day <n> with <n> tokens
-Given  a ride for "<team>" on match day <n> that was burned
-Given  the ride on match day <n> is in the state "<state>"
-Given  match day <n> ends "<h>–<a>" [to "<team>"]          — also a When
-Given  round <n> closed without settling its rides
-
-When   the player locks <n> tokens on "<team>" for match day <n>
-When   the player burns | unlocks | continues the ride
-When   round <n> completes / the season's final round completes
-When   the settlement reports match day <n> as a win for "<team>"
-When   the result of match day <n> arrives a second time
-
-Then   the ride is locked | waits on a decision | is lost | is burned | is unlocked
-Then   the ride is locked on match day <n>
-Then   the ride carries a stake of <n> tokens / carries no bonus / carries a base price
-Then   the ride has accrued a bonus of <x> / keeps its bonus of <x> / has banked <n> win
-Then   the ride still reads "<state>"
-Then   the command | the settlement is refused as <illegal transition | the wrong phase |
-       the round not being open>
-Then   no ride exists for "<player>" on match day <n> / the ride was not created
-Then   the refusal is unnamed for the caller                        (@known-defect only)
-
-When   the Owner pool tries to insert a ride for "<player>" on match day <n> in state "<state>"
-When   the Owner pool tries to insert a locked ride with <an amount outside the domain>
-When   the Owner pool tries to move the ride straight to "<state>"
-When   the Owner pool tries to move the ride onto match day <n>
-When   the Owner pool tries to unlock the ride without releasing its bonus
-When   the Owner pool rewrites the frozen ride without changing its state or its match
-Then   the write is refused by <database object> / the refusal names <raised name>
-Then   the write is allowed
-```
+The standardized step vocabulary lives where it cannot rot: the godog step definitions —
+`internal/spec/steps_identity_test.go`, `steps_players_test.go`, `steps_ride_test.go`,
+`steps_schedule_test.go`, `steps_settlement_test.go`. This section intentionally does not
+duplicate them; a hand-maintained inventory here would drift silently. Vocabulary rules
+remain §6.
 
 ---
 
