@@ -1,27 +1,11 @@
-# docs/spec/rules.yaml
+# docs/spec/rules.yaml — CANONICAL, HAND-EDITED business-rule catalog.
 #
-# CANONICAL, HAND-EDITED business-rule catalog. The field-by-field schema, the
-# frozen enums, the catalog's own invariants and the "how to add a rule" recipe
-# live in docs/spec/rules.schema.md.
+# docs/spec/business-rules.md is GENERATED from this file — never edit it.
+# Field schema, frozen enums, policies: docs/spec/rules.schema.md. Workflow + how to add a rule: docs/spec/README.md §2.
 #
-# docs/spec/business-rules.md is GENERATED from this file — do not edit it.
-#
-# Do not guess: every `site` and every `verification` pointer below was resolved
-# against the working tree on main, not against an earlier recon snapshot.
-# Sites are `path::Symbol` (Go) or the migration id (SQL); never line numbers.
-#
-# Enums are frozen in docs/spec/rules.schema.md as approved at gate A2: authority is
-# database|domain|service|repository|composition-root|handler, layer is
-# handler|validator|service|domain|repository|db-constraint|db-trigger (the vault Lessons
-# call the repository layer *store*; the Go type was renamed Store → Repository).
-#
-# Validate with (either):
-#   python3 -c "import yaml; yaml.safe_load(open('docs/spec/rules.yaml'))"
-#   ruby -ryaml -e 'p YAML.safe_load(File.read("docs/spec/rules.yaml")).size'
-#
-# Retired at gate B5 (dupe policy): R-GAME-019 merged into R-KERNEL-003, R-GAME-022
-# merged into R-KERNEL-014 — kernel owns the statement, game call-sites are enforcement
-# sites on the kernel rule. Ids are never reused.
+# Retired at gate B5 (dupe policy): R-GAME-019 merged into R-KERNEL-003, R-GAME-022 merged into
+# R-KERNEL-014 — kernel owns the statement, game call-sites are enforcement sites on it. Ids are never reused.
+# Gate-decision minutes: docs/spec/history/decisions.md.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # schedule — calendar authority (teams, seasons, rounds, matches)
