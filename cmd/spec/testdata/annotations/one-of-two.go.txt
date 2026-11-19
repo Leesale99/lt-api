@@ -1,0 +1,8 @@
+package thing
+
+// Do does the thing, and names only one of the two rules the catalog files it
+// under.
+//rule:R-KERNEL-001
+func Do() {}
+
+func Other() {}

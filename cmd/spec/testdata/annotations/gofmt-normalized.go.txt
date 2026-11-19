@@ -1,0 +1,7 @@
+package thing
+
+// Do does the thing. gofmt reflows a doc comment, so the annotation the sweep
+// wrote as `//rule:R-KERNEL-001` lands here with a space after the slashes; it
+// is the same annotation.
+// rule:R-KERNEL-001
+func Do() {}

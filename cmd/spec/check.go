@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -17,6 +18,16 @@ const (
 	statusDrifted       = "drifted"
 
 	stalePointerPrefix = "stale-pointer:"
+
+	// policyCategory binds a rule's category to the verification and refusal
+	// surface it must carry; policyKnowledgeRef keeps the knowledge-base
+	// pointer honest.
+	policyCategory     = "14-category"
+	policyKnowledgeRef = "16-knowledge-ref"
+
+	// knowledgeRefRoot is the only tree a knowledge-ref may point into: the
+	// expert documents that are the source of truth for what to build.
+	knowledgeRefRoot = "docs/league-tokens-learning-phases"
 )
 
 // policy is one numbered invariant from docs/spec/rules.schema.md §3. The
@@ -40,6 +51,9 @@ var policies = []policy{
 	{"11-fixture", "pinned_by names a declared fixture"},
 	{"12-features", "feature files parse; every scenario names exactly one known rule"},
 	{policyVocabulary, "step text: denylisted transport/SQL tokens and the seeded glossary"},
+	{policyCategory, "category ⇒ verification and refusal binding"},
+	{policyAnnotations, "Go enforcement sites carry //rule: annotations, and every annotation resolves"},
+	{policyKnowledgeRef, "knowledge-ref is a real path under the learning phases"},
 	{"refusal", "refusal code sanity"},
 }
 
@@ -175,6 +189,7 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	gherkinFindings, index := collectGherkin(catalog, root)
 	findings = append(findings, gherkinFindings...)
 	findings = append(findings, collectVocabulary(root)...)
+	findings = append(findings, collectAnnotations(catalog, root)...)
 	sortFindings(findings)
 	printFindings(stdout, *rulesPath, catalog, findings, index)
 
@@ -206,6 +221,8 @@ func collectFindings(catalog Catalog, root string) []Finding {
 		c.checkCopyPolicy(rule)
 		c.checkAuthorityDefault(rule)
 		c.checkSiteReferences(rule)
+		c.checkCategory(rule)
+		c.checkKnowledgeRef(rule)
 		c.checkFixtureRefs(rule)
 		c.checkRefusal(rule)
 	}
@@ -435,6 +452,77 @@ func (c *checker) checkSiteReferences(rule Rule) {
 		if isLineNumber(symbol) {
 			c.errorf("9-site-ref", rule.ID, "verification pointer %q uses a line number; use path::Symbol", pointer)
 		}
+	}
+}
+
+// policy 14: the category fixes what a rule's proof and refusal surface must
+// look like. A rule classified `interface` frames a request, so it names the
+// status its refusal writes; `refusal-mapping` and `persistence-fact` rules are
+// proved by Go tests, never by a business-facing scenario; `invariant` and
+// `policy` rules are business-visible, so a missing scenario is a WARN (report
+// it, never fail --strict on it). `orchestration` and `boundary` are
+// unconstrained. specified-only rules are exempt: nothing exists to bind yet.
+func (c *checker) checkCategory(rule Rule) {
+	if rule.Status != statusImplemented {
+		return
+	}
+	hasGherkin := len(rule.Verification.Gherkin) > 0
+	forbidGherkin := func() {
+		if hasGherkin {
+			c.errorf(policyCategory, rule.ID,
+				"%s rule carries a gherkin pointer; its proof is a Go test, not a business-facing scenario",
+				rule.Category)
+		}
+	}
+
+	switch rule.Category {
+	case "interface":
+		if rule.Refusal == nil {
+			c.errorf(policyCategory, rule.ID,
+				"interface rule has no refusal; an interface rule names the status the framed-away request is refused with")
+		} else if rule.Refusal.HTTP == nil {
+			c.errorf(policyCategory, rule.ID,
+				"interface rule's refusal has no http status; an interface rule names the status the framed-away request is refused with")
+		}
+		forbidGherkin()
+	case "refusal-mapping":
+		forbidGherkin()
+	case "persistence-fact":
+		forbidGherkin()
+		if len(rule.Verification.Unit) == 0 {
+			c.errorf(policyCategory, rule.ID,
+				"persistence-fact rule has no unit verification pointer; a store-stamped fact is proved by a Go test")
+		}
+	case "invariant", "policy":
+		if !hasGherkin {
+			c.warnf(policyCategory, rule.ID,
+				"%s rule has no gherkin pointer; a business-visible rule wants an executable scenario",
+				rule.Category)
+		}
+	}
+}
+
+// policy 16: a knowledge-ref is additional to expert-ref, and must resolve to a
+// real note under the learning-phases tree. No rule carries one yet; the field
+// exists so the backfill lands through the catalog, not through prose.
+func (c *checker) checkKnowledgeRef(rule Rule) {
+	if rule.KnowledgeRef == nil || strings.TrimSpace(*rule.KnowledgeRef) == "" {
+		return
+	}
+	raw := strings.TrimSpace(*rule.KnowledgeRef)
+	if path.IsAbs(raw) {
+		c.errorf(policyKnowledgeRef, rule.ID,
+			"knowledge-ref %q is absolute; it is a path relative to the repository root", raw)
+		return
+	}
+	ref := path.Clean(filepath.ToSlash(raw))
+	if ref != knowledgeRefRoot && !strings.HasPrefix(ref, knowledgeRefRoot+"/") {
+		c.errorf(policyKnowledgeRef, rule.ID,
+			"knowledge-ref %q is not under %s/ (the learning-phase documents are the only knowledge base)", raw, knowledgeRefRoot)
+		return
+	}
+	if !c.fileExists(ref) {
+		c.errorf(policyKnowledgeRef, rule.ID, "knowledge-ref %q does not exist", raw)
 	}
 }
 

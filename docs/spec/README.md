@@ -27,10 +27,17 @@ docs/spec/
 - **Scenarios.** `docs/spec/features/<module>/<capability>.feature` holds one capability
   of business-visible behaviour per file. Every scenario carries exactly one
   `@rule:R-...` tag. Authoring rules: `gherkin-style.md`.
+- **Glossary.** `docs/spec/glossary.yaml` is the per-module step-vocabulary
+  allowlist: every word a step uses must be declared in its module's section (or in
+  `common`), and policy 13 denies undeclared vocabulary as well as transport/SQL
+  words. A new scenario word is a deliberate glossary edit.
 - **Checker.** `cmd/spec`: `gen` regenerates the Markdown (or `--diff` to detect
   staleness); `check` validates the catalog's schema policies and traces every site,
   test pointer and Gherkin pointer to something that exists, in both catalog → tree and
-  tree → catalog directions. `--strict` makes any check error fatal.
+  tree → catalog directions. The policies are `rules.schema.md` §3: enums and
+  pointers (1–12), the step vocabulary (13), the category's verification/refusal
+  binding (14), the `//rule:` annotations on Go enforcement sites (15) and
+  `knowledge-ref` (16). `--strict` makes any check error fatal.
 - **Enforcement suite.** `internal/spec` is a godog suite run as a plain `go test`
   against real Postgres — real migrations, role-restricted pools, the product's own
   entry points, plus sabotage steps for database-authority proofs. Scenarios tagged
@@ -75,15 +82,24 @@ What step 1 of the gate actually means, for a brand-new rule:
    exists, the rule is `drifted` (or `implemented` with the gap in `notes` when it is a
    coverage gap, not a disagreement).
 6. **Assign the next id** for that module; never reuse or renumber.
-7. **Validate the YAML parses.** Stock macOS `python3` has no `yaml` module, so Ruby's
+7. **Declare the new scenario vocabulary.** Every word a new step uses must be
+   declared in the module's section of `docs/spec/glossary.yaml` (or in `common`) —
+   policy 13 denies undeclared step vocabulary, so the glossary edit belongs in the
+   same change as the scenario.
+8. **Annotate new enforcement sites.** When adding an enforcement site to the
+   catalog, place a `//rule:R-XXX-NNN` comment on or above the Go declaration (the
+   contiguous comment block is fine, one line per id). Policy 15 checks both
+   directions: the site must carry its rule, and every annotation must name a
+   catalog rule.
+9. **Validate the YAML parses.** Stock macOS `python3` has no `yaml` module, so Ruby's
    stdlib `psych` is the reliable one:
    ```sh
    ruby -ryaml -e 'p YAML.safe_load(File.read("docs/spec/rules.yaml")).size'
    python3 -c "import yaml; yaml.safe_load(open('docs/spec/rules.yaml'))"
    ```
-8. **Run the gate** (steps 2–5 above). `make spec/check` enforces the
-   `rules.schema.md` §3 policies mechanically; then `make spec/gen`; finish when
-   `make audit` is green.
+10. **Run the gate** (steps 2–5 above). `make spec/check` enforces the
+    `rules.schema.md` §3 policies mechanically; then `make spec/gen`; finish when
+    `make audit` is green.
 
 ## 3. Running each piece
 
@@ -92,12 +108,20 @@ What step 1 of the gate actually means, for a brand-new rule:
 | `make spec/gen` | regenerate `docs/spec/business-rules.md` from `rules.yaml` |
 | `make spec/check` | validate schema policies + catalog/feature traceability; runs `--strict`, so any check error fails the target (and therefore `make audit`) |
 | `make spec/diff` | fail if `business-rules.md` is stale (wired into `make audit`) |
-| `make test/spec` | run the godog scenarios against real Postgres; skips without `LT_API_TEST_DSN` |
-| `make test` | run the full test tree; DB-backed tests skip when `LT_API_TEST_DSN` is unset |
+| `make db/up` | start the compose test database (CI's postgres:18 service container) and wait until its healthcheck passes |
+| `make db/down` | stop it; the named volume survives; `docker compose down -v` drops the base database too |
+| `make test/spec` | run the godog scenarios against real Postgres; fails without LT_API_TEST_DSN (bring it up with make db/up); AUDIT_SKIP_DB=1 turns that into a loud skip |
+| `make test` | run the full test tree; the spec suite fails without LT_API_TEST_DSN (e2e and the boundary test still skip) |
 | `make audit` | the single gate: `tidy -diff` → `mod verify` → gofmt → vet → staticcheck → `spec/diff` → `spec/check` → full test tree |
 
-Set a real `LT_API_TEST_DSN` (`.envrc`) before trusting a green run: without it the
-database-backed half skips.
+`make db/up` starts the throwaway test database (compose, same credentials and image
+as CI's service container) and waits for it to be healthy; a missing
+`LT_API_TEST_DSN` now fails the spec suite rather than skipping it, so a green run
+always includes the scenarios. On a deliberately DB-less machine, opt out out loud
+with `AUDIT_SKIP_DB=1`. Quickstart: `make db/up` →
+`export LT_API_TEST_DSN='postgres://lt_test:test@localhost:5432/lt_api_test?sslmode=disable'`
+→ `make test/spec` (the first run applies migrations 000001–000022 to a database it
+creates and drops itself) → `make db/down` when done.
 
 ## 4. Agent quickstart
 

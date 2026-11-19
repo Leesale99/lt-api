@@ -32,7 +32,11 @@ type Rule struct {
 	Fixture      *string       `yaml:"fixture"`
 	Verification Verification  `yaml:"verification"`
 	ExpertRef    *string       `yaml:"expert-ref"`
-	Notes        string        `yaml:"notes"`
+	// KnowledgeRef points at the knowledge-base note behind the rule. It is
+	// additional to expert-ref (never a replacement): policy 16 requires the
+	// path to exist and to sit under docs/league-tokens-learning-phases/.
+	KnowledgeRef *string `yaml:"knowledge-ref"`
+	Notes        string  `yaml:"notes"`
 }
 
 // Enforcement is one place a rule is enforced. Site is `path::Symbol` for Go or

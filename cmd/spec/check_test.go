@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -636,5 +637,283 @@ func (t *Thing) hidden() {}
 		if got := symbolExists(src, tt.symbol); got != tt.want {
 			t.Errorf("symbolExists(%q) = %v, want %v", tt.symbol, got, tt.want)
 		}
+	}
+}
+
+// loadFixtureCatalog reads a one-rule catalog fixture (testdata/catalog) as the
+// canonical YAML would arrive from disk.
+func loadFixtureCatalog(t *testing.T, name string) Catalog {
+	t.Helper()
+
+	catalog, err := loadCatalog(filepath.Join("testdata", filepath.FromSlash(name)))
+	if err != nil {
+		t.Fatalf("load fixture catalog %s: %v", name, err)
+	}
+	return catalog
+}
+
+// TestCheckCategoryBinding is policy 14: the category binds a rule's refusal
+// surface and its proof. `interface` names the status it refuses with and is
+// never proved by a scenario; `refusal-mapping` and `persistence-fact` are
+// proved by Go tests; `invariant`/`policy` want a scenario (a WARN, never a
+// failure); `orchestration`/`boundary` are free; specified-only is exempt.
+func TestCheckCategoryBinding(t *testing.T) {
+	tests := []struct {
+		name         string
+		fixture      string
+		mutate       func(*Rule)
+		wantErrors   int
+		wantWarnings int
+		wantMessage  string
+	}{
+		{
+			name:       "interface without a refusal",
+			fixture:    "catalog/policy14-interface-no-refusal.yaml",
+			wantErrors: 1, wantMessage: "no refusal",
+		},
+		{
+			name: "interface refusal without an http status",
+			mutate: func(r *Rule) {
+				r.Category = "interface"
+				r.Authority = "handler"
+				r.Refusal = &Refusal{Code: "synthetic"}
+			},
+			wantErrors: 1, wantMessage: "no http status",
+		},
+		{
+			name: "interface carrying a gherkin pointer",
+			mutate: func(r *Rule) {
+				r.Category = "interface"
+				r.Authority = "handler"
+				r.Refusal = &Refusal{Code: "synthetic", HTTP: ptr(422)}
+				r.Verification.Gherkin = []string{"docs/spec/features/kernel/thing.feature::A thing always is a thing"}
+			},
+			wantErrors: 1, wantMessage: "gherkin pointer",
+		},
+		{
+			name: "interface complete",
+			mutate: func(r *Rule) {
+				r.Category = "interface"
+				r.Authority = "handler"
+				r.Refusal = &Refusal{Code: "synthetic", HTTP: ptr(422)}
+			},
+		},
+		{
+			name: "refusal-mapping carrying a gherkin pointer",
+			mutate: func(r *Rule) {
+				r.Category = "refusal-mapping"
+				r.Authority = "repository"
+				r.Refusal = &Refusal{Code: "P0001", HTTP: ptr(409)}
+				r.Verification.Gherkin = []string{"docs/spec/features/kernel/thing.feature::A thing always is a thing"}
+			},
+			wantErrors: 1, wantMessage: "gherkin pointer",
+		},
+		{
+			name:       "persistence-fact without a unit pointer",
+			fixture:    "catalog/policy14-persistence-fact-no-unit.yaml",
+			wantErrors: 1, wantMessage: "no unit verification pointer",
+		},
+		{
+			name: "persistence-fact carrying a gherkin pointer",
+			mutate: func(r *Rule) {
+				r.Category = "persistence-fact"
+				r.Authority = "repository"
+				r.Verification.Gherkin = []string{"docs/spec/features/kernel/thing.feature::A thing always is a thing"}
+			},
+			wantErrors: 1, wantMessage: "gherkin pointer",
+		},
+		{
+			name: "persistence-fact complete",
+			mutate: func(r *Rule) {
+				r.Category = "persistence-fact"
+				r.Authority = "repository"
+			},
+		},
+		{
+			name: "invariant without a gherkin pointer warns",
+			mutate: func(r *Rule) {
+				r.Category = "invariant"
+				r.Authority = "database"
+				r.Mechanism = ptr("constraint")
+				r.Scope = ptr("row-local")
+			},
+			wantWarnings: 1, wantMessage: "no gherkin pointer",
+		},
+		{
+			name: "policy without a gherkin pointer warns",
+			mutate: func(r *Rule) {
+				r.Category = "policy"
+				r.Authority = "domain"
+			},
+			wantWarnings: 1, wantMessage: "no gherkin pointer",
+		},
+		{
+			name: "invariant with a gherkin pointer is silent",
+			mutate: func(r *Rule) {
+				r.Category = "invariant"
+				r.Authority = "database"
+				r.Mechanism = ptr("constraint")
+				r.Scope = ptr("row-local")
+				r.Verification.Gherkin = []string{"docs/spec/features/kernel/thing.feature::A thing always is a thing"}
+			},
+		},
+		{
+			name: "orchestration is unconstrained",
+			mutate: func(r *Rule) {
+				r.Category = "orchestration"
+				r.Authority = "service"
+			},
+		},
+		{
+			name: "boundary is unconstrained",
+			mutate: func(r *Rule) {
+				r.Category = "boundary"
+				r.Authority = "composition-root"
+			},
+		},
+		{
+			name: "specified-only is exempt",
+			mutate: func(r *Rule) {
+				r.Status = statusSpecifiedOnly
+				r.Category = "interface"
+				r.Authority = "handler"
+				r.Enforcement = nil
+				r.Verification = Verification{}
+				r.ExpertRef = ptr("docs/league-tokens-learning-phases/phase-03.md")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newTestRepo(t)
+
+			var catalog Catalog
+			if tt.fixture != "" {
+				catalog = loadFixtureCatalog(t, tt.fixture)
+			} else {
+				rule := baseRule()
+				tt.mutate(&rule)
+				catalog = Catalog{rule}
+			}
+
+			findings := collectFindings(catalog, repo.root)
+			errorsFound, warnings := countFindings(findings)
+			if errorsFound != tt.wantErrors || warnings != tt.wantWarnings {
+				t.Fatalf("got %d errors / %d warnings, want %d / %d:\n%s",
+					errorsFound, warnings, tt.wantErrors, tt.wantWarnings, describeFindings(findings))
+			}
+			if tt.wantMessage == "" {
+				return
+			}
+			group := findingsFor(findings, policyCategory)
+			if len(group) != tt.wantErrors+tt.wantWarnings {
+				t.Fatalf("policy %s carried %d findings, want %d:\n%s",
+					policyCategory, len(group), tt.wantErrors+tt.wantWarnings, describeFindings(findings))
+			}
+			if !strings.Contains(group[0].Message, tt.wantMessage) {
+				t.Errorf("message = %q, want it to contain %q", group[0].Message, tt.wantMessage)
+			}
+		})
+	}
+}
+
+// TestCheckKnowledgeRef is policy 16: knowledge-ref is a path relative to the
+// repository root, it exists, and it sits under the learning-phase tree.
+func TestCheckKnowledgeRef(t *testing.T) {
+	tests := []struct {
+		name        string
+		fixture     string
+		mutate      func(*Rule)
+		wantErrors  int
+		wantMessage string
+	}{
+		{name: "absent is allowed"},
+		{
+			name: "an existing learning-phase note",
+			mutate: func(r *Rule) {
+				r.KnowledgeRef = ptr("docs/league-tokens-learning-phases/phase-03.md")
+			},
+		},
+		{
+			name:       "outside the learning-phase tree",
+			fixture:    "catalog/policy16-knowledge-ref-outside.yaml",
+			wantErrors: 1, wantMessage: "is not under docs/league-tokens-learning-phases/",
+		},
+		{
+			name:       "a note that does not exist",
+			fixture:    "catalog/policy16-knowledge-ref-missing.yaml",
+			wantErrors: 1, wantMessage: "does not exist",
+		},
+		{
+			name:       "an absolute path",
+			mutate:     func(r *Rule) { r.KnowledgeRef = ptr("/etc/hosts") },
+			wantErrors: 1, wantMessage: "is absolute",
+		},
+		{
+			name: "a traversal out of the tree",
+			mutate: func(r *Rule) {
+				r.KnowledgeRef = ptr("docs/league-tokens-learning-phases/../README.md")
+			},
+			wantErrors: 1, wantMessage: "is not under docs/league-tokens-learning-phases/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newTestRepo(t)
+
+			var catalog Catalog
+			if tt.fixture != "" {
+				catalog = loadFixtureCatalog(t, tt.fixture)
+			} else {
+				rule := baseRule()
+				if tt.mutate != nil {
+					tt.mutate(&rule)
+				}
+				catalog = Catalog{rule}
+			}
+
+			findings := collectFindings(catalog, repo.root)
+			errorsFound, warnings := countFindings(findings)
+			if errorsFound != tt.wantErrors || warnings != 0 {
+				t.Fatalf("got %d errors / %d warnings, want %d / 0:\n%s",
+					errorsFound, warnings, tt.wantErrors, describeFindings(findings))
+			}
+			if tt.wantMessage == "" {
+				return
+			}
+			group := findingsFor(findings, policyKnowledgeRef)
+			if len(group) != tt.wantErrors {
+				t.Fatalf("policy %s carried %d findings, want %d:\n%s",
+					policyKnowledgeRef, len(group), tt.wantErrors, describeFindings(findings))
+			}
+			if !strings.Contains(group[0].Message, tt.wantMessage) {
+				t.Errorf("message = %q, want it to contain %q", group[0].Message, tt.wantMessage)
+			}
+		})
+	}
+}
+
+// TestKnowledgeRefIsAdditionalToExpertRef pins the field's shape: a
+// specified-only rule keeps expert-ref and adds knowledge-ref beside it.
+func TestKnowledgeRefIsAdditionalToExpertRef(t *testing.T) {
+	repo := newTestRepo(t)
+	catalog := loadFixtureCatalog(t, "catalog/policy16-specified-only.yaml")
+	if len(catalog) != 1 {
+		t.Fatalf("fixture carries %d rules, want 1", len(catalog))
+	}
+
+	rule := catalog[0]
+	const note = "docs/league-tokens-learning-phases/phase-03.md"
+	if rule.ExpertRef == nil || *rule.ExpertRef != note {
+		t.Errorf("expert-ref = %v, want %q", rule.ExpertRef, note)
+	}
+	if rule.KnowledgeRef == nil || *rule.KnowledgeRef != note {
+		t.Errorf("knowledge-ref = %v, want %q", rule.KnowledgeRef, note)
+	}
+
+	if findings := collectFindings(catalog, repo.root); len(findings) != 0 {
+		t.Fatalf("specified-only rule with both refs produced findings:\n%s", describeFindings(findings))
 	}
 }

@@ -12,6 +12,8 @@ import (
 // file order. gen must sort them.
 func genCatalog() Catalog {
 	kernel := baseRule() // R-KERNEL-001
+	kernel.Category = "policy"
+	kernel.Authority = "domain"
 	kernel.Notes = "Context nobody needs. stale-pointer: TestDo moved in Phase B."
 	kernel.Refusal = &Refusal{Code: "synthetic", HTTP: ptr(422)}
 

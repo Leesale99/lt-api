@@ -3650,7 +3650,7 @@
     the internal version counter are never part of a response.
   module: identity
   entity: user
-  category: interface
+  category: boundary
   status: implemented
   authority: handler
   mechanism: null
@@ -3678,6 +3678,10 @@
     TestRegisterUserHandlerSuccessState's leak scan of the 201 body. Coverage gap: no
     test inspects a read path's body for the hash (the register response is the only
     account body the suite asserts) and there is no user-read endpoint to inspect.
+
+    Category note: `boundary`, not `interface` — the rule is about what crosses the transport
+    edge (the hash and the version never leave), and a rule about what is absent has nothing
+    to refuse, which the interface category now requires (policy 14).
 
 - id: R-IDENTITY-005
   title: A token is twenty-six random characters
@@ -4242,7 +4246,7 @@
     resolves to an empty set rather than to an error.
   module: identity
   entity: permission
-  category: persistence-fact
+  category: policy
   status: implemented
   authority: repository
   mechanism: null
@@ -4259,8 +4263,8 @@
     e2e:
       - internal/e2e/auth_test.go::TestRequirePermissionMiddleware
   notes: >
-    Persistence-fact with the default authority (repository), because the rule is a
-    statement about the store's shape: the permission set is the three-table join through
+    Repository authority (deviating from the policy category's domain default), because the
+    rule is a statement about the store's shape: the permission set is the three-table join through
     roles_permissions keyed on the account's role_id, and there is no table in which an
     account could be granted something on its own. The read happens per gated request with
     no caching, which is a deliberate consequence — it is one extra query per gated request
@@ -4270,6 +4274,11 @@
     unit test for GetAllForRole at all — the only coverage is the e2e gate, which needs a
     live database and a seeded matrix. A repository test (a role with no grants → empty
     set and no error; two roles → no cross-contamination) closes it.
+
+    Category note: `policy`, not `persistence-fact` — the decision is authorization resolved
+    correctly on every request (freshness is part of the rule), and it is proved by the e2e
+    gate rather than a unit test, which the persistence-fact category now requires (policy
+    14).
 
 - id: R-IDENTITY-016
   title: An unactivated account is refused at every gated route
@@ -4996,7 +5005,7 @@
     it a different request, and an oversized body claims no key at all.
   module: kernel
   entity: idempotency_key
-  category: interface
+  category: orchestration
   status: implemented
   authority: handler
   mechanism: null
@@ -5059,6 +5068,10 @@
     half; the formula's "same key, different ride" case is asserted at the service level
     with hand-built tokens, so nothing ties the URI half to a test — a change that
     dropped the URI from the hash would replay silently instead of conflicting.
+
+    Category note: `orchestration`, not `interface` — the digest is the identity an
+    idempotency claim is made under and it refuses nothing itself, so it cannot name the
+    refusal status the interface category requires (policy 14).
 
 - id: R-KERNEL-003
   title: An idempotency key names exactly one logical request
@@ -5886,7 +5899,7 @@
     allowlist, the build version — are not overridable at all.
   module: platform
   entity: configuration
-  category: interface
+  category: orchestration
   status: implemented
   authority: handler
   mechanism: null
@@ -5916,6 +5929,10 @@
     R-PLATFORM-002/003's startup refusal, and this rule only fixes where a value comes
     from.
 
+    Category note: `orchestration`, not `interface` — the rule orders the process's own intake
+    (environment parsed before flags, defaults last) and never sees a request, so it has no
+    refusal status to name (policy 14).
+
 - id: R-PLATFORM-002
   title: Startup refuses a configuration it cannot honour, and names the setting
   statement: |
@@ -5926,7 +5943,7 @@
     instead of one at a time, and nothing degrades into a silent default.
   module: platform
   entity: configuration
-  category: interface
+  category: orchestration
   status: implemented
   authority: handler
   mechanism: null
@@ -5965,6 +5982,10 @@
     validated here at all: R-PLATFORM-006 owns them, at construction and (since item 16)
     in config's own validate.
 
+    Category note: `orchestration`, not `interface` — a startup refusal stops the process
+    before it serves anything, so it has no HTTP status to name (policy 14); the refusal
+    recorded here is the process's exit.
+
 - id: R-PLATFORM-003
   title: Every setting has a bound, and the bound holds when the feature is off
   statement: |
@@ -5977,7 +5998,7 @@
     only correct while something else is off fails unpredictably when it is switched on.
   module: platform
   entity: configuration
-  category: interface
+  category: orchestration
   status: implemented
   authority: handler
   mechanism: null
@@ -6019,6 +6040,10 @@
     that names a *database* the context's role cannot see is not detectable here; that
     failure is deferred to the pool ping at boot.
 
+    Category note: `orchestration`, not `interface` — the bounds are judged at startup, before
+    a request exists, and a violation is a boot failure rather than an HTTP refusal (policy
+    14).
+
 - id: R-PLATFORM-004
   title: A log level is an enumerated name, never a silent fallback
   statement: |
@@ -6028,7 +6053,7 @@
     flood or silence a deployment whose level was mistyped.
   module: platform
   entity: configuration
-  category: interface
+  category: orchestration
   status: implemented
   authority: handler
   mechanism: null
@@ -6058,6 +6083,9 @@
     only be the flag's. The parser itself is the standard library's — numeric offsets
     such as INFO+2 are therefore accepted even though the message advertises four names.
 
+    Category note: `orchestration`, not `interface` — an unknown level is a startup refusal,
+    not a framed request (policy 14); no HTTP status is written.
+
 - id: R-PLATFORM-005
   title: The cross-origin allowlist holds bare origins, never a wildcard
   statement: |
@@ -6068,7 +6096,7 @@
     and an empty list means cross-origin access is simply off.
   module: platform
   entity: cors_origin
-  category: interface
+  category: orchestration
   status: implemented
   authority: handler
   mechanism: null
@@ -6099,6 +6127,9 @@
     e2e CORS suite pins exact matching from the other end. Empty (or whitespace/comma
     only) yields nil, which the middleware reads as "no origin is allowed".
 
+    Category note: `orchestration`, not `interface` — the allowlist is normalized and refused
+    at startup, so there is no request to frame and no HTTP refusal to name (policy 14).
+
 # ─────────────────────────────────────────────────────────────────────────────
 # platform — mailer, logging, server lifecycle
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6112,7 +6143,7 @@
     retried as if it were a network problem.
   module: platform
   entity: email_delivery
-  category: interface
+  category: orchestration
   status: implemented
   authority: handler
   mechanism: null
@@ -6144,6 +6175,10 @@
     item 16 of the misalignment report, gap closed: SMTP_PORT is bounded and SMTP_SENDER
     must parse as an RFC 5322 mailbox), and an empty one is refused twice (here and
     there) with this rule's sentinel being the mailer's own.
+
+    Category note: `orchestration`, not `interface` — incompleteness is refused at
+    construction, before the process serves, so the rule has no HTTP refusal to name (policy
+    14).
 
 - id: R-PLATFORM-007
   title: A failed delivery is retried a bounded number of times, then reported
@@ -6195,7 +6230,7 @@
     development only, so production records carry no path bulk.
   module: platform
   entity: log_stream
-  category: interface
+  category: orchestration
   status: implemented
   authority: handler
   mechanism: null
@@ -6232,6 +6267,9 @@
     No refusal: a log stream has nothing to refuse — the failures it records are other
     rules' refusals.
 
+    Category note: `orchestration`, not `interface` — one stream for the whole process is
+    startup wiring, not request framing, and it refuses nothing (policy 14).
+
 - id: R-PLATFORM-009
   title: Every connection is bounded in time
   statement: |
@@ -6241,7 +6279,7 @@
     indefinitely.
   module: platform
   entity: http_server
-  category: interface
+  category: orchestration
   status: implemented
   authority: handler
   mechanism: null
@@ -6265,6 +6303,10 @@
     at their bound, so a removed or lengthened timeout fails a test. Refusal surface
     is null on purpose: exceeding a write deadline truncates the response and closes the
     connection; there is no named refusal.
+
+    Category note: `orchestration`, not `interface` — the bounds are set once where the server
+    is built and enforced by closing a connection instead of writing a named refusal, so the
+    interface category's status requirement cannot hold (policy 14).
 
 - id: R-PLATFORM-010
   title: Shutdown is bounded and never hangs

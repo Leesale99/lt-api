@@ -1,0 +1,9 @@
+package thing
+
+// Other enforces a rule id the catalog has never issued.
+//rule:R-KERNEL-999
+func Other() {}
+
+// Do does the thing and names the rule correctly.
+//rule:R-KERNEL-001
+func Do() {}

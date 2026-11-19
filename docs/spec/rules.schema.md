@@ -204,6 +204,7 @@ name *which* app layer. When generating `business-rules.md`, map:
 | `verification.e2e` | list of strings | no | `path::TestSymbol` for existing E2E coverage. Counts toward policy 3 exactly like `unit`; a rule proved only by an e2e test is covered. Must exist **today**. |
 | `verification.gherkin` | list of strings | no | `<feature-file>::<scenario name>` under `docs/spec/features/**`; every scenario carries an `@rule:R-...` tag. Counts toward policy 3 like `unit`/`e2e`; policy 10 resolves every pointer against the feature tree. |
 | `expert-ref` | string (path) | required for `specified-only` | The phase document the rule comes from. Omitted where no doc covers the rule (an ADR referenced only in code is not a path that exists in this repo). |
+| `knowledge-ref` | string (path) | no | The knowledge-base note behind the rule, relative to the repository root. It must exist and sit under `docs/league-tokens-learning-phases/` (policy 16). It is **additional** to `expert-ref`, never a replacement: a `specified-only` rule keeps its `expert-ref` and may add this beside it. |
 | `notes` | string (block) | required for `drifted`; required when `authority` ≠ category default | What disagrees, what the catalog believes, what would fix it. Rotted pointers (dead files, deleted tests, moved enforcement) belong here behind a `stale-pointer:` prefix, with `status: implemented`. |
 
 ### Refusal mapping (house convention)
@@ -276,6 +277,45 @@ list is the frequency.
       dropped; every remaining run of characters other than a letter, a digit or an
       underscore becomes a separator. Underscore is *not* a separator, so a database
       object name (`rides_state_gate`) is one token and is seeded like any other word.
+14. `category` binds the verification and refusal surface of an **implemented** rule
+    (checker id `14-category`); `specified-only` rules are exempt:
+    - `interface` ⇒ a `refusal` is present and `refusal.http` is non-null (an
+      interface rule names the status the framed-away request is refused with),
+      and `verification.gherkin` is forbidden (its proof is a Go test).
+    - `refusal-mapping` ⇒ `verification.gherkin` is forbidden.
+    - `persistence-fact` ⇒ `verification.gherkin` is forbidden **and** at least one
+      `verification.unit` pointer is required.
+    - `invariant` / `policy` ⇒ a WARN when there is no `verification.gherkin`
+      pointer: a business-visible rule wants an executable scenario, but a warning
+      never fails `--strict`.
+    - `orchestration` / `boundary` ⇒ unconstrained.
+15. Every Go enforcement site carries its rule's annotation, and every annotation
+    names a catalog rule — in both directions (checker id `15-annotations`):
+    - **The annotation (convention).** A comment line that is exactly
+      `//rule:R-XXX-NNN` — the prefix, the id, and nothing else (no space after the
+      colon, no trailing prose; one id per line). It sits either on the declaration
+      line or in the contiguous comment block directly above the declaration. A blank
+      line or a non-comment line breaks contiguity, so a comment block separated
+      from the declaration documents something else. A site named by several rules
+      carries one `//rule:` line per id in that same block. `gofmt` reflows a doc
+      comment's `//rule:` to `// rule:`, which is the same annotation; the id after
+      the colon must still be exact, so `// rule: R-XXX-NNN` stays a typo.
+    - **Catalog → tree.** For every implemented rule's Go enforcement site
+      (`path::Symbol`), the rule's id must appear in that annotation window; an
+      annotation that is not at the declaration does not count. SQL sites (paths
+      starting `migrations/`) are exempt — the migration's own text is the record —
+      and test files are exempt too, because a test names its rule through
+      `verification`. A missing annotation is an ERROR.
+    - **Tree → catalog.** Every annotation in any non-vendor `*.go` file under the
+      repository must resolve to a catalog rule id (test files are included in this
+      direction; `testdata/` is excluded as fixture data). An annotation whose id
+      does not match `^R-[A-Z]+-\d{3}$` is an ERROR of its own, so a typo cannot pass
+      for "a rule that does not exist yet".
+16. `knowledge-ref`, when present, must (a) exist as a file relative to the
+    repository root and (b) be a path under `docs/league-tokens-learning-phases/`
+    (checker id `16-knowledge-ref`). It records the knowledge-base note behind the
+    rule; `expert-ref` is unchanged by it, so `specified-only` rules keep their
+    `expert-ref` and may add `knowledge-ref` beside it.
 
 ---
 

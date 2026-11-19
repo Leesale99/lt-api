@@ -1,0 +1,10 @@
+package thing
+
+// Other carries an annotation that is not an id at all: the digits are two, not
+// three, so a typo cannot pass for "a rule that does not exist yet".
+//rule:R-KERNEL-1
+func Other() {}
+
+// Do does the thing and names the rule correctly.
+//rule:R-KERNEL-001
+func Do() {}

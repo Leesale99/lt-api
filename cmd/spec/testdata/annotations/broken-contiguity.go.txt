@@ -1,0 +1,7 @@
+package thing
+
+// Do does the thing. The annotation below is separated from the declaration by
+// a blank line, so it documents the comment, not the function.
+//rule:R-KERNEL-001
+
+func Do() {}

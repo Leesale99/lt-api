@@ -40,12 +40,12 @@ the catalog's own invariants are checked by `go run ./cmd/spec check`.
 
 | Category | Rules |
 | --- | ---: |
-| `boundary` | 7 |
-| `interface` | 22 |
+| `boundary` | 8 |
+| `interface` | 12 |
 | `invariant` | 37 |
-| `orchestration` | 32 |
-| `persistence-fact` | 3 |
-| `policy` | 24 |
+| `orchestration` | 41 |
+| `persistence-fact` | 2 |
+| `policy` | 25 |
 | `refusal-mapping` | 1 |
 | **total** | **126** |
 
@@ -875,7 +875,7 @@ The vocabulary of what a caller may do is fixed: eleven codes covering reading a
 
 #### R-IDENTITY-015 — A caller's permissions are its role's, resolved on every request
 
-`implemented` · `persistence-fact` · authority `repository`
+`implemented` · `policy` · authority `repository`
 
 Permissions hang off roles, never off accounts: there is no per-account grant and no cached set, so two accounts holding the same role are indistinguishable to the gate and a grant change takes effect on the next request. An account whose role carries nothing resolves to an empty set rather than to an error.
 
@@ -987,7 +987,7 @@ The password a user types is never stored and never written down anywhere: the a
 
 #### R-IDENTITY-004 — An account response never carries the hash or the internal version
 
-`implemented` · `interface` · authority `handler`
+`implemented` · `boundary` · authority `handler`
 
 What the service says about an account is its id, when it was created, its name, its email, whether it is activated and which role it holds. The stored hash and the internal version counter are never part of a response.
 
@@ -1506,7 +1506,7 @@ Every command that promises retry safety must arrive with a key that names one l
 
 #### R-KERNEL-002 — A request's dedup identity is a digest of the request itself
 
-`implemented` · `interface` · authority `handler`
+`implemented` · `orchestration` · authority `handler`
 
 Two requests are the same logical request exactly when they carry the same method, the same request URI and — for a command with a body — the same raw body bytes. The identity is a SHA-256 digest of exactly those bytes, and a body is capped before it is hashed so that the bytes hashed are the bytes decoded: a retry of an identical request is recognized as a replay, any changed field makes it a different request, and an oversized body claims no key at all.
 
@@ -1753,7 +1753,7 @@ Buying tokens is one movement with two sides: the player pays currency into the 
 
 #### R-PLATFORM-001 — Configuration is resolved flag over environment over default
 
-`implemented` · `interface` · authority `handler`
+`implemented` · `orchestration` · authority `handler`
 
 A deployment's settings come from its environment, and an operator may override them per run with a flag; when neither says anything, a built-in default applies. Values that are deployment data rather than per-run operator choices — the cross-origin allowlist, the build version — are not overridable at all.
 
@@ -1772,7 +1772,7 @@ A deployment's settings come from its environment, and an operator may override 
 
 #### R-PLATFORM-002 — Startup refuses a configuration it cannot honour, and names the setting
 
-`implemented` · `interface` · authority `handler`
+`implemented` · `orchestration` · authority `handler`
 
 A configuration value that is missing, unparseable or out of its allowed range stops the process before it serves anything, and the message names the setting that must change — both its environment variable and its command-line flag, because the same value can arrive either way. Every bad environment value is reported in one refusal instead of one at a time, and nothing degrades into a silent default.
 
@@ -1794,7 +1794,7 @@ A configuration value that is missing, unparseable or out of its allowed range s
 
 #### R-PLATFORM-003 — Every setting has a bound, and the bound holds when the feature is off
 
-`implemented` · `interface` · authority `handler`
+`implemented` · `orchestration` · authority `handler`
 
 Each setting is either usable or refused: the listen port and the mail port are real ports, the outbound sender is an address mail can be sent from, the environment is one of the three the deployment knows, a database connection string is present and parseable, the pool is at least one connection with a positive idle limit, and the throttle rates are positive. A setting is judged on its own merits — a throttle that is switched off must still be configured with usable values, because config that is only correct while something else is off fails unpredictably when it is switched on.
 
@@ -1816,7 +1816,7 @@ Each setting is either usable or refused: the listen port and the mail port are 
 
 #### R-PLATFORM-004 — A log level is an enumerated name, never a silent fallback
 
-`implemented` · `interface` · authority `handler`
+`implemented` · `orchestration` · authority `handler`
 
 The logging level is one of the four names the deployment documents — debug, info, warn, error — matched without regard to case. An unrecognized level stops startup and the message names where the bad value came from, because a fallback would either flood or silence a deployment whose level was mistyped.
 
@@ -1919,7 +1919,7 @@ The connection pool a context is given runs every one of its statements as that 
 
 #### R-PLATFORM-005 — The cross-origin allowlist holds bare origins, never a wildcard
 
-`implemented` · `interface` · authority `handler`
+`implemented` · `orchestration` · authority `handler`
 
 The deployment lists the origins it serves cross-origin, one bare origin each; a wildcard is refused at startup rather than degraded into "allow everything". Origins are normalized to lowercase scheme and host with any trailing slash removed, a value carrying a path, query or fragment is refused as not an origin, duplicates collapse, and an empty list means cross-origin access is simply off.
 
@@ -1942,7 +1942,7 @@ The deployment lists the origins it serves cross-origin, one bare origin each; a
 
 #### R-PLATFORM-006 — Mail cannot be sent from an incomplete configuration
 
-`implemented` · `interface` · authority `handler`
+`implemented` · `orchestration` · authority `handler`
 
 If the outbound mail settings are incomplete — no host, no credentials, no sender — the process refuses to start instead of accepting requests it cannot honour. The refusal is distinguished from a delivery failure, so a configuration mistake is never retried as if it were a network problem.
 
@@ -2009,7 +2009,7 @@ Every request traverses the same chain in the same order: panic recovery outermo
 
 #### R-PLATFORM-009 — Every connection is bounded in time
 
-`implemented` · `interface` · authority `handler`
+`implemented` · `orchestration` · authority `handler`
 
 The HTTP server bounds how long it will spend on a connection: a read must finish within five seconds, a write within ten, and an idle connection is closed after a minute. A client that cannot meet those bounds does not hold a server resource indefinitely.
 
@@ -2031,7 +2031,7 @@ The HTTP server bounds how long it will spend on a connection: a read must finis
 
 #### R-PLATFORM-008 — One structured log stream per process
 
-`implemented` · `interface` · authority `handler`
+`implemented` · `orchestration` · authority `handler`
 
 The process emits one machine-readable log stream on standard output at the level the deployment chose, and everything that logs — the application and the database driver — writes into that same stream. Call-site source locations are attached in development only, so production records carry no path bulk.
 

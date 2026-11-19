@@ -24,7 +24,7 @@ func newTestRepo(t *testing.T) *testRepo {
 		root:      root,
 		rulesPath: filepath.Join(root, "docs", "spec", "rules.yaml"),
 	}
-	repo.addFile(t, "internal/kernel/thing/thing.go", "package thing\n\nfunc Do() {}\n")
+	repo.addFile(t, "internal/kernel/thing/thing.go", "package thing\n\n//rule:R-KERNEL-001\nfunc Do() {}\n")
 	repo.addFile(t, "internal/kernel/thing/other.go", "package thing\n\nfunc Other() {}\n\ntype Token struct{}\n")
 	repo.addFile(t, "internal/kernel/thing/thing_test.go",
 		"package thing\n\nimport \"testing\"\n\nfunc TestDo(t *testing.T) {}\n")
@@ -66,8 +66,10 @@ func (r *testRepo) writeCatalog(t *testing.T, catalog Catalog) {
 }
 
 // baseRule is a minimal catalog entry that satisfies every policy: one
-// authoritative site, one unit pointer, authority == category default, no
-// refusal, no notes.
+// authoritative site (annotated, policy 15), one unit pointer, authority ==
+// category default, no refusal, no notes. It picks `orchestration`, the
+// category policies 14 leaves unconstrained, so a test only sees category
+// findings when it sets the category it exercises.
 func baseRule() Rule {
 	return Rule{
 		ID:        "R-KERNEL-001",
@@ -75,9 +77,9 @@ func baseRule() Rule {
 		Statement: "A thing always is. It is never almost.",
 		Module:    "kernel",
 		Entity:    "thing",
-		Category:  "policy",
+		Category:  "orchestration",
 		Status:    statusImplemented,
-		Authority: "domain",
+		Authority: "service",
 		Enforcement: []Enforcement{{
 			Site:  "internal/kernel/thing/thing.go::Do",
 			Layer: "domain",
