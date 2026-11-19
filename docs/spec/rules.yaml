@@ -2764,7 +2764,11 @@
     so the replay is byte-identical, and create's Location header is re-derived
     from the stored body rather than persisted. The claim table and the
     single-flight mechanics are the kernel engine's; what this rule owns is that
-    the *game* commands call it first and inside one transaction.
+    the *game* commands call it first and inside one transaction. The caller is part of
+    the claim's identity since the ride routes became permission-gated: the handlers put
+    the authenticated principal's id on the token (`port.Token.UserID`) and the kernel
+    claims (key, user_id), so two callers that pick the same key hold two claims
+    (R-KERNEL-003 owns the scope and the retention window).
     Related but distinct: R-KERNEL-004 owns the transactional coupling (the claim commits
     with the command's effect, or not at all); this rule owns the ordering inside the
     command, and the kernel claim rule (R-KERNEL-003) owns what the caller sees on a
@@ -4975,12 +4979,11 @@
     table's CHECK is the path-independent backstop, carrying the same 255-byte bound.
     Tie: a wrong copy fails loudly — a key the validator accepts but the table refuses
     makes the command's transaction fail (500), and the CHECK is the only half a
-    non-Go writer meets. Two recorded absences the statement deliberately does not
-    claim: keys are NOT scoped to a player or a route (000010: "no player scoping yet";
-    the endpoint column is ops visibility only, and the primary key is the bare key
-    text, so two clients that pick the same key collide in one global namespace), and
-    there is NO retention policy — a claimed key lives forever (000010: "no retention
-    policy yet"). Both are defect candidates for the Phase B report, not drift.
+    non-Go writer meets. The namespace and the lifetime are not this rule's: since
+    migration 000022 the claim row is (key, user_id), so keys are scoped to their caller
+    (and 000010's rows carried over as system claims, user_id 0), and the kernel's claim
+    sweeps rows older than a day. R-KERNEL-003 owns both facts; misalignment-report §6
+    item 13 recorded the defect this closes.
 
 - id: R-KERNEL-002
   title: A request's dedup identity is a digest of the request itself
@@ -5037,8 +5040,8 @@
     pins it. Deployment note: the formula change is not backward compatible with keys
     claimed under the old one — a row stored before the deploy carries a URI-only
     digest, so a retry of that request afterwards is the 409 idempotency conflict, not
-    a replay; the table keeps no expiry (§6 item 13), so those stale rows age out of
-    the retry window with the old deployment rather than expiring. The table's
+    a replay; the table sweeps rows older than a day (R-KERNEL-003, migration 000022), so
+    those stale rows disappear within that window instead of living forever. The table's
     request_hash CHECK (exactly 32 bytes)
     is the only backstop and it cannot verify the digest covers the right bytes; a
     second ride-shaped command must remember createRideToken's shape by hand. The
@@ -5060,10 +5063,14 @@
 - id: R-KERNEL-003
   title: An idempotency key names exactly one logical request
   statement: |
-    Once a key has been used for one request, reusing it for a different request is
-    refused as key misuse and the second request never executes. The refusal is a
-    conflict, not a retry: a genuine retry resends the identical request and receives
-    the stored answer.
+    Once a key has been used by one caller, that same caller reusing it for a different
+    request is refused as key misuse and the second request never executes. The refusal is
+    a conflict, not a retry: a genuine retry resends the identical request and receives
+    the stored answer. A key belongs to its caller — two callers that happen to choose the
+    same key hold two independent claims, so one caller's key can neither collide with
+    another's nor come back with another's answer. A claim is remembered for one day: a
+    key whose claim is older than that is forgotten, and a command sent under it executes
+    again instead of replaying.
   module: kernel
   entity: idempotency_key
   category: policy
@@ -5074,6 +5081,10 @@
   enforcement:
     - site: internal/kernel/idempotency/idempotency.go::Repository.Claim
       layer: repository
+      role: authoritative
+      pinned_by: null
+    - site: migrations/000022_scope_idempotency_keys_per_caller.up.sql
+      layer: db-constraint
       role: authoritative
       pinned_by: null
     - site: migrations/000010_add_idempotency_keys_table.up.sql
@@ -5099,18 +5110,42 @@
       - internal/e2e/rides_test.go::TestCreateRideIdempotentHandler
     gherkin:
       - docs/spec/features/game/idempotency.feature::The same key on a different command is refused, never replayed
+      - docs/spec/features/game/idempotency.feature::Two callers that pick the same key do not collide
+      - docs/spec/features/game/idempotency.feature::A claim older than the day it is kept is forgotten
   notes: >
     Authority deviates from the category default (policy → domain): the decision is not
     a business policy but a stored-fact comparison — "does this key already name a
     different request" — executed inside the claim, by the repository that owns the
-    table. Tie: the table contributes only key uniqueness (its primary key), which is why
-    it is a data-carrying backstop for two rows of one key and never for two different
-    requests under one key — the claim's comparison is the only site that can tell them
-    apart, and it fails loudly (a misuse returns the sentinel, the handler renders 409,
-    and the conflict subtest of both idempotency suites fails first). The handler site is an advisory copy in the refusal sense
-    only: game translates the kernel's sentinel into the 409 envelope. Recorded gap: the
-    kernel's own sentinel is unmapped outside game — any other context that adopts the
-    key must add the mapping or answer 500.
+    table. Tie: the claim's comparison is the only site that tells a genuine retry from
+    key misuse (a misuse returns the sentinel, the handler renders 409, and the conflict
+    subtest of both idempotency suites fails first). The table contributes the namespace
+    and the lifetime instead: its primary key (key, user_id) since migration 000022 is
+    what makes two callers' claims independent (misalignment-report §6 item 13, defect
+    fixed: the key was the bare text in one global namespace, so two clients that picked
+    the same key collided), and the claim's own sweep is what makes the day-long lifetime
+    real. The handler site is an advisory copy in the refusal sense only: game translates
+    the kernel's sentinel into the 409 envelope. Recorded gap: the kernel's own sentinel
+    is unmapped outside game — any other context that adopts the key must add the mapping
+    or answer 500.
+    Scope, as built by 000022: the claim row is (key, user_id), the authenticated
+    principal's id — the transport puts it on the token (`port.Token.UserID`, set by the
+    ride handlers from httpx.GetAuthenticatedUser) and the settlement handlers claim as
+    the reserved system caller 0, since an event has no request principal (0 is not an
+    identity id: users.id is serial). The endpoint stays part of the request identity
+    (the digest, R-KERNEL-002) rather than of the namespace, so one caller's key is one
+    key across routes and a different route under it is still misuse. Legacy rows from
+    000010 were claimed before caller scoping existed; 000022 carries them over as system
+    claims (user_id 0), which keeps the settlement events' own dedup intact across the
+    deploy and leaves every ride retry that was in flight to execute once more.
+    Retention, as built: the claim deletes rows older than 24 hours
+    (`retentionWindow` in the kernel engine) on its own transaction before it inserts —
+    a lazy sweep, one statement per claim, because a real background sweeper is the
+    Phase 07 worker's job and R-PLATFORM-016 is still specified-only. The interim's
+    boundary is recorded, not hidden: every claim pays for the sweep, the sweep is
+    global (any caller's stale rows), and the window is a constant rather than config
+    until the worker owns it. The Gherkin pair pins both halves — two callers on one key
+    (both execute, neither is refused) and a claim aged past the window (the same key
+    executes again).
     Merged at gate B5 (dupe policy): the game sweep had catalogued this same decision a
     second time, from the ride command's caller-facing side — same `Repository.Claim`
     site, same 409, same two idempotency suites — and it is now this rule's game

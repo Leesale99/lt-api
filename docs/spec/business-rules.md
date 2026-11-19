@@ -93,7 +93,7 @@ Every ride command first claims its idempotency key inside its own transaction, 
 
 **Notes**
 
-> Four authoritative sites, one per command: the ordering (claim first, then execute, then store, then commit) is the same statement applied to four disjoint commands, so it is one rule with four sites, not four rules. No refusal: a claim that loses is not a refusal — it returns the recorded answer, which is a success. The recorded answer is the transport's presentation callback output (status + marshaled body), stored byte for byte so the replay is byte-identical, and create's Location header is re-derived from the stored body rather than persisted. The claim table and the single-flight mechanics are the kernel engine's; what this rule owns is that the *game* commands call it first and inside one transaction. Related but distinct: R-KERNEL-004 owns the transactional coupling (the claim commits with the command's effect, or not at all); this rule owns the ordering inside the command, and the kernel claim rule (R-KERNEL-003) owns what the caller sees on a replay. stale-pointer: phase-04's §"Later, for HTTP commands, add an idempotency key table" is superseded sequencing, not a disagreement — migrations/000010 and this rule's sites are that table. Nothing else in the doc names a path that no longer exists.
+> Four authoritative sites, one per command: the ordering (claim first, then execute, then store, then commit) is the same statement applied to four disjoint commands, so it is one rule with four sites, not four rules. No refusal: a claim that loses is not a refusal — it returns the recorded answer, which is a success. The recorded answer is the transport's presentation callback output (status + marshaled body), stored byte for byte so the replay is byte-identical, and create's Location header is re-derived from the stored body rather than persisted. The claim table and the single-flight mechanics are the kernel engine's; what this rule owns is that the *game* commands call it first and inside one transaction. The caller is part of the claim's identity since the ride routes became permission-gated: the handlers put the authenticated principal's id on the token (`port.Token.UserID`) and the kernel claims (key, user_id), so two callers that pick the same key hold two claims (R-KERNEL-003 owns the scope and the retention window). Related but distinct: R-KERNEL-004 owns the transactional coupling (the claim commits with the command's effect, or not at all); this rule owns the ordering inside the command, and the kernel claim rule (R-KERNEL-003) owns what the caller sees on a replay. stale-pointer: phase-04's §"Later, for HTTP commands, add an idempotency key table" is superseded sequencing, not a disagreement — migrations/000010 and this rule's sites are that table. Nothing else in the doc names a path that no longer exists.
 
 ### Entity `player`
 
@@ -1531,7 +1531,7 @@ Two requests are the same logical request exactly when they carry the same metho
 
 `implemented` · `policy` · authority `repository`
 
-Once a key has been used for one request, reusing it for a different request is refused as key misuse and the second request never executes. The refusal is a conflict, not a retry: a genuine retry resends the identical request and receives the stored answer.
+Once a key has been used by one caller, that same caller reusing it for a different request is refused as key misuse and the second request never executes. The refusal is a conflict, not a retry: a genuine retry resends the identical request and receives the stored answer. A key belongs to its caller — two callers that happen to choose the same key hold two independent claims, so one caller's key can neither collide with another's nor come back with another's answer. A claim is remembered for one day: a key whose claim is older than that is forgotten, and a command sent under it executes again instead of replaying.
 
 **Authority** `repository` · scope `row-local`
 
@@ -1540,6 +1540,7 @@ Once a key has been used for one request, reusing it for a different request is 
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
 | `internal/kernel/idempotency/idempotency.go::Repository.Claim` | `repository` | `authoritative` | — |
+| `migrations/000022_scope_idempotency_keys_per_caller.up.sql` | `db-constraint` | `authoritative` | — |
 | `migrations/000010_add_idempotency_keys_table.up.sql` | `db-constraint` | `defense-in-depth` | — |
 | `internal/game/internal/adapter/inbound/http/errors.go::Handler.idempotencyConflictResponse` | `handler` | `advisory-copy` | — |
 
