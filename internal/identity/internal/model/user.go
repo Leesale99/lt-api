@@ -2,12 +2,19 @@ package model
 
 import (
 	"errors"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
 	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
+
+// passwordHashCost is the bcrypt cost every stored password hash is minted
+// with, and the cost the timing-equalizer hash below is minted with too: the
+// dummy comparison has to cost what a real one costs, so both read this one
+// constant.
+const passwordHashCost = 12
 
 type User struct {
 	ID        int
@@ -29,7 +36,7 @@ type password struct {
 }
 
 func (p *password) Set(plaintextPassword string) error {
-	hash, err := bcrypt.GenerateFromPassword([]byte(plaintextPassword), 12)
+	hash, err := bcrypt.GenerateFromPassword([]byte(plaintextPassword), passwordHashCost)
 	if err != nil {
 		return err
 	}
@@ -52,6 +59,30 @@ func (p *password) Matches(plaintextPassword string) (bool, error) {
 	}
 
 	return true, nil
+}
+
+// dummyPasswordHash is a bcrypt hash of a constant this package never reveals,
+// minted once per process (lazily, on the first burn) at passwordHashCost so a
+// burn costs exactly what a real comparison costs. Its plaintext is irrelevant:
+// nothing ever matches it, and the verdict is thrown away.
+var dummyPasswordHash = sync.OnceValue(func() []byte {
+	hash, err := bcrypt.GenerateFromPassword([]byte("identity-timing-equalizer"), passwordHashCost)
+	if err != nil {
+		panic("identity: cannot mint the timing-equalizer hash: " + err.Error())
+	}
+	return hash
+})
+
+// BurnPasswordComparison spends a bcrypt comparison against the package's
+// constant dummy hash and discards the verdict. It exists so a refusal that
+// has no stored hash to compare against (an unknown email at sign-in) can be
+// made to cost the same work as one that does (a wrong password): the two
+// "invalid credentials" answers must not be distinguishable by latency, or a
+// caller can time sign-in to learn whether an address is registered
+// (R-IDENTITY-018). Two independent users of it buy the cost twice, which is
+// what a real comparison would cost them too.
+func BurnPasswordComparison(plaintextPassword string) {
+	_ = bcrypt.CompareHashAndPassword(dummyPasswordHash(), []byte(plaintextPassword))
 }
 
 // Hash returns the stored hash — the repository's write path (INSERT/UPDATE

@@ -1287,6 +1287,7 @@ An email that no account holds and a password that does not match the account pr
 **Verification**
 
 - unit: `internal/identity/internal/model/user_test.go::TestPasswordHashRoundTrip`
+- unit: `internal/identity/internal/service/authenticate_test.go::TestAuthenticate`
 
 ## Module `kernel`
 

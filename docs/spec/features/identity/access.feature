@@ -23,11 +23,11 @@ Feature: Who may act
   Rule: A failed login is one refusal, whichever half failed
 
     # Both refusals are the same one — same answer, same sentence — so a caller
-    # cannot use signing in to learn whether an address is registered.
-    # Misalignment-report §6.8 records that the two paths still differ in the
-    # work they do (an unknown email returns before any password is compared),
-    # so the timing is a catalogued candidate defect and is deliberately not
-    # asserted here: no scenario in this file reads a clock.
+    # cannot use signing in to learn whether an address is registered. They also
+    # cost the same work: the unknown-email path burns a dummy password
+    # comparison before it refuses, so the timing is no longer an oracle
+    # (misalignment-report §6.8 is resolved). No scenario reads a clock — the
+    # work half is pinned by the service test TestAuthenticate instead.
     Scenario: An unknown email is refused as an invalid credential
       When the visitor signs in as "nobody@example.com" with the password "guessed-once"
       Then the sign-in is refused as an invalid credential

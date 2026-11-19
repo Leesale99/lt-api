@@ -4436,6 +4436,7 @@
   verification:
     unit:
       - internal/identity/internal/model/user_test.go::TestPasswordHashRoundTrip
+      - internal/identity/internal/service/authenticate_test.go::TestAuthenticate
     gherkin:
       - docs/spec/features/identity/access.feature::An unknown email is refused as an invalid credential
   notes: >

@@ -107,8 +107,9 @@ func (s *Service) RequestActivationToken(ctx context.Context, email string) erro
 
 // Authenticate checks the password and mints an authentication token. An
 // unknown email and a wrong password both surface as
-// model.ErrInvalidCredentials: the same 401, and the same code path — the
-// caller's response must not reveal which half failed.
+// model.ErrInvalidCredentials: the same 401 from the same code path — the
+// caller's response must not reveal which half failed, in what it says or in
+// how long it takes to say it.
 //
 // Timeout placement: each store call gets its own persistence.DBTimeout
 // child; the bcrypt compare runs BETWEEN them, outside any DB budget, so a
@@ -120,6 +121,18 @@ func (s *Service) Authenticate(ctx context.Context, email, plaintextPassword str
 	user, err := s.users.GetByEmail(lookupCtx, email)
 	if err != nil {
 		if errors.Is(err, model.ErrNotFound) {
+			// Timing equivalence (R-IDENTITY-018). The wrong-password path
+			// below spends a bcrypt comparison before it refuses; if this
+			// path returned here, the two "invalid credentials" answers
+			// would differ by exactly that work, and a caller who times
+			// sign-in could enumerate registered addresses. So burn one
+			// comparison against a constant hash and throw the verdict
+			// away. The connection is released first, as it is on the
+			// real path, so both paths hold a DB connection for the same
+			// part of the request and spend the same time outside the
+			// budget.
+			cancelLookup()
+			model.BurnPasswordComparison(plaintextPassword)
 			return model.UserToken{}, model.ErrInvalidCredentials
 		}
 		return model.UserToken{}, err
