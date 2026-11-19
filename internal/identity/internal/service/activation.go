@@ -82,7 +82,11 @@ func (s *Service) Register(ctx context.Context, user model.User, plaintextPasswo
 
 // RequestActivationToken mints a fresh activation token for an unactivated
 // user and books the email that carries it. model.ErrNotFound is an unknown
-// email; model.ErrAlreadyActivated is an already-active account.
+// email; model.ErrAlreadyActivated is an already-active account. Both are
+// verdicts for the caller's own bookkeeping, not refusal shapes: no token is
+// minted and no mail is booked for either, and the handler answers both with
+// the same 202 envelope a genuine request receives, so the endpoint tells a
+// caller nothing about which addresses exist (R-IDENTITY-022).
 func (s *Service) RequestActivationToken(ctx context.Context, email string) error {
 	user, err := s.users.GetByEmail(ctx, email)
 	if err != nil {

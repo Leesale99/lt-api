@@ -32,18 +32,20 @@ func (h *Handler) createActivationToken(w http.ResponseWriter, r *http.Request) 
 	defer cancel()
 
 	err = h.svc.RequestActivationToken(ctx, input.Email)
-	if err != nil {
-		switch {
-		case errors.Is(err, context.Canceled):
-			return
-		case errors.Is(err, model.ErrNotFound):
-			httpx.NotFound(w, r)
-		case errors.Is(err, model.ErrAlreadyActivated):
-			v.AddError("email", "user has already been activated")
-			httpx.FailedValidation(w, r, v.Errors)
-		default:
-			h.serverError(w, r, err)
-		}
+	switch {
+	case err == nil:
+		// A genuine request: the service minted a token and booked the mail.
+	case errors.Is(err, context.Canceled):
+		return
+	case errors.Is(err, model.ErrNotFound), errors.Is(err, model.ErrAlreadyActivated):
+		// Existence neutralization (R-IDENTITY-022): an address no account
+		// holds and an account that is already active are answered exactly as
+		// a genuine request is — same 202, same envelope — because the
+		// service minted nothing and mailed nothing. A distinguishable refusal
+		// here would turn this endpoint into an account oracle. The neutral
+		// answer is the one below; only that the work was skipped differs.
+	default:
+		h.serverError(w, r, err)
 		return
 	}
 

@@ -1138,11 +1138,11 @@ An account's id, its creation time and its version counter are produced by the s
 - unit: `internal/identity/internal/repository/user_repo_test.go::TestInsert`
 - e2e: `internal/e2e/users_test.go::TestRegisterUserHandler`
 
-#### R-IDENTITY-022 — A second activation is refused
+#### R-IDENTITY-022 — Activation happens once and asking discloses nothing
 
 `implemented` · `policy` · authority `service`
 
-Activation happens once. An account that is already active cannot be activated again, and asking for a fresh activation mail for such an account is refused rather than silently re-minted. A token that was already spent, has expired or was minted for another purpose is likewise no longer an activation credential.
+Activation happens once. An account that is already active cannot be activated again, and a token that was already spent, has expired or was minted for another purpose is no longer an activation credential. Asking for a fresh activation mail is answered the same way whoever asks: an address no account holds and an address whose account is already active receive exactly the answer a genuine request receives — the same status, the same body — and neither mints a token nor sends a mail, so the endpoint never says whether an address is registered or whether its account is active.
 
 **Authority** `service`
 
@@ -1151,13 +1151,15 @@ Activation happens once. An account that is already active cannot be activated a
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
 | `internal/identity/internal/service/activation.go::Service.RequestActivationToken` | `service` | `authoritative` | — |
+| `internal/identity/internal/handler/user_tokens.go::Handler.createActivationToken` | `handler` | `defense-in-depth` | — |
 | `internal/identity/internal/service/activation.go::Service.Activate` | `service` | `defense-in-depth` | — |
 
-**Refusal** `synthetic` → _(unnamed)_ → `ErrAlreadyActivated` → `422`
+**Refusal** `synthetic` → _(unnamed)_ → `ErrNotFound` → `422`
 
 **Verification**
 
 - unit: `internal/identity/internal/service/activation_test.go::TestActivate`
+- unit: `internal/identity/internal/service/activation_test.go::TestRequestActivationToken`
 
 ### Entity `user_token`
 

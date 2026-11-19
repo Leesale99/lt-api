@@ -107,16 +107,24 @@ Feature: Account registration and activation
       Then her activation is refused as an expired or spent activation token
 
   @rule:R-IDENTITY-022
-  Rule: Activation happens once
+  Rule: Activation happens once and asking discloses nothing
 
-    # An unknown email and an already-active account are answered differently on
-    # this surface (misalignment-report §6.9) — a deliberate existence
-    # disclosure that needs a product decision, not a scenario. Nothing here
-    # asserts the shape of either branch beyond the account's own refusal.
-    Scenario: An activated account cannot collect another activation mail
+    # The request endpoint's answer carries no existence bit: an address no
+    # account holds and an account that is already active are answered exactly
+    # as a genuine request is — same status, same body — and neither is mailed
+    # anything (misalignment-report §6.9, neutralized by decision).
+    Scenario: An activated account collects no second activation mail
       Given a member is activated as "Ana" with the email "ana@example.com"
+      And a member is registered as "Bea" with the email "bea@example.com"
       When the member "Ana" asks for a fresh activation mail
-      Then the member "Ana" is refused as an already activated account
+      Then no activation mail arrives for "ana@example.com"
+      And the answer is the one the unactivated member "Bea" receives
+
+    Scenario: An address no account holds is answered like a registered one
+      Given a member is registered as "Bea" with the email "bea@example.com"
+      When a visitor asks for a fresh activation mail for "nobody@example.com"
+      Then no activation mail arrives for "nobody@example.com"
+      And the answer is the one the unactivated member "Bea" receives
 
     Scenario: An account that never activated may collect a fresh mail
       Given a member is registered as "Ana" with the email "ana@example.com"
