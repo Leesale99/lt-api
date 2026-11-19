@@ -142,12 +142,14 @@ func (m *Middleware) RequirePermission(code string, next http.HandlerFunc) http.
 	})
 }
 
-// RateLimit is the HTTP shell around RateLimiter: it keys on the
-// kernel-controlled RemoteAddr (never client-supplied headers —
-// X-Forwarded-For is attacker-controlled unless a trusted proxy guarantees
-// it), and turns a denial into 429 + Retry-After. All state and decisions
-// live in RateLimiter (ratelimiter.go); this function only translates
-// between HTTP and Allow's verdict.
+// RateLimit is the HTTP shell around RateLimiter: it derives the bucket key
+// from the transport's own facts (RateLimiter.ClientKey: the connection peer,
+// or — behind a trusted reverse proxy such as the deployment's Caddy — the
+// rightmost untrusted hop of X-Forwarded-For), and turns a denial into 429 +
+// Retry-After. An untrusted peer's X-Forwarded-For is ignored, so a spoofed
+// header can never pick someone else's bucket. All state and decisions live in
+// RateLimiter (ratelimiter.go); this function only translates between HTTP and
+// Allow's verdict.
 func (m *Middleware) RateLimit(next http.Handler) http.Handler {
 	l := m.RateLimiter
 	if l == nil || !l.Enabled {
@@ -155,13 +157,13 @@ func (m *Middleware) RateLimit(next http.Handler) http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip, _, err := net.SplitHostPort(r.RemoteAddr)
+		peer, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil {
 			ServerError(w, r, m.Logger, err)
 			return
 		}
 
-		ok, retryAfter := l.Allow(ip)
+		ok, retryAfter := l.Allow(l.ClientKey(peer, r.Header.Values("X-Forwarded-For")))
 		if !ok {
 			// RFC 7231 delay-seconds: an integer count of seconds, ceil'd —
 			// rounding down would promise a retry before the token exists.

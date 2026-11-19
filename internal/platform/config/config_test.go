@@ -263,6 +263,89 @@ func TestParseCORSOrigins(t *testing.T) {
 	}
 }
 
+func TestParseTrustedProxies(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    []string // prefix strings, in order; nil means no allowlist
+		wantErr string
+	}{
+		{
+			name: "empty raw is nil (nobody trusted)",
+			raw:  "",
+			want: nil,
+		},
+		{
+			name: "whitespace and commas only is nil (nobody trusted)",
+			raw:  "  ,  ",
+			want: nil,
+		},
+		{
+			name: "single prefix",
+			raw:  "10.0.0.0/8",
+			want: []string{"10.0.0.0/8"},
+		},
+		{
+			name: "several prefixes, spaces and empties tolerated",
+			raw:  " 10.0.0.0/8 , , 192.168.0.0/16 ,",
+			want: []string{"10.0.0.0/8", "192.168.0.0/16"},
+		},
+		{
+			// The convention: a bare IP is a single host, never a guess at the
+			// surrounding network.
+			name: "bare IPv4 is a /32",
+			raw:  "203.0.113.7",
+			want: []string{"203.0.113.7/32"},
+		},
+		{
+			name: "bare IPv6 is a /128",
+			raw:  "2001:db8::1",
+			want: []string{"2001:db8::1/128"},
+		},
+		{
+			name: "host bits are masked away",
+			raw:  "10.1.2.3/8",
+			want: []string{"10.0.0.0/8"},
+		},
+		{
+			name:    "hostname rejected (no DNS lookup at boot)",
+			raw:     "proxy.internal",
+			wantErr: "not an IP or CIDR prefix",
+		},
+		{
+			name:    "out-of-range prefix length rejected",
+			raw:     "10.0.0.0/33",
+			wantErr: "not an IP or CIDR prefix",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseTrustedProxies(tt.raw)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("parseTrustedProxies(%q) = nil error, want error containing %q", tt.raw, tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseTrustedProxies(%q) = %v, want nil", tt.raw, err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i].String() != tt.want[i] {
+					t.Errorf("prefix[%d] = %q, want %q", i, got[i].String(), tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestParse(t *testing.T) {
 	const validDSN = "postgres://lt:test@localhost:5432/lt_test?sslmode=disable"
 
@@ -422,6 +505,62 @@ func TestParse(t *testing.T) {
 					}
 				}
 			},
+		},
+		{
+			name: "TRUSTED_PROXIES flows through Parse",
+			env: map[string]string{
+				"LT_API_DSN":      validDSN,
+				"TRUSTED_PROXIES": " 10.0.0.0/8, 203.0.113.7 ",
+			},
+			check: func(t *testing.T, cfg Config) {
+				want := []string{"10.0.0.0/8", "203.0.113.7/32"}
+				if len(cfg.Limiter.TrustedProxies) != len(want) {
+					t.Fatalf("got %v, want %v", cfg.Limiter.TrustedProxies, want)
+				}
+				for i := range want {
+					if cfg.Limiter.TrustedProxies[i].String() != want[i] {
+						t.Errorf("prefix[%d] = %q, want %q", i, cfg.Limiter.TrustedProxies[i].String(), want[i])
+					}
+				}
+			},
+		},
+		{
+			// The default is the safe one: no allowlist, so the limiter keeps
+			// keying on the connection peer.
+			name: "TRUSTED_PROXIES unset trusts nobody",
+			env:  map[string]string{"LT_API_DSN": validDSN},
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Limiter.TrustedProxies) != 0 {
+					t.Errorf("got %v, want no trusted proxies", cfg.Limiter.TrustedProxies)
+				}
+			},
+		},
+		{
+			name: "a malformed TRUSTED_PROXIES fails at boot, naming both spellings",
+			env: map[string]string{
+				"LT_API_DSN":      validDSN,
+				"TRUSTED_PROXIES": "10.0.0.0/8,proxy.internal",
+			},
+			wantErr: "env TRUSTED_PROXIES or -trusted-proxies flag",
+		},
+		{
+			name: "the flag overrides a bad env TRUSTED_PROXIES",
+			env: map[string]string{
+				"LT_API_DSN":      validDSN,
+				"TRUSTED_PROXIES": "proxy.internal",
+			},
+			args: []string{"-trusted-proxies=10.0.0.0/8"},
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Limiter.TrustedProxies) != 1 || cfg.Limiter.TrustedProxies[0].String() != "10.0.0.0/8" {
+					t.Errorf("got %v, want [10.0.0.0/8]", cfg.Limiter.TrustedProxies)
+				}
+			},
+		},
+		{
+			name:    "a bad -trusted-proxies names both spellings and the IP convention",
+			env:     map[string]string{"LT_API_DSN": validDSN},
+			args:    []string{"-trusted-proxies=not-an-ip"},
+			wantErr: "/32 or /128",
 		},
 	}
 

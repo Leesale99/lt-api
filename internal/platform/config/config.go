@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/mail"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -47,6 +48,13 @@ type Config struct {
 		RPS     float64
 		Burst   int
 		Enabled bool
+		// TrustedProxies is the reverse-proxy allowlist: a peer inside one of
+		// these prefixes may name the client in X-Forwarded-For, and the
+		// limiter keys buckets on that client instead of on the proxy. Empty
+		// (the default) trusts no peer, so X-Forwarded-For is ignored and the
+		// bucket key is the connection address — the safe default, since an
+		// untrusted caller writes that header itself.
+		TrustedProxies []netip.Prefix
 	}
 	SMTP struct {
 		Host     string
@@ -100,6 +108,12 @@ func Parse(args []string) (Config, error) {
 	fs.IntVar(&cfg.Limiter.Burst, "limiter-burst", env.limiterBurst, "Rate limiter maximum burst (env: LT_API_LIMITER_BURST)")
 	fs.BoolVar(&cfg.Limiter.Enabled, "limiter-enabled", env.limiterEnabled, "Enable rate limiter (env: LT_API_LIMITER_ENABLED)")
 
+	// Parsed after fs.Parse, for the same reason LOG_LEVEL is: a bare IP has
+	// to become a prefix, and the refusal must name the knob the bad value
+	// came from.
+	trustedProxiesRaw := env.trustedProxiesRaw
+	fs.StringVar(&trustedProxiesRaw, "trusted-proxies", trustedProxiesRaw, "Reverse proxies whose X-Forwarded-For is trusted, as comma-separated IPs/CIDRs; empty trusts none (env: TRUSTED_PROXIES)")
+
 	fs.StringVar(&cfg.SMTP.Host, "smtp-host", env.smtpHost, "SMTP host (env: SMTP_HOST)")
 	fs.IntVar(&cfg.SMTP.Port, "smtp-port", env.smtpPort, "SMTP port (env: SMTP_PORT)")
 	fs.StringVar(&cfg.SMTP.Username, "smtp-username", env.smtpUsername, "SMTP username (env: SMTP_USERNAME)")
@@ -132,6 +146,11 @@ func Parse(args []string) (Config, error) {
 		return Config{}, err
 	}
 
+	cfg.Limiter.TrustedProxies, err = parseTrustedProxies(trustedProxiesRaw)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid TRUSTED_PROXIES: %w (%s)", err, knob("TRUSTED_PROXIES", "-trusted-proxies"))
+	}
+
 	if err := validate(cfg); err != nil {
 		return Config{}, err
 	}
@@ -142,24 +161,25 @@ func Parse(args []string) (Config, error) {
 // surfaces before flag.Parse ever runs (all bad variables at once), and the
 // flag registrations stay plain literals reading from one struct.
 type envDefaults struct {
-	port           int
-	env            string
-	logLevel       string
-	dbDSN          string
-	dbDSNSchedule  string
-	dbDSNGame      string
-	dbDSNIdentity  string
-	dbMaxConns     int
-	dbMaxIdleTime  time.Duration
-	limiterRPS     float64
-	limiterBurst   int
-	limiterEnabled bool
-	smtpHost       string
-	smtpPort       int
-	smtpUsername   string
-	smtpPassword   string
-	smtpSender     string
-	corsRaw        string
+	port              int
+	env               string
+	logLevel          string
+	dbDSN             string
+	dbDSNSchedule     string
+	dbDSNGame         string
+	dbDSNIdentity     string
+	dbMaxConns        int
+	dbMaxIdleTime     time.Duration
+	limiterRPS        float64
+	limiterBurst      int
+	limiterEnabled    bool
+	trustedProxiesRaw string
+	smtpHost          string
+	smtpPort          int
+	smtpUsername      string
+	smtpPassword      string
+	smtpSender        string
+	corsRaw           string
 }
 
 func readEnv() (envDefaults, error) {
@@ -176,6 +196,7 @@ func readEnv() (envDefaults, error) {
 	e.smtpPassword = envString("SMTP_PASSWORD", "")
 	e.smtpSender = envString("SMTP_SENDER", "League Tokens <no-reply@lt.aleksrdvn.com>")
 	e.corsRaw = envString("CORS_ORIGINS", "")
+	e.trustedProxiesRaw = envString("TRUSTED_PROXIES", "")
 
 	var errs []error
 	var err error
@@ -280,6 +301,37 @@ func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid %s %q: must be a duration (e.g. 15m)", key, v)
 	}
 	return d, nil
+}
+
+// parseTrustedProxies turns the raw TRUSTED_PROXIES value into the reverse
+// proxy allowlist. Each entry must be an IP prefix; a bare IP is accepted and
+// means exactly that ONE host — /32 for IPv4, /128 for IPv6 — never a whole
+// /8, because an operator who typed a single address named a single proxy.
+// Prefixes are masked, so host bits in 10.1.2.3/8 cannot make the membership
+// test surprising. Empty (or whitespace/commas only) yields nil: nobody is
+// trusted, which is the pre-proxy behaviour.
+func parseTrustedProxies(raw string) ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+
+	for part := range strings.SplitSeq(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		if prefix, err := netip.ParsePrefix(part); err == nil {
+			prefixes = append(prefixes, prefix.Masked())
+			continue
+		}
+
+		addr, err := netip.ParseAddr(part)
+		if err != nil {
+			return nil, fmt.Errorf("%q is not an IP or CIDR prefix (a bare IP means that single host: /32 or /128)", part)
+		}
+		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+
+	return prefixes, nil
 }
 
 // parseCORSOrigins turns the raw CORS_ORIGINS value into an allowlist.

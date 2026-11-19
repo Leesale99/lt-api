@@ -9,9 +9,12 @@ package httpx
 // HTTP-free is what lets its tests fake the clock without touching
 // Application.
 //
-// In-memory buckets are correct while the app is a single process; the
-// boundary is recorded, not built (cross-replica limiting needs a shared
-// store such as Redis).
+// Buckets are in memory, so limiting is per process; that boundary is
+// recorded, not built (cross-replica limiting needs a shared store such as
+// Redis). Buckets are keyed by the client address, which by default is the
+// connection peer; a deployment behind a reverse proxy declares the proxy in
+// WithTrustedProxies and the key becomes the client the proxy forwards for
+// (see ClientKey).
 //
 // Concurrency notes:
 //   - one mutex guards the client map; everything touching it stays inside
@@ -23,6 +26,8 @@ package httpx
 
 import (
 	"context"
+	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,6 +53,11 @@ type RateLimiter struct {
 	now  func() time.Time
 	tick time.Duration
 
+	// trustedProxies is the reverse-proxy allowlist (WithTrustedProxies).
+	// Empty is the safe default: the bucket key is the connection peer and
+	// X-Forwarded-For is ignored.
+	trustedProxies []netip.Prefix
+
 	mu      sync.Mutex
 	clients map[string]*rateLimiterClient
 }
@@ -68,6 +78,18 @@ func WithSweepPeriod(d time.Duration) Option {
 	return func(l *RateLimiter) { l.tick = d }
 }
 
+// WithTrustedProxies declares the peers whose X-Forwarded-For may name the
+// client: a peer inside one of these prefixes is a reverse proxy this
+// deployment trusts (in production: the Caddy instance in front of the API).
+// The empty list — the default — trusts nobody, which is exactly the
+// connection-peer-only behaviour. The prefixes come from TRUSTED_PROXIES
+// (platform config validates them at boot).
+func WithTrustedProxies(prefixes []netip.Prefix) Option {
+	return func(l *RateLimiter) {
+		l.trustedProxies = append([]netip.Prefix(nil), prefixes...)
+	}
+}
+
 // NewRateLimiter returns a limiter allowing burst requests at once, refilled
 // at rps tokens per second, per client IP.
 func NewRateLimiter(rps float64, burst int, enabled bool, opts ...Option) *RateLimiter {
@@ -83,6 +105,76 @@ func NewRateLimiter(rps float64, burst int, enabled bool, opts ...Option) *RateL
 		o(l)
 	}
 	return l
+}
+
+// ClientKey derives the bucket key for one request from its transport facts:
+// peer is the host part of r.RemoteAddr and forwardedFor carries the request's
+// X-Forwarded-For values verbatim (net/http splits repeated headers for us).
+//
+// The rule is the RIGHTMOST-UNTRUSTED-HOP: the client is the last address in
+// the forwarded chain that is not itself a trusted proxy — everything to its
+// right was appended by a proxy we trust, everything to its left is whatever
+// the caller claimed. Consequences:
+//   - the trusted list empty (the default) or the peer outside it: the peer is
+//     the client and the header is ignored entirely, so an untrusted caller
+//     cannot move its own bucket by inventing an X-Forwarded-For;
+//   - the peer trusted (the Caddy reverse proxy the deployment runs in front
+//     of this process): walk the hops right to left and take the first
+//     untrusted one; if every hop is trusted, the leftmost hop is the
+//     originating client;
+//   - unparseable entries are skipped, and a chain with no parseable address
+//     at all falls back to the peer — a mangled header never merges clients,
+//     it only withholds the more precise key.
+func (l *RateLimiter) ClientKey(peer string, forwardedFor []string) string {
+	if len(l.trustedProxies) == 0 || !l.trusted(peer) {
+		return peer
+	}
+
+	var hops []string
+	for _, header := range forwardedFor {
+		for raw := range strings.SplitSeq(header, ",") {
+			if addr, ok := parseIP(raw); ok {
+				hops = append(hops, addr)
+			}
+		}
+	}
+	if len(hops) == 0 {
+		return peer
+	}
+
+	for i := len(hops) - 1; i >= 0; i-- {
+		if !l.trusted(hops[i]) {
+			return hops[i]
+		}
+	}
+	return hops[0]
+}
+
+// trusted reports whether addr is a reverse proxy this deployment trusts.
+// An unparseable address is never trusted, which keeps the fallback on the
+// connection peer.
+func (l *RateLimiter) trusted(addr string) bool {
+	ip, err := netip.ParseAddr(addr)
+	if err != nil {
+		return false
+	}
+	ip = ip.Unmap()
+	for _, prefix := range l.trustedProxies {
+		if prefix.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseIP canonicalizes one X-Forwarded-For entry. Only a bare IP is a hop:
+// a port, a hostname or a "unknown" placeholder is not, and is skipped.
+func parseIP(raw string) (string, bool) {
+	addr, err := netip.ParseAddr(strings.TrimSpace(raw))
+	if err != nil {
+		return "", false
+	}
+	return addr.Unmap().String(), true
 }
 
 // Allow records the client's activity and reports whether the request may
