@@ -5,11 +5,12 @@ package service_test
 // the enforcement home (see testmain_test.go for the harness). The
 // calendar-entity constraint drift tests live in internal/schedule.
 //
-// Requires a running PostgreSQL. LT_API_TEST_DSN (see .envrc) points at the
-// test database, which the harness creates and drops itself — the test role
-// needs only LOGIN + CREATEDB (see internal/testdb).
+// Requires a running PostgreSQL. LT_API_TEST_DSN points at the test database
+// (see internal/testdb for the setup contract), which the harness creates and
+// drops itself — the test role needs only LOGIN + CREATEDB.
 //
-// Without LT_API_TEST_DSN the tests are skipped.
+// Without LT_API_TEST_DSN the suite fails, unless AUDIT_SKIP_DB=1 opts out
+// explicitly; the DB-backed tests then skip, saying so.
 
 import (
 	"context"
@@ -114,12 +115,19 @@ var (
 
 // TestMain always runs the full suite: unit tests in this package must run
 // on a DB-less machine too. Only the DB-backed tests skip, one by one, via
-// requireDB. Exiting before m.Run() would silently disable the whole
-// package — including `go test -list`.
+// requireDB — and only under the explicit AUDIT_SKIP_DB=1 opt-out.
+// Exiting before m.Run() would silently disable the whole package — including
+// `go test -list`.
 func TestMain(m *testing.M) {
-	dsn := os.Getenv("LT_API_TEST_DSN")
-	if dsn == "" {
-		fmt.Println("LT_API_TEST_DSN not set; database-backed tests will be skipped")
+	dsn := os.Getenv(testdb.DSNEnv)
+	switch decision := testdb.DecideSkip(dsn, os.Getenv(testdb.SkipOptOutEnv)); decision.Action {
+	case testdb.ActionFail:
+		// Not a skip: the DB-backed half did not run, so the exit status says
+		// so. The message carries the way out.
+		fmt.Fprintln(os.Stderr, decision.Message)
+		os.Exit(1)
+	case testdb.ActionSkip:
+		testdb.Announce(decision.Message)
 		os.Exit(m.Run())
 	}
 
@@ -144,11 +152,12 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// requireDB skips a test when the database harness is unavailable.
+// requireDB skips a test under the explicit AUDIT_SKIP_DB=1 opt-out (TestMain
+// leaves pool nil there); otherwise TestMain has already failed or built it.
 func requireDB(t *testing.T) {
 	t.Helper()
 	if pool == nil {
-		t.Skip("LT_API_TEST_DSN not set; requires a test database")
+		t.Skip("database skipped: AUDIT_SKIP_DB=1 opted out")
 	}
 }
 

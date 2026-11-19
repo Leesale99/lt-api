@@ -22,8 +22,9 @@ package testdb
 // and, once, that the Owner pool is the DSN role — unrestricted, never
 // role-switched (fixtures and constraint probes need that).
 //
-// Same skip-guard as boundary_test.go: LT_API_TEST_DSN unset → skip (TestMain
-// leaves boundaryDB nil); set but unusable → TestMain has already failed.
+// Same skip-guard as boundary_test.go: the TestMain above leaves boundaryDB nil
+// only under the explicit AUDIT_SKIP_DB=1 opt-out; a set-but-unusable DSN has
+// already failed there.
 
 import (
 	"context"
@@ -73,9 +74,7 @@ func searchPathList(t *testing.T, pool *pgxpool.Pool) []string {
 // context's tables would become resolvable unqualified), or if the pools are
 // mixed up at Setup time (a context handed another context's pool).
 func TestContextPoolsRunAsContextRole(t *testing.T) {
-	if boundaryDB == nil {
-		t.Skip("LT_API_TEST_DSN not set; context-role probe skipped")
-	}
+	requireDB(t)
 	owner := dsnRole(t)
 
 	pools := []struct {

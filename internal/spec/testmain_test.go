@@ -16,8 +16,9 @@ package spec
 //   - LT_API_TEST_DSN set but the database unreachable → hard failure with
 //     testdb's actionable message.
 //
-// internal/e2e still skips quietly without the DSN; moving it onto the same
-// policy is a separate change.
+// Every database-backed suite in the tree (this one, internal/e2e, the
+// schedule/identity/game store packages and internal/testdb's own boundary
+// probes) implements this same policy.
 
 import (
 	"context"
