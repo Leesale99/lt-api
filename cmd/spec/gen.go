@@ -414,7 +414,7 @@ func writeNotes(b *strings.Builder, notes string) {
 			fmt.Fprint(b, ">\n")
 			continue
 		}
-		fmt.Fprintf(b, "> %s\n", line)
+		fmt.Fprintf(b, "> %s\n", escapeQuoteLine(line))
 	}
 	fmt.Fprint(b, "\n")
 }

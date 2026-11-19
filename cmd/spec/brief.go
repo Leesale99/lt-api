@@ -1,10 +1,10 @@
 package main
 
 // brief.go emits a Markdown work order for one rule or one module: everything a
-// reader needs to pick the rule up — statement, enforcement sites, refusal map,
-// fixture, verification pointers (each resolved against the tree today), the
-// scenarios tagged with the rule, and the gate to run. It assembles the same
-// catalog and the same feature parse `check` uses, and it is a reading aid,
+// reader needs to pick the rule up — statement, enforcement sites and
+// verification pointers (each resolved against the tree today), refusal map,
+// fixture, the scenarios tagged with the rule, and the gate to run. It assembles
+// the same catalog and the same feature parse `check` uses, and it is a reading aid,
 // never a source of truth: the catalog entry and its scenario are the law.
 
 import (
@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -204,7 +205,7 @@ func writeBriefRule(b *strings.Builder, rule Rule, ctx *briefContext) {
 		}
 	}
 
-	writeBriefEnforcement(b, rule)
+	writeBriefEnforcement(b, rule, ctx)
 	writeBriefRefusal(b, rule)
 
 	if rule.Fixture != nil && *rule.Fixture != "" {
@@ -230,19 +231,23 @@ func writeBriefRule(b *strings.Builder, rule Rule, ctx *briefContext) {
 	writeBriefGate(b)
 }
 
-func writeBriefEnforcement(b *strings.Builder, rule Rule) {
+func writeBriefEnforcement(b *strings.Builder, rule Rule, ctx *briefContext) {
 	if len(rule.Enforcement) == 0 {
 		fmt.Fprint(b, "**Enforcement.** _(no site — a specified-only rule has none yet)_\n\n")
 		return
 	}
-	fmt.Fprint(b, "**Enforcement.**\n\n| Site | Layer | Role | Pinned by |\n| --- | --- | --- | --- |\n")
+	fmt.Fprint(b, "**Enforcement.**\n\n| Site | Layer | Role | Pinned by | Resolves |\n| --- | --- | --- | --- | --- |\n")
 	for _, site := range rule.Enforcement {
 		pinned := "—"
 		if site.PinnedBy != nil && *site.PinnedBy != "" {
 			pinned = "`" + mdCell(*site.PinnedBy) + "`"
 		}
-		fmt.Fprintf(b, "| `%s` | `%s` | `%s` | %s |\n",
-			mdCell(displayPath(site.Site)), mdCell(site.Layer), mdCell(site.Role), pinned)
+		resolved := "yes"
+		if !ctx.resolvesEnforcement(site.Site) {
+			resolved = "**missing**"
+		}
+		fmt.Fprintf(b, "| `%s` | `%s` | `%s` | %s | %s |\n",
+			mdCell(displayPath(site.Site)), mdCell(site.Layer), mdCell(site.Role), pinned, resolved)
 	}
 	fmt.Fprint(b, "\n")
 }
@@ -330,6 +335,24 @@ func writeBriefGate(b *strings.Builder) {
 	fmt.Fprint(b, "`make test/spec` needs `LT_API_TEST_DSN` (`make db/up` provides it); `make audit` is the whole gate.\n\n")
 }
 
+// resolvesEnforcement resolves a site the same way `check` does: a migration
+// site when the file exists under the root, a `path::Symbol` site when the
+// symbol exists in the file (receiver-aware, via symbolExists), and anything
+// malformed as missing.
+func (b *briefContext) resolvesEnforcement(site string) bool {
+	if site == "" || lineNumberPattern.MatchString(site) {
+		return false
+	}
+	if strings.HasPrefix(site, "migrations/") {
+		return b.checker.fileExists(site)
+	}
+	path, symbol, ok := splitPointer(site)
+	if !ok || isLineNumber(symbol) {
+		return false
+	}
+	return b.resolvesSymbol(path, symbol, symbolExists)
+}
+
 // resolvesVerification resolves a pointer the same way `check` does: Go
 // pointers by `path::Symbol` (test symbols for unit/e2e), scenarios by
 // `<feature-file>::<scenario name>` against the parsed tree.
@@ -379,9 +402,31 @@ func writeQuoteBlock(b *strings.Builder, text string) {
 			fmt.Fprint(b, ">\n")
 			continue
 		}
-		fmt.Fprintf(b, "> %s\n", line)
+		fmt.Fprintf(b, "> %s\n", escapeQuoteLine(line))
 	}
 	fmt.Fprint(b, "\n")
+}
+
+// orderedListMarker matches a leading `1.`/`12.` list marker; only the dot is
+// escaped so the note reads as prose inside the quote, not a nested list.
+var orderedListMarker = regexp.MustCompile(`^([0-9]+)\.(?:[ \t]|$)`)
+
+// escapeQuoteLine neutralizes exactly the leading characters that would change
+// the Markdown structure of the block quote — a nested quote (`>`), a heading
+// (`#`), and a list marker (`-`, `*`, `+`, `1.`). Ordinary prose is untouched.
+func escapeQuoteLine(line string) string {
+	switch {
+	case strings.HasPrefix(line, ">"), strings.HasPrefix(line, "#"):
+		return `\` + line
+	case strings.HasPrefix(line, "- "), strings.HasPrefix(line, "* "), strings.HasPrefix(line, "+ "),
+		line == "-", line == "*", line == "+":
+		return `\` + line
+	}
+	if loc := orderedListMarker.FindStringSubmatchIndex(line); loc != nil {
+		dot := loc[3] // end of the digit group, i.e. the `.`
+		return line[:dot] + `\` + line[dot:]
+	}
+	return line
 }
 
 // finishMarkdown keeps every generated artifact byte-stable: exactly one
