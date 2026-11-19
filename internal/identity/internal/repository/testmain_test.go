@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 
 	"lt-api.aleksrdvn.com/internal/identity/internal/model"
 	"lt-api.aleksrdvn.com/internal/testdb"
@@ -66,6 +67,10 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	// Fixtures hash passwords through the model; no assertion here depends on
+	// the hash being slow, so the suite pays the cheapest cost.
+	model.PasswordCost = bcrypt.MinCost
+
 	dsn := os.Getenv("LT_API_TEST_DSN")
 	if dsn == "" {
 		fmt.Println("LT_API_TEST_DSN not set; identity repository integration tests will be skipped")

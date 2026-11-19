@@ -15,7 +15,9 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 
+	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/testdb"
 )
 
@@ -31,6 +33,11 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	// Registration flows hash through the real handler; the assertions read
+	// the stored hash back (bcrypt.CompareHashAndPassword), so the cheapest
+	// cost proves the same thing.
+	identity.SetPasswordHashCost(bcrypt.MinCost)
+
 	dsn := os.Getenv("LT_API_TEST_DSN")
 	if dsn == "" {
 		fmt.Println("LT_API_TEST_DSN not set; E2E integration tests will be skipped")

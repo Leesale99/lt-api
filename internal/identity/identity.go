@@ -64,6 +64,19 @@ func NewModule(pool *pgxpool.Pool, mailer Mailer) *Module {
 	return &Module{svc: service.New(pool, repos, mailer)}
 }
 
+// SetPasswordHashCost overrides the bcrypt cost every hash the model produces
+// uses. It exists for the integration suites: internal/spec and internal/e2e
+// compose the module through this facade, and Go's internal-package rule keeps
+// internal/identity/internal/model out of their reach, so the facade is the
+// only door to the model's knob. Like server.RunOptions — the short shutdown
+// budgets production never sets — this is a test-only override that lives in
+// production code because the seam has to be reachable: the suites set it once
+// before composing (bcrypt.MinCost), and the product keeps hashing at
+// model.ProductionPasswordCost because nothing else calls it.
+func SetPasswordHashCost(cost int) {
+	model.PasswordCost = cost
+}
+
 // UseBackground installs the process background-task runner the mail
 // deliveries are booked on (the shared server's tracker) — the composition
 // root installs it after the server exists, because the tracker lives there.
