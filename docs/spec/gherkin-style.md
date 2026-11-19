@@ -84,8 +84,9 @@ decision, round, match, season, team, player, match day, tokens, stake, bonus, s
 committed result, open round, refused**.
 
 Forbidden in feature and step text — they describe *how* a message is shaped, not what the
-business decides: `HTTP`, `JSON`, `request`, `response`, `status code`, `endpoint`, `route`,
-`handler`, `DTO`, `payload`, numeric statuses (`200`, `401`, `409`, `422`, `500`), and SQL
+business decides: `HTTP`, `HTTPS`, `JSON`, `request`, `response`, `header`, `headers`,
+`status code`, `endpoint`, `route`, `handler`, `DTO`, `payload`, numeric statuses (`200`,
+`401`, `409`, `422`, `500`), and SQL
 vocabulary in facade steps (`SELECT`, `INSERT`, `UPDATE`, `CHECK`, `WHERE`, table and column
 names).
 
@@ -157,12 +158,19 @@ layer, because the database refuses the write itself.
 |---|---|
 | `When` | `When the Owner pool tries to <forbidden write, in domain words> <object>` |
 | `Then` | `Then the write is refused by <database object>` |
+| `Then` | `Then the write is refused for <the fact the store stamps>` — the store refuses a row that names its own id (the `GENERATED ALWAYS` case, SQLSTATE `428C9`); e.g. `the write is refused for the id the store stamps` |
 | `Then` | `Then the refusal names <raised name>` — only when the gate's own name differs |
 | `Then` | `Then the write is allowed` — the carve-out case |
 
-- One forbidden write per scenario. `<database object>` is spelled exactly as the migration
-  spells it: a trigger gate (`rides_state_insert_gate`, `rides_state_gate`) or a declarative
-  constraint (`rides_money_state_coupling`, `rides_tokens_locked_check`).
+- One forbidden write per scenario. `<database object>` is a gate or raise name as the
+  migration spells it (`rides_state_insert_gate`, `rides_state_gate`), or a declarative
+  constraint by its actual name (`rides_money_state_coupling`,
+  `rides_tokens_locked_check`) — including the default name Postgres gives an unnamed
+  `UNIQUE`/`PKEY` when that is the name the refusal surfaces (`user_tokens_pkey`,
+  `permissions_code_key`, `roles_permissions_pkey`).
+- The sabotage family is exempt from the SQL half of policy 13's step-vocabulary
+  denylist (`rules.schema.md` §3 policy 13): these steps legitimately say `insert` and
+  name database objects. The transport half still applies.
 - Sabotage is only for rules whose catalog `authority` is `database` (or where the database
   holds a load-bearing copy). For a `domain`- or `service`-authority rule a bypassing writer
   is **allowed by design**, so a sabotage scenario would be a false promise: prove those at
@@ -182,13 +190,15 @@ layer, because the database refuses the write itself.
 
 ## 9. `@known-defect:<item>` — the red scenario that is a finding
 
-A scenario that is **red because of a catalogued defect** in misalignment-report §6
-carries, in addition to its `@rule` tag, `@known-defect:<item>` — the §6 item number,
-e.g. `@known-defect:2` for the unmapped SQLSTATEs that surface as an unnamed server
-error.
+A scenario that is **red because of a catalogued defect** carries, in addition to its
+`@rule` tag, `@known-defect:<item>` — the defect's item number from the historical
+Phase B report, e.g. `@known-defect:2` for the unmapped SQLSTATEs that surface as an
+unnamed server error. The report is no longer a file in the tree; the catalogued defects
+live in the report as it last existed, recoverable in git history at `a92249a^`
+(`git show a92249a^:docs/spec/history/misalignment-report.md`).
 
 ```gherkin
-    # Defect 2 (misalignment-report §6): a check violation from the rides table is not
+    # Defect 2 (historical report, item 2): a check violation from the rides table is not
     # translated into a named ride refusal, so the caller learns only that something
     # failed, never that the stake was the problem.
     @known-defect:2
@@ -201,16 +211,16 @@ error.
 
 Semantics the harness implements:
 
-- **default run:** skipped with a loud note —
-  `KNOWN-DEFECT 2 (misalignment-report §6.2): <scenario> — skipped` — so a green run never
-  silently claims the behaviour is correct;
+- **default run:** skipped with a loud note naming the historical item —
+  `KNOWN-DEFECT 2 (misalignment-report §6.2): <scenario> — skipped`, the harness's
+  historical label — so a green run never silently claims the behaviour is correct;
 - **opt-in run:** executed only under a flag (`SPEC_KNOWN_DEFECTS=1`);
 - reported as a **finding**, not a pass and not a failure: it never breaks the build. A
   finding that starts passing means the defect is fixed — remove the tag *and* the item;
 - it never counts towards a rule's coverage: the rule still needs a non-defect scenario;
-- the item number must exist in §6, and the scenario body says in business words what is
-  wrong today and what it should be. A catalogued defect is the only justification for a
-  known-red scenario.
+- the item number must name a defect catalogued in the historical report (recoverable at
+  `a92249a^`), and the scenario body says in business words what is wrong today and what
+  it should be. A catalogued defect is the only justification for a known-red scenario.
 
 ---
 
@@ -243,7 +253,8 @@ remain §6.
 - [ ] Exactly one `@rule` per scenario, every id resolving in `rules.yaml`, names unique in
       the file and matching the catalog's `verification.gherkin` pointers.
 - [ ] No forbidden word from §6 left in the text?
-- [ ] Does every sabotage `Then` name a real database object, spelled as the migration
-      spells it — and does the sabotaged rule really have a database authority?
-- [ ] Does every `@known-defect:<n>` map to an existing §6 item, with a non-defect scenario
-      carrying the same rule?
+- [ ] Does every sabotage `Then` name a real database object — as the migration spells
+      it, or by the default name the store gives it — and does the sabotaged rule really
+      have a database authority?
+- [ ] Does every `@known-defect:<n>` map to a catalogued item in the historical report,
+      with a non-defect scenario carrying the same rule?

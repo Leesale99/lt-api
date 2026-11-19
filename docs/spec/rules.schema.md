@@ -147,8 +147,10 @@ fixture in `notes`.
 comment pointing at a deleted test, enforcement that moved away from where the docs
 claim it lives — does NOT make a rule `drifted`: its content still holds. Keep `status:
 implemented` and record the rot in `notes` behind a `stale-pointer:` prefix. Both
-`drifted` rules and every `stale-pointer` note MUST be surfaced in the Phase B
-misalignment report.
+`drifted` rules and every `stale-pointer` note MUST be surfaced by `spec/check` and
+preserved in the catalog's own `notes`; the historical Phase B misalignment report that
+first catalogued them is recoverable at `a92249a^`
+(`git show a92249a^:docs/spec/history/misalignment-report.md`).
 
 Applied migrations are immutable history; when rot is caused by stale prose in an
 applied migration, the fix is the catalog (and a comment at the current site), not a
@@ -158,11 +160,14 @@ rewrite of the migration.
 
 `schedule` | `game` | `identity` | `ledger` | `kernel` | `platform`
 
-### Mapping to the plan's coarser enums (see §6)
+### Mapping to the plan sketch's coarser enums (historical provenance)
 
-The plan sketch used `authority: db|app|both` and `layer: validator|domain|service|db|middleware`.
-This schema uses the taxonomy's five-value authority and six-value layer because they
-name *which* app layer. When generating `business-rules.md`, map:
+The original plan sketch — no longer a file in the tree, recoverable in git history at
+`a92249a^` (e.g. `git show a92249a^:docs/spec/history/plan.md`) — used `authority:
+db|app|both` and `layer: validator|domain|service|db|middleware`. This schema uses the
+taxonomy's five-value authority and six-value layer because they name *which* app layer.
+The mapping below records how the coarse enums were resolved; when generating
+`business-rules.md`, map:
 
 | coarse | this schema |
 |---|---|
@@ -253,8 +258,8 @@ list is the frequency.
 13. Every step in `docs/spec/features/**` is bounded by the vocabulary, in both
     directions (checker id `13-vocabulary`):
     - **Denylist (absolute).** A step may not use the transport words of
-      `gherkin-style.md` §6 — `http`, `json`, `request`, `response`, `header`,
-      `endpoint`, `route`, `handler`, `dto`, `payload`, `status code` — a bare
+      `gherkin-style.md` §6 — `http`, `https`, `json`, `request`, `response`, `header`,
+      `headers`, `endpoint`, `route`, `handler`, `dto`, `payload`, `status code` — a bare
       three-digit HTTP-range figure (`200`, `401`, `409`, `422`, `500`), or the SQL
       vocabulary (`select`, `insert`, `update`, `delete`, `join`, `create`, `drop`,
       `alter`, `table`, `index`, `column`, `check`, `constraint`, `trigger`,
