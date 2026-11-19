@@ -330,7 +330,7 @@ A newly registered account is never active: activation is a separate, token-driv
 
 #### R-IDENTITY-020 — An account's identity facts are stamped by the store
 
-`implemented` · `persistence-fact` · authority `database`
+`implemented` · `invariant` · authority `database`
 
 An account's id, its creation time and its version counter are produced by the store, never by the caller — a client cannot choose who it is or how old its row looks. The store hands them back with the write, so the service never has to invent one.
 

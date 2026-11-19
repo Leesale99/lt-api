@@ -206,6 +206,8 @@ Registering a player creates the season registration and grants the starting cur
 
 **Expert ref** `docs/league-tokens-learning-phases/phase-03-transactions-and-atomic-operations.md`
 
+**Knowledge ref** `docs/league-tokens-learning-phases/domain-knowledge.md`
+
 #### R-GAME-035 — A registration the rides still name is not withdrawn
 
 `implemented` · `invariant` · authority `database`
@@ -255,6 +257,8 @@ A ride may only come into existence in the locked state. Every other state is re
 
 **Expert ref** `docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md`
 
+**Knowledge ref** `docs/league-tokens-learning-phases/domain-knowledge-game-engine.md`
+
 #### R-GAME-002 — Ride state transitions follow the five-state graph
 
 `implemented` · `invariant` · authority `database`
@@ -281,6 +285,8 @@ A ride moves only along the legal graph: locked → won_pending or lost; won_pen
 
 **Expert ref** `docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md`
 
+**Knowledge ref** `docs/league-tokens-learning-phases/domain-knowledge-game-engine.md`
+
 #### R-GAME-003 — Terminal rides are frozen
 
 `implemented` · `invariant` · authority `database`
@@ -304,6 +310,8 @@ A burned, lost or unlocked ride is final: its state never changes again and it i
 - unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_TerminalRideGate`
 
 **Expert ref** `docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md`
+
+**Knowledge ref** `docs/league-tokens-learning-phases/domain-knowledge-game-engine.md`
 
 #### R-GAME-004 — Ride money columns stay in their domain
 
@@ -355,6 +363,8 @@ An unlocked or lost ride forfeits everything it accrued: its accumulated bonus i
 - unit: `internal/game/internal/core/domain/ride_test.go::TestRide_Lost`
 - unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx`
 
+**Knowledge ref** `docs/league-tokens-learning-phases/domain-knowledge-game-engine.md`
+
 **Notes**
 
 > stale-pointer: the rule holds — the CHECK is enforced, mapped by constraint name to ErrInvalidTransition (409), and probed by TestRideMoneyStateCoupling — but migration 000013's change-detector prose no longer describes the code. It names the domain copies as "(internal/game/rides.go)", the persistence copy as "rideAutoUnlockSQL's bonus_acc = 0 (internal/game/rounds.go)" and the DB probe as "(internal/game/constraints_test.go)". None of those paths exist after the modular-monolith refactor: the domain operations are in internal/game/internal/core/domain/ride.go, the copy that actually reaches the row is internal/ledger/postgres.go::Repository.ReleaseBonus (the repository's UPDATE deliberately omits every money column), and the probe is internal/game/internal/core/service/constraints_test.go. The rule's content is unchanged, so the status stays `implemented` (gate A2 / D2: rot is not drift); the applied migration is immutable, so the fix is a comment at the current sites, not a migration rewrite, and this `stale-pointer` note surfaces in the Phase B misalignment report alongside every `drifted` rule. Second finding: the domain copies zero an in-memory Acc that the repository never persists, so they are documentation of intent — the load-bearing copies are the CHECK and the ledger's release-before-flip order. Tie: the ReleaseBonus and domain copies fail loudly — they never drift silently, because the CHECK refuses an unlocked/lost row carrying acc (23514 → 409) and TestRideMoneyStateCoupling pins the refusal name. A shared fixture (moneyStateRule: unlocked/lost/burned × acc 0/100, run through the ledger seam and direct SQL) would tie them without relying on the refusal.
@@ -378,6 +388,8 @@ Winning a ride accrues a bonus equal to the locked tokens, multiplied by the tea
 
 - unit: `internal/game/internal/core/domain/ride_bonus_test.go::TestCalculateBonus`
 - unit: `internal/game/internal/core/service/service_test.go::TestService_OnMatchResultRecorded`
+
+**Knowledge ref** `docs/league-tokens-learning-phases/domain-knowledge-game-engine.md`
 
 #### R-GAME-007 — Each ride command opens only in its phase window
 
@@ -736,6 +748,8 @@ A ride whose decision window has expired is burned by the system itself, with no
 
 **Expert ref** `docs/league-tokens-learning-phases/phase-07-background-workers.md`
 
+**Knowledge ref** `docs/league-tokens-learning-phases/domain-knowledge-game-engine.md`
+
 #### R-GAME-032 — The auto-burn is safe to run twice
 
 `specified-only` · `orchestration` · authority `service`
@@ -767,3 +781,5 @@ Resolving a match updates the affected team's base price in the same transaction
 **Authority** `service`
 
 **Expert ref** `docs/league-tokens-learning-phases/phase-03-transactions-and-atomic-operations.md`
+
+**Knowledge ref** `docs/league-tokens-learning-phases/domain-knowledge-game-engine.md`

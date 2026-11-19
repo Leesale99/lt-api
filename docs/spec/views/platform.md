@@ -21,18 +21,18 @@ The rules themselves live in `../features/platform/`; the format authority is
 
 #### R-PLATFORM-001 — Configuration is resolved flag over environment over default
 
-`implemented` · `orchestration` · authority `handler`
+`implemented` · `orchestration` · authority `composition-root`
 
 A deployment's settings come from its environment, and an operator may override them per run with a flag; when neither says anything, a built-in default applies. Values that are deployment data rather than per-run operator choices — the cross-origin allowlist, the build version — are not overridable at all.
 
-**Authority** `handler`
+**Authority** `composition-root`
 
 **Enforcement**
 
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
-| `internal/platform/config/config.go::Parse` | `handler` | `authoritative` | — |
-| `internal/platform/config/config.go::readEnv` | `handler` | `authoritative` | — |
+| `internal/platform/config/config.go::Parse` | `composition-root` | `authoritative` | — |
+| `internal/platform/config/config.go::readEnv` | `composition-root` | `authoritative` | — |
 
 **Verification**
 
@@ -40,18 +40,18 @@ A deployment's settings come from its environment, and an operator may override 
 
 #### R-PLATFORM-002 — Startup refuses a configuration it cannot honour, and names the setting
 
-`implemented` · `orchestration` · authority `handler`
+`implemented` · `orchestration` · authority `composition-root`
 
 A configuration value that is missing, unparseable or out of its allowed range stops the process before it serves anything, and the message names the setting that must change — both its environment variable and its command-line flag, because the same value can arrive either way. Every bad environment value is reported in one refusal instead of one at a time, and nothing degrades into a silent default.
 
-**Authority** `handler`
+**Authority** `composition-root`
 
 **Enforcement**
 
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
-| `internal/platform/config/config.go::Parse` | `handler` | `authoritative` | — |
-| `internal/platform/config/config.go::readEnv` | `handler` | `authoritative` | — |
+| `internal/platform/config/config.go::Parse` | `composition-root` | `authoritative` | — |
+| `internal/platform/config/config.go::readEnv` | `composition-root` | `authoritative` | — |
 
 **Refusal** `synthetic` → _(unnamed)_ → _(unmapped)_ → _(falls through to 500)_
 
@@ -62,18 +62,18 @@ A configuration value that is missing, unparseable or out of its allowed range s
 
 #### R-PLATFORM-003 — Every setting has a bound, and the bound holds when the feature is off
 
-`implemented` · `orchestration` · authority `handler`
+`implemented` · `orchestration` · authority `composition-root`
 
 Each setting is either usable or refused: the listen port and the mail port are real ports, the outbound sender is an address mail can be sent from, the environment is one of the three the deployment knows, a database connection string is present and parseable, the pool is at least one connection with a positive idle limit, and the throttle rates are positive. A setting is judged on its own merits — a throttle that is switched off must still be configured with usable values, because config that is only correct while something else is off fails unpredictably when it is switched on.
 
-**Authority** `handler`
+**Authority** `composition-root`
 
 **Enforcement**
 
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
-| `internal/platform/config/config.go::validate` | `validator` | `authoritative` | — |
-| `internal/platform/config/config.go::parseLogLevel` | `validator` | `authoritative` | — |
+| `internal/platform/config/config.go::validate` | `composition-root` | `authoritative` | — |
+| `internal/platform/config/config.go::parseLogLevel` | `composition-root` | `authoritative` | — |
 
 **Refusal** `synthetic` → _(unnamed)_ → _(unmapped)_ → _(falls through to 500)_
 
@@ -84,18 +84,18 @@ Each setting is either usable or refused: the listen port and the mail port are 
 
 #### R-PLATFORM-004 — A log level is an enumerated name, never a silent fallback
 
-`implemented` · `orchestration` · authority `handler`
+`implemented` · `orchestration` · authority `composition-root`
 
 The logging level is one of the four names the deployment documents — debug, info, warn, error — matched without regard to case. An unrecognized level stops startup and the message names where the bad value came from, because a fallback would either flood or silence a deployment whose level was mistyped.
 
-**Authority** `handler`
+**Authority** `composition-root`
 
 **Enforcement**
 
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
-| `internal/platform/config/config.go::parseLogLevel` | `validator` | `authoritative` | — |
-| `internal/platform/config/config.go::readEnv` | `validator` | `authoritative` | — |
+| `internal/platform/config/config.go::parseLogLevel` | `composition-root` | `authoritative` | — |
+| `internal/platform/config/config.go::readEnv` | `composition-root` | `authoritative` | — |
 
 **Refusal** `synthetic` → _(unnamed)_ → _(unmapped)_ → _(falls through to 500)_
 
@@ -191,17 +191,17 @@ The connection pool a context is given runs every one of its statements as that 
 
 #### R-PLATFORM-005 — The cross-origin allowlist holds bare origins, never a wildcard
 
-`implemented` · `orchestration` · authority `handler`
+`implemented` · `orchestration` · authority `composition-root`
 
 The deployment lists the origins it serves cross-origin, one bare origin each; a wildcard is refused at startup rather than degraded into "allow everything". Origins are normalized to lowercase scheme and host with any trailing slash removed, a value carrying a path, query or fragment is refused as not an origin, duplicates collapse, and an empty list means cross-origin access is simply off.
 
-**Authority** `handler`
+**Authority** `composition-root`
 
 **Enforcement**
 
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
-| `internal/platform/config/config.go::parseCORSOrigins` | `validator` | `authoritative` | — |
+| `internal/platform/config/config.go::parseCORSOrigins` | `composition-root` | `authoritative` | — |
 
 **Refusal** `synthetic` → _(unnamed)_ → _(unmapped)_ → _(falls through to 500)_
 
@@ -214,17 +214,17 @@ The deployment lists the origins it serves cross-origin, one bare origin each; a
 
 #### R-PLATFORM-006 — Mail cannot be sent from an incomplete configuration
 
-`implemented` · `orchestration` · authority `handler`
+`implemented` · `orchestration` · authority `composition-root`
 
 If the outbound mail settings are incomplete — no host, no credentials, no sender — the process refuses to start instead of accepting requests it cannot honour. The refusal is distinguished from a delivery failure, so a configuration mistake is never retried as if it were a network problem.
 
-**Authority** `handler`
+**Authority** `composition-root`
 
 **Enforcement**
 
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
-| `internal/platform/mailer/mailer.go::New` | `handler` | `authoritative` | — |
+| `internal/platform/mailer/mailer.go::New` | `composition-root` | `authoritative` | — |
 
 **Refusal** `synthetic` → _(unnamed)_ → `ErrMissingCredentials` → _(falls through to 500)_
 
@@ -281,17 +281,17 @@ Every request traverses the same chain in the same order: panic recovery outermo
 
 #### R-PLATFORM-009 — Every connection is bounded in time
 
-`implemented` · `orchestration` · authority `handler`
+`implemented` · `orchestration` · authority `composition-root`
 
 The HTTP server bounds how long it will spend on a connection: a read must finish within five seconds, a write within ten, and an idle connection is closed after a minute. A client that cannot meet those bounds does not hold a server resource indefinitely.
 
-**Authority** `handler`
+**Authority** `composition-root`
 
 **Enforcement**
 
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
-| `internal/platform/server/server.go::Server.Serve` | `handler` | `authoritative` | — |
+| `internal/platform/server/server.go::Server.Serve` | `composition-root` | `authoritative` | — |
 
 **Verification**
 
@@ -303,19 +303,19 @@ The HTTP server bounds how long it will spend on a connection: a read must finis
 
 #### R-PLATFORM-008 — One structured log stream per process
 
-`implemented` · `orchestration` · authority `handler`
+`implemented` · `orchestration` · authority `composition-root`
 
 The process emits one machine-readable log stream on standard output at the level the deployment chose, and everything that logs — the application and the database driver — writes into that same stream. Call-site source locations are attached in development only, so production records carry no path bulk.
 
-**Authority** `handler`
+**Authority** `composition-root`
 
 **Enforcement**
 
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
-| `internal/platform/logging/logging.go::New` | `handler` | `authoritative` | — |
-| `internal/platform/logging/logging.go::newLogger` | `handler` | `authoritative` | — |
-| `internal/platform/logging/logging.go::Pgx` | `handler` | `authoritative` | — |
+| `internal/platform/logging/logging.go::New` | `composition-root` | `authoritative` | — |
+| `internal/platform/logging/logging.go::newLogger` | `composition-root` | `authoritative` | — |
+| `internal/platform/logging/logging.go::Pgx` | `composition-root` | `authoritative` | — |
 
 **Verification**
 

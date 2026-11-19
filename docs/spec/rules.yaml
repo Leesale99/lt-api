@@ -1726,6 +1726,7 @@
     gherkin:
       - docs/spec/features/game/ride_lifecycle.feature::A new ride is born locked
   expert-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge-game-engine.md
   notes: >
     The insert half of the gate is a trigger, not a CHECK: the predicate is
     INSERT-only ("state = 'locked'"), and a CHECK would also refuse the UPDATEs that
@@ -1776,6 +1777,7 @@
     gherkin:
       - docs/spec/features/game/ride_lifecycle.feature::A won match leaves the ride waiting on a decision
   expert-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge-game-engine.md
   notes: >
     The graph is OLD-vs-NEW, so it must live in the trigger (check 3 of
     rides_block_illegal_transition, unchanged since 000006, re-created verbatim by
@@ -1825,6 +1827,7 @@
     gherkin:
       - docs/spec/features/game/ride_lifecycle.feature::A burned ride accepts no further command
   expert-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge-game-engine.md
   notes: >
     Trigger check 1. The domain copy is the absence of any entry for a terminal state
     in `transitions` (canTransition returns false), so the refusal surfaces as
@@ -1945,6 +1948,7 @@
       - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx
     gherkin:
       - docs/spec/features/game/settlement.feature::Unlocking a won ride forfeits the bonus it accrued
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge-game-engine.md
   notes: >
     stale-pointer: the rule holds — the CHECK is enforced, mapped by constraint name to
     ErrInvalidTransition (409), and probed by TestRideMoneyStateCoupling — but migration
@@ -2002,6 +2006,7 @@
       - internal/game/internal/core/service/service_test.go::TestService_OnMatchResultRecorded
     gherkin:
       - docs/spec/features/game/settlement.feature::A win accrues the stake times the odds minus one times the streak multiplier
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge-game-engine.md
   notes: >
     One formula, two entry points: BonusDelta is the one match's increment (what the
     ledger's AccrueBonus applies) and CalculateBonus is delta + acc (what the in-memory
@@ -3297,6 +3302,7 @@
   fixture: null
   verification: {}
   expert-ref: docs/league-tokens-learning-phases/phase-03-transactions-and-atomic-operations.md
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge-game-engine.md
   notes: >
     Specified only. Phase 03 names ResolveMatch's steps twice ("mark match resolved +
     update team base + resolve rides" in §"New concept", repeated in §"First transactional
@@ -3305,8 +3311,8 @@
     update path exists, and the ride's own base_at_lock is a hard-coded stub at the HTTP
     edge (internal/game/internal/adapter/inbound/http/rides.go: "TODO: ledgerToken :=
     app.Ledger.Tokens.GetByTeamID" above a literal Base: 1.95). Only the atomicity is
-    catalogued: the base-price formula is the game-engine spec's, which is not a path in
-    this repo, so no formula is invented here. Open design question left by the docs
+    catalogued: the base-price formula is the game-engine spec's (domain-knowledge-game-engine.md
+    §6.3, the knowledge-ref), so no formula is invented here. Open design question left by the docs
     themselves: phase-05's suggested ownership gives base price to game while, as built,
     teams live in schedule (see the docmap's contradiction candidates).
     Numbered from the phase-doc sweep (was provisional R-GAME-203).
@@ -3329,6 +3335,7 @@
   fixture: null
   verification: {}
   expert-ref: docs/league-tokens-learning-phases/phase-07-background-workers.md
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge-game-engine.md
   notes: >
     Specified only. Phase 07 §"Start with one worker" gives the shape —
     game.ProcessDueAutoBurns(ctx, now) called from a ticker loop — and §"Done when" the
@@ -3422,6 +3429,7 @@
   fixture: null
   verification: {}
   expert-ref: docs/league-tokens-learning-phases/phase-03-transactions-and-atomic-operations.md
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge.md
   notes: >
     Specified only. Phase 03 §"First transactional operations" defines Register as "player
     created + starting currency + season registration" — one business operation, one
@@ -4175,6 +4183,7 @@
     e2e:
       - internal/e2e/auth_test.go::TestRequirePermissionMiddleware
     gherkin:
+      - docs/spec/features/identity/access.feature::The database refuses a permission code the seed already carries
       - docs/spec/features/identity/access.feature::The database refuses the same grant written twice
   notes: >
     Three declarative facts in one rule because they are one shape — the key of a
@@ -4187,11 +4196,14 @@
     the same rule: "there is one row per fact". Refusal is unmapped: nothing in Go translates
     these codes, and the app has no write path to these tables at all (they are seeded by an
     applied migration), so an http status would describe a surface clients cannot reach.
-    Verification gap, recorded knowingly: no test probes these constraints directly. Only
-    the e2e permission gate exercises the reference data, and it would keep passing if
-    roles_permissions' primary key were dropped. A direct-SQL constraints test (attempt a
-    duplicate code and a duplicate grant through the owner pool, assert 23505) closes it —
-    the same deferred gap the catalog records for game's ride CHECKs. Case sensitivity is
+    Verification: both uniqueness halves are proved by sabotage scenarios that attempt the
+    forbidden write through the owner pool and assert the named refusal — a duplicate code is
+    refused by permissions_code_key, a repeated grant by roles_permissions_pkey — so dropping
+    either key fails a scenario instead of only a prose claim. Gap, recorded knowingly: the
+    cross-table half is unproved — no test attempts a grant naming a role or a permission that
+    does not exist, so dropping either foreign key would leave every test green. A third
+    sabotage scenario asserting the 23503 closes it, the same deferred gap the catalog records
+    for game's ride CHECKs. Case sensitivity is
     worth stating: codes are compared exactly, so 'Teams:read' and 'teams:read' would be two
     permissions, and only convention keeps the vocabulary lowercase.
 
@@ -4230,7 +4242,7 @@
       - internal/e2e/rides_test.go::TestRideRoutesPermissionGate
     gherkin:
       - docs/spec/features/identity/access.feature::The standard user may read the calendar and manage her own player
-      - docs/spec/features/identity/access.feature::The database refuses a permission code the seed already carries
+      - docs/spec/features/identity/access.feature::The administrator may do everything
   notes: >
     Authority deviates from the policy default (domain) because the matrix is data, not a
     computation: the eleven codes, the two roles and the twenty-two grants are rows an
@@ -4239,16 +4251,22 @@
     one method, GetAllForRole). The mechanism is `constraint` in the schema's closest sense:
     what pins the seed is the keys (a duplicated code is a 23505, a duplicated role name is
     a 23505) and the immutability of applied migrations, so the fix for a wrong matrix is a
-    new migration, never an edit. The concrete matrix: admin = seasons, rounds, matches,
-    players, teams (read and write) plus players:write:any; user = seasons:read,
-    rounds:read, matches:read, players:read, players:write, teams:read. The split between
-    the two roles is the actual product policy — a standard user may register and manage
-    their own player but may not touch anyone else's, which is why players:write is granted
-    and players:write:any is not. Verification is indirect and thin: only
-    TestRequirePermissionMiddleware exercises the matrix (it pins that the user role carries
-    teams:read and lacks teams:write), and a new migration re-seeding the roles would keep
-    it green. Coverage gap: no test asserts the code count, the exact grant sets, or that the
-    running service cannot mutate them. The ride surface names no ride-specific code —
+    new migration, never an edit. The duplicate-key refusals are R-IDENTITY-013's rule, not
+    this one's: its sabotage scenario proves permissions_code_key and its grant scenario
+    proves roles_permissions_pkey, while roles_name_key stays unproved. The concrete matrix:
+    admin = seasons, rounds, matches, players, teams (read and write) plus
+    players:write:any; user = seasons:read, rounds:read, matches:read, players:read,
+    players:write, teams:read. The split between the two roles is the actual product policy —
+    a standard user may register and manage their own player but may not touch anyone
+    else's, which is why players:write is granted and players:write:any is not. The matrix
+    itself is proved by two scenarios: "The standard user may read the calendar and manage
+    her own player" pins the exact six-code set and that the role carries no other code, and
+    "The administrator may do everything" pins all eleven, so the split above is executable
+    rather than prose. The e2e permission gate (TestRequirePermissionMiddleware) stays the
+    other half: it pins that the user role carries teams:read and lacks teams:write from the
+    middleware's side. Coverage gap: nothing asserts that the running service cannot mutate
+    the matrix — that rests on there being no repository method that writes it. The ride
+    surface names no ride-specific code —
     the vocabulary stays closed at eleven — and since Phase G (§6 item #10) the six
     /v1/rides routes are gated with players:read (the two reads) and players:write
     (the four commands): the ride surface is the player domain's action surface (a
@@ -4561,7 +4579,7 @@
     store hands them back with the write, so the service never has to invent one.
   module: identity
   entity: user
-  category: persistence-fact
+  category: invariant
   status: implemented
   authority: database
   mechanism: constraint
@@ -4590,13 +4608,15 @@
       - internal/identity/internal/repository/user_repo_test.go::TestInsert
     e2e:
       - internal/e2e/users_test.go::TestRegisterUserHandler
+    gherkin:
+      - docs/spec/features/identity/account.feature::The database refuses an account that names its own id
   knowledge-ref: docs/league-tokens-learning-phases/phase-01-postgresql-persistence.md
   notes: >
-    Authority deviates from the persistence-fact default (repository) because the values are
-    the database's, not Go's: id is GENERATED ALWAYS AS IDENTITY (a client-supplied id is not
-    merely ignored, it is refused by the database), created_at is DEFAULT now() at
-    timestamp(0), and version is DEFAULT 1. The repository's part is the read-back — the
-    INSERT ... RETURNING clause is how the stamped values reach the entity — and the DTO's
+    The database owns these values, not Go — the invariant is that no caller can choose them:
+    id is GENERATED ALWAYS AS IDENTITY (a client-supplied id is not merely ignored, it is
+    refused by the database), created_at is DEFAULT now() at timestamp(0), and version is
+    DEFAULT 1. The repository's part is the read-back — the INSERT ... RETURNING clause is how
+    the stamped values reach the entity — and the DTO's
     part is that none of the three has a field, so a body carrying `id` is an unknown key
     (400). Tie: the copies fail loudly in the obvious way: binding a client value to id would
     make 000002 refuse the INSERT, and TestInsert's "returns the persisted user with
@@ -5090,9 +5110,12 @@
     with hand-built tokens, so nothing ties the URI half to a test — a change that
     dropped the URI from the hash would replay silently instead of conflicting.
 
-    Category note: `orchestration`, not `interface` — the digest is the identity an
-    idempotency claim is made under and it refuses nothing itself, so it cannot name the
-    refusal status the interface category requires (policy 14).
+    Category and authority note: `orchestration` with authority `handler`, deviating from the
+    category default (service) — the dedup identity is framed from the raw request bytes
+    (method, URI, body) at the transport edge, and the use case only ever receives the
+    finished token. It refuses nothing itself, so it cannot name the refusal status the
+    `interface` category requires (policy 14); the 409 and 413 it makes possible belong to
+    R-KERNEL-003 and R-KERNEL-013.
 
 - id: R-KERNEL-003
   title: An idempotency key names exactly one logical request
@@ -5924,16 +5947,16 @@
   entity: configuration
   category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/config/config.go::Parse
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
     - site: internal/platform/config/config.go::readEnv
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal: null
@@ -5945,16 +5968,18 @@
     One entry point (ADR-014): the binary reduces to Parse(os.Args[1:]) plus wiring, and
     no other code reads os.Getenv or a flag. The flag set is private to the binary (no
     global CommandLine, ContinueOnError so a bad flag is an error, not an exit) — an
-    unknown flag fails with the flag named. Authority note: `handler` here means the
-    process's intake edge, not a request; the frozen layer enum has no config/startup
-    value.
+    unknown flag fails with the flag named. Authority note: composition-root, not the
+    orchestration default (service) — resolving the configuration is process-level wiring
+    done once at assembly (Parse is called from cmd/api/main.go), before any request exists
+    and with no use case to own it.
     No refusal of its own: reading a setting cannot fail — a bad or missing value is
     R-PLATFORM-002/003's startup refusal, and this rule only fixes where a value comes
     from.
 
     Category note: `orchestration`, not `interface` — the rule orders the process's own intake
-    (environment parsed before flags, defaults last) and never sees a request, so it has no
-    refusal status to name (policy 14).
+    (environment parsed before flags, defaults last), so it has no refusal status to name
+    (policy 14); nothing on its sites sees a request, which is also why the layer is
+    composition-root and not handler.
 
 - id: R-PLATFORM-002
   title: Startup refuses a configuration it cannot honour, and names the setting
@@ -5968,16 +5993,16 @@
   entity: configuration
   category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/config/config.go::Parse
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
     - site: internal/platform/config/config.go::readEnv
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal:
@@ -6007,7 +6032,9 @@
 
     Category note: `orchestration`, not `interface` — a startup refusal stops the process
     before it serves anything, so it has no HTTP status to name (policy 14); the refusal
-    recorded here is the process's exit.
+    recorded here is the process's exit. Authority note: composition-root, not the
+    orchestration default (service) — the refusal is decided where the process is assembled
+    (Parse, called from cmd/api/main.go), before any use case exists.
 
 - id: R-PLATFORM-003
   title: Every setting has a bound, and the bound holds when the feature is off
@@ -6023,16 +6050,16 @@
   entity: configuration
   category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/config/config.go::validate
-      layer: validator
+      layer: composition-root
       role: authoritative
       pinned_by: null
     - site: internal/platform/config/config.go::parseLogLevel
-      layer: validator
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal:
@@ -6065,7 +6092,9 @@
 
     Category note: `orchestration`, not `interface` — the bounds are judged at startup, before
     a request exists, and a violation is a boot failure rather than an HTTP refusal (policy
-    14).
+    14). Authority note: composition-root, not the orchestration default (service) — validate
+    and parseLogLevel are called by Parse while the process is assembled, so the decision
+    belongs to the wiring, not to any request's use case.
 
 - id: R-PLATFORM-004
   title: A log level is an enumerated name, never a silent fallback
@@ -6078,16 +6107,16 @@
   entity: configuration
   category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/config/config.go::parseLogLevel
-      layer: validator
+      layer: composition-root
       role: authoritative
       pinned_by: null
     - site: internal/platform/config/config.go::readEnv
-      layer: validator
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal:
@@ -6107,7 +6136,9 @@
     such as INFO+2 are therefore accepted even though the message advertises four names.
 
     Category note: `orchestration`, not `interface` — an unknown level is a startup refusal,
-    not a framed request (policy 14); no HTTP status is written.
+    not a framed request (policy 14); no HTTP status is written. Authority note:
+    composition-root, not the orchestration default (service) — the level is parsed once,
+    while Parse assembles the configuration, so no use case is in the loop.
 
 - id: R-PLATFORM-005
   title: The cross-origin allowlist holds bare origins, never a wildcard
@@ -6121,12 +6152,12 @@
   entity: cors_origin
   category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/config/config.go::parseCORSOrigins
-      layer: validator
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal:
@@ -6152,6 +6183,8 @@
 
     Category note: `orchestration`, not `interface` — the allowlist is normalized and refused
     at startup, so there is no request to frame and no HTTP refusal to name (policy 14).
+    Authority note: composition-root, not the orchestration default (service) — config.Parse
+    is its only caller and runs while the process is assembled, before any use case exists.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # platform — mailer, logging, server lifecycle
@@ -6168,12 +6201,12 @@
   entity: email_delivery
   category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/mailer/mailer.go::New
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal:
@@ -6201,7 +6234,9 @@
 
     Category note: `orchestration`, not `interface` — incompleteness is refused at
     construction, before the process serves, so the rule has no HTTP refusal to name (policy
-    14).
+    14). Authority note: composition-root, not the orchestration default (service) — the
+    mailer is built by the composition root before it dials a database, so the decision
+    belongs to assembly and no use case participates.
 
 - id: R-PLATFORM-007
   title: A failed delivery is retried a bounded number of times, then reported
@@ -6255,20 +6290,20 @@
   entity: log_stream
   category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/logging/logging.go::New
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
     - site: internal/platform/logging/logging.go::newLogger
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
     - site: internal/platform/logging/logging.go::Pgx
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal: null
@@ -6291,7 +6326,9 @@
     rules' refusals.
 
     Category note: `orchestration`, not `interface` — one stream for the whole process is
-    startup wiring, not request framing, and it refuses nothing (policy 14).
+    startup wiring, not request framing, and it refuses nothing (policy 14). Authority note:
+    composition-root, not the orchestration default (service) — New and Pgx are called where
+    the process is wired, and no use case chooses the stream or its format.
 
 - id: R-PLATFORM-009
   title: Every connection is bounded in time
@@ -6304,12 +6341,12 @@
   entity: http_server
   category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/server/server.go::Server.Serve
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal: null
@@ -6329,7 +6366,10 @@
 
     Category note: `orchestration`, not `interface` — the bounds are set once where the server
     is built and enforced by closing a connection instead of writing a named refusal, so the
-    interface category's status requirement cannot hold (policy 14).
+    interface category's status requirement cannot hold (policy 14). Authority note:
+    composition-root, not the orchestration default (service) — Serve is the assembly point
+    that builds the http.Server with the consts.go bounds (tests reach the same mechanism
+    through serveWithOptions), so no request and no use case decides them.
 
 - id: R-PLATFORM-010
   title: Shutdown is bounded and never hangs
