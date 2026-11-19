@@ -26,7 +26,7 @@ confirm:
 run/api: 
 	go run ./cmd/api -db-dsn=${LT_API_DSN} -smtp-username=${SMTP_USERNAME} -smtp-password=${SMTP_PASSWORD}
 
-## test: run the full suite; DB-backed tests skip when LT_API_TEST_DSN is unset
+## test: run the full suite; the spec suite FAILS without LT_API_TEST_DSN (bring it up with db/up)
 .PHONY: test
 test:
 	go test ./...
@@ -41,10 +41,28 @@ test/unit:
 test/db:
 	go test ./... -v
 
-## test/spec: run the godog suite against real Postgres (skips without LT_API_TEST_DSN)
+## test/spec: run the godog suite against real Postgres (needs LT_API_TEST_DSN; `make db/up` provides it)
 .PHONY: test/spec
 test/spec:
 	go test ./internal/spec/...
+
+## db/up: start the compose test database (CI's postgres 18 service container) and wait until it is healthy
+.PHONY: db/up
+db/up:
+	docker compose up -d
+	@echo 'waiting for the compose test database to report healthy ...'
+	@for i in $$(seq 1 60); do \
+		status=$$(docker inspect --format '{{.State.Health.Status}}' $$(docker compose ps -q postgres) 2>/dev/null || echo starting); \
+		if [ "$$status" = healthy ]; then echo 'test database is healthy'; exit 0; fi; \
+		sleep 2; \
+	done; \
+	echo 'test database did not become healthy; see: docker compose logs postgres' >&2; exit 1
+
+## db/down: stop the compose test database (the named volume survives; compose down -v drops it too)
+.PHONY: db/down
+db/down:
+	docker compose down
+	@echo 'named volume kept: `docker compose down -v` also drops the base database'
 
 ## db/seed: reset and seed the dev database with the canonical dummy data (run db/migrations/up first)
 .PHONY: db/seed
