@@ -1,0 +1,44 @@
+# Fixture glossary for the cmd/spec policy-13 tests: a synthetic checkout's
+# docs/spec/glossary.yaml. Deliberately tiny — it declares only the words the
+# testdata features are supposed to be allowed to say.
+
+common:
+  - a
+  - an
+  - and
+  - by
+  - for
+  - is
+  - the
+  - to
+  - with
+
+game:
+  - answer
+  - carries
+  - insert
+  - locked
+  - names
+  - owner
+  - player
+  - pool
+  - refusal
+  - refused
+  - ride
+  - rides_state_gate
+  - ride_state_transition_illegal
+  - says
+  - selects
+  - sends
+  - tries
+  - write
+
+identity: []
+
+schedule: []
+
+ledger: []
+
+kernel: []
+
+platform: []

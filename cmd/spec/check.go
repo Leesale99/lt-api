@@ -39,6 +39,7 @@ var policies = []policy{
 	{"10-gherkin", "verification.gherkin resolves to a real scenario"},
 	{"11-fixture", "pinned_by names a declared fixture"},
 	{"12-features", "feature files parse; every scenario names exactly one known rule"},
+	{policyVocabulary, "step text: denylisted transport/SQL tokens and the seeded glossary"},
 	{"refusal", "refusal code sanity"},
 }
 
@@ -173,6 +174,7 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	findings := collectFindings(catalog, root)
 	gherkinFindings, index := collectGherkin(catalog, root)
 	findings = append(findings, gherkinFindings...)
+	findings = append(findings, collectVocabulary(root)...)
 	sortFindings(findings)
 	printFindings(stdout, *rulesPath, catalog, findings, index)
 

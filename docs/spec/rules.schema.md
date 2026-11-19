@@ -249,6 +249,33 @@ list is the frequency.
 11. `pinned_by` names a fixture declared by some rule's `fixture` field.
 12. The feature tree is cross-checked in both directions — every `@rule` tag names a
     catalog rule, and every scenario names exactly one (checker id `12-features`).
+13. Every step in `docs/spec/features/**` is bounded by the vocabulary, in both
+    directions (checker id `13-vocabulary`):
+    - **Denylist (absolute).** A step may not use the transport words of
+      `gherkin-style.md` §6 — `http`, `json`, `request`, `response`, `header`,
+      `endpoint`, `route`, `handler`, `dto`, `payload`, `status code` — a bare
+      three-digit HTTP-range figure (`200`, `401`, `409`, `422`, `500`), or the SQL
+      vocabulary (`select`, `insert`, `update`, `delete`, `join`, `create`, `drop`,
+      `alter`, `table`, `index`, `column`, `check`, `constraint`, `trigger`,
+      `unique`, `references`, `grant`, `revoke`, `cascade`, `upsert`, `truncate`).
+      A three-digit figure that quantifies a business noun (`100 tokens`) is a
+      quantity, not a status. The SQL half is **scoped to facade steps**: the
+      sabotage family of `gherkin-style.md` §8 (`the Owner pool …`, `the write is
+      refused by …`, `the refusal names …`, `the write is allowed`) exists to bypass
+      the application with raw writes and legitimately says `insert`; the transport
+      half applies to it.
+    - **Allowlist (the seeded glossary).** Every remaining token of every step must be
+      declared in `docs/spec/glossary.yaml` — in the section named after the feature
+      file's module directory (`game`, `identity`, `schedule`, `ledger`, `kernel`,
+      `platform`, one section each even where the module has no feature file yet) or
+      in the shared `common` section. An undeclared token is an ERROR naming
+      `file::scenario` and the section to extend. The seed describes the vocabulary
+      the tree uses today; extending it is part of the change that needs the word.
+    - **Tokenizer.** Lowercase; the English possessive suffix (`'s`) folds away;
+      quoted literals (`"Spring 2026"`, `"2–1"`, `"ana@example.com"`) are data and are
+      dropped; every remaining run of characters other than a letter, a digit or an
+      underscore becomes a separator. Underscore is *not* a separator, so a database
+      object name (`rides_state_gate`) is one token and is seeded like any other word.
 
 ---
 

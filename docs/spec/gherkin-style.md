@@ -96,6 +96,11 @@ the subject of the sentence. Concrete nouns, not abstractions: `"Spring 2026"`, 
 `"Ana"`, `match day 1`. Numbers: tokens whole (`10 tokens`), money to two decimals (`9.60`,
 `1.80`), scores as `2–1`.
 
+This section is enforced mechanically by checker policy 13 (`13-vocabulary`,
+`rules.schema.md` §3): the denylist above is an absolute ERROR in every step, and every
+remaining step token must be declared in the module's section of `docs/spec/glossary.yaml`
+(or in `common`). Extending the glossary is part of the change that needs the word.
+
 ---
 
 ## 7. Step family A — facade steps

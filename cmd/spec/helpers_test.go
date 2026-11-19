@@ -29,7 +29,20 @@ func newTestRepo(t *testing.T) *testRepo {
 	repo.addFile(t, "internal/kernel/thing/thing_test.go",
 		"package thing\n\nimport \"testing\"\n\nfunc TestDo(t *testing.T) {}\n")
 	repo.addFile(t, "docs/league-tokens-learning-phases/phase-03.md", "# Transactions\n")
+	// A valid (if empty) step-vocabulary allowlist: policy 13 needs one, and
+	// every module owns a section even where no feature file exists.
+	repo.addFile(t, "docs/spec/glossary.yaml",
+		"common: []\ngame: []\nidentity: []\nschedule: []\nledger: []\nkernel: []\nplatform: []\n")
 	return repo
+}
+
+// removeFile deletes a file the baseline repo seeded, so a test can exercise a
+// checkout that is missing it.
+func (r *testRepo) removeFile(t *testing.T, rel string) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(r.root, filepath.FromSlash(rel))); err != nil {
+		t.Fatalf("remove %s: %v", rel, err)
+	}
 }
 
 func (r *testRepo) addFile(t *testing.T, rel, content string) {

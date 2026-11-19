@@ -1,0 +1,467 @@
+# docs/spec/glossary.yaml — the seeded step vocabulary allowlist
+#
+# Checker policy 13 (`cmd/spec`, docs/spec/rules.schema.md §3) binds every token
+# of every step in docs/spec/features/** to one of these sections:
+#
+#   * the section named after the feature file's module directory, or
+#   * `common`, which every module may use.
+#
+# The denylist in gherkin-style.md §6 is absolute and runs first: a word denied
+# there is an ERROR even when a section lists it (the seed declares `insert`
+# because §8's sabotage steps legitimately say it; a facade step may not).
+#
+# Tokenizer (pinned, `tokenizeStep` in cmd/spec/vocabulary.go): lowercase; drop
+# the English possessive suffix (`'s` / `’s`); drop quoted literals ("Spring
+# 2026", "2–1", "ana@example.com"); replace every remaining run of characters
+# that is not a letter, a digit or an underscore with a space; split. Bare
+# numbers carry no vocabulary and are exempt — except a three-digit
+# HTTP-range figure with no unit after it ("refused as 409"), which §6 denies.
+# Underscore is NOT a separator: `rides_state_gate` is one token, so database
+# object names are declared here like any other word.
+#
+# The seed is today's tree: this file describes the vocabulary the ten feature
+# files already use. Extending a section is a deliberate edit made together with
+# the scenario that needs the word — never an accident that slips review.
+#
+# `common` is the closed class only: articles, determiners, pronouns,
+# prepositions, conjunctions, auxiliaries and copula, negation/degree particles,
+# and cardinal/ordinal quantifiers. Anything that carries domain meaning — even
+# a plain adjective like `new` — belongs to the module that says it.
+
+common:
+  # articles and determiners
+  - a
+  - all
+  - an
+  - another
+  - both
+  - "no"
+  - one
+  - only
+  - other
+  - same
+  - that
+  - the
+  - this
+  - two
+  # pronouns
+  - her
+  - hers
+  - it
+  - its
+  - she
+  - someone
+  # prepositions and particles (quoted where YAML 1.1 would read a boolean:
+  # "no", "on", "off")
+  - above
+  - after
+  - afterwards
+  - again
+  - against
+  - ago
+  - already
+  - as
+  - at
+  - away
+  - back
+  - before
+  - by
+  - for
+  - from
+  - in
+  - into
+  - of
+  - "off"
+  - "on"
+  - onto
+  - out
+  - since
+  - still
+  - to
+  - under
+  - with
+  - without
+  - yet
+  # conjunctions
+  - and
+  - else
+  - or
+  - when
+  # auxiliaries and copula
+  - are
+  - been
+  - being
+  - does
+  - has
+  - have
+  - is
+  - not
+  - was
+  # quantifiers (cardinal, ordinal, bare)
+  - eleven
+  - first
+  - five
+  - last
+  - second
+  - ten
+  - three
+  - twenty
+  - zero
+
+# game — the module's own nouns and verbs, plus the §8 sabotage family it uses
+# (Owner pool, write, refused, refusal, the database object names) and the error
+# names the refusals raise.
+game:
+  - accrued
+  - administrator
+  - allowed
+  - answer
+  - arrives
+  - banked
+  - base
+  - belongs
+  - bonus
+  - born
+  - burned
+  - burns
+  - calendar
+  - captured
+  - carries
+  - carry
+  - change
+  - changes
+  - changing
+  - claimed
+  - claiming
+  - closed
+  - comes
+  - command
+  - completes
+  - continues
+  - day
+  - decision
+  - duplicate
+  - earlier
+  - ended
+  - ends
+  - exists
+  - favour
+  - favouring
+  - favourite
+  - field
+  - final
+  - frozen
+  - holds
+  - hours
+  - illegal
+  - insert
+  - keeps
+  - key
+  - locked
+  - locks
+  - lost
+  - match
+  - member
+  - minus
+  - minutes
+  - move
+  - moved
+  - names
+  - odds
+  - open
+  - owner
+  - phase
+  - play
+  - player
+  - pool
+  - price
+  - priced
+  - reaching
+  - read
+  - reading
+  - reads
+  - recorded
+  - refusal
+  - refused
+  - registered
+  - registers
+  - registration
+  - releasing
+  - reports
+  - result
+  - rewrites
+  - ride
+  - ride_match_id_immutable_outside_continuation
+  - ride_state_transition_illegal
+  - ride_terminal_state_frozen
+  - rides
+  - rides_base_at_lock_check
+  - rides_bonus_acc_check
+  - rides_money_state_coupling
+  - rides_state_gate
+  - rides_state_insert_gate
+  - rides_streak_check
+  - rides_tokens_locked_check
+  - round
+  - rounds
+  - season
+  - settlement
+  - settling
+  - sits
+  - stake
+  - stale
+  - state
+  - straight
+  - streak
+  - team
+  - teams
+  - time
+  - tokens
+  - transition
+  - tries
+  - unknown
+  - unlock
+  - unlocked
+  - unlocks
+  - use
+  - version
+  - waiting
+  - waits
+  - win
+  - withdrawal
+  - withdraws
+  - write
+  - wrong
+
+# identity — accounts, credentials, tokens, roles, permissions.
+identity:
+  - account
+  - activated
+  - activation
+  - administrator
+  - answer
+  - arrives
+  - asked
+  - asks
+  - carries
+  - change
+  - code
+  - codes
+  - credential
+  - day
+  - days
+  - duplicate
+  - earlier
+  - email
+  - expired
+  - field
+  - fresh
+  - good
+  - held
+  - hold
+  - invalid
+  - list
+  - lists
+  - made
+  - mail
+  - match
+  - member
+  - names
+  - opens
+  - page
+  - passed
+  - password
+  - permission
+  - player
+  - players
+  - presents
+  - reads
+  - receives
+  - recorded
+  - records
+  - refusal
+  - refused
+  - registered
+  - registers
+  - registration
+  - renames
+  - role
+  - rounds
+  - says
+  - season
+  - seasons
+  - sends
+  - service
+  - sign
+  - signed
+  - signs
+  - spent
+  - stamp
+  - standard
+  - team
+  - token
+  - tokens
+  - unactivated
+  - unauthenticated
+  - user
+  - visitor
+
+# schedule — the calendar, rounds, match days, fixtures, pricing, and the
+# database object names its sabotage scenarios assert against.
+schedule:
+  - adds
+  - allowed
+  - announced
+  - arrived
+  - burned
+  - burns
+  - calendar
+  - carries
+  - changed
+  - changing
+  - close
+  - closed
+  - closes
+  - command
+  - corrects
+  - create
+  - created
+  - day
+  - decision
+  - declared
+  - delete
+  - deletes
+  - description
+  - duplicate
+  - edit
+  - editor
+  - end
+  - ending
+  - evens
+  - falls
+  - favouring
+  - fixture
+  - full
+  - half
+  - happened
+  - holds
+  - home
+  - hour
+  - hours
+  - instant
+  - keeps
+  - kick
+  - kicked
+  - kicking
+  - kickoff
+  - landed
+  - list
+  - locked
+  - locks
+  - longer
+  - match
+  - match_status_regression
+  - matches_away_odds_check
+  - matches_away_score_check
+  - matches_ended_at_check
+  - matches_freeze_gate
+  - matches_home_odds_check
+  - matches_home_score_check
+  - matches_score_complete_check
+  - matches_season_id_round_id_fkey
+  - matches_status_check
+  - matches_status_score_check
+  - matches_teams_differ_check
+  - minus
+  - minutes
+  - move
+  - names
+  - new
+  - number
+  - numbered
+  - odds
+  - open
+  - opened
+  - opens
+  - order
+  - organiser
+  - own
+  - owner
+  - phase
+  - played
+  - player
+  - pool
+  - postpone
+  - postponed
+  - postpones
+  - price
+  - prices
+  - progress
+  - re
+  - read
+  - reading
+  - reads
+  - records
+  - refusal
+  - refused
+  - registered
+  - resolved
+  - resolves
+  - rewrites
+  - ride
+  - round
+  - round_close_has_unclosed_matches
+  - round_lifecycle_blocks_delete
+  - round_progress_season_not_live
+  - round_sequence_incomplete
+  - round_status_regression
+  - rounds
+  - rounds_close_gate
+  - rounds_delete_gate
+  - rounds_freeze_gate
+  - rounds_number_check
+  - rounds_progress_gate
+  - rounds_season_id_number_key
+  - rounds_status_check
+  - running
+  - runs
+  - saves
+  - schedules
+  - score
+  - season
+  - season_lifecycle_blocks_delete
+  - season_status_regression
+  - seasons_delete_gate
+  - seasons_freeze_gate
+  - seasons_status_check
+  - send
+  - set
+  - side
+  - sides
+  - stale
+  - started
+  - started_match_blocks_round_regression
+  - started_match_blocks_status_regression
+  - status
+  - store
+  - taken
+  - team
+  - teams
+  - time
+  - tokens
+  - tries
+  - waiting
+  - waits
+  - way
+  - write
+  - wrong
+
+# ledger — no feature file yet: the section declares that nothing has been
+# standardized here.
+ledger: []
+
+# kernel — no feature file yet.
+kernel: []
+
+# platform — no feature file yet.
+platform: []
