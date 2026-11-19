@@ -189,7 +189,7 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	gherkinFindings, index := collectGherkin(catalog, root)
 	findings = append(findings, gherkinFindings...)
 	findings = append(findings, collectVocabulary(root)...)
-	findings = append(findings, collectAnnotations(catalog, root)...)
+	findings = append(findings, collectAnnotationsAgainst(catalog, root, *rulesPath)...)
 	sortFindings(findings)
 	printFindings(stdout, *rulesPath, catalog, findings, index)
 

@@ -11,6 +11,16 @@ package main
 //     to a catalog rule id. An annotation whose id does not even match
 //     `^R-[A-Z]+-\d{3}$` is a typo and an ERROR of its own, so a mistyped id
 //     cannot masquerade as "a rule that does not exist yet".
+//   - ANNOTATION → STATUS. An annotation in non-test Go code may not name a
+//     `specified-only` rule: that rule has no code yet, so no site may claim it.
+//     Test files are unchanged: their annotations still resolve, but a
+//     specified-only target stays legal there because a test names its rule
+//     through `verification`.
+//
+// The reverse direction's two non-rule conditions render distinctly, so a reader
+// never mistakes either for a catalog id: a malformed id is reported under the
+// `(malformed id)` subject, and a well-formed unknown id under
+// `(unknown id R-X-NNN)`, naming the catalog it failed to resolve against.
 //
 // # The convention (pinned)
 //
@@ -82,12 +92,21 @@ type siteRequirement struct {
 // reads Go sources rather than catalog pointers, so it is called next to
 // collectVocabulary rather than from collectFindings.
 func collectAnnotations(catalog Catalog, root string) []Finding {
+	return collectAnnotationsAgainst(catalog, root, filepath.Join("docs", "spec", "rules.yaml"))
+}
+
+// collectAnnotationsAgainst is collectAnnotations with the catalog path the
+// reverse direction names when an annotation resolves to no rule. The path is
+// display-only; resolution always uses the loaded catalog.
+func collectAnnotationsAgainst(catalog Catalog, root, rulesPath string) []Finding {
 	c := &checker{root: root}
 
 	ruleIDs := make(map[string]bool, len(catalog))
+	ruleStatus := make(map[string]string, len(catalog))
 	naming := map[string][]siteRequirement{} // site path → requirements
 	for _, rule := range catalog {
 		ruleIDs[rule.ID] = true
+		ruleStatus[rule.ID] = rule.Status
 		if rule.Status != statusImplemented {
 			continue
 		}
@@ -111,7 +130,7 @@ func collectAnnotations(catalog Catalog, root string) []Finding {
 		files[source.path] = source
 	}
 
-	c.checkAnnotationsResolve(files, ruleIDs)
+	c.checkAnnotationsResolve(files, ruleIDs, ruleStatus, rulesPath)
 	c.checkSitesAnnotated(files, naming)
 	sortFindings(c.findings)
 	return c.findings
@@ -226,16 +245,35 @@ func declarationsOf(file *ast.File, fset *token.FileSet) map[string]declaration 
 			for _, spec := range d.Specs {
 				switch s := spec.(type) {
 				case *ast.TypeSpec:
-					record(s.Name.Name, d.Doc, d.Pos(), d.End())
+					doc, start, end := specDocAndRange(d, s.Doc, s.Pos(), s.End())
+					record(s.Name.Name, doc, start, end)
 				case *ast.ValueSpec:
+					doc, start, end := specDocAndRange(d, s.Doc, s.Pos(), s.End())
 					for _, name := range s.Names {
-						record(name.Name, d.Doc, d.Pos(), d.End())
+						record(name.Name, doc, start, end)
 					}
 				}
 			}
 		}
 	}
 	return decls
+}
+
+// specDocAndRange picks the comment group and source range a spec's declaration
+// is read against. A parenthesized `var (...)` / `const (...)` / `type (...)`
+// block carries per-spec docs: an annotation above one spec belongs to that
+// spec, so it wins; a spec without its own doc falls back to the block-level
+// doc. A single non-grouped declaration keeps the GenDecl's doc and range
+// exactly as before.
+func specDocAndRange(decl *ast.GenDecl, specDoc *ast.CommentGroup, start, end token.Pos) (*ast.CommentGroup, token.Pos, token.Pos) {
+	if !decl.Lparen.IsValid() {
+		return decl.Doc, decl.Pos(), decl.End()
+	}
+	doc := specDoc
+	if doc == nil {
+		doc = decl.Doc
+	}
+	return doc, start, end
 }
 
 // receiverName returns the bare type name of a method receiver (`*Handler` →
@@ -283,9 +321,19 @@ func commentAnnotationIDs(text string) []string {
 	return nil
 }
 
+// Finding subjects for the reverse direction's two non-rule conditions. They
+// are deliberately not rule ids: a reader must never mistake a typo or an
+// unissued id for a catalog entry.
+const (
+	malformedAnnotationID     = "(malformed id)"
+	unknownAnnotationIDFormat = "(unknown id %s)"
+)
+
 // checkAnnotationsResolve is the tree → catalog direction: every annotation
-// names a catalog rule, and every annotation's id is well-formed.
-func (c *checker) checkAnnotationsResolve(files map[string]goSource, ruleIDs map[string]bool) {
+// names a catalog rule, every annotation's id is well-formed, and — in non-test
+// Go code — the rule it names has code to point at (a specified-only rule does
+// not).
+func (c *checker) checkAnnotationsResolve(files map[string]goSource, ruleIDs map[string]bool, ruleStatus map[string]string, rulesPath string) {
 	paths := make([]string, 0, len(files))
 	for path := range files {
 		paths = append(paths, path)
@@ -294,18 +342,30 @@ func (c *checker) checkAnnotationsResolve(files map[string]goSource, ruleIDs map
 
 	for _, path := range paths {
 		source := files[path]
+		isTest := strings.HasSuffix(path, "_test.go")
 		for _, group := range source.file.Comments {
 			for _, id := range annotationIDsOf(group) {
 				line := source.fset.Position(group.Pos()).Line
 				if !ruleAnnotationPattern.MatchString(id) {
-					c.errorf(policyAnnotations, fmt.Sprintf("%s:%d", path, line),
+					c.errorf(policyAnnotations, malformedAnnotationID,
 						"%s:%d carries //rule:%s, which is not an id; an annotation is exactly //rule:R-<MODULE>-<NNN>",
 						path, line, id)
 					continue
 				}
 				if !ruleIDs[id] {
+					c.errorf(policyAnnotations, fmt.Sprintf(unknownAnnotationIDFormat, id),
+						"%s:%d carries //rule:%s, which names no rule in the catalog %s",
+						path, line, id, displayPath(rulesPath))
+					continue
+				}
+				// A specified-only rule has no enforcement site yet, so an
+				// annotation in production code claiming it is a lie about the
+				// tree. Test files stay exempt: they already name rules through
+				// verification, and this direction still resolves their ids.
+				if !isTest && ruleStatus[id] == statusSpecifiedOnly {
 					c.errorf(policyAnnotations, id,
-						"%s:%d carries //rule:%s, which names no rule in the catalog", path, line, id)
+						"%s:%d carries //rule:%s, which names a specified-only rule; no site may claim it before its code exists",
+						path, line, id)
 				}
 			}
 		}

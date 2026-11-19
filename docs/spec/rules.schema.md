@@ -324,7 +324,13 @@ list is the frequency.
       repository must resolve to a catalog rule id (test files are included in this
       direction; `testdata/` is excluded as fixture data). An annotation whose id
       does not match `^R-[A-Z]+-\d{3}$` is an ERROR of its own, so a typo cannot pass
-      for "a rule that does not exist yet".
+      for "a rule that does not exist yet"; the report labels it `(malformed id)`
+      and labels a well-formed id that names no catalog rule `(unknown id
+      R-X-NNN)`, so neither reads as a real rule id. An annotation in **non-test**
+      Go code that resolves to a `specified-only` rule is an ERROR too: the rule has
+      no code yet, so no site may claim it. Test files keep the reverse-direction
+      check only — their annotation must resolve, but a specified-only target is
+      legal there because a test names its rule through `verification`.
 16. `knowledge-ref`, when present, must (a) exist as a file relative to the
     repository root and (b) be a path under `docs/league-tokens-learning-phases/`
     (checker id `16-knowledge-ref`). It records the knowledge-base note behind the

@@ -33,7 +33,9 @@ docs/spec/
   `common`), and policy 13 denies undeclared vocabulary as well as transport/SQL
   words. A new scenario word is a deliberate glossary edit.
 - **Checker.** `cmd/spec`: `gen` regenerates the Markdown — the dashboard and every
-  module view (or `--diff` to detect staleness in either); `check` validates the
+  module view (or `--diff` to detect staleness in either, and in the `views/`
+  directory as a whole: a file the run does not render is an orphan and fails the
+  diff); `check` validates the
   catalog's schema policies and traces every site, test pointer and Gherkin pointer to
   something that exists, in both catalog → tree and tree → catalog directions. The
   policies are `rules.schema.md` §3: enums and
@@ -109,7 +111,7 @@ What step 1 of the gate actually means, for a brand-new rule:
 |---|---|
 | `make spec/gen` | regenerate `docs/spec/business-rules.md` (the dashboard) and `docs/spec/views/<module>.md` (the six module views) from `rules.yaml` |
 | `make spec/check` | validate schema policies + catalog/feature traceability; runs `--strict`, so any check error fails the target (and therefore `make audit`) |
-| `make spec/diff` | fail if the dashboard or any module view is stale (wired into `make audit`) |
+| `make spec/diff` | fail if the dashboard or any module view is stale, or if `views/` holds a file the run does not render (an orphan; `gen` reports it but never deletes it) |
 | `make spec/brief args='R-GAME-001'` | print a Markdown work order for one rule — statement, sites, refusal map, fixture, resolved verification pointers, linked scenarios, gate — or `args='--module game'` for every rule of one module |
 | `make db/up` | start the compose test database (CI's postgres:18 service container) and wait until its healthcheck passes |
 | `make db/down` | stop it; the named volume survives; `docker compose down -v` drops the base database too |

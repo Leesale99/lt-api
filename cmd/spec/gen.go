@@ -106,6 +106,19 @@ func runGen(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Write mode never deletes: an orphan view is reported and left in place,
+	// because removing a file is a human decision. It is not fatal here —
+	// `make spec/gen` writes, `make spec/diff` gates — but `--diff` fails on it.
+	orphans, err := viewOrphans(artifacts)
+	if err != nil {
+		fmt.Fprintf(stderr, "spec gen: %v\n", err)
+		return 1
+	}
+	for _, orphan := range orphans {
+		fmt.Fprintf(stderr, "spec gen: %s is an orphan the views directory does not render — left in place; remove it\n",
+			displayPath(orphan))
+	}
+
 	fmt.Fprintf(stdout, "spec gen: wrote %s (%d rules)\n", displayPath(*outPath), len(catalog))
 	fmt.Fprintf(stdout, "spec gen: wrote %d module views in %s\n",
 		len(artifacts)-1, displayPath(viewsDir(*outPath)))
@@ -138,7 +151,10 @@ func renderArtifacts(catalog Catalog, rulesPath, outPath string) []artifact {
 }
 
 // diffArtifacts compares every generated file against the tree. A stale or
-// missing file is a change; the command never writes in diff mode.
+// missing file is a change, and so is an orphan in the views directory — a file
+// this run does not render (a renamed module's old view, a hand-written note).
+// Comparing only the artifacts would make the orphan invisible. The command
+// never writes in diff mode, so it never deletes either.
 func diffArtifacts(artifacts []artifact, stdout, stderr io.Writer) int {
 	stale := 0
 	for _, a := range artifacts {
@@ -157,10 +173,61 @@ func diffArtifacts(artifacts []artifact, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
+
+	orphans, err := viewOrphans(artifacts)
+	if err != nil {
+		fmt.Fprintf(stderr, "spec gen: %v\n", err)
+		return 1
+	}
+	for _, orphan := range orphans {
+		fmt.Fprintf(stdout, "spec gen --diff: %s is an orphan the views directory does not render — remove it (gen never deletes files)\n",
+			displayPath(orphan))
+		stale++
+	}
+
 	if stale > 0 {
 		return 1
 	}
 	return 0
+}
+
+// viewOrphans lists the entries under the views directory that this run does
+// not render, sorted for deterministic output. The directory is the parent of
+// the rendered `views/<module>.md` artifacts; when it does not exist, there is
+// nothing to report (the missing artifacts already fail the diff).
+func viewOrphans(artifacts []artifact) ([]string, error) {
+	dir := ""
+	for _, a := range artifacts {
+		if filepath.Base(filepath.Dir(a.path)) == viewsDirName {
+			dir = filepath.Dir(a.path)
+			break
+		}
+	}
+	if dir == "" {
+		return nil, nil
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s: %w", displayPath(dir), err)
+	}
+
+	rendered := make(map[string]bool, len(artifacts))
+	for _, a := range artifacts {
+		rendered[filepath.Clean(a.path)] = true
+	}
+	var orphans []string
+	for _, entry := range entries {
+		full := filepath.Join(dir, entry.Name())
+		if !rendered[filepath.Clean(full)] {
+			orphans = append(orphans, full)
+		}
+	}
+	sort.Strings(orphans)
+	return orphans, nil
 }
 
 // renderDashboard renders the front door: totals, the counts the catalog is
