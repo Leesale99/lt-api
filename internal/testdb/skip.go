@@ -12,9 +12,10 @@ package testdb
 //
 //   - ActionRun → LT_API_TEST_DSN is set; call Setup. An unreachable server is
 //     Setup's hard failure, unchanged (a DSN typo must never read as a skip).
-//   - ActionSkip → the operator opted out with AUDIT_SKIP_DB=1. Print the banner
-//     and run whatever needs no database; the run may be green, but it must say
-//     out loud that the database-backed scenarios did NOT run.
+//   - ActionSkip → the operator opted out with AUDIT_SKIP_DB=1. Announce the
+//     banner (stdout, stderr and the terminal) and run whatever needs no
+//     database; the run may be green, but it must say out loud that the
+//     database-backed scenarios did NOT run.
 //   - ActionFail → neither: print the instructions and exit non-zero. A green
 //     `go test ./...` that skipped the enforcement half is the failure mode this
 //     policy exists to remove.
@@ -35,10 +36,13 @@ const SkipOptOutEnv = "AUDIT_SKIP_DB"
 // throwaway test database.
 const DSNEnv = "LT_API_TEST_DSN"
 
-// DefaultTestDSN is the DSN of the compose database (compose.yaml), which
-// mirrors CI's Postgres service container. It is what the instructions below
-// tell an operator to export.
-const DefaultTestDSN = "postgres://lt_test:test@localhost:5432/lt_api_test?sslmode=disable"
+// DefaultTestDSN is the DSN of the compose database (compose.yaml): the same
+// credentials, image and database name as CI's Postgres service container,
+// published on host port 5433 because 5432 belongs to the host-native
+// PostgreSQL on a developer machine. (CI maps its own service container to
+// 5432 inside the runner and sets LT_API_TEST_DSN itself, so its port is
+// unchanged.) It is what the instructions below tell an operator to export.
+const DefaultTestDSN = "postgres://lt_test:test@localhost:5433/lt_api_test?sslmode=disable"
 
 // Action is what a database-backed suite should do about the environment it
 // was started in.
@@ -68,7 +72,7 @@ func (a Action) String() string {
 }
 
 // Decision is the answer plus the banner the caller must print: Message is
-// non-empty for ActionSkip (print it on stdout) and ActionFail (stderr).
+// non-empty for ActionSkip (print it with Announce) and ActionFail (stderr).
 type Decision struct {
 	Action  Action
 	Message string
@@ -103,7 +107,8 @@ const SkipBanner = "SPEC SUITE SKIPPED: no LT_API_TEST_DSN and AUDIT_SKIP_DB=1 �
 const MissingDSNHelp = "SPEC SUITE DID NOT RUN: LT_API_TEST_DSN is unset and AUDIT_SKIP_DB is not 1.\n" +
 	"The database-backed scenarios are the audit's enforcement half, so a green run without them is not evidence.\n" +
 	"\n" +
-	"Bring the throwaway test database up (it mirrors CI's Postgres service container):\n" +
+	"Bring the throwaway test database up (same image, credentials and database as\n" +
+	"CI's Postgres service container, published on host port 5433):\n" +
 	"\n" +
 	"    docker compose up -d          # or: make db/up  (waits until it is healthy)\n" +
 	"    export LT_API_TEST_DSN='" + DefaultTestDSN + "'\n" +
@@ -116,21 +121,25 @@ const MissingDSNHelp = "SPEC SUITE DID NOT RUN: LT_API_TEST_DSN is unset and AUD
 //
 // Printing is not enough: `go test ./...` captures a package's output and
 // discards all of it when the package passes (only -v or a failure shows it),
-// so a banner written to stdout or stderr inside a green run is invisible —
+// so a banner written to a single stream inside a green run is invisible —
 // exactly the silent skip this policy exists to remove. Announce therefore
-// writes to both the captured stream (tests, -v runs, failure dumps) and the
-// controlling terminal, when there is one (a developer's `make audit`); with no
-// terminal (CI, pipes) the captured copy is all that is possible.
+// writes the message to BOTH captured streams (os.Stdout and os.Stderr, so a
+// caller that keeps only one of them still carries the banner: tests, -v runs,
+// failure dumps) and to the controlling terminal, when there is one (a
+// developer's `make audit`); with no terminal (CI, pipes) the two captured
+// copies are all that is possible.
 func Announce(message string) {
-	announce(os.Stdout, message)
+	announce(message, os.Stdout, os.Stderr)
 }
 
-// announce is Announce's testable core: the given stream plus /dev/tty.
-func announce(primary io.Writer, message string) {
-	fmt.Fprintln(primary, message)
+// announce is Announce's testable core: every given stream plus /dev/tty.
+func announce(message string, streams ...io.Writer) {
+	for _, stream := range streams {
+		fmt.Fprintln(stream, message)
+	}
 	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
 	if err != nil {
-		return // no terminal (CI, nohup): the captured stream is all there is
+		return // no terminal (CI, nohup): the captured streams are all there is
 	}
 	defer func() { _ = tty.Close() }()
 	fmt.Fprintln(tty, message)

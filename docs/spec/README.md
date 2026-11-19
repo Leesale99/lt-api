@@ -124,7 +124,7 @@ as CI's service container) and waits for it to be healthy; a missing
 `LT_API_TEST_DSN` now fails the spec suite rather than skipping it, so a green run
 always includes the scenarios. On a deliberately DB-less machine, opt out out loud
 with `AUDIT_SKIP_DB=1`. Quickstart: `make db/up` →
-`export LT_API_TEST_DSN='postgres://lt_test:test@localhost:5432/lt_api_test?sslmode=disable'`
+`export LT_API_TEST_DSN='postgres://lt_test:test@localhost:5433/lt_api_test?sslmode=disable'`
 → `make test/spec` (the first run applies migrations 000001–000022 to a database it
 creates and drops itself) → `make db/down` when done.
 

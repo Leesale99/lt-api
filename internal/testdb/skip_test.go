@@ -13,9 +13,20 @@ package testdb
 
 import (
 	"bytes"
+	"io"
+	"os"
 	"strings"
 	"testing"
 )
+
+// The compose database is published on host port 5433 (5432 belongs to a
+// host-native PostgreSQL on developer machines), so the instructions must not
+// send an operator to 5432 — that server knows nothing about lt_test.
+func TestDefaultTestDSNPinsTheComposeHostPort(t *testing.T) {
+	if !strings.Contains(DefaultTestDSN, "@localhost:5433/") {
+		t.Errorf("DefaultTestDSN = %q, want the compose database on host port 5433", DefaultTestDSN)
+	}
+}
 
 func TestDecideSkipRunsWhenDSNIsSet(t *testing.T) {
 	decision := DecideSkip(DefaultTestDSN, "")
@@ -81,15 +92,63 @@ func TestDecideSkipSkipsLoudlyWithExplicitOptOut(t *testing.T) {
 	}
 }
 
-// The banner has to land in the stream the caller captures; whether anyone sees
-// it is `go test`'s buffering (Announce's doc comment) and the terminal's job.
-func TestAnnounceWritesTheMessageOnce(t *testing.T) {
-	var buf bytes.Buffer
-	announce(&buf, SkipBanner)
+// The banner has to land in every stream the caller captures; whether anyone
+// sees it is `go test`'s buffering (Announce's doc comment) and the terminal's
+// job. Both captured streams are pinned because a non-tty non-verbose run keeps
+// only one of them.
+func TestAnnounceWritesTheMessageToEveryStream(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	announce(SkipBanner, &stdout, &stderr)
 
-	if got := strings.Count(buf.String(), "SPEC SUITE SKIPPED:"); got != 1 {
-		t.Errorf("captured stream carries the banner %d times, want 1:\n%s", got, buf.String())
+	for name, got := range map[string]string{"stdout": stdout.String(), "stderr": stderr.String()} {
+		if n := strings.Count(got, "SPEC SUITE SKIPPED:"); n != 1 {
+			t.Errorf("%s carries the banner %d times, want 1:\n%s", name, n, got)
+		}
 	}
+}
+
+// Announce itself must reach both of the package's own captured streams, not
+// just the one it is printed on first.
+func TestAnnounceWritesStdoutAndStderr(t *testing.T) {
+	stdout, stderr := captureStdio(t, func() { Announce(SkipBanner) })
+
+	for name, got := range map[string]string{"stdout": stdout, "stderr": stderr} {
+		if !strings.Contains(got, "SPEC SUITE SKIPPED:") {
+			t.Errorf("Announce did not write the banner to %s:\n%s", name, got)
+		}
+	}
+}
+
+// captureStdio redirects os.Stdout/os.Stderr for the duration of fn and returns
+// what each captured.
+func captureStdio(t *testing.T, fn func()) (stdout, stderr string) {
+	t.Helper()
+
+	origOut, origErr := os.Stdout, os.Stderr
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stdout pipe: %v", err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	os.Stdout, os.Stderr = outW, errW
+	defer func() { os.Stdout, os.Stderr = origOut, origErr }()
+
+	fn()
+
+	_ = outW.Close()
+	_ = errW.Close()
+	outBytes, err := io.ReadAll(outR)
+	if err != nil {
+		t.Fatalf("read captured stdout: %v", err)
+	}
+	errBytes, err := io.ReadAll(errR)
+	if err != nil {
+		t.Fatalf("read captured stderr: %v", err)
+	}
+	return string(outBytes), string(errBytes)
 }
 
 func TestActionString(t *testing.T) {
