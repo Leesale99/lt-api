@@ -1762,11 +1762,11 @@ A deployment's settings come from its environment, and an operator may override 
 
 - unit: `internal/platform/config/config_test.go::TestParse`
 
-#### R-PLATFORM-002 — Startup refuses a configuration it cannot honour, and names the variable
+#### R-PLATFORM-002 — Startup refuses a configuration it cannot honour, and names the setting
 
 `implemented` · `interface` · authority `handler`
 
-A configuration value that is missing, unparseable or out of its allowed range stops the process before it serves anything, and the message names the variable that must change. Every bad environment value is reported in one refusal instead of one at a time, and nothing degrades into a silent default.
+A configuration value that is missing, unparseable or out of its allowed range stops the process before it serves anything, and the message names the setting that must change — both its environment variable and its command-line flag, because the same value can arrive either way. Every bad environment value is reported in one refusal instead of one at a time, and nothing degrades into a silent default.
 
 **Authority** `handler`
 

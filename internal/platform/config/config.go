@@ -322,57 +322,69 @@ func parseCORSOrigins(raw string) ([]string, error) {
 	return origins, nil
 }
 
+// knob names one setting by BOTH spellings an operator can set it with: the
+// environment variable and the flag. validate cannot know which of the two
+// supplied the value — the stdlib flag package exposes no "was this flag
+// passed" for a typed var — so every refusal names both. A message that named
+// only the env var told an operator who ran with -port to go change a variable
+// they never set (misalignment-report §6 item 17).
+func knob(env, flag string) string {
+	return fmt.Sprintf("env %s or %s flag", env, flag)
+}
+
 // validate enforces semantic rules that type parsing cannot express. Every
-// message names the offending variable — the contract that makes boot
-// failures actionable in a deployment log.
+// message names the offending setting by both spellings — the contract that
+// makes boot failures actionable in a deployment log.
 func validate(cfg Config) error {
 	if cfg.Port < 1 || cfg.Port > 65535 {
-		return fmt.Errorf("invalid PORT %d: must be in range 1-65535", cfg.Port)
+		return fmt.Errorf("invalid PORT %d: must be in range 1-65535 (%s)", cfg.Port, knob("PORT", "-port"))
 	}
 	switch cfg.Env {
 	case "development", "staging", "production":
 	default:
-		return fmt.Errorf("invalid ENV %q: must be development, staging or production", cfg.Env)
+		return fmt.Errorf("invalid ENV %q: must be development, staging or production (%s)", cfg.Env, knob("ENV", "-env"))
 	}
 	// Parse, not hand-check: pgx is the authority on what a DSN is. An
 	// empty DSN is rejected explicitly — ParseConfig("") would happily
 	// fall back to PGHOST/PGUSER-style defaults and blow up later as a
 	// connect error instead of a config error.
 	if cfg.DB.DSN == "" {
-		return fmt.Errorf("invalid LT_API_DSN: is empty; set it in the environment")
+		return fmt.Errorf("invalid LT_API_DSN: is empty; set it in the environment or pass %s", knob("LT_API_DSN", "-db-dsn"))
 	}
 	if _, err := pgxpool.ParseConfig(cfg.DB.DSN); err != nil {
-		return fmt.Errorf("invalid LT_API_DSN: %w", err)
+		return fmt.Errorf("invalid LT_API_DSN (%s): %w", knob("LT_API_DSN", "-db-dsn"), err)
 	}
 	// The per-context overrides must each be a DSN when present: a typo in
-	// one of them must fail at boot with the variable named, not at the
+	// one of them must fail at boot with the setting named, not at the
 	// first acquire.
-	for name, dsn := range map[string]string{
-		"LT_API_DSN_SCHEDULE": cfg.DB.DSNSchedule,
-		"LT_API_DSN_GAME":     cfg.DB.DSNGame,
-		"LT_API_DSN_IDENTITY": cfg.DB.DSNIdentity,
+	for _, override := range []struct {
+		env, flag, dsn string
+	}{
+		{"LT_API_DSN_SCHEDULE", "-db-dsn-schedule", cfg.DB.DSNSchedule},
+		{"LT_API_DSN_GAME", "-db-dsn-game", cfg.DB.DSNGame},
+		{"LT_API_DSN_IDENTITY", "-db-dsn-identity", cfg.DB.DSNIdentity},
 	} {
-		if dsn == "" {
+		if override.dsn == "" {
 			continue
 		}
-		if _, err := pgxpool.ParseConfig(dsn); err != nil {
-			return fmt.Errorf("invalid %s: %w", name, err)
+		if _, err := pgxpool.ParseConfig(override.dsn); err != nil {
+			return fmt.Errorf("invalid %s (%s): %w", override.env, knob(override.env, override.flag), err)
 		}
 	}
 	if cfg.DB.MaxConns < 1 {
-		return fmt.Errorf("invalid LT_API_DB_MAX_CONNS %d: must be at least 1", cfg.DB.MaxConns)
+		return fmt.Errorf("invalid LT_API_DB_MAX_CONNS %d: must be at least 1 (%s)", cfg.DB.MaxConns, knob("LT_API_DB_MAX_CONNS", "-db-max-conns"))
 	}
 	if cfg.DB.MaxIdleTime <= 0 {
-		return fmt.Errorf("invalid LT_API_DB_MAX_IDLE_TIME %s: must be positive", cfg.DB.MaxIdleTime)
+		return fmt.Errorf("invalid LT_API_DB_MAX_IDLE_TIME %s: must be positive (%s)", cfg.DB.MaxIdleTime, knob("LT_API_DB_MAX_IDLE_TIME", "-db-max-idle-time"))
 	}
 	// Validated even when the limiter is disabled: config that is "correct
 	// only when something else is off" fails unpredictably when the other
 	// thing gets switched on.
 	if cfg.Limiter.RPS <= 0 {
-		return fmt.Errorf("invalid LT_API_LIMITER_RPS %f: must be positive", cfg.Limiter.RPS)
+		return fmt.Errorf("invalid LT_API_LIMITER_RPS %f: must be positive (%s)", cfg.Limiter.RPS, knob("LT_API_LIMITER_RPS", "-limiter-rps"))
 	}
 	if cfg.Limiter.Burst < 1 {
-		return fmt.Errorf("invalid LT_API_LIMITER_BURST %d: must be at least 1", cfg.Limiter.Burst)
+		return fmt.Errorf("invalid LT_API_LIMITER_BURST %d: must be at least 1 (%s)", cfg.Limiter.Burst, knob("LT_API_LIMITER_BURST", "-limiter-burst"))
 	}
 	return nil
 }

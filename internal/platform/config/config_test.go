@@ -25,63 +25,87 @@ func validConfig() Config {
 
 func TestValidate(t *testing.T) {
 	tests := []struct {
-		name    string
-		mutate  func(*Config)
-		wantErr string // substring; empty means must pass
+		name string
+		// mutate breaks exactly one setting.
+		mutate func(*Config)
+		// wantErr is the setting's env spelling; wantFlag is its flag
+		// spelling. Every refusal must name both (misalignment-report §6
+		// item 17: stdlib flag cannot say whether a typed value was passed
+		// on the command line, so the message names both knobs).
+		wantErr  string
+		wantFlag string
+		wantMsg  string // exact message, when the wording itself is the pin
 	}{
 		{
 			name:   "baseline passes",
 			mutate: func(*Config) {},
 		},
 		{
-			name:    "port below range",
-			mutate:  func(c *Config) { c.Port = 0 },
-			wantErr: "PORT",
+			name:     "port below range",
+			mutate:   func(c *Config) { c.Port = 0 },
+			wantErr:  "PORT",
+			wantFlag: "-port",
+			wantMsg:  "invalid PORT 0: must be in range 1-65535 (env PORT or -port flag)",
 		},
 		{
-			name:    "port above range",
-			mutate:  func(c *Config) { c.Port = 65536 },
-			wantErr: "PORT",
+			name:     "port above range",
+			mutate:   func(c *Config) { c.Port = 65536 },
+			wantErr:  "PORT",
+			wantFlag: "-port",
 		},
 		{
-			name:    "unknown environment",
-			mutate:  func(c *Config) { c.Env = "prod" },
-			wantErr: "ENV",
+			name:     "unknown environment",
+			mutate:   func(c *Config) { c.Env = "prod" },
+			wantErr:  "ENV",
+			wantFlag: "-env",
 		},
 		{
-			name:    "empty DSN",
-			mutate:  func(c *Config) { c.DB.DSN = "" },
-			wantErr: "LT_API_DSN",
+			name:     "empty DSN",
+			mutate:   func(c *Config) { c.DB.DSN = "" },
+			wantErr:  "LT_API_DSN",
+			wantFlag: "-db-dsn",
 		},
 		{
-			name:    "unparseable DSN (bad sslmode)",
-			mutate:  func(c *Config) { c.DB.DSN = "postgres://user@localhost/db?sslmode=bogus" },
-			wantErr: "LT_API_DSN",
+			name:     "unparseable DSN (bad sslmode)",
+			mutate:   func(c *Config) { c.DB.DSN = "postgres://user@localhost/db?sslmode=bogus" },
+			wantErr:  "LT_API_DSN",
+			wantFlag: "-db-dsn",
 		},
 		{
-			name:    "zero max conns",
-			mutate:  func(c *Config) { c.DB.MaxConns = 0 },
-			wantErr: "LT_API_DB_MAX_CONNS",
+			name:     "unparseable per-context DSN",
+			mutate:   func(c *Config) { c.DB.DSNGame = "postgres://user@localhost/db?sslmode=bogus" },
+			wantErr:  "LT_API_DSN_GAME",
+			wantFlag: "-db-dsn-game",
 		},
 		{
-			name:    "zero max idle time",
-			mutate:  func(c *Config) { c.DB.MaxIdleTime = 0 },
-			wantErr: "LT_API_DB_MAX_IDLE_TIME",
+			name:     "zero max conns",
+			mutate:   func(c *Config) { c.DB.MaxConns = 0 },
+			wantErr:  "LT_API_DB_MAX_CONNS",
+			wantFlag: "-db-max-conns",
 		},
 		{
-			name:    "zero limiter rps",
-			mutate:  func(c *Config) { c.Limiter.RPS = 0 },
-			wantErr: "LT_API_LIMITER_RPS",
+			name:     "zero max idle time",
+			mutate:   func(c *Config) { c.DB.MaxIdleTime = 0 },
+			wantErr:  "LT_API_DB_MAX_IDLE_TIME",
+			wantFlag: "-db-max-idle-time",
 		},
 		{
-			name:    "zero limiter burst",
-			mutate:  func(c *Config) { c.Limiter.Burst = 0 },
-			wantErr: "LT_API_LIMITER_BURST",
+			name:     "zero limiter rps",
+			mutate:   func(c *Config) { c.Limiter.RPS = 0 },
+			wantErr:  "LT_API_LIMITER_RPS",
+			wantFlag: "-limiter-rps",
 		},
 		{
-			name:    "limiter disabled does not excuse bad values",
-			mutate:  func(c *Config) { c.Limiter.Enabled = false; c.Limiter.Burst = 0 },
-			wantErr: "LT_API_LIMITER_BURST",
+			name:     "zero limiter burst",
+			mutate:   func(c *Config) { c.Limiter.Burst = 0 },
+			wantErr:  "LT_API_LIMITER_BURST",
+			wantFlag: "-limiter-burst",
+		},
+		{
+			name:     "limiter disabled does not excuse bad values",
+			mutate:   func(c *Config) { c.Limiter.Enabled = false; c.Limiter.Burst = 0 },
+			wantErr:  "LT_API_LIMITER_BURST",
+			wantFlag: "-limiter-burst",
 		},
 	}
 
@@ -100,10 +124,15 @@ func TestValidate(t *testing.T) {
 			if err == nil {
 				t.Fatalf("validate() = nil, want error containing %q", tt.wantErr)
 			}
-			// Every message names the offending variable — that is the
-			// contract that makes boot failures actionable.
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Errorf("validate() error %q does not name %q", err, tt.wantErr)
+			// Every message names the offending setting by BOTH spellings —
+			// that is the contract that makes boot failures actionable.
+			for _, want := range []string{tt.wantErr, tt.wantFlag, "flag"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("validate() error %q does not name %q", err, want)
+				}
+			}
+			if tt.wantMsg != "" && err.Error() != tt.wantMsg {
+				t.Errorf("validate() error = %q, want %q", err, tt.wantMsg)
 			}
 		})
 	}
@@ -272,6 +301,15 @@ func TestParse(t *testing.T) {
 					t.Errorf("got Port=%d, want 7000", cfg.Port)
 				}
 			},
+		},
+		{
+			// The value arrived as a flag, not a variable: the message must
+			// name the flag too, or the operator is told to change something
+			// they never set (misalignment-report §6 item 17).
+			name:    "bad flag port names both spellings",
+			env:     map[string]string{"LT_API_DSN": validDSN},
+			args:    []string{"-port=0"},
+			wantErr: "env PORT or -port flag",
 		},
 		{
 			name: "untyped env value fails at boot, naming the variable",

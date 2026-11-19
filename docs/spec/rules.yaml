@@ -5865,12 +5865,13 @@
     from.
 
 - id: R-PLATFORM-002
-  title: Startup refuses a configuration it cannot honour, and names the variable
+  title: Startup refuses a configuration it cannot honour, and names the setting
   statement: |
     A configuration value that is missing, unparseable or out of its allowed range stops
-    the process before it serves anything, and the message names the variable that must
-    change. Every bad environment value is reported in one refusal instead of one at a
-    time, and nothing degrades into a silent default.
+    the process before it serves anything, and the message names the setting that must
+    change — both its environment variable and its command-line flag, because the same
+    value can arrive either way. Every bad environment value is reported in one refusal
+    instead of one at a time, and nothing degrades into a silent default.
   module: platform
   entity: configuration
   category: interface
@@ -5902,11 +5903,15 @@
     the process, which logs and exits 1. Contract details the tests pin: env values are
     parsed and joined before flags ever parse, so all bad variables surface together;
     flag parse errors are ordinary errors, not exits; a returned error is always safe to
-    log verbatim. Two recorded gaps in the "name the variable" contract: the SMTP
-    variables are not validated here at all (R-PLATFORM-006 validates them later, in the
-    mailer), and the values that do have semantic checks never name the *flag* form —
-    validate() reports the env name (PORT, LT_API_DB_MAX_CONNS) even when the bad value
-    arrived as a flag.
+    log verbatim. Every semantic refusal names its setting by both spellings —
+    `invalid PORT 0: must be in range 1-65535 (env PORT or -port flag)` — because the
+    stdlib flag package exposes no "was this flag passed" for a typed value, so validate()
+    cannot know which one supplied it. The earlier behaviour named only the env var and
+    sent a -port caller to a variable they had not set (defect resolved,
+    misalignment-report §6 item 17; TestValidate's wantErr/wantFlag pair and TestParse's
+    "bad flag port names both spellings" case pin it). The SMTP variables are not
+    validated here at all: R-PLATFORM-006 owns them, at construction and (since item 16)
+    in config's own validate.
 
 - id: R-PLATFORM-003
   title: Every setting has a bound, and the bound holds when the feature is off
