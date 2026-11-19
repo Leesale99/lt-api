@@ -198,7 +198,7 @@ name *which* app layer. When generating `business-rules.md`, map:
 | `refusal.code` | string | in refusal | A 5-character SQLSTATE, or the reserved word `synthetic` (a Go-only refusal with no SQLSTATE). **Illustrative, not a closed list:** `P0001`, `23514`, `23503`, `23001` are the codes the house table below shows most often; any real SQLSTATE (`23505`, `23502`, `22003`, `42501`, …) is valid. `cmd/spec` warns — never errors — on a code outside the illustrative set (gate B5). |
 | `refusal.constraint` | string \| list \| null | in refusal | The named refusal (constraint name, or the name the trigger `RAISE`s). A list when a rule carries several constraints. |
 | `refusal.sentinel` | string \| null | in refusal | The domain sentinel the repository/ACL maps to (`ErrInvalidTransition`, …). `null` = unmapped. |
-| `refusal.http` | int \| null | in refusal | Status the handler writes. `null` = falls through to 500. |
+| `refusal.http` | int \| null | in refusal | Status the handler writes; must be a real status (100–599). `null` = falls through to 500. |
 | `fixture` | string \| null | no | The shared change-detector fixture id this rule's copies are pinned to. Every `pinned_by` in the catalog must name this id or another rule's `fixture`. |
 | `verification.unit` | list of strings | yes for `implemented` (one of three) | `path::TestSymbol` (add `::Subtest` text only if the subtest name is stable). One of `unit`/`e2e`/`gherkin`: **any one** satisfies policy 3. Must exist **today** — grep it. |
 | `verification.e2e` | list of strings | no | `path::TestSymbol` for existing E2E coverage. Counts toward policy 3 exactly like `unit`; a rule proved only by an e2e test is covered. Must exist **today**. |
@@ -259,12 +259,18 @@ list is the frequency.
       vocabulary (`select`, `insert`, `update`, `delete`, `join`, `create`, `drop`,
       `alter`, `table`, `index`, `column`, `check`, `constraint`, `trigger`,
       `unique`, `references`, `grant`, `revoke`, `cascade`, `upsert`, `truncate`).
-      A three-digit figure that quantifies a business noun (`100 tokens`) is a
-      quantity, not a status. The SQL half is **scoped to facade steps**: the
-      sabotage family of `gherkin-style.md` §8 (`the Owner pool …`, `the write is
-      refused by …`, `the refusal names …`, `the write is allowed`) exists to bypass
-      the application with raw writes and legitimately says `insert`; the transport
-      half applies to it.
+      A three-digit figure that quantifies a business noun (`100 tokens`, `200 entries`)
+      is a quantity, not a status; it is a status at the end of a step or before a
+      transport noun (`409 status`, `409 code`, `409 error`, `409 response`, `409
+      request`). The SQL half is **scoped to facade steps**: the sabotage family of
+      `gherkin-style.md` §8 (`the Owner pool …`, `the write is refused by …`, `the
+      refusal names …`, `the write is allowed`) exists to bypass the application with
+      raw writes and legitimately says `insert`; the transport half applies to it.
+      The denylist also reads each token **split on `_`**, so joining words is not a
+      way past it: `status_code` denies as the phrase `status code`, `http_status` as
+      the transport word `http`, and a figure respelled with letters (`2OO`) as the
+      numeric status it imitates. A database object name's fragments are scanned that
+      way too; they surface only in §8 steps, which the sabotage exemption covers.
     - **Allowlist (the seeded glossary).** Every remaining token of every step must be
       declared in `docs/spec/glossary.yaml` — in the section named after the feature
       file's module directory (`game`, `identity`, `schedule`, `ledger`, `kernel`,
@@ -272,11 +278,19 @@ list is the frequency.
       in the shared `common` section. An undeclared token is an ERROR naming
       `file::scenario` and the section to extend. The seed describes the vocabulary
       the tree uses today; extending it is part of the change that needs the word.
+      A term that merely respells denylisted vocabulary over its `_`-split form
+      (`status_code`, `http_status`) or that is a status figure written with letters
+      (`2oo`) is an ERROR naming the section and the term, and never enters the
+      allowlist: the remedy may not launder the disguise.
     - **Tokenizer.** Lowercase; the English possessive suffix (`'s`) folds away;
       quoted literals (`"Spring 2026"`, `"2–1"`, `"ana@example.com"`) are data and are
       dropped; every remaining run of characters other than a letter, a digit or an
       underscore becomes a separator. Underscore is *not* a separator, so a database
       object name (`rides_state_gate`) is one token and is seeded like any other word.
+      A step's **docstring body and data-table cells** are part of the step: the same
+      rules scan them and the same `file::scenario` pointer reports them. A docstring
+      body keeps its quotation marks (there they are prose, not data); a table cell
+      keeps the quoted-literal exemption.
 14. `category` binds the verification and refusal surface of an **implemented** rule
     (checker id `14-category`); `specified-only` rules are exempt:
     - `interface` ⇒ a `refusal` is present and `refusal.http` is non-null (an

@@ -99,11 +99,18 @@ var httpStatusLikePattern = regexp.MustCompile(`^[1-5][0-9]{2}$`)
 
 // quantityUnits are the business nouns a three-digit figure legitimately
 // quantifies in this domain. `100 tokens` is a stake, not a status; a figure
-// with no unit ("refused as 409") is the transport fact §6 forbids.
+// with no unit ("refused as 409") is the transport fact §6 forbids. The seed is
+// the examples the schema states; `isQuantityFollower` generalises it to any
+// plain business word ("200 entries").
 var quantityUnits = enum(
 	"tokens", "rounds", "matches", "minutes", "hours", "days", "seconds",
 	"players", "teams", "members", "points",
 )
+
+// statusNouns are the transport nouns a three-digit figure names when it is a
+// status rather than a quantity: `409 status`, `409 code`, `409 error`,
+// `409 response`, `409 request` all speak the wire, not the business.
+var statusNouns = enum("status", "code", "error", "response", "request")
 
 var (
 	// possessivePattern removes the English possessive suffix before
@@ -125,6 +132,11 @@ var (
 	// glossaryTermPattern is what a glossary entry may look like: one token,
 	// already lowercase.
 	glossaryTermPattern = regexp.MustCompile(`^[a-z0-9_]+$`)
+	// disguisedStatusPattern is §6's numeric status written with letters in
+	// place of digits (`2oo` for `200`, `4O4` for `404`): a token that is not
+	// all digits but begins with a digit and mixes letters in. It is a
+	// transport figure, never a word a feature may declare.
+	disguisedStatusPattern = regexp.MustCompile(`^[0-9]+[0-9a-z]*[a-z][0-9a-z]*$`)
 )
 
 // tokenizeStep is the pinned tokenizer, in order: lowercase; drop English
@@ -133,9 +145,25 @@ var (
 // (they are exempt), and the status-code rule is the one place that looks at
 // them.
 func tokenizeStep(text string) []string {
+	return tokenize(text, true)
+}
+
+// tokenizeDocString tokenizes a docstring body WITHOUT the quoted-literal
+// exemption. A docstring is prose, not a list of data values: the quotes in it
+// are characters, so a docstring that says `"json"` still says the transport
+// word §6 forbids.
+func tokenizeDocString(text string) []string {
+	return tokenize(text, false)
+}
+
+// tokenize is the pinned tokenizer; dropQuoted switches the quoted-literal
+// exemption (on for step lines and data-table cells, off for docstring bodies).
+func tokenize(text string, dropQuoted bool) []string {
 	lowered := strings.ToLower(text)
 	lowered = possessivePattern.ReplaceAllString(lowered, "")
-	lowered = quotedLiteralPattern.ReplaceAllString(lowered, " ")
+	if dropQuoted {
+		lowered = quotedLiteralPattern.ReplaceAllString(lowered, " ")
+	}
 	fields := tokenSplitPattern.Split(lowered, -1)
 	tokens := make([]string, 0, len(fields))
 	for _, field := range fields {
@@ -144,6 +172,90 @@ func tokenizeStep(text string) []string {
 		}
 	}
 	return tokens
+}
+
+// splitTokenStream splits the tokenizer's tokens on `_`, dropping empty
+// fields.
+//
+// The underscore-preserving stream is the one the glossary binding uses: a
+// database object name (`rides_state_gate`) is a single declared word. The
+// DENYLIST reads this split stream instead, because leaving `_` opaque would be
+// a bypass hatch: `status_code` would escape the `status code` phrase, and
+// `http_status` would escape the transport-word list. Splitting the names the
+// sabotage family spells surfaces their fragments (`matches_ended_at_check` →
+// `check`), which the §8 exemption covers because those names appear only in
+// sabotage steps (see the file comment).
+func splitTokenStream(tokens []string) []string {
+	split := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		for _, field := range strings.Split(token, "_") {
+			if field != "" {
+				split = append(split, field)
+			}
+		}
+	}
+	return split
+}
+
+// isQuantityFollower reports whether a token makes the preceding three-digit
+// figure a QUANTITY rather than a status. The rule is deliberately narrow: a
+// plain alphabetic word that is not a transport noun. `100 tokens` and `200
+// entries` quantify; the seeded business nouns are the fast path, and the rule
+// generalises the seed to any business word.
+//
+// The edges stay conservative so the denied cases never loosen: a figure at the
+// END of a stream is a status ("refused as 409"), and so is a figure followed
+// by a transport noun ("409 status", "409 code") or by another number / a
+// mixed token ("409 2", "409_2"), which quantifies nothing a feature may say.
+func isQuantityFollower(token string) bool {
+	if statusNouns[token] {
+		return false
+	}
+	if quantityUnits[token] {
+		return true
+	}
+	if token == "" {
+		return false
+	}
+	for _, r := range token {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	return true
+}
+
+// disguiseReason explains why a glossary term is disguised denylisted
+// vocabulary rather than a word the features may say, or "" when the term is
+// legitimate. The glossary is where the remedy message sends the author, so a
+// term that merely re-spells a denylisted phrase or a transport word would
+// launder the disguise permanently: `status_code` and `http_status` must never
+// be addable.
+//
+// The SQL half of the denylist is deliberately NOT applied to glossary terms.
+// The seed declares the §8 sabotage family's own SQL words (`insert`, `delete`)
+// and the database object names those assertions spell
+// (`rides_tokens_locked_check`, `round_lifecycle_blocks_delete`), which carry
+// `check`/`delete` fragments by construction. Those names are exactly what the
+// glossary is for (the pinned V1 exemption); a facade step that says one of
+// them is still caught per step, because the SQL half is scoped to facade steps
+// when the step is scanned.
+func disguiseReason(term string) string {
+	split := splitTokenStream([]string{term})
+	for _, phrase := range denylistedPhrases {
+		if windowContains(split, phrase) {
+			return fmt.Sprintf("it spells the denylisted phrase %q", strings.Join(phrase, " "))
+		}
+	}
+	for _, token := range split {
+		if denylistedTransportTokens[token] {
+			return fmt.Sprintf("it carries the transport word %q", token)
+		}
+	}
+	if disguisedStatusPattern.MatchString(term) {
+		return "it is a numeric status written with letters in place of digits"
+	}
+	return ""
 }
 
 // isSabotageStep reports whether the step is one of gherkin-style.md §8's
@@ -220,6 +332,11 @@ func (c *checker) loadGlossary() *glossary {
 			if !glossaryTermPattern.MatchString(term) {
 				c.errorf(policyVocabulary, rel,
 					"glossary term %q in section %q is not a single lowercase token", term, name)
+				continue
+			}
+			if reason := disguiseReason(term); reason != "" {
+				c.errorf(policyVocabulary, rel,
+					"glossary term %q in section %q is not a legitimate step word: %s", term, name, reason)
 				continue
 			}
 			terms[term] = true
@@ -300,35 +417,71 @@ func (c *checker) checkStepVocabulary(g *glossary) {
 		for _, pickle := range gherkin.Pickles(*doc, rel, ids.NewId) {
 			pointer := rel + "::" + pickle.Name
 			for _, step := range pickle.Steps {
-				c.checkStep(report, g, module, pointer, step.Text)
+				c.checkStep(report, g, module, pointer, step.Text, step.Argument)
 			}
 		}
 	}
 }
 
-// checkStep applies both halves of policy 13 to one step: the absolute denylist
-// first, then the glossary binding for the tokens the denylist did not already
-// name (one finding per problem step token is enough to act on).
-func (c *checker) checkStep(report func(pointer, msg string), g *glossary, module, pointer, text string) {
-	tokens := tokenizeStep(text)
+// checkStep applies both halves of policy 13 to one step: its text and its step
+// argument (a docstring body or data-table cells — they are part of the step,
+// so they carry the same rules and the same `file::scenario` attribution).
+//
+// The sabotage exemption is decided once, by the step's own text, and covers
+// the whole step including its argument (the §8 family's docstring is a raw
+// write too).
+func (c *checker) checkStep(report func(pointer, msg string), g *glossary, module, pointer, text string, argument *messages.PickleStepArgument) {
 	sabotage := isSabotageStep(text)
+	c.scanVocabulary(report, g, module, pointer, tokenizeStep(text), sabotage)
+
+	if argument == nil {
+		return
+	}
+	if docString := argument.DocString; docString != nil {
+		c.scanVocabulary(report, g, module, pointer, tokenizeDocString(docString.Content), sabotage)
+	}
+	if table := argument.DataTable; table != nil {
+		for _, row := range table.Rows {
+			for _, cell := range row.Cells {
+				// A cell is a value: the quoted-literal exemption still applies
+				// (`"Team A"` in a cell is data, as on the step line).
+				c.scanVocabulary(report, g, module, pointer, tokenizeStep(cell.Value), sabotage)
+			}
+		}
+	}
+}
+
+// scanVocabulary applies both halves of policy 13 to one token stream (a step
+// line, a docstring body or a data-table cell): the absolute denylist first,
+// over the `_`-split stream, then the glossary binding for the
+// underscore-preserving tokens the denylist did not already name (one finding
+// per problem step token is enough to act on).
+func (c *checker) scanVocabulary(report func(pointer, msg string), g *glossary, module, pointer string, tokens []string, sabotage bool) {
+	scrutiny := splitTokenStream(tokens)
 	denied := map[string]bool{}
 	deny := func(token, msg string) {
 		denied[token] = true
 		report(pointer, msg)
 	}
 
-	for i, token := range tokens {
+	for i, token := range scrutiny {
 		switch {
 		case pureNumberPattern.MatchString(token):
 			if !httpStatusLikePattern.MatchString(token) {
 				continue
 			}
-			if i+1 < len(tokens) && quantityUnits[tokens[i+1]] {
-				continue // `100 tokens` is a quantity, not a status
+			if i+1 < len(scrutiny) && isQuantityFollower(scrutiny[i+1]) {
+				continue // `100 tokens` / `200 entries` quantify; not a status
 			}
 			deny(token, fmt.Sprintf(
 				"step carries the bare number %q: numeric statuses are transport vocabulary; say what the business decided instead (gherkin-style.md §6)",
+				token))
+		case disguisedStatusPattern.MatchString(token):
+			// `2oo` is `200` wearing letters: the numeric-status rule must not
+			// be escapable by respelling the figure, and the remedy is not "add
+			// it to the glossary" — there is no word to add.
+			deny(token, fmt.Sprintf(
+				"step token %q is a numeric status written with letters in place of digits: numeric statuses are transport vocabulary; say what the business decided instead (gherkin-style.md §6)",
 				token))
 		case denylistedTransportTokens[token]:
 			deny(token, fmt.Sprintf(
@@ -342,7 +495,7 @@ func (c *checker) checkStep(report func(pointer, msg string), g *glossary, modul
 	}
 
 	for _, phrase := range denylistedPhrases {
-		if !windowContains(tokens, phrase) {
+		if !windowContains(scrutiny, phrase) {
 			continue
 		}
 		for _, token := range phrase {
@@ -351,6 +504,18 @@ func (c *checker) checkStep(report func(pointer, msg string), g *glossary, modul
 		report(pointer, fmt.Sprintf(
 			"step uses %q: numeric statuses and transport vocabulary are forbidden (gherkin-style.md §6)",
 			strings.Join(phrase, " ")))
+	}
+
+	// A whole token whose split form is denied is already explained by the
+	// denylist finding; offering the glossary remedy for it would invite the
+	// author to launder the disguise (fix B rejects it anyway).
+	for _, token := range tokens {
+		for _, field := range splitTokenStream([]string{token}) {
+			if denied[field] {
+				denied[token] = true
+				break
+			}
+		}
 	}
 
 	// The allowlist half: every token that is not a pure number and not already

@@ -15,9 +15,17 @@
 # 2026", "2–1", "ana@example.com"); replace every remaining run of characters
 # that is not a letter, a digit or an underscore with a space; split. Bare
 # numbers carry no vocabulary and are exempt — except a three-digit
-# HTTP-range figure with no unit after it ("refused as 409"), which §6 denies.
+# HTTP-range figure with no business word after it ("refused as 409", "409
+# status"), which §6 denies.
 # Underscore is NOT a separator: `rides_state_gate` is one token, so database
-# object names are declared here like any other word.
+# object names are declared here like any other word. The denylist, however,
+# also reads every token split on `_`, so a term that merely respells a
+# denylisted phrase or transport word (`status_code`, `http_status`) is an
+# ERROR and never enters the allowlist. Database object names keep their
+# underscore form for the allowlist; their SQL fragments are covered by the
+# per-step sabotage exemption (§8).
+# A step's docstring body and data-table cells are part of the step and bound
+# by the same rules.
 #
 # The seed is today's tree: this file describes the vocabulary the ten feature
 # files already use. Extending a section is a deliberate edit made together with
@@ -34,12 +42,15 @@ common:
   - all
   - an
   - another
+  - any
   - both
+  - each
   - "no"
   - one
   - only
   - other
   - same
+  - some
   - that
   - the
   - this
@@ -47,10 +58,14 @@ common:
   # pronouns
   - her
   - hers
+  - his
   - it
   - its
   - she
   - someone
+  - their
+  - which
+  - who
   # prepositions and particles (quoted where YAML 1.1 would read a boolean:
   # "no", "on", "off")
   - above
@@ -85,18 +100,28 @@ common:
   # conjunctions
   - and
   - else
+  - if
   - or
+  - than
+  - then
   - when
-  # auxiliaries and copula
+  # auxiliaries, copula and modals
   - are
+  - be
   - been
   - being
+  - can
   - does
   - has
   - have
   - is
+  - may
+  - must
   - not
   - was
+  - were
+  - will
+  - would
   # quantifiers (cardinal, ordinal, bare)
   - eleven
   - first
@@ -271,6 +296,7 @@ identity:
   - made
   - mail
   - match
+  - matches
   - member
   - names
   - opens
@@ -284,6 +310,7 @@ identity:
   - players
   - pool
   - presents
+  - read
   - reads
   - receives
   - record
@@ -312,6 +339,7 @@ identity:
   - standard
   - store
   - team
+  - teams
   - time
   - token
   - tokens
