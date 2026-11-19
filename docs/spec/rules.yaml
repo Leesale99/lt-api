@@ -5449,6 +5449,10 @@
       layer: handler
       role: authoritative
       pinned_by: null
+    - site: internal/kernel/httpx/ratelimiter.go::RateLimiter.ClientKey
+      layer: handler
+      role: authoritative
+      pinned_by: null
     - site: internal/kernel/httpx/middleware.go::Middleware.RateLimit
       layer: handler
       role: authoritative
@@ -5469,19 +5473,32 @@
       - internal/kernel/httpx/ratelimiter_test.go::TestRateLimiterSustainedCapped
       - internal/kernel/httpx/ratelimiter_test.go::TestRateLimiterIPsIsolated
       - internal/kernel/httpx/ratelimiter_test.go::TestRateLimiterStaleBucketsEvicted
+      - internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyTrustedProxyUsesForwardedClient
+      - internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyTrustedProxyTakesRightmostUntrustedHop
+      - internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyUntrustedPeerIgnoresForwardedFor
+      - internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyEmptyTrustedListIgnoresForwardedFor
+      - internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyMalformedForwardedForFallsBack
+      - internal/kernel/httpx/ratelimiter_proxy_test.go::TestRateLimitMiddlewareKeysOnForwardedClientBehindProxy
     e2e: []
   notes: >
     Authority deviates from the category default (policy → domain): throttling is a
-    transport decision with no domain participant. Facts the statement relies on: the
-    key is the connection's RemoteAddr, never X-Forwarded-For (attacker-controlled unless
-    a trusted proxy guarantees it); the denial carries Retry-After as a ceil'd
-    whole-second count; a disabled limiter is transparent; a bucket idle longer than
-    three minutes is evicted, and a denied request cancels its reservation so a rejection
-    does not push the client's next slot further out. Two recorded boundaries, both
-    stated in code and neither built: buckets are in memory, so limiting is per process
-    (cross-replica limiting needs a shared store), and because the key is RemoteAddr, a
-    deployment behind a load balancer throttles the balancer's address — every client
-    shares one bucket. The second is a defect candidate, not drift.
+    transport decision with no domain participant. The bucket key is a client address
+    derived from the transport (RateLimiter.ClientKey): with the trusted-proxy allowlist
+    empty — the default, and the safe one — it is the connection peer alone and
+    X-Forwarded-For is ignored, so a caller cannot move its own bucket by inventing a
+    header; when the peer is inside TRUSTED_PROXIES (the Caddy reverse proxy the
+    deployment runs in front of this process), the key is the rightmost hop of
+    X-Forwarded-For that is not itself trusted, falling back to the leftmost hop when
+    every hop is trusted and to the peer when no entry is parseable. Other facts the
+    statement relies on: the denial carries Retry-After as a ceil'd whole-second count;
+    a disabled limiter is transparent; a bucket idle longer than three minutes is
+    evicted, and a denied request cancels its reservation so a rejection does not push
+    the client's next slot further out. One recorded boundary, stated in code and not
+    built: buckets are in memory, so limiting is per process — a second replica keeps
+    its own counters, and cross-replica limiting needs a shared store (phase 07). The
+    proxy collapse this note used to record (every client sharing one bucket behind a
+    load balancer, misalignment-report §6 item 14) is fixed by the allowlist; the
+    per-process fact is unchanged.
     Renumbered at merge (was provisional R-KERNEL-010): R-KERNEL-009 was folded into R-IDENTITY-016/R-IDENTITY-017.
 
 - id: R-KERNEL-010

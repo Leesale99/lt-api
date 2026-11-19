@@ -1650,6 +1650,7 @@ Requests are throttled per client address: a client may burst a configured numbe
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
 | `internal/kernel/httpx/ratelimiter.go::RateLimiter.Allow` | `handler` | `authoritative` | — |
+| `internal/kernel/httpx/ratelimiter.go::RateLimiter.ClientKey` | `handler` | `authoritative` | — |
 | `internal/kernel/httpx/middleware.go::Middleware.RateLimit` | `handler` | `authoritative` | — |
 | `internal/kernel/httpx/ratelimiter.go::RateLimiter.Sweep` | `handler` | `authoritative` | — |
 
@@ -1661,6 +1662,12 @@ Requests are throttled per client address: a client may burst a configured numbe
 - unit: `internal/kernel/httpx/ratelimiter_test.go::TestRateLimiterSustainedCapped`
 - unit: `internal/kernel/httpx/ratelimiter_test.go::TestRateLimiterIPsIsolated`
 - unit: `internal/kernel/httpx/ratelimiter_test.go::TestRateLimiterStaleBucketsEvicted`
+- unit: `internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyTrustedProxyUsesForwardedClient`
+- unit: `internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyTrustedProxyTakesRightmostUntrustedHop`
+- unit: `internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyUntrustedPeerIgnoresForwardedFor`
+- unit: `internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyEmptyTrustedListIgnoresForwardedFor`
+- unit: `internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyMalformedForwardedForFallsBack`
+- unit: `internal/kernel/httpx/ratelimiter_proxy_test.go::TestRateLimitMiddlewareKeysOnForwardedClientBehindProxy`
 
 ## Module `ledger`
 
