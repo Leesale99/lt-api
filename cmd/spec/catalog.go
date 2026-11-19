@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -90,14 +91,19 @@ type Verification struct {
 	Gherkin []string `yaml:"gherkin"`
 }
 
-// loadCatalog reads and decodes the canonical catalog.
+// loadCatalog reads and decodes the canonical catalog. Decoding is strict: an
+// unknown field is an error, because a misspelled key (`knowledge_ref:` for
+// `knowledge-ref:`) would otherwise be dropped silently, and the policies that
+// treat an absent key as legal (policy 16) could never notice the typo.
 func loadCatalog(path string) (Catalog, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read catalog: %w", err)
 	}
 	var catalog Catalog
-	if err := yaml.Unmarshal(data, &catalog); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&catalog); err != nil {
 		return nil, fmt.Errorf("parse catalog %s: %w", path, err)
 	}
 	return catalog, nil
