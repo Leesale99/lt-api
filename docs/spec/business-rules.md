@@ -320,7 +320,7 @@ A ride moves only along the legal graph: locked → won_pending or lost; won_pen
 **Verification**
 
 - unit: `internal/game/internal/core/domain/ride_test.go::TestRide_InvalidTransitions`
-- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update`
+- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx`
 - e2e: `internal/e2e/rides_test.go::TestRideCommandHandlers`
 
 **Expert ref** `docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md`
@@ -345,7 +345,7 @@ A burned, lost or unlocked ride is final: its state never changes again and it i
 **Verification**
 
 - unit: `internal/game/internal/core/domain/ride_test.go::TestRide_TerminalStates`
-- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update`
+- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_TerminalRideGate`
 
 **Expert ref** `docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md`
 
@@ -397,7 +397,7 @@ An unlocked or lost ride forfeits everything it accrued: its accumulated bonus i
 - unit: `internal/game/internal/core/service/constraints_test.go::TestRideMoneyStateCoupling`
 - unit: `internal/game/internal/core/domain/ride_test.go::TestRide_Unlock`
 - unit: `internal/game/internal/core/domain/ride_test.go::TestRide_Lost`
-- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update`
+- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx`
 
 **Notes**
 
@@ -532,7 +532,7 @@ A locked ride may only arrive at won_pending when the committed result of its ma
 - unit: `internal/game/internal/core/service/score_state_rule_test.go::TestScoreStateRuleDB`
 - unit: `internal/schedule/internal/model/matches_winner_test.go::TestWinner`
 - unit: `internal/game/internal/core/service/service_test.go::TestService_OnMatchResultRecorded`
-- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update`
+- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_ArriveTx`
 
 **Expert ref** `docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md`
 
@@ -688,7 +688,7 @@ A ride may change the match it is on only when a won ride continues onto a later
 
 **Verification**
 
-- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update`
+- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx`
 - unit: `internal/game/internal/core/domain/ride_test.go::TestRide_Lock`
 
 #### R-GAME-026 — The calendar is reached through game's own vocabulary, never its tables

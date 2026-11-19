@@ -1,7 +1,9 @@
 package postgres
 
-// Adapter-level tests for RideRepository: Insert / Get / GetAll / Update
-// against the real rides table, plus the DB gates the adapter must translate —
+// Adapter-level tests for RideRepository: Insert / Get / GetAll and the two
+// transactional write paths (DecisionGuardedTx for decisions, ArriveTx for
+// settlement arrivals) against the real rides table, plus the DB gates the
+// adapter must translate —
 // rides_state_gate (P0001 → domain.ErrInvalidTransition, ADR-020) and the FK
 // parents (23503 → domain.ErrNotFound).
 //
@@ -16,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
 
 	"lt-api.aleksrdvn.com/internal/game/internal/core/domain"
@@ -380,183 +383,112 @@ func TestRideRepository_GetAll(t *testing.T) {
 	})
 }
 
-// TestRideRepository_Update covers the optimistic-lock write and every
-// rides_state_gate refusal the store must translate into
-// domain.ErrInvalidTransition (ADR-020). The gate is phase-free — phase checks
-// live in the command methods — so the store-level cases use no phase at
-// all: whatever the trigger accepts, the store accepts.
-func TestRideRepository_Update(t *testing.T) {
+// TestRideRepository_TerminalRideGate covers R-GAME-003 at the store: a ride
+// command on a terminal row never writes it (the guarded UPDATE's
+// state = 'won_pending' predicate finds no row, and classifyDecisionRefusal
+// names the loss as the invalid-state 409), while the trigger's own carve-out —
+// a state-preserving rewrite of a terminal ride is not a transition — still
+// admits the rewrite. The carve-out has no production command (no use case
+// writes a frozen ride), so it is proved through a direct writer, the same way
+// the sabotage scenarios prove a database object.
+func TestRideRepository_TerminalRideGate(t *testing.T) {
 	requireDB(t)
 
 	ctx := context.Background()
 
-	t.Run("happy path persists the fields and bumps the version", func(t *testing.T) {
-		roundID, homeID, awayID := seedFixture(ctx, t)
-		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 1)
-
-		ride.State = domain.RideBurned
-		ride.Streak = 2
-
-		got, err := rideRepo.Update(ctx, ride)
-		if err != nil {
-			t.Fatalf("Update() = %v, want nil", err)
-		}
-		if got.Version != ride.Version+1 {
-			t.Errorf("version = %d, want %d", got.Version, ride.Version+1)
-		}
-
-		persisted, err := rideRepo.Get(ctx, ride.ID)
-		if err != nil {
-			t.Fatalf("Get() = %v, want nil", err)
-		}
-		if persisted.State != domain.RideBurned || persisted.Streak != 2 {
-			t.Errorf("persisted state/streak = %q/%d, want burned/2", persisted.State, persisted.Streak)
-		}
-		if !persisted.Acc.Equal(decimal.NewFromInt(90)) {
-			t.Errorf("acc = %s, want unchanged 90 (burn keeps acc)", persisted.Acc)
-		}
-	})
-
-	t.Run("stale version is ErrEditConflict", func(t *testing.T) {
-		roundID, homeID, awayID := seedFixture(ctx, t)
-		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 1)
-
-		ride.Version = ride.Version - 1 // somebody else already wrote
-
-		_, err := rideRepo.Update(ctx, ride)
-
-		if !errors.Is(err, domain.ErrEditConflict) {
-			t.Fatalf("Update() = %v, want domain.ErrEditConflict", err)
-		}
-	})
-
-	t.Run("illegal transition is domain.ErrInvalidTransition (gate P0001)", func(t *testing.T) {
-		roundID, homeID, awayID := seedFixture(ctx, t)
-		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideLocked, decimal.Zero, 0)
-
-		// locked → burned is outside the transition graph (ADR-016). The
-		// domain command would refuse it too; this case proves the DB gate
-		// refuses it independently and the store maps P0001 to
-		// domain.ErrInvalidTransition — the app/DB agreement is tested, not trusted.
-		ride.State = domain.RideBurned
-
-		_, err := rideRepo.Update(ctx, ride)
-
-		if !errors.Is(err, domain.ErrInvalidTransition) {
-			t.Fatalf("Update() = %v, want domain.ErrInvalidTransition", err)
-		}
-	})
-
-	t.Run("the store is not the result-agreement enforcement point (000017)", func(t *testing.T) {
-		roundID, homeID, awayID := seedFixture(ctx, t)
-		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		// Away team planted: the fixture closed match ends 88:79 (home
-		// wins), so a won_pending arrival for the away ride disagrees.
-		ride := plantRide(ctx, t, closedMatch, awayID, domain.RideLocked, decimal.Zero, 0)
-
-		// Migration 000017: result agreement left the DB trigger
-		// with the cross-context read it needed (schedule's matches table).
-		// A direct store write CAN plant a won_pending arrival the committed
-		// scores disagree with — the enforcement is the service's
-		// resultAgreement check at the settlement handlers
-		// (core/service/settlement.go; the lying-payload probe in
-		// score_state_rule_test.go and service_test.go pins it). This case
-		// documents the store boundary: no disagreement refusal below.
-		ride.State = domain.RideWonPending
-
-		got, err := rideRepo.Update(ctx, ride)
-		if err != nil {
-			t.Fatalf("Update() = %v, want nil (the store alone does not enforce result agreement)", err)
-		}
-		if got.State != domain.RideWonPending {
-			t.Errorf("state = %s, want won_pending", got.State)
-		}
-	})
-
-	t.Run("match re-point outside continuation is refused", func(t *testing.T) {
-		roundID, homeID, awayID := seedFixture(ctx, t)
-		match1 := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
-		match2 := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "31 days")
-		ride := plantRide(ctx, t, match1, homeID, domain.RideLocked, decimal.Zero, 0)
-
-		// ADR-018: match_id writes only on won_pending → locked.
-		ride.MatchID = match2
-
-		_, err := rideRepo.Update(ctx, ride)
-
-		if !errors.Is(err, domain.ErrInvalidTransition) {
-			t.Fatalf("Update() = %v, want domain.ErrInvalidTransition", err)
-		}
-	})
-
-	t.Run("continuation re-points the match", func(t *testing.T) {
-		roundID, homeID, awayID := seedFixture(ctx, t)
-		match1 := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		match2 := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
-		ride := plantRide(ctx, t, match1, homeID, domain.RideWonPending, decimal.NewFromInt(90), 1)
-
-		ride.State = domain.RideLocked
-		ride.MatchID = match2
-		ride.Streak = 2
-
-		if _, err := rideRepo.Update(ctx, ride); err != nil {
-			t.Fatalf("Update() = %v, want nil", err)
-		}
-
-		persisted, err := rideRepo.Get(ctx, ride.ID)
-		if err != nil {
-			t.Fatalf("Get() = %v, want nil", err)
-		}
-		if persisted.State != domain.RideLocked || persisted.MatchID != match2 {
-			t.Errorf("persisted state/match = %q/%d, want locked/%d", persisted.State, persisted.MatchID, match2)
-		}
-	})
-
-	t.Run("terminal ride rejects a state change but accepts a rewrite", func(t *testing.T) {
+	t.Run("a command on a terminal ride is refused", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
 		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideBurned, decimal.NewFromInt(90), 1)
-		rs := rideRepo
 
-		t.Run("state change", func(t *testing.T) {
-			frozen := ride
-			frozen.State = domain.RideLost
+		frozen := ride
+		frozen.State = domain.RideUnlocked
 
-			_, err := rs.Update(ctx, frozen)
+		_, err := decisionWrite(ctx, t, frozen, closedMatch, 0)
+		if !errors.Is(err, domain.ErrInvalidTransition) {
+			t.Fatalf("DecisionGuardedTx() = %v, want domain.ErrInvalidTransition", err)
+		}
 
-			if !errors.Is(err, domain.ErrInvalidTransition) {
-				t.Fatalf("Update() = %v, want domain.ErrInvalidTransition", err)
-			}
-		})
-
-		// The store's Update shape writes the full mutable column set even
-		// when nothing changed (idempotent re-send); the gate must let a
-		// state-preserving rewrite of a terminal ride through.
-		t.Run("state-preserving rewrite", func(t *testing.T) {
-			same := ride
-
-			if _, err := rs.Update(ctx, same); err != nil {
-				t.Fatalf("Update() = %v, want nil", err)
-			}
-		})
+		persisted, err := rideRepo.Get(ctx, ride.ID)
+		if err != nil {
+			t.Fatalf("Get() = %v, want nil", err)
+		}
+		if persisted.State != domain.RideBurned {
+			t.Errorf("state = %s, want burned (the refusal must not have written)", persisted.State)
+		}
 	})
 
-	t.Run("unlocked arrival with non-zero acc is refused", func(t *testing.T) {
+	t.Run("a state change through a direct writer is refused by the gate", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
-		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 1)
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideBurned, decimal.NewFromInt(90), 1)
 
-		// A writer that flips to unlocked but forgets to zero acc: the gate
-		// is the second line of defense behind ride.Unlock (which zeroes it).
-		ride.State = domain.RideUnlocked
+		_, err := pool.Exec(ctx, `UPDATE game.rides SET state = 'lost' WHERE id = $1`, ride.ID)
 
-		_, err := rideRepo.Update(ctx, ride)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "P0001" || pgErr.Message != "ride_terminal_state_frozen" {
+			t.Fatalf("direct UPDATE = %v, want the gate's ride_terminal_state_frozen (P0001)", err)
+		}
+	})
 
-		if !errors.Is(err, domain.ErrInvalidTransition) {
-			t.Fatalf("Update() = %v, want domain.ErrInvalidTransition", err)
+	t.Run("a state-preserving rewrite of a terminal ride is allowed", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideBurned, decimal.NewFromInt(90), 1)
+
+		// The rewrite writes the same state and match — the shape the retired
+		// store Update had for an idempotent re-send — so the gate must let it
+		// through.
+		if _, err := pool.Exec(ctx, `
+			UPDATE game.rides
+			SET state = state, match_id = match_id, streak = streak, version = version + 1
+			WHERE id = $1
+		`, ride.ID); err != nil {
+			t.Fatalf("state-preserving rewrite = %v, want nil", err)
+		}
+
+		persisted, err := rideRepo.Get(ctx, ride.ID)
+		if err != nil {
+			t.Fatalf("Get() = %v, want nil", err)
+		}
+		if persisted.State != domain.RideBurned || persisted.Version != ride.Version+1 {
+			t.Errorf("state/version = %q/%d, want burned/%d", persisted.State, persisted.Version, ride.Version+1)
+		}
+	})
+}
+
+// TestRideRepository_ArriveTx covers the settlement arrival write on its own
+// transaction — the production path for a state arrival, in place of the
+// retired test-only Update. The case pins the store boundary R-GAME-010 turns
+// on: the store performs no result agreement, so a won_pending arrival the
+// committed scores disagree with is written here; the service's
+// resultAgreement check refuses it before this call (core/service/settlement.go).
+func TestRideRepository_ArriveTx(t *testing.T) {
+	requireDB(t)
+
+	ctx := context.Background()
+
+	t.Run("the store writes an arrival the committed result disagrees with", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		// The fixture closed match ends 88:79 — the home side wins.
+		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
+		ride := plantRide(ctx, t, closedMatch, awayID, domain.RideLocked, decimal.Zero, 0)
+
+		tx, err := gamePool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+
+		got, err := rideRepo.ArriveTx(ctx, tx, ride.ID, domain.RideLocked, domain.RideWonPending, ride.Version)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("ArriveTx() = %v, want nil (the store alone does not enforce result agreement)", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+		if got.State != domain.RideWonPending {
+			t.Errorf("state = %s, want won_pending", got.State)
 		}
 	})
 }
@@ -615,8 +547,8 @@ func decisionWrite(ctx context.Context, t *testing.T, ride domain.Ride, ownMatch
 //     the port gates answer it before the write runs;
 //   - a CAS lost to a concurrent ride command is domain.ErrInvalidTransition,
 //     the invalid-state 409 (classifyDecisionRefusal names it);
-//   - a rides_state_gate P0001 stays domain.ErrInvalidTransition, exactly like
-//     Update — the trigger remains the transition graph's DB authority.
+//   - a rides_state_gate P0001 stays domain.ErrInvalidTransition — the trigger
+//     remains the transition graph's DB authority.
 func TestRideRepository_DecisionGuardedTx(t *testing.T) {
 	requireDB(t)
 
@@ -680,6 +612,9 @@ func TestRideRepository_DecisionGuardedTx(t *testing.T) {
 		}
 		if persisted.State != domain.RideBurned || persisted.MatchID != closedMatch {
 			t.Errorf("state/match = %q/%d, want burned/%d", persisted.State, persisted.MatchID, closedMatch)
+		}
+		if persisted.Version != ride.Version+1 {
+			t.Errorf("version = %d, want %d (one guarded write)", persisted.Version, ride.Version+1)
 		}
 		if !persisted.Acc.Equal(decimal.NewFromInt(90)) {
 			t.Errorf("acc = %s, want unchanged 90 (burn keeps acc)", persisted.Acc)
@@ -832,6 +767,52 @@ func TestRideRepository_DecisionGuardedTx(t *testing.T) {
 		}
 	})
 
+	t.Run("a match re-point outside continuation is refused", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 2)
+		otherMatch := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
+
+		// ADR-018: match_id writes only on won_pending → locked. Here the row
+		// moves to burned (a legal transition) while also re-pointing, so only
+		// the match check can refuse it — the trigger's
+		// ride_match_id_immutable_outside_continuation (R-GAME-025).
+		ride.State = domain.RideBurned
+		ride.MatchID = otherMatch
+
+		_, err := decisionWrite(ctx, t, ride, closedMatch, 0)
+		if !errors.Is(err, domain.ErrInvalidTransition) {
+			t.Fatalf("DecisionGuardedTx() = %v, want domain.ErrInvalidTransition", err)
+		}
+
+		persisted, err := rs.Get(ctx, ride.ID)
+		if err != nil {
+			t.Fatalf("Get() = %v, want nil", err)
+		}
+		if persisted.State != domain.RideWonPending || persisted.MatchID != closedMatch {
+			t.Errorf("persisted state/match = %q/%d, want won_pending/%d (nothing written)",
+				persisted.State, persisted.MatchID, closedMatch)
+		}
+	})
+
+	t.Run("an unlock that keeps the bonus is refused by the money coupling", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
+		ride := plantRide(ctx, t, closedMatch, homeID, domain.RideWonPending, decimal.NewFromInt(90), 1)
+
+		// The decision UPDATE deliberately omits every money column, so acc
+		// stays at the planted 90 while the state flips to unlocked: the
+		// declarative coupling refuses it (23514 → ErrInvalidTransition,
+		// R-GAME-005). The domain's Unlock zeroes the accrual first, so this
+		// is the second line of defence.
+		ride.State = domain.RideUnlocked
+
+		_, err := decisionWrite(ctx, t, ride, closedMatch, 0)
+		if !errors.Is(err, domain.ErrInvalidTransition) {
+			t.Fatalf("DecisionGuardedTx() = %v, want domain.ErrInvalidTransition", err)
+		}
+	})
+
 	t.Run("illegal transition is still the gate's P0001", func(t *testing.T) {
 		roundID, homeID, awayID := seedFixture(ctx, t)
 		closedMatch := insertClosedMatch(ctx, t, 1, roundID, homeID, awayID, "2 hours")
@@ -839,7 +820,7 @@ func TestRideRepository_DecisionGuardedTx(t *testing.T) {
 
 		// Every guard predicate passes, but won_pending → lost is outside
 		// the transition graph (ADR-016): the DB gate refuses and the
-		// mapping stays domain.ErrInvalidTransition, as with Update.
+		// mapping is domain.ErrInvalidTransition.
 		ride.State = domain.RideLost
 		_, err := decisionWrite(ctx, t, ride, closedMatch, 0)
 

@@ -1764,7 +1764,7 @@
   verification:
     unit:
       - internal/game/internal/core/domain/ride_test.go::TestRide_InvalidTransitions
-      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx
     e2e:
       - internal/e2e/rides_test.go::TestRideCommandHandlers
     gherkin:
@@ -1779,7 +1779,10 @@
     `canTransition` is the lookup, listed separately because a change to the map alone
     would not show up in a diff of the command methods. Tie: both Go sites fail loudly —
     they never drift silently, because the trigger refuses the arrival and the refused
-    ride's own test fails first.
+    ride's own test fails first. The store's guarded writes are the two transactional
+    production paths (DecisionGuardedTx for decisions, ArriveTx for settlement arrivals);
+    the test-only RideRepository.Update that used to stand in for them was removed in
+    Phase G, and its cases moved onto those paths (misalignment-report §6 item 21).
 
 - id: R-GAME-003
   title: Terminal rides are frozen
@@ -1812,7 +1815,7 @@
   verification:
     unit:
       - internal/game/internal/core/domain/ride_test.go::TestRide_TerminalStates
-      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_TerminalRideGate
     gherkin:
       - docs/spec/features/game/ride_lifecycle.feature::A burned ride accepts no further command
   expert-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
@@ -1933,7 +1936,7 @@
       - internal/game/internal/core/service/constraints_test.go::TestRideMoneyStateCoupling
       - internal/game/internal/core/domain/ride_test.go::TestRide_Unlock
       - internal/game/internal/core/domain/ride_test.go::TestRide_Lost
-      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx
     gherkin:
       - docs/spec/features/game/settlement.feature::Unlocking a won ride forfeits the bonus it accrued
   notes: >
@@ -2242,7 +2245,7 @@
       - internal/game/internal/core/service/score_state_rule_test.go::TestScoreStateRuleDB
       - internal/schedule/internal/model/matches_winner_test.go::TestWinner
       - internal/game/internal/core/service/service_test.go::TestService_OnMatchResultRecorded
-      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_ArriveTx
     gherkin:
       - docs/spec/features/game/settlement.feature::Each ride arrives where the committed result puts it
       - docs/spec/features/game/settlement.feature::A settlement that misreports the odds is refused and pays nothing
@@ -2635,8 +2638,12 @@
     Deliberately not part of this rule: what the destination must be (R-GAME-010),
     the event claim (R-KERNEL-014) and the per-round serialization (R-GAME-023).
     Verification gap: no unit test calls ArriveTx with a stale pre-state
-    directly; the CAS is pinned through the settlement races and through
-    TestRideRepository_Update (the same guarded-update shape on the player path).
+    directly; the CAS is pinned through the settlement races and the store's
+    other guarded write (TestRideRepository_DecisionGuardedTx), which applies the
+    same from-state + version predicate. The one ArriveTx case that is unit-pinned
+    is the store boundary itself (TestRideRepository_ArriveTx): the write lands
+    without a result-agreement check, because that refusal is the service's
+    (R-GAME-010).
     Related but distinct: R-KERNEL-014 claims the *event* at the service, this rule claims
     the *ride row* at the repository — the authorities differ, so they are two rules (a
     replay can be dropped by the claim and still be settled idempotently per ride, and
@@ -3047,7 +3054,7 @@
   fixture: null
   verification:
     unit:
-      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx
       - internal/game/internal/core/domain/ride_test.go::TestRide_Lock
     gherkin:
       - docs/spec/features/game/ride_lifecycle.feature::Continuing moves the won ride onto its next match
@@ -3059,7 +3066,8 @@
     untouched and is still refused). The domain site is the only operation that
     writes the match at all, so it is a copy that fails loudly — Tie: if the
     domain let another command move the match, the trigger refuses the UPDATE
-    (P0001 → 409) and TestRideRepository_Update's re-point case fails first. On
+    (P0001 → 409) and TestRideRepository_DecisionGuardedTx's re-point case fails
+    first. On
     terminal rows this check and R-GAME-003's freeze both fire; the freeze name
     is the one that wins there because it is evaluated first, which is why the
     continuation carve-out is stated in both rules' statements rather than

@@ -389,48 +389,6 @@ func (r *RideRepository) classifyArrivalRefusal(ctx context.Context, rideID, cla
 	}
 }
 
-func (r *RideRepository) Update(ctx context.Context, ride domain.Ride) (domain.Ride, error) {
-	// bonus_acc is deliberately absent from the SET clause: the money
-	// columns are the ledger's since the intent seam — this statement moves
-	// state, continuation and streak; the ledger moves money (and the
-	// money-state coupling still checks the row as a whole).
-	query := `
-		UPDATE rides
-		SET match_id = $1, state = $2, streak = $3, version = version + 1
-		WHERE id = $4 AND version = $5
-		RETURNING id, player_id, team_id, version
-	`
-	args := []any{ride.MatchID, ride.State, ride.Streak, ride.ID, ride.Version}
-
-	err := r.pool.QueryRow(ctx, query, args...).Scan(
-		&ride.ID,
-		&ride.PlayerID,
-		&ride.TeamID,
-		&ride.Version,
-	)
-	if err != nil {
-		switch {
-		case errors.Is(err, pgx.ErrNoRows):
-			return domain.Ride{}, domain.ErrEditConflict
-		case persistence.IsTriggerViolation(err):
-			// rides_state_gate (ADR-020): the DB refused the transition.
-			// Deliberately ErrInvalidTransition — the invalid-state 409 —
-			// NOT an edit conflict: the row is not referenced by anything,
-			// its state machine rejected the write.
-			return domain.Ride{}, domain.ErrInvalidTransition
-		case persistence.IsCheckViolation(err, ridesMoneyStateCoupling):
-			// rides_money_state_coupling (000013): the declarative check
-			// that took trigger check 4's job — unlocked|lost arrivals
-			// carry no acc. Same 409 surface the P0001 refusal produced.
-			return domain.Ride{}, domain.ErrInvalidTransition
-		default:
-			return domain.Ride{}, err
-		}
-	}
-
-	return ride, nil
-}
-
 // ridesMoneyStateCoupling is the declarative money-state-coupling gate
 // (000013): unlocked|lost arrivals carry no accumulated bonus_acc — the
 // predicate the domain's Unlock and Lost obey. It is row-local (references

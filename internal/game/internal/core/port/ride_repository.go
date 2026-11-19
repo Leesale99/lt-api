@@ -49,10 +49,6 @@ type RideRepository interface {
 	// domain.ErrInvalidTransition.
 	ArriveTx(ctx context.Context, tx pgx.Tx, rideID int, from, to domain.RideState, claimedVersion int) (domain.Ride, error)
 
-	// Update writes state, continuation and streak under the optimistic
-	// version guard.
-	Update(ctx context.Context, ride domain.Ride) (domain.Ride, error)
-
 	// DecisionGuardedTx writes a ride decision (Lock, Burn, Unlock) under the
 	// won_pending + version guard, on the caller's transaction.
 	DecisionGuardedTx(ctx context.Context, tx pgx.Tx, ride domain.Ride) (domain.Ride, error)
