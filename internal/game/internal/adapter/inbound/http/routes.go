@@ -54,6 +54,7 @@ func (h *Handler) UseIdentity(users UserDirectory) {
 // RegisterRoutes installs game's routes — paths and methods are the
 // pre-refactor api/routes.go's, and every route carries its permission gate
 // (the rides note below records why the ride surface takes the player codes).
+// rule:R-IDENTITY-017
 func (h *Handler) RegisterRoutes(router RouteRegistrar, gate PermissionGate) {
 	// Players
 	router.HandlerFunc(http.MethodGet, "/v1/players", gate("players:read", h.listPlayers))

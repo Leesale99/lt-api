@@ -30,6 +30,7 @@ func (r *UserTokenRepository) New(ctx context.Context, userID int, ttl time.Dura
 	return userToken, nil
 }
 
+// rule:R-IDENTITY-006
 func (r *UserTokenRepository) insert(ctx context.Context, userToken model.UserToken) error {
 	query := `
 		INSERT INTO user_tokens (hash, user_id, expiry, scope)
@@ -46,6 +47,7 @@ func (r *UserTokenRepository) insert(ctx context.Context, userToken model.UserTo
 // caller's transaction: the activation use case runs it beside the activated
 // flip so the cleanup is one commit with the flag it cleans up after. There is
 // no non-transactional variant: this cleanup only ever belongs to that unit.
+// rule:R-IDENTITY-009
 func (r *UserTokenRepository) DeleteAllForUserTx(ctx context.Context, tx pgx.Tx, scope string, userID int) error {
 	query := `
 		DELETE FROM user_tokens

@@ -112,6 +112,7 @@ func (o RunOptions) taskBudget() time.Duration {
 // (bounded by RunOptions.TaskBudget) during shutdown, so the tracker and the
 // lifecycle that waits on it live together. A panicking task is logged and
 // contained: it must not take the process down after the response was sent.
+// rule:R-PLATFORM-011
 func (s *Server) Background(fn func(ctx context.Context)) {
 	s.wg.Go(func() {
 		defer func() {
@@ -127,6 +128,7 @@ func (s *Server) Background(fn func(ctx context.Context)) {
 
 // Serve builds the http.Server around the handler chain and runs it through
 // the full shutdown lifecycle with the default timeouts and budgets.
+// rule:R-PLATFORM-009
 func (s *Server) Serve() error {
 	return s.serveWithOptions(RunOptions{})
 }
@@ -159,6 +161,7 @@ func (s *Server) newServer(opts RunOptions) *http.Server {
 // reaction, escalation, drain, bounded background wait) decoupled from how
 // the http.Server and its handler are built. Tests inject a server with a
 // hanging handler; production passes the one built in Serve.
+// rule:R-PLATFORM-010
 func (s *Server) runServer(srv *http.Server, opts RunOptions) error {
 	shutdownError := make(chan error)
 
@@ -230,6 +233,7 @@ func (s *Server) runServer(srv *http.Server, opts RunOptions) error {
 // whatever is left. A completed force-close after a drain timeout is not an
 // error — the server did stop, just ungracefully — so only a failing force
 // close (or a non-timeout drain failure) is surfaced as an error.
+// rule:R-PLATFORM-010
 func (s *Server) shutdown(srv *http.Server, opts RunOptions) error {
 	ctx, cancel := context.WithTimeout(context.Background(), opts.gracePeriod())
 	defer cancel()

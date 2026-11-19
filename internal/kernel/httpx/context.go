@@ -32,6 +32,7 @@ type AuthUser struct {
 type Permissions []string
 
 // Include reports whether the set contains code.
+// rule:R-IDENTITY-017
 func (p Permissions) Include(code string) bool {
 	return slices.Contains(p, code)
 }
@@ -55,6 +56,7 @@ func GetPermissions(r *http.Request) Permissions {
 }
 
 // SetAuthenticatedUser returns r with the authenticated principal attached.
+// rule:R-KERNEL-008
 func SetAuthenticatedUser(r *http.Request, user AuthUser) *http.Request {
 	ctx := context.WithValue(r.Context(), authenticatedUserContextKey, user)
 	return r.WithContext(ctx)

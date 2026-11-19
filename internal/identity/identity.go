@@ -41,6 +41,7 @@ type Mailer = service.Mailer
 // Module is the identity bounded context as the rest of the process sees it.
 // The composition root builds exactly one per process and hands the same
 // value to the api gateway (which drives the routes and the two lookups).
+// rule:R-PLATFORM-013
 type Module struct {
 	svc *service.Service
 }
@@ -100,6 +101,8 @@ func (m *Module) RegisterRoutes(router handler.RouteRegistrar, log *slog.Logger)
 // every refusal (malformed, unknown, expired) is httpx.ErrInvalidToken, the
 // middleware's 401 verdict, rather than a concrete cause leaking to the
 // transport layer.
+// rule:R-IDENTITY-005
+// rule:R-IDENTITY-008
 func (m *Module) UserForToken(ctx context.Context, token string) (httpx.AuthUser, error) {
 	v := validator.New()
 

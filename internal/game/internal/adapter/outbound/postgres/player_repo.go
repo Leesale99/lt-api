@@ -134,6 +134,7 @@ func (r *PlayerRepository) Get(ctx context.Context, id int) (domain.Player, erro
 	return player, nil
 }
 
+// rule:R-GAME-014
 func (r *PlayerRepository) Insert(ctx context.Context, player domain.Player) (domain.Player, error) {
 	query := `
 		INSERT INTO players (name, user_id, season_id, favorite_team_id)
@@ -161,6 +162,7 @@ func (r *PlayerRepository) Insert(ctx context.Context, player domain.Player) (do
 	return player, nil
 }
 
+// rule:R-GAME-017
 func (r *PlayerRepository) Update(ctx context.Context, player domain.Player) (domain.Player, error) {
 	query := `
 		UPDATE players
@@ -193,6 +195,7 @@ func (r *PlayerRepository) Update(ctx context.Context, player domain.Player) (do
 // ON DELETE RESTRICT) refuses the delete, and the store translates that driver
 // refusal into domain.ErrRecordInUse so the caller reads the record-in-use 409
 // instead of a 500 (R-GAME-035).
+// rule:R-GAME-035
 func (r *PlayerRepository) Delete(ctx context.Context, id, seasonID int) error {
 	query := `
 		DELETE FROM players
@@ -236,6 +239,7 @@ func (r *PlayerRepository) ExistsForTeam(ctx context.Context, teamID int) (bool,
 // returns nothing. A ride still referencing a player trips
 // rides_player_id_fkey — a same-context FK — so a season that owns rides is
 // refused: domain.ErrRecordInUse, the 409 the old cascade produced.
+// rule:R-SCHEDULE-026
 func (r *PlayerRepository) DeleteForSeasonTx(ctx context.Context, tx pgx.Tx, seasonID int) error {
 	_, err := tx.Exec(ctx, `SELECT game.delete_players_for_season($1)`, seasonID)
 	if err != nil {

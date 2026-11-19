@@ -33,6 +33,7 @@ type EventHandler interface {
 // unchanged: the calendar publishes post-commit, handlers run in-process and
 // synchronously, and a handler error propagates back to the publisher exactly
 // as it did before the translation layer existed.
+// rule:R-GAME-026
 func Subscribe(bus *eventbus.Bus, handler EventHandler) {
 	eventbus.Subscribe(bus, func(ctx context.Context, event schedule.MatchResultRecorded) error {
 		return handler.OnMatchResultRecorded(ctx, TranslateMatchResultRecorded(event))

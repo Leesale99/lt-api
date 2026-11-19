@@ -104,6 +104,7 @@ func (s *Service) UseGameRefs(usage GameUsage) {
 // sweep (Phase 08 outbox) closes the hole. The context loses its
 // cancellation: the publisher's request may be gone, but the handler's work
 // is post-commit settlement, not a reply.
+// rule:R-KERNEL-013
 func publish(ctx context.Context, bus *eventbus.Bus, log *slog.Logger, event any) {
 	if bus == nil {
 		// Composition roots always attach a bus; a bare service in tests

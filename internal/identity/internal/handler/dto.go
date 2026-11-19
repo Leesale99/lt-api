@@ -13,6 +13,9 @@ import (
 
 // Request bodies.
 
+// rule:R-IDENTITY-012
+// rule:R-IDENTITY-019
+// rule:R-IDENTITY-020
 type registerUserInput struct {
 	Name     string `json:"name"`
 	Email    string `json:"email"`
@@ -44,6 +47,7 @@ type userResponse struct {
 	RoleID    int       `json:"role_id"`
 }
 
+// rule:R-IDENTITY-004
 func newUserResponse(user model.User) userResponse {
 	return userResponse{
 		ID:        user.ID,

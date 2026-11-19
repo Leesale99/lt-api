@@ -52,6 +52,9 @@ type Mailer interface {
 // persistence.DBTimeout window. The budget bounds database work, not crypto —
 // a cost-12 hash can eat it on a contended machine and starve the INSERT.
 // The mail dispatch stays outside the timed section: it is not storage.
+// rule:R-IDENTITY-007
+// rule:R-IDENTITY-019
+// rule:R-KERNEL-005
 func (s *Service) Register(ctx context.Context, user model.User, plaintextPassword string) (model.User, error) {
 	if err := user.Password.Set(plaintextPassword); err != nil {
 		return model.User{}, err
@@ -87,6 +90,8 @@ func (s *Service) Register(ctx context.Context, user model.User, plaintextPasswo
 // minted and no mail is booked for either, and the handler answers both with
 // the same 202 envelope a genuine request receives, so the endpoint tells a
 // caller nothing about which addresses exist (R-IDENTITY-022).
+// rule:R-IDENTITY-007
+// rule:R-IDENTITY-022
 func (s *Service) RequestActivationToken(ctx context.Context, email string) error {
 	user, err := s.users.GetByEmail(ctx, email)
 	if err != nil {
@@ -118,6 +123,9 @@ func (s *Service) RequestActivationToken(ctx context.Context, email string) erro
 // Timeout placement: each store call gets its own persistence.DBTimeout
 // child; the bcrypt compare runs BETWEEN them, outside any DB budget, so a
 // slow hash cannot turn a healthy token INSERT into a deadline error.
+// rule:R-IDENTITY-007
+// rule:R-IDENTITY-018
+// rule:R-KERNEL-005
 func (s *Service) Authenticate(ctx context.Context, email, plaintextPassword string) (model.UserToken, error) {
 	lookupCtx, cancelLookup := context.WithTimeout(ctx, persistence.DBTimeout)
 	defer cancelLookup()
@@ -168,6 +176,9 @@ func (s *Service) Authenticate(ctx context.Context, email, plaintextPassword str
 // tokens in one transaction. tokenPlaintext is the raw token from the
 // request body; the lookup hashes it (GetForTokenTx) and refuses unknown,
 // expired or out-of-scope tokens with model.ErrNotFound.
+// rule:R-IDENTITY-009
+// rule:R-IDENTITY-010
+// rule:R-IDENTITY-022
 func (s *Service) Activate(ctx context.Context, tokenPlaintext string) (model.User, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

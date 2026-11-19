@@ -45,6 +45,7 @@ type ScheduleAPI interface {
 }
 
 // ScheduleACL implements port.Schedule over the calendar facade.
+// rule:R-GAME-026
 type ScheduleACL struct {
 	api ScheduleAPI
 }
@@ -97,6 +98,7 @@ func (a *ScheduleACL) NextForTeam(ctx context.Context, teamID int) (port.NextMat
 // RoundOpenTx pins the ride's own round open inside the caller's
 // transaction. Unknown match → ErrNotFound; a round that refuses commands →
 // ErrRoundNotOpen (the round-refusal 409).
+// rule:R-GAME-008
 func (a *ScheduleACL) RoundOpenTx(ctx context.Context, tx pgx.Tx, matchID int) error {
 	status, err := a.api.RoundOpenTx(ctx, tx, matchID)
 	if err != nil {

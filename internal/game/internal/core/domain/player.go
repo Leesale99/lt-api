@@ -21,6 +21,7 @@ type Player struct {
 	Version        int
 }
 
+// rule:R-GAME-021
 func ValidatePlayer(v *validator.Validator, player Player) {
 	v.Check(player.SeasonID > 0, "season_id", "must be provided")
 	v.Check(player.Name != "", "name", "must be provided")

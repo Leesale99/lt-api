@@ -63,6 +63,7 @@ func (r *SeasonRepository) Insert(ctx context.Context, season model.Season) (mod
 	return season, err
 }
 
+// rule:R-SCHEDULE-028
 func (r *SeasonRepository) Update(ctx context.Context, season model.Season) (model.Season, error) {
 	query := `
 		UPDATE seasons

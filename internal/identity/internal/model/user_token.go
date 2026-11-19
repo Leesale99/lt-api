@@ -63,6 +63,7 @@ func newTokenPlaintext() string {
 // GenerateUserToken mints a token: random plaintext, its SHA-256 hash, the
 // ttl-derived expiry and the scope. Pure domain logic — the repository only
 // persists the result.
+// rule:R-IDENTITY-005
 func GenerateUserToken(userID int, ttl time.Duration, scope string) UserToken {
 	userToken := UserToken{
 		Plaintext: newTokenPlaintext(),
@@ -77,6 +78,7 @@ func GenerateUserToken(userID int, ttl time.Duration, scope string) UserToken {
 	return userToken
 }
 
+// rule:R-IDENTITY-005
 func ValidateUserTokenPlaintext(v *validator.Validator, userTokenPlaintext string) {
 	v.Check(userTokenPlaintext != "", "user_token", "must be provided")
 	v.Check(len(userTokenPlaintext) == plaintextTokenLength, "user_token", "must be 26 bytes long")

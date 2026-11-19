@@ -37,6 +37,7 @@ type Actor struct {
 // owner may always manage their own registration; any other actor only with
 // players:write:any (admin). A player with a NULL user_id has no owner —
 // admin-only by design.
+// rule:R-GAME-011
 func canManagePlayer(actor Actor, player domain.Player) bool {
 	if actor.Authenticated && player.UserID != nil && *player.UserID == actor.UserID {
 		return true
@@ -47,6 +48,7 @@ func canManagePlayer(actor Actor, player domain.Player) bool {
 // referenceTeam checks the favourite-team reference against the calendar. An
 // unknown team is the field-level refusal the old FK produced: a 422 naming
 // favorite_team_id, not a 404 (the player, not the team, is the resource).
+// rule:R-GAME-013
 func (s *Service) referenceTeam(ctx context.Context, teamID int) error {
 	if _, err := s.schedule.Team(ctx, teamID); err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
@@ -61,6 +63,8 @@ func (s *Service) referenceTeam(ctx context.Context, teamID int) error {
 // favourite team must exist in the calendar, and user_id is only ever the
 // authenticated principal's. The registration's user existence is the
 // transport's check (identity is not game's context to read).
+// rule:R-GAME-012
+// rule:R-GAME-013
 func (s *Service) PlayerCreate(ctx context.Context, actor Actor, seasonID int, player domain.Player) (domain.Player, error) {
 	if !actor.Authenticated {
 		return domain.Player{}, domain.ErrForbidden
@@ -97,6 +101,9 @@ func (s *Service) PlayerList(ctx context.Context, name string, favoriteTeamID in
 // client's expected version (nil = not claimed) must match, the merged row must
 // still validate and its favourite team must exist. The merged row — not the
 // patch — is what the version guard and the write see.
+// rule:R-GAME-011
+// rule:R-GAME-017
+// rule:R-GAME-021
 func (s *Service) PlayerUpdate(ctx context.Context, actor Actor, seasonID, playerID int, patch domain.PlayerPatch, expectedVersion *int) (domain.Player, error) {
 	player, err := s.players.Get(ctx, playerID)
 	if err != nil {
@@ -134,6 +141,7 @@ func (s *Service) PlayerUpdate(ctx context.Context, actor Actor, seasonID, playe
 // existence, season and ownership rules as PlayerUpdate, then the row goes
 // (a ride still referencing it trips the game-internal FK — the refusal stays
 // the DB's, surfaced as a conflict by the transport).
+// rule:R-GAME-011
 func (s *Service) PlayerDelete(ctx context.Context, actor Actor, seasonID, playerID int) error {
 	player, err := s.players.Get(ctx, playerID)
 	if err != nil {

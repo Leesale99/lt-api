@@ -54,6 +54,7 @@ func (r *Repository) AccrueBonus(ctx context.Context, q persistence.Querier, rid
 // — rides_money_state_coupling (000013) refuses an unlocked|lost row
 // carrying acc, so the money write must precede the state write inside the
 // caller's transaction.
+// rule:R-GAME-005
 func (r *Repository) ReleaseBonus(ctx context.Context, q persistence.Querier, rideID int) error {
 	tag, err := q.Exec(ctx, `
 		UPDATE rides

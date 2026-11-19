@@ -49,6 +49,7 @@ var errGameRefsNotWired = errors.New("schedule: game usage port is not wired")
 // produced. The race — a player or ride created between the check and the
 // delete — is the accepted gap (the same window the delete-then-FK flow had
 // between its own read and write).
+// rule:R-SCHEDULE-026
 func (s *Service) DeleteTeam(ctx context.Context, id int) error {
 	if s.usage == nil {
 		return errGameRefsNotWired
@@ -78,6 +79,7 @@ func (s *Service) DeleteTeam(ctx context.Context, id int) error {
 // race — a ride locked between the check and the delete — is the accepted
 // gap (the same window the delete-then-FK flow had between its own read and
 // write).
+// rule:R-SCHEDULE-026
 func (s *Service) DeleteMatch(ctx context.Context, matchID, seasonID int) error {
 	if s.usage == nil {
 		return errGameRefsNotWired
@@ -113,6 +115,8 @@ func (s *Service) DeleteMatch(ctx context.Context, matchID, seasonID int) error 
 //     season alive with its registrations gone.
 //
 // Both arrive as ErrRecordInUse → the same 409 the blocked cascade produced.
+// rule:R-SCHEDULE-026
+// rule:R-SCHEDULE-027
 func (s *Service) DeleteSeason(ctx context.Context, id int) error {
 	if s.usage == nil {
 		return errGameRefsNotWired

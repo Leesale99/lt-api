@@ -23,6 +23,7 @@ import (
 // absent). The handler already refused a mismatching value before parsing
 // the body — that ordering is the wire contract and stays there; this call
 // re-verifies it so the use case never trusts that its caller checked.
+// rule:R-SCHEDULE-017
 func (s *RoundService) UpdateRound(ctx context.Context, current, updated model.Round, expectedVersion string) (model.Round, error) {
 	if expectedVersion != "" && strconv.Itoa(current.Version) != expectedVersion {
 		return model.Round{}, model.ErrEditConflict
@@ -52,6 +53,9 @@ func (s *RoundService) UpdateRound(ctx context.Context, current, updated model.R
 // event. The repository commits the flip (and the last round's season
 // close); the publish — the results read and the delivery — happens here,
 // after that commit, exactly where it used to run inside the repository.
+// rule:R-SCHEDULE-019
+// rule:R-GAME-009
+// rule:R-KERNEL-013
 func (s *RoundService) Close(ctx context.Context, round model.Round) (model.Round, error) {
 	closed, err := s.repo.Close(ctx, round)
 	if err != nil {

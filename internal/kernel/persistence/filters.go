@@ -22,6 +22,7 @@ type Filters struct {
 // SortColumn returns the SQL column name for the sort parameter. It panics
 // on an unsafelisted value: only ValidateFilters-checked filters may reach
 // it, and the panic is the guard that keeps fmt.Sprintf-built queries safe.
+// rule:R-KERNEL-007
 func (f Filters) SortColumn() string {
 	if slices.Contains(f.SortSafelist, f.Sort) {
 		return strings.TrimPrefix(f.Sort, "-")
@@ -45,6 +46,7 @@ func (f Filters) Offset() int {
 	return (f.Page - 1) * f.PageSize
 }
 
+// rule:R-KERNEL-007
 func ValidateFilters(v *validator.Validator, f Filters) {
 	v.Check(f.Page > 0, "page", "must be greater than zero")
 	v.Check(f.Page <= 10_000_000, "page", "must be a maximum of 10 million")

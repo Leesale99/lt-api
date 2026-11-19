@@ -34,6 +34,7 @@ func WriteError(w http.ResponseWriter, status int, message any) error {
 	return WriteJSON(w, status, Envelope{"error": message}, nil)
 }
 
+// rule:R-KERNEL-011
 func ServerError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error) {
 	LogError(logger, r, err)
 
@@ -80,6 +81,7 @@ func InvalidCredentials(w http.ResponseWriter, r *http.Request) {
 	_ = WriteError(w, http.StatusUnauthorized, message)
 }
 
+// rule:R-KERNEL-008
 func InvalidAuthenticationToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("WWW-Authenticate", "Bearer")
 
@@ -87,6 +89,7 @@ func InvalidAuthenticationToken(w http.ResponseWriter, r *http.Request) {
 	_ = WriteError(w, http.StatusUnauthorized, message)
 }
 
+// rule:R-IDENTITY-016
 func AuthenticationRequired(w http.ResponseWriter, r *http.Request) {
 	message := "you must be authenticated to acces this resource"
 	_ = WriteError(w, http.StatusUnauthorized, message)
@@ -97,6 +100,7 @@ func InactiveAccount(w http.ResponseWriter, r *http.Request) {
 	_ = WriteError(w, http.StatusForbidden, message)
 }
 
+// rule:R-IDENTITY-017
 func MissingPermission(w http.ResponseWriter, r *http.Request) {
 	message := "your user account doesn't have the necessary permissions to access this resource"
 	_ = WriteError(w, http.StatusForbidden, message)

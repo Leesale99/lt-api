@@ -58,6 +58,8 @@ type IdempotencyToken struct {
 // ValidateIdempotencyToken checks the token's key: it is required (it
 // identifies the logical request) and bounded by the idempotency_keys_key_check
 // limit — the same rule the DB CHECK enforces as the backstop.
+// rule:R-GAME-020
+// rule:R-KERNEL-001
 func ValidateIdempotencyToken(v *validator.Validator, token IdempotencyToken) {
 	v.Check(token.Key != "", "idempotency_key", "must be provided")
 	v.Check(len(token.Key) <= 255, "idempotency_key", "must not be more than 255 bytes")
@@ -95,6 +97,9 @@ func New() Repository { return Repository{} }
 // not collide with this one: the INSERT simply succeeds under this caller's
 // row. Before it, the claim sweeps rows older than retentionWindow — the lazy
 // retention policy, one statement per claim, on the same transaction.
+// rule:R-KERNEL-003
+// rule:R-KERNEL-004
+// rule:R-KERNEL-014
 func (r Repository) Claim(ctx context.Context, tx pgx.Tx, token IdempotencyToken) (bool, IdempotentResponse, error) {
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM idempotency_keys
@@ -143,6 +148,7 @@ func (r Repository) Claim(ctx context.Context, tx pgx.Tx, token IdempotencyToken
 
 // Save stores the command's HTTP answer on the claimed row. Runs in the
 // command's transaction, so the claim commits only with its response.
+// rule:R-KERNEL-004
 func (r Repository) Save(ctx context.Context, tx pgx.Tx, token IdempotencyToken, res IdempotentResponse) error {
 	tag, err := tx.Exec(ctx, `
 		UPDATE idempotency_keys

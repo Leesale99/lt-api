@@ -32,6 +32,7 @@ func ValidateSeason(v *validator.Validator, season Season) {
 	ValidateSeasonStatus(v, season.Status)
 }
 
+// rule:R-SCHEDULE-004
 func ValidateSeasonStatus(v *validator.Validator, status SeasonStatus) {
 	v.Check(validator.PermittedValue(status, SeasonStatuses...), "status", "must be one of: created, open, in_progress, closed")
 }
@@ -47,6 +48,7 @@ var seasonStatusRank = map[SeasonStatus]int{
 // ValidateNewSeason validates a season about to be created. A new season
 // always starts in created: the client cannot choose the status, and the
 // lifecycle progression belongs to Update (see checkStatusRegression).
+// rule:R-SCHEDULE-001
 func ValidateNewSeason(v *validator.Validator, season Season) {
 	ValidateSeason(v, season)
 	v.Check(season.Status == SeasonCreated, "status", "new seasons can only have status created")
@@ -56,6 +58,7 @@ func ValidateNewSeason(v *validator.Validator, season Season) {
 // version (old): vocabulary plus no-regression. The freeze half — no
 // created/open once a match has started — is the seasons_freeze_gate
 // trigger (ADR-008); this check is advisory UX.
+// rule:R-SCHEDULE-003
 func ValidateSeasonUpdate(v *validator.Validator, old, new Season) {
 	ValidateSeason(v, new)
 	checkStatusRegression(v, "season", old.Status, new.Status, seasonStatusRank)

@@ -7,12 +7,14 @@ import "time"
 // so these are the process-wide defaults.
 
 // ShutdownGracePeriod bounds the HTTP drain before force-close.
+// rule:R-PLATFORM-010
 const ShutdownGracePeriod = 10 * time.Second
 
 // BackgroundTaskBudget bounds the wait for background goroutines (mailer
 // sends) after the HTTP drain. Sized below ShutdownGracePeriod so the total
 // worst-case shutdown (drain + workers) stays inside a typical orchestrator
 // kill window (Kubernetes default: 30s) with margin to spare.
+// rule:R-PLATFORM-010
 const BackgroundTaskBudget = 5 * time.Second
 
 // ReadTimeout bounds how long the server waits for a request to arrive on an

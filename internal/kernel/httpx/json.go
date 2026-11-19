@@ -29,6 +29,7 @@ type Envelope map[string]any
 // MaxBodyBytes caps every request body at 1 MiB. The intake wraps live at
 // each reader of r.Body (createRideToken's hash drain, ReadJSON's decode)
 // and must agree with this limit — one constant, no drifting copies.
+// rule:R-KERNEL-012
 const MaxBodyBytes = 1 << 20
 
 func WriteJSON(w http.ResponseWriter, status int, data Envelope, headers http.Header) error {
@@ -63,6 +64,7 @@ func WriteRawJSON(w http.ResponseWriter, status int, body []byte) {
 // ReadJSON decodes exactly one JSON value into dst: unknown fields are
 // rejected, the body is capped at MaxBodyBytes, and every failure comes back
 // as a client-readable sentence (handlers turn it into a 400).
+// rule:R-KERNEL-012
 func ReadJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, MaxBodyBytes)
 

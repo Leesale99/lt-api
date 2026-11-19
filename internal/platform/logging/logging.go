@@ -20,10 +20,12 @@ import (
 // level. Source call sites (short file:line) are attached in development
 // only — production aggregates parse machine data, and a full source path
 // in every record is bulk without payoff there.
+// rule:R-PLATFORM-008
 func New(level slog.Level, env string) *slog.Logger {
 	return newLogger(level, env, os.Stdout)
 }
 
+// rule:R-PLATFORM-008
 func newLogger(level slog.Level, env string, w io.Writer) *slog.Logger {
 	opts := &slog.HandlerOptions{
 		Level: level,
@@ -52,6 +54,7 @@ func shortSource(groups []string, a slog.Attr) slog.Attr {
 // Pgx adapts the application logger to pgx's tracelog.Logger interface, so
 // database connection and query events land in the same JSON stream as
 // application logs — one log pipeline per process, not two.
+// rule:R-PLATFORM-008
 func Pgx(logger *slog.Logger) tracelog.Logger {
 	return pgxLogger{logger: logger}
 }

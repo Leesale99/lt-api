@@ -19,6 +19,8 @@ import (
 // checks — with no ride rules involved. The resolve PATCH below is the one
 // match operation with a rule of its own (time policy), and it is
 // schedule's script since the Game/Schedule split.
+// rule:R-SCHEDULE-001
+// rule:R-SCHEDULE-011
 func (h *Handler) createMatch(w http.ResponseWriter, r *http.Request) {
 	var input createMatchRequest
 
@@ -225,6 +227,7 @@ func (h *Handler) deleteMatch(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// rule:R-SCHEDULE-028
 func (h *Handler) updateMatch(w http.ResponseWriter, r *http.Request) {
 	seasonID, err := httpx.ReadIDParam(r)
 	if err != nil {
@@ -361,6 +364,7 @@ func (h *Handler) updateMatch(w http.ResponseWriter, r *http.Request) {
 // payload, not in this request's transaction. The match types are
 // schedule's (the row belongs to the calendar); the ride half lives behind
 // the event seam.
+// rule:R-SCHEDULE-020
 func (h *Handler) resolveMatch(w http.ResponseWriter, r *http.Request) {
 	matchID, err := httpx.ReadIDParam(r, "match_id")
 	if err != nil {

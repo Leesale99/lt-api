@@ -49,6 +49,7 @@ func (h *Handler) showRide(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// rule:R-GAME-020
 func (h *Handler) listRides(w http.ResponseWriter, r *http.Request) {
 	v := validator.New()
 
@@ -104,6 +105,8 @@ type rideCommand func(ctx context.Context, id int, token port.Token, marshal ser
 // claims. ok=false means the header failed validation, the request carried no
 // principal (the routes are permission-gated, so this is defensive), or the
 // body could not be read — and the response is already written.
+// rule:R-GAME-020
+// rule:R-KERNEL-002
 func (h *Handler) rideCommandToken(w http.ResponseWriter, r *http.Request, endpoint string) (port.Token, bool) {
 	user, found := httpx.GetAuthenticatedUser(r)
 	if !found {
@@ -187,6 +190,9 @@ func (h *Handler) rideCommand(endpoint string, command rideCommand) http.Handler
 // id. ok=false means the request carried no principal (defensive: the route is
 // permission-gated) or the token failed validation, and the 422/401 is
 // written.
+// rule:R-GAME-020
+// rule:R-KERNEL-002
+// rule:R-KERNEL-012
 func (h *Handler) createRideToken(w http.ResponseWriter, r *http.Request) ([]byte, port.Token, bool) {
 	user, found := httpx.GetAuthenticatedUser(r)
 	if !found {
@@ -234,6 +240,7 @@ func (h *Handler) createRideToken(w http.ResponseWriter, r *http.Request) ([]byt
 	return body, port.Token(token), true
 }
 
+// rule:R-GAME-020
 func (h *Handler) createRide(w http.ResponseWriter, r *http.Request) {
 	// The token first: the key must exist (the retry promise) and the body
 	// must hash before decode, so a replay of the same key with altered bytes
