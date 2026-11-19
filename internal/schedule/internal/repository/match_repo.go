@@ -69,11 +69,16 @@ func (r *MatchRepository) Get(ctx context.Context, id int) (model.Match, error) 
 	return match, nil
 }
 
+// Insert writes the row and returns it as committed: the RETURNING list carries
+// every stored value the response reports, including the odds — numeric(4,2)
+// rounds a third decimal on arrival (1.234 -> 1.23), so reading it back is what
+// keeps the 201 honest about what the row holds (the pattern 000020 set for
+// ended_at on the resolve path).
 func (r *MatchRepository) Insert(ctx context.Context, match model.Match) (model.Match, error) {
 	query := `
 		INSERT INTO matches (season_id, round_id, home_team_id, away_team_id, home_odds, away_odds, home_score, away_score, starts_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, created_at, ended_at, status, version
+		RETURNING id, created_at, ended_at, status, home_odds, away_odds, version
 	`
 	args := []any{
 		match.SeasonID,
@@ -87,7 +92,7 @@ func (r *MatchRepository) Insert(ctx context.Context, match model.Match) (model.
 		match.StartsAt,
 	}
 
-	err := r.pool.QueryRow(ctx, query, args...).Scan(&match.ID, &match.CreatedAt, &match.EndedAt, &match.Status, &match.Version)
+	err := r.pool.QueryRow(ctx, query, args...).Scan(&match.ID, &match.CreatedAt, &match.EndedAt, &match.Status, &match.Odds.Home, &match.Odds.Away, &match.Version)
 
 	return match, err
 }

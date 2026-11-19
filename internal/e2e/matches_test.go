@@ -112,6 +112,16 @@ func TestCreateMatchHandler(t *testing.T) {
 			wantBody: []string{`"starts_at": "2030-01-01T12:00:00Z"`},
 		},
 		{
+			// numeric(4,2) rounds a third decimal on arrival, so the 201 must
+			// echo the committed row's odds, not the requested ones (the create
+			// INSERT reads them back through RETURNING — R-SCHEDULE-009).
+			name:     "odds echo the rounded row",
+			url:      "/v1/seasons/1/matches",
+			body:     `{"round_id":3,"home_team_id":1,"away_team_id":2,"odds":{"home":1.234,"away":2.567},` + futureStartsAt + `}`,
+			wantCode: http.StatusCreated,
+			wantBody: []string{`"home": 1.23,`, `"away": 2.57`},
+		},
+		{
 			name:     "unknown season",
 			url:      "/v1/seasons/999/matches",
 			body:     `{"round_id":3,"home_team_id":1,"away_team_id":2,"odds":{"home":2,"away":3}}`,
