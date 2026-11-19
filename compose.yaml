@@ -1,0 +1,39 @@
+# The throwaway PostgreSQL the database-backed suites build themselves.
+#
+# internal/spec (the godog enforcement suite) and internal/e2e never use this
+# database directly: they connect to the server, then drop and recreate their
+# own <dsn-db>_<suite> database from the repository's migrations on every run.
+# So the volume below only keeps the *base* database alive across restarts —
+# the suites depend on the server, never on its contents.
+#
+# Everything here mirrors the Postgres service container in
+# .github/workflows/ci.yml, so the same DSN works on this machine and in CI:
+#
+#   postgres://lt_test:test@localhost:5432/lt_api_test?sslmode=disable
+#
+# Start it with `make db/up` (docker compose up -d + wait for the healthcheck)
+# and stop it with `make db/down`.
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: lt_test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: lt_api_test
+    ports:
+      - "5432:5432"
+    healthcheck:
+      # Same probe as CI's service container: "accepting connections" is the
+      # signal `make db/up` waits for.
+      test: ["CMD-SHELL", "pg_isready -U lt_test -d lt_api_test"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      # postgres:18 keeps PGDATA under /var/lib/postgresql/18/docker and
+      # declares /var/lib/postgresql as its volume — mount there, not at
+      # .../data (which 18+ ignores).
+      - pgdata:/var/lib/postgresql
+
+volumes:
+  pgdata:
