@@ -817,8 +817,10 @@
   notes: >
     rounds_progress_gate fires on INSERT beyond created, on every forward
     transition (created -> open/closed, open -> closed) and on any renumbering of
-    a row (OLD.number IS DISTINCT FROM NEW.number), which is what stops a writer
-    from renaming its way around the order. Both halves read sibling rows
+    a *live or closed* round (OLD.number IS DISTINCT FROM NEW.number, inside the
+    NEW.status IN ('open','closed') branch), which is what stops a writer from
+    renaming its way around the order; a created round renumbers freely, subject
+    only to the per-season unique number. Both halves read sibling rows
     (seasons, sibling rounds), so a trigger. Two migration sites, because the
     function's current body is 000019's: 000008 created it, and 000019 gave the
     same function R-SCHEDULE-003's rank half — round_status_regression — checked
@@ -831,10 +833,15 @@
     and the escape hatch is the only evidence it exists. (2) Refusal UX defect:
     every round-update refusal maps to ErrRecordInUse and the handler answers the
     *frozen* message ("a match has already started, so the hierarchy cannot move
-    to an earlier stage"). A renumber of a created round in a created season
-    trips round_progress_season_not_live with no started match anywhere and still
-    gets that message; a close over unclosed matches gets it too. The three
-    causes are indistinguishable to a client.
+    to an earlier stage"). A round going live under a created or closed season
+    trips round_progress_season_not_live, and a close over unclosed matches trips
+    rounds_close_gate, both with no started match anywhere, and both still get
+    that message; those causes are indistinguishable to a client.
+    misalignment-report §6 item 5 (docs/spec/history/misalignment-report.md) is
+    therefore a false premise: it claims a created round in a created season
+    cannot be renumbered, but the gate's renumber branch requires
+    NEW.status IN ('open','closed'), so such a renumber is allowed and only the
+    per-season unique number can refuse it (§6 item 4 repeats the same example).
     stale-pointer: round_repo.go::updateRound's IsTriggerViolation comment names only
     rounds_freeze_gate as the cause of the P0001 it maps to ErrRecordInUse, but the same
     SQLSTATE also comes from rounds_progress_gate (000008) and rounds_close_gate; the
