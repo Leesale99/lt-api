@@ -864,6 +864,15 @@ func TestRideLockIdempotentHandler(t *testing.T) {
 		return rr
 	}
 
+	lockWithBody := func(rideID int, key, body string) *httptest.ResponseRecorder {
+		app := newTestApplication()
+		req := httptest.NewRequest(http.MethodPost, "/v1/rides/"+strconv.Itoa(rideID)+"/lock", strings.NewReader(body))
+		req.Header.Set("Idempotency-Key", key)
+		rr := httptest.NewRecorder()
+		app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+		return rr
+	}
+
 	t.Run("retry with the same key replays the stored response", func(t *testing.T) {
 		reset(t)
 		closedMatch := plantDecidedMatch(t)
@@ -942,6 +951,41 @@ func TestRideLockIdempotentHandler(t *testing.T) {
 		}
 		if version != 1 {
 			t.Errorf("refused ride version = %d, want 1 (no execution)", version)
+		}
+	})
+
+	t.Run("same key with different body bytes is the 409 idempotency conflict", func(t *testing.T) {
+		reset(t)
+		closedMatch := plantDecidedMatch(t)
+		playerID := plantPlayerRow(t, 1)
+		rideID := plantRideRow(t, playerID, 1, closedMatch, "won_pending", "90", 1)
+
+		// The command reads no body, but the digest is a digest of the whole
+		// request: appending bytes changes the request identity, so the same
+		// key with different body bytes is key misuse, never a replay
+		// (R-KERNEL-002).
+		if code := lockWithBody(rideID, "body-key", `{"note":"first"}`).Code; code != http.StatusOK {
+			t.Fatalf("first lock: got %d, want 200", code)
+		}
+
+		rr := lockWithBody(rideID, "body-key", `{"note":"second"}`)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("got status %d, want 409 (body: %s)", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "already used with a different request") {
+			t.Errorf("body missing conflict message (body: %s)", rr.Body.String())
+		}
+
+		// The refused request executed nothing: the first lock was the only
+		// transition (version 2, streak 2 from the planted 1).
+		var version, streak int
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT version, streak FROM game.rides WHERE id = $1`, rideID,
+		).Scan(&version, &streak); err != nil {
+			t.Fatalf("read ride: %v", err)
+		}
+		if version != 2 || streak != 2 {
+			t.Errorf("ride version = %d, streak = %d; want 2 and 2 (no second transition)", version, streak)
 		}
 	})
 
