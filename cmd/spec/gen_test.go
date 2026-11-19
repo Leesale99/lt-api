@@ -29,6 +29,7 @@ func genCatalog() Catalog {
 		Site: "internal/kernel/thing/thing.go::Do", Layer: "handler", Role: "authoritative",
 	}}
 	rideBorn.Notes = "Ordinary notes that should not reach the Markdown."
+	rideBorn.KnowledgeRef = ptr("docs/league-tokens-learning-phases/phase-00-http-api-foundation.md")
 
 	money := baseRule()
 	money.ID = "R-GAME-002"
@@ -129,6 +130,12 @@ func TestGenDeterministic(t *testing.T) {
 
 	// Expert ref for specified-only rules.
 	assertContains("**Expert ref** `docs/league-tokens-learning-phases/phase-03.md`")
+
+	// Knowledge ref: rendered beside the expert ref, only where the rule has one.
+	assertContains("**Knowledge ref** `docs/league-tokens-learning-phases/phase-00-http-api-foundation.md`")
+	if got := strings.Count(md, "**Knowledge ref**"); got != 1 {
+		t.Errorf("generated Markdown renders %d knowledge refs, want 1 (one rule carries the field)", got)
+	}
 
 	// Deterministic ordering: modules, then ids.
 	ordered := []string{"## Module `game`", "## Module `kernel`", "## Module `platform`"}

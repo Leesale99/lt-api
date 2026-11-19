@@ -169,6 +169,8 @@ A registration's season and favourite team must exist in the calendar, and a rid
 - e2e: `internal/e2e/players_test.go::TestCreatePlayerHandler`
 - e2e: `internal/e2e/players_test.go::TestUpdatePlayerHandler`
 
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md`
+
 **Notes**
 
 > Category boundary (the cross-context FKs came out in 000016 so the composition moved into the use cases), but authority is the service, not the composition root, because each use case performs its own check before its write — the deviation from the boundary default is deliberate and this note is the reason. Disjoint cases of one statement, one refusal per case: an unknown favourite team is a field-level 422 on favorite_team_id (the player, not the team, is the resource); an unknown season in the route and an unknown ride team are 404; the ride's match reference is not checked here — it is the round gate's (R-GAME-008) and answers the round refusal. Tie: the handler site fails loudly — it asks identity for the principal's user row and its refusal keeps the field-error shape, but the user reference is checked *only* there and only when the identity directory was installed (`if h.users != nil`): with the FK gone, a module wired without identity silently plants an orphan user_id. Its 422 used to name favorite_team_id — a leftover of the FK-era shape that mislabelled the failing reference; it now names user_id, the principal's user account (misalignment-report §6 item 12's mislabel half, fixed; the optional-check half is still a defect, not a rule). stale-pointer: two repository comments still describe FK-era behaviour after 000016 — ride_repo.go::insertRide's FK branch says "the referenced player, team or match does not exist", though with the cross-context FKs gone the only surviving reference on that INSERT is rides_player_id_fkey (a missing team or match is the port's check), and player_repo.go::GetAll's "favorite_team_id is never 0 in the schema (FK)" names an FK that 000016 dropped (0 still works as the no-filter sentinel).
@@ -566,6 +568,8 @@ Whenever a ride forfeits its accrued bonus — a player unlock, a lost result, t
 - unit: `internal/game/internal/core/service/service_test.go::TestService_OnRoundCompleted`
 - unit: `internal/game/internal/core/service/constraints_test.go::TestRideMoneyStateCoupling`
 
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-06-ledger-and-accounting.md`
+
 #### R-GAME-016 — A settlement reaches each ride once
 
 `implemented` · `orchestration` · authority `repository`
@@ -590,6 +594,8 @@ A settlement arrival only lands on a ride that is still in the state the handler
 - unit: `internal/game/internal/core/service/service_test.go::TestService_OnMatchResultRecorded`
 - unit: `internal/game/internal/core/service/service_test.go::TestService_OnRoundCompleted`
 - e2e: `internal/e2e/matches_test.go::TestResolveMatchSettlesRowOnce`
+
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-04-concurrency-and-idempotency.md`
 
 #### R-GAME-020 — Ride requests are framed before the command runs
 
@@ -641,6 +647,8 @@ A match settlement and a round settlement of the same round never run beside eac
 
 - unit: `internal/game/internal/core/service/rides_concurrency_test.go::TestSettlementHandlersSerializeOnTheRound`
 
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md`
+
 #### R-GAME-024 — A refused ride write names its cause in a fixed order
 
 `implemented` · `refusal-mapping` · authority `repository`
@@ -691,6 +699,8 @@ A ride may change the match it is on only when a won ride continues onto a later
 - unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx`
 - unit: `internal/game/internal/core/domain/ride_test.go::TestRide_Lock`
 
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md`
+
 #### R-GAME-026 — The calendar is reached through game's own vocabulary, never its tables
 
 `implemented` · `boundary` · authority `composition-root`
@@ -735,6 +745,8 @@ The query that collects a closing round's undecided rides is the one shape the d
 **Verification**
 
 - unit: `internal/game/internal/core/service/service_test.go::TestService_OnRoundCompleted`
+
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-01-postgresql-persistence.md`
 
 **Notes**
 
@@ -1138,6 +1150,8 @@ An account's id, its creation time and its version counter are produced by the s
 - unit: `internal/identity/internal/repository/user_repo_test.go::TestInsert`
 - e2e: `internal/e2e/users_test.go::TestRegisterUserHandler`
 
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-01-postgresql-persistence.md`
+
 #### R-IDENTITY-022 — Activation happens once and asking discloses nothing
 
 `implemented` · `policy` · authority `service`
@@ -1504,6 +1518,8 @@ Every command that promises retry safety must arrive with a key that names one l
 - unit: `internal/kernel/idempotency/idempotency_test.go::TestValidateIdempotencyToken`
 - e2e: `internal/e2e/rides_test.go::TestCreateRideHandler`
 
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-04-concurrency-and-idempotency.md`
+
 #### R-KERNEL-002 — A request's dedup identity is a digest of the request itself
 
 `implemented` · `orchestration` · authority `handler`
@@ -1553,6 +1569,8 @@ Once a key has been used by one caller, that same caller reusing it for a differ
 - e2e: `internal/e2e/rides_test.go::TestRideLockIdempotentHandler`
 - e2e: `internal/e2e/rides_test.go::TestCreateRideIdempotentHandler`
 
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-04-concurrency-and-idempotency.md`
+
 #### R-KERNEL-004 — A claim commits with its command, never before or after it
 
 `implemented` · `orchestration` · authority `service`
@@ -1578,6 +1596,8 @@ The claim on a key and the stored answer are written inside the command's own tr
 - unit: `internal/game/internal/core/service/idempotency_test.go::TestService_RideCreateIdempotent`
 - e2e: `internal/e2e/rides_test.go::TestCreateRideIdempotentHandler`
 - e2e: `internal/e2e/rides_test.go::TestRideLockIdempotentHandler`
+
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-04-concurrency-and-idempotency.md`
 
 ### Entity `list_query`
 
@@ -1894,6 +1914,8 @@ Each bounded context owns one database schema and nothing else: the calendar its
 - unit: `internal/testdb/boundary_test.go::TestScheduleAppBoundary`
 - unit: `internal/testdb/boundary_test.go::TestIdentityAppBoundary`
 
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md`
+
 #### R-PLATFORM-015 — A context's pool speaks as that context's role
 
 `implemented` · `boundary` · authority `repository`
@@ -1914,6 +1936,8 @@ The connection pool a context is given runs every one of its statements as that 
 **Verification**
 
 - unit: `internal/testdb/context_roles_test.go::TestContextPoolsRunAsContextRole`
+
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md`
 
 ### Entity `cors_origin`
 
@@ -2078,6 +2102,8 @@ When the process is asked to stop, it stops accepting work, gives in-flight requ
 - unit: `internal/platform/server/shutdown_test.go::TestSecondSignalForceClosesDuringDrain`
 - unit: `internal/platform/server/shutdown_test.go::TestBackgroundTaskBudgetBoundsWait`
 
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-07-background-workers.md`
+
 #### R-PLATFORM-011 — Background work may fail without taking the process down
 
 `implemented` · `policy` · authority `service`
@@ -2096,6 +2122,8 @@ Work that runs after a response has been sent — a mail delivery, a background 
 **Verification**
 
 - unit: `internal/platform/server/server_test.go::TestBackgroundPanicIsContainedAndRecorded`
+
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-07-background-workers.md`
 
 ### Entity `worker`
 
@@ -2346,6 +2374,8 @@ A result may only be written for a match that is in progress, has already starte
 - unit: `internal/game/internal/core/service/rides_concurrency_test.go::TestResolveMatchRaces`
 - e2e: `internal/e2e/matches_test.go::TestResolveMatchHandler`
 - e2e: `internal/e2e/matches_test.go::TestResolveMatchSettlesRowOnce`
+
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-04-concurrency-and-idempotency.md`
 
 **Notes**
 
@@ -2639,6 +2669,8 @@ A season, a round and a match only ever advance through their vocabularies: crea
 - e2e: `internal/e2e/rounds_test.go::TestUpdateRoundHandler`
 - e2e: `internal/e2e/matches_test.go::TestUpdateMatchHandler`
 
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md`
+
 **Notes**
 
 > One rule, three vocabularies: each entity owns a rank map and the shared statusRegresses verdict rejects a lower rank (disjoint cases, one statement; the generic signature makes a cross-vocabulary comparison a compile error). The rank maps are why a same-status rewrite passes. Since migration 000019 the database is the authoritative home: the three gate functions mirror the Go ranks and refuse every regression with the three P0001 names (match_status_regression / round_status_regression / season_status_regression), including a closed match moved back to in_progress, a closed round with nothing started moved back to open, and a live season moved back a stage — all reachable by a direct writer before. The rank check runs BEFORE the started-freeze rule, so a row tripping both reports the rank message deterministically. The Go rank maps stay the authority the DB copies must not drift from: the model's three exported StatusRegresses functions are the oracle and the drift matrix (TestStatusRankGatesMirrorGoRanks) probes every ordered status pair, asserting the exact rank message on regressions and acceptance elsewhere (fixtures isolate the rank rule from the freeze / season-live / sequence gates). The advisory validators still run first, so the API path keeps its friendly 422 and the DB's 409 is reachable only by writers that skip them. stale-pointer: migration 000008's header ("Regressions ... are NOT gated here — they belong to rounds_freeze_gate, which already refuses them") overstates the gate — resolved by 000019: it refused regressions only once a match of the round had started, and the rank half now lives in the same function's 000019 body, so the 000008 header is historical, not current; 000008 is applied and stays byte-identical.
@@ -2735,6 +2767,8 @@ Every edit is conditional on the version the client last saw. If the record move
 - e2e: `internal/e2e/matches_test.go::TestUpdateMatchHandler`
 - e2e: `internal/e2e/teams_test.go::TestUpdateTeamHandler`
 - e2e: `internal/e2e/seasons_test.go::TestUpdateSeasonHandler`
+
+**Knowledge ref** `docs/league-tokens-learning-phases/phase-04-concurrency-and-idempotency.md`
 
 ### Entity `team`
 

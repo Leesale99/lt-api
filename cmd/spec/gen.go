@@ -208,6 +208,13 @@ func writeRule(b *strings.Builder, rule Rule) {
 		fmt.Fprintf(b, "**Expert ref** `%s`\n\n", mdCell(displayPath(*rule.ExpertRef)))
 	}
 
+	// The knowledge-base note sits beside expert-ref and mirrors its line shape:
+	// expert-ref says where the rule was specified, knowledge-ref says which note
+	// explains it. Both are optional and neither replaces the other.
+	if rule.KnowledgeRef != nil && *rule.KnowledgeRef != "" {
+		fmt.Fprintf(b, "**Knowledge ref** `%s`\n\n", mdCell(displayPath(*rule.KnowledgeRef)))
+	}
+
 	// Notes are deliberately omitted unless a reviewer needs them: drift is a
 	// content disagreement, stale-pointer notes are rot the report surfaces.
 	if rule.Status == statusDrifted || strings.Contains(rule.Notes, stalePointerPrefix) {
