@@ -3,26 +3,26 @@ package server
 // Serve/Background tests: the two rules this package owns.
 //
 // R-PLATFORM-009 (bounded connections): the three http.Server timeouts are
-// written inline in Serve's construction, with no injection seam, so they are
-// proven the only way they can be — through Serve() itself, from the wire, on
-// a real bound port. Each probe is a raw TCP client measuring when the server
-// hangs up:
+// applied by newServer from RunOptions (zero value = the consts.go defaults),
+// so each timeout is proven twice: cheaply, that the server built for
+// production carries exactly the consts, and behaviorally, that the real
+// server mechanism actually enforces it. The behavioral probes drive
+// serveWithOptions with ms-scale timeouts and are raw TCP clients measuring
+// when the server hangs up:
 //
-//   - ReadTimeout 5s: a connection that sends nothing is closed ~5s after it
-//     is accepted. Window [3s, 15s].
-//   - WriteTimeout 10s: a handler streaming 4KB every 250ms has its
-//     connection cut ~10s after the request header was read. Window
-//     [8s, 25s].
-//   - IdleTimeout 1min: a keep-alive connection that goes silent after one
-//     completed request/response is closed ~60s later. Window [50s, 100s].
+//   - ReadTimeout 100ms: a connection that sends nothing is closed ~100ms
+//     after it is accepted. Window [60ms, 400ms].
+//   - WriteTimeout 100ms: a handler streaming 4KB every 10ms has its
+//     connection cut ~100ms after the request header was read. Window
+//     [60ms, 400ms].
+//   - IdleTimeout 100ms: a keep-alive connection that goes silent after one
+//     completed request/response is closed ~100ms later. Window [60ms, 400ms].
 //
-// The lower bounds are far below the constants (never a "too early" flake
-// from a fast machine); the upper bounds are far above them (never a "too
-// late" flake from a loaded CI box), and every probe arms its own read
-// deadline ABOVE the upper bound, so a server that never closes fails with an
-// explicit timeout instead of hanging the suite. Total added runtime is
-// ~75s, dominated by the idle probe — the audit already runs minute-scale DB
-// suites.
+// The lower bounds are far below the injected constant (never a "too early"
+// flake from a fast machine); the upper bounds are 4x it (never a "too late"
+// flake from a loaded CI box); and every probe arms its own read deadline
+// ABOVE the upper bound, so a server that never closes fails with an explicit
+// timeout instead of hanging the suite. Total added runtime is ~1s.
 //
 // Serve binds ":<Port>", so the port is pre-picked (listen ":0", remember,
 // close, reuse): the caller cannot hand Serve a listener of its own.
@@ -67,12 +67,13 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-// serveForTest starts Serve on a free port with the given handler and
-// registers the teardown: cancel the root (the process-wide signal root's
-// stand-in) and wait for Serve to return through the full shutdown path.
-// Serve's own RunOptions defaults apply (10s drain, 5s task budget), so the
-// wait is bounded above them.
-func serveForTest(t *testing.T, handler http.Handler) *Server {
+// serveForTest starts the server lifecycle on a free port with the given
+// handler and options, and registers the teardown: cancel the root (the
+// process-wide signal root's stand-in) and wait for it to return through the
+// full shutdown path. Callers override only the connection timeouts, so the
+// shutdown budgets stay at their defaults (10s drain, 5s task budget); the
+// wait below is bounded above those.
+func serveForTest(t *testing.T, handler http.Handler, opts RunOptions) *Server {
 	t.Helper()
 
 	root, cancel := context.WithCancel(context.Background())
@@ -84,7 +85,7 @@ func serveForTest(t *testing.T, handler http.Handler) *Server {
 	}
 
 	errc := make(chan error, 1)
-	go func() { errc <- s.Serve() }()
+	go func() { errc <- s.serveWithOptions(opts) }()
 
 	t.Cleanup(func() {
 		cancel()
@@ -142,42 +143,70 @@ func readUntilClosed(t *testing.T, r io.Reader, window time.Duration) time.Durat
 	}
 }
 
+// TestNewServerUsesProductionTimeouts: the http.Server built for production
+// (Serve's zero-value RunOptions) carries exactly the consts.go timeouts.
+// Cheap, and the tripwire on the injection seam: if a default is dropped or a
+// test value leaks into the zero-value path, this fails instead of the
+// behavioral probes above (which override the timeouts and cannot see it).
+func TestNewServerUsesProductionTimeouts(t *testing.T) {
+	s := &Server{
+		Port:    8080,
+		Logger:  quietLogger(),
+		Handler: http.NewServeMux(),
+	}
+
+	srv := s.newServer(RunOptions{})
+
+	if srv.ReadTimeout != ReadTimeout {
+		t.Errorf("ReadTimeout = %v, want the %v default", srv.ReadTimeout, ReadTimeout)
+	}
+	if srv.WriteTimeout != WriteTimeout {
+		t.Errorf("WriteTimeout = %v, want the %v default", srv.WriteTimeout, WriteTimeout)
+	}
+	if srv.IdleTimeout != IdleTimeout {
+		t.Errorf("IdleTimeout = %v, want the %v default", srv.IdleTimeout, IdleTimeout)
+	}
+}
+
 // TestServeReadTimeoutClosesSilentConnection: a client that connects and sends
-// nothing is disconnected by the server's ReadTimeout (5s) instead of holding
-// a slot forever. Window [3s, 15s]; fails early if the timeout disappears
-// (the client read deadline at 15s fires) or is mis-set to something short.
+// nothing is disconnected by the server's ReadTimeout (injected at 100ms)
+// instead of holding a slot forever. Window [60ms, 400ms]; fails early if the
+// timeout disappears (the client read deadline at 600ms fires) or is mis-set
+// to something short.
 func TestServeReadTimeoutClosesSilentConnection(t *testing.T) {
 	const (
-		lower  = 3 * time.Second  // ReadTimeout is 5s: 2s of slack for the accept
-		upper  = 15 * time.Second // 3x the constant: CI slowness cannot flake it
-		margin = upper + 5*time.Second
+		readTimeout = 100 * time.Millisecond
+		lower       = 60 * time.Millisecond  // below the 100ms timeout: room for the accept path
+		upper       = 400 * time.Millisecond // 4x the timeout: CI slowness cannot flake it
+		margin      = upper + 200*time.Millisecond
 	)
 
-	s := serveForTest(t, http.NewServeMux())
+	s := serveForTest(t, http.NewServeMux(), RunOptions{ReadTimeout: readTimeout})
 	conn := dialServed(t, s)
 
 	_ = conn.SetReadDeadline(time.Now().Add(margin))
 	elapsed := readUntilClosed(t, conn, upper)
 
 	if elapsed < lower {
-		t.Fatalf("server closed an idle-on-connect socket after %v, want the 5s ReadTimeout (window [%v, %v])", elapsed, lower, upper)
+		t.Fatalf("server closed an idle-on-connect socket after %v, want the %v ReadTimeout (window [%v, %v])", elapsed, readTimeout, lower, upper)
 	}
 	if elapsed > upper {
-		t.Fatalf("server closed the silent connection after %v, want within [%v, %v] around the 5s ReadTimeout", elapsed, lower, upper)
+		t.Fatalf("server closed the silent connection after %v, want within [%v, %v] around the %v ReadTimeout", elapsed, lower, upper, readTimeout)
 	}
 }
 
 // TestServeWriteTimeoutClosesStreamingResponse: a handler that streams without
-// end cannot hold the connection past WriteTimeout (10s) — the server cuts it,
-// which the client observes as EOF at ~10s. Streaming in 4KB chunks every
-// 250ms keeps the write side genuinely busy (so the cut is not an idle
-// artifact). Window [8s, 25s]; fails if the timeout disappears (client read
-// deadline at 30s fires) or fires early.
+// end cannot hold the connection past WriteTimeout (injected at 100ms) — the
+// server cuts it, which the client observes as EOF at ~100ms. Streaming in 4KB
+// chunks every 10ms keeps the write side genuinely busy (so the cut is not an
+// idle artifact). Window [60ms, 400ms]; fails if the timeout disappears (client
+// read deadline at 600ms fires) or fires early.
 func TestServeWriteTimeoutClosesStreamingResponse(t *testing.T) {
 	const (
-		lower  = 8 * time.Second  // WriteTimeout is 10s: 2s of slack for the header read
-		upper  = 25 * time.Second // 2.5x the constant
-		margin = upper + 5*time.Second
+		writeTimeout = 100 * time.Millisecond
+		lower        = 60 * time.Millisecond  // below the 100ms timeout: room for the header read
+		upper        = 400 * time.Millisecond // 4x the timeout
+		margin       = upper + 200*time.Millisecond
 	)
 
 	// stop releases the handler at teardown, so the drain never has to wait
@@ -204,10 +233,10 @@ func TestServeWriteTimeoutClosesStreamingResponse(t *testing.T) {
 				return
 			case <-r.Context().Done():
 				return
-			case <-time.After(250 * time.Millisecond):
+			case <-time.After(10 * time.Millisecond): // well under the 100ms write budget: the stream stays busy
 			}
 		}
-	}))
+	}), RunOptions{WriteTimeout: writeTimeout})
 
 	conn := dialServed(t, s)
 	if _, err := io.WriteString(conn, "GET /stream HTTP/1.1\r\nHost: test\r\n\r\n"); err != nil {
@@ -236,28 +265,29 @@ func TestServeWriteTimeoutClosesStreamingResponse(t *testing.T) {
 		t.Fatalf("client received %d bytes before the cut, want a genuinely streaming response (>= 4KB)", received)
 	}
 	if elapsed < lower {
-		t.Fatalf("server cut the streaming response after %v, want the 10s WriteTimeout (window [%v, %v])", elapsed, lower, upper)
+		t.Fatalf("server cut the streaming response after %v, want the %v WriteTimeout (window [%v, %v])", elapsed, writeTimeout, lower, upper)
 	}
 	if elapsed > upper {
-		t.Fatalf("server cut the streaming response after %v, want within [%v, %v] around the 10s WriteTimeout", elapsed, lower, upper)
+		t.Fatalf("server cut the streaming response after %v, want within [%v, %v] around the %v WriteTimeout", elapsed, lower, upper, writeTimeout)
 	}
 }
 
 // TestServeIdleTimeoutClosesKeepAlive: a keep-alive connection that completes
 // one request/response and then goes silent is closed by the server's
-// IdleTimeout (1min) rather than being kept forever. Window [50s, 100s]; the
-// client read deadline sits at 110s, so a missing idle timeout fails with an
-// explicit message instead of hanging the suite.
+// IdleTimeout (injected at 100ms) rather than being kept forever. Window
+// [60ms, 400ms]; the client read deadline sits at 600ms, so a missing idle
+// timeout fails with an explicit message instead of hanging the suite.
 func TestServeIdleTimeoutClosesKeepAlive(t *testing.T) {
 	const (
-		lower  = 50 * time.Second  // IdleTimeout is 60s: 10s of slack
-		upper  = 100 * time.Second // 1.67x the constant
-		margin = 110 * time.Second // above the upper bound: timeout == failure
+		idleTimeout = 100 * time.Millisecond
+		lower       = 60 * time.Millisecond        // below the 100ms timeout: room for the response hand-off
+		upper       = 400 * time.Millisecond       // 4x the timeout
+		margin      = upper + 200*time.Millisecond // above the upper bound: timeout == failure
 	)
 
 	s := serveForTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "idle-probe-ok")
-	}))
+	}), RunOptions{IdleTimeout: idleTimeout})
 
 	conn := dialServed(t, s)
 	if _, err := io.WriteString(conn, "GET /idle HTTP/1.1\r\nHost: test\r\n\r\n"); err != nil {
@@ -286,10 +316,10 @@ func TestServeIdleTimeoutClosesKeepAlive(t *testing.T) {
 	elapsed := readUntilClosed(t, reader, upper)
 
 	if elapsed < lower {
-		t.Fatalf("server closed the idle keep-alive connection after %v, want the 1min IdleTimeout (window [%v, %v])", elapsed, lower, upper)
+		t.Fatalf("server closed the idle keep-alive connection after %v, want the %v IdleTimeout (window [%v, %v])", elapsed, idleTimeout, lower, upper)
 	}
 	if elapsed > upper {
-		t.Fatalf("server closed the idle keep-alive connection after %v, want within [%v, %v] around the 1min IdleTimeout", elapsed, lower, upper)
+		t.Fatalf("server closed the idle keep-alive connection after %v, want within [%v, %v] around the %v IdleTimeout", elapsed, lower, upper, idleTimeout)
 	}
 }
 
