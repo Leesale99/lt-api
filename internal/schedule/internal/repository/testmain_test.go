@@ -63,6 +63,7 @@ var migFiles = []string{
 	// runs the full production series.
 	"../../../../migrations/000020_respect_supplied_match_ended_at.up.sql",
 	"../../../../migrations/000021_add_game_delete_players_for_season.up.sql",
+	"../../../../migrations/000022_scope_idempotency_keys_per_caller.up.sql",
 }
 
 // PostgreSQL error codes (see pgerrcode; inlined to avoid the extra dependency).

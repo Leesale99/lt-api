@@ -329,6 +329,9 @@ func (s *Service) runEvent(ctx context.Context, endpoint, eventID string, payloa
 	hash := sha256.Sum256(encoded)
 
 	token := port.Token{Key: eventID, Endpoint: endpoint, Hash: hash[:]}
+	// UserID is left at zero: an event has no request principal, so its claim
+	// lives in the system caller's namespace (the kernel's SystemCallerID,
+	// which no identity id can collide with).
 	claimed, _, err := s.idempotency.Claim(ctx, tx, token)
 	if err != nil {
 		return err

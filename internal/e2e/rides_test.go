@@ -242,7 +242,8 @@ func TestCreateRideHandler(t *testing.T) {
 // 201 byte-identical and inserts no second ride; the same key behind a
 // different body is the 409 idempotency conflict (the create hash covers
 // the raw body bytes); a failed create rolls its claim back, so the retry
-// re-executes.
+// re-executes; and the key is the caller's own (R-KERNEL-003), so two callers
+// that pick the same key both execute.
 func TestCreateRideIdempotentHandler(t *testing.T) {
 	requireDB(t)
 
@@ -252,6 +253,15 @@ func TestCreateRideIdempotentHandler(t *testing.T) {
 		req.Header.Set("Idempotency-Key", key)
 		rr := httptest.NewRecorder()
 		app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+		return rr
+	}
+
+	createAs := func(body, key, token string) *httptest.ResponseRecorder {
+		app := newTestApplication()
+		req := httptest.NewRequest(http.MethodPost, "/v1/rides", strings.NewReader(body))
+		req.Header.Set("Idempotency-Key", key)
+		rr := httptest.NewRecorder()
+		app.routes().ServeHTTP(rr, withAuth(req, token))
 		return rr
 	}
 
@@ -322,6 +332,40 @@ func TestCreateRideIdempotentHandler(t *testing.T) {
 		}
 		if rideRows != 1 {
 			t.Errorf("rides rows = %d, want 1 (nothing executed)", rideRows)
+		}
+	})
+
+	t.Run("two callers may pick the same key", func(t *testing.T) {
+		reset(t)
+
+		// Same key text, different caller, different body. Before 000022 the
+		// key was one global namespace: the second caller's request carried a
+		// different digest and was refused 409 as key misuse (R-KERNEL-003).
+		first := createAs(`{"player_id":1,"team_id":1,"match_id":5,"tokens_locked":100}`, "caller-shared-key", adminAuthToken)
+		if first.Code != http.StatusCreated {
+			t.Fatalf("first caller: got %d, want 201 (body: %s)", first.Code, first.Body.String())
+		}
+		second := createAs(`{"player_id":1,"team_id":1,"match_id":5,"tokens_locked":50}`, "caller-shared-key", userAuthToken)
+		if second.Code != http.StatusCreated {
+			t.Fatalf("second caller: got %d, want 201 (body: %s)", second.Code, second.Body.String())
+		}
+
+		// Both commands executed, each under its own claim: two rides and two
+		// claim rows carrying one key text.
+		var rideRows, keyRows int
+		if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM game.rides`).Scan(&rideRows); err != nil {
+			t.Fatalf("count rides: %v", err)
+		}
+		if rideRows != 2 {
+			t.Errorf("rides rows = %d, want 2 (each caller's command executed)", rideRows)
+		}
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT count(*) FROM game.idempotency_keys WHERE key = $1`, "caller-shared-key",
+		).Scan(&keyRows); err != nil {
+			t.Fatalf("count key rows: %v", err)
+		}
+		if keyRows != 2 {
+			t.Errorf("idempotency_keys rows = %d, want 2 (one claim per caller)", keyRows)
 		}
 	})
 

@@ -86,6 +86,7 @@ func TestMain(m *testing.M) {
 		// policy — the E2E season tests exercise it over the role pools
 		// 000018 creates.
 		"../../migrations/000021_add_game_delete_players_for_season.up.sql",
+		"../../migrations/000022_scope_idempotency_keys_per_caller.up.sql",
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "test database setup: %v\n", err)

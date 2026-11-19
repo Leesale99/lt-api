@@ -34,11 +34,19 @@ func idempotentMarshal(r domain.Ride) (int, []byte, error) {
 
 // rideToken builds a valid token for a ride command endpoint: the hash must
 // be SHA-256-sized (32 bytes), matching the idempotency_keys request_hash
-// check.
+// check. The claim is scoped to its caller (R-KERNEL-003), so the token names
+// one — these suites act as a single fixture caller.
 func rideToken(key, endpoint string) port.Token {
+	return rideTokenFor(7, key, endpoint)
+}
+
+// rideTokenFor is rideToken for an explicit caller: the two-caller cases need
+// two ids against one key text.
+func rideTokenFor(userID int, key, endpoint string) port.Token {
 	hash := sha256.Sum256([]byte(key))
 	return port.Token{
 		Key:      key,
+		UserID:   userID,
 		Endpoint: endpoint,
 		Hash:     hash[:],
 	}
@@ -275,6 +283,41 @@ func TestService_RideCreateIdempotent(t *testing.T) {
 		}
 		if rideRows != 1 {
 			t.Errorf("rides rows = %d, want 1 (refused request executed nothing)", rideRows)
+		}
+	})
+
+	t.Run("two callers may pick the same key", func(t *testing.T) {
+		roundID, homeID, awayID := seedFixture(ctx, t)
+		matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
+		playerID := plantPlayer(ctx, t, homeID)
+
+		// The same key text, the same request, two callers. The key is the
+		// caller's own (R-KERNEL-003): each call claims under its own id, so
+		// neither is a replay of the other and both execute.
+		first, err := svc.RideCreate(ctx, newRide(playerID, matchID, homeID), rideTokenFor(7, "shared-caller-key", "POST /v1/rides"), idempotentMarshal)
+		if err != nil {
+			t.Fatalf("first caller's RideCreate() error = %v", err)
+		}
+		second, err := svc.RideCreate(ctx, newRide(playerID, matchID, homeID), rideTokenFor(8, "shared-caller-key", "POST /v1/rides"), idempotentMarshal)
+		if err != nil {
+			t.Fatalf("second caller's RideCreate() error = %v", err)
+		}
+		if bytes.Equal(first.Body, second.Body) {
+			t.Errorf("the second caller was answered the first caller's stored body:\n%s", second.Body)
+		}
+
+		var rideRows, keyRows int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM game.rides WHERE match_id = $1`, matchID).Scan(&rideRows); err != nil {
+			t.Fatalf("count rides: %v", err)
+		}
+		if rideRows != 2 {
+			t.Errorf("rides rows = %d, want 2 (each caller's command executed)", rideRows)
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM game.idempotency_keys WHERE key = $1`, "shared-caller-key").Scan(&keyRows); err != nil {
+			t.Fatalf("count key rows: %v", err)
+		}
+		if keyRows != 2 {
+			t.Errorf("key rows = %d, want 2 (one claim per caller)", keyRows)
 		}
 	})
 
