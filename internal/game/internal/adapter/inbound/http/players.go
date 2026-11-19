@@ -73,8 +73,8 @@ func (h *Handler) createPlayer(w http.ResponseWriter, r *http.Request) {
 	// came out (migration 000016 — identity is another context: the
 	// players_user_id_fkey is gone). user_id is only ever the authenticated
 	// principal's ID, so this is the one spot the check belongs. The refusal
-	// keeps the shape the FK refusal produced: identity.ErrNotFound → the 422
-	// favorite_team_id validation error.
+	// is a field error on the reference that actually failed — the principal's
+	// user account, not the favourite team (misalignment-report §6 item 12).
 	if h.users != nil {
 		if _, err := h.users.User(ctx, authenticatedUser.ID); err != nil {
 			switch {
@@ -82,7 +82,7 @@ func (h *Handler) createPlayer(w http.ResponseWriter, r *http.Request) {
 				return
 			case errors.Is(err, identity.ErrNotFound):
 				v := validator.New()
-				v.AddError("favorite_team_id", "must reference an existing team")
+				v.AddError("user_id", "must reference an existing user account")
 				httpx.FailedValidation(w, r, v.Errors)
 			default:
 				httpx.ServerError(w, r, h.log, err)
