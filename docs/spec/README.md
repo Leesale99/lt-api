@@ -4,7 +4,7 @@
 business rule is and who decides it; the scenarios say what those rules look like from
 outside; the checker keeps catalog, code, tests and scenarios tied to each other; the
 audit gate refuses a stale or contradictory spec. This file is the workflow.
-`rules.schema.md` is the format authority; superseded records live in `history/`.
+`rules.schema.md` is the format authority for the catalog.
 
 Where things live:
 
@@ -14,16 +14,17 @@ docs/spec/
 ├── rules.yaml — canonical, hand-edited catalog; header is a pointer block, the entries are the law
 ├── rules.schema.md — format authority (enums §1, fields §2, policies §3)
 ├── gherkin-style.md — Gherkin authoring style
-├── business-rules.md — GENERATED from rules.yaml; never edit
-├── features/ — the Gherkin tree, one capability per file
-└── history/ — superseded records (plan, misalignment report, coverage, gate-decision minutes); nothing reads it, and no .feature file ever goes there
+├── business-rules.md — GENERATED dashboard from rules.yaml: totals, per-module counts and the index into views/; never edit
+├── views/<module>.md — GENERATED per-module views (game, identity, kernel, ledger, platform, schedule), the full rule blocks; never edit
+└── features/ — the Gherkin tree, one capability per file
 ```
 
 ## 1. The pieces
 
 - **Catalog.** `docs/spec/rules.yaml` is the canonical, hand-edited catalog. The readable
-  view `docs/spec/business-rules.md` is **generated** from it — never hand-edit; only the
-  YAML feeds it.
+  view is **generated** from it: `docs/spec/business-rules.md` is the dashboard (totals,
+  the per-module counts, the index) and `docs/spec/views/<module>.md` holds each module's
+  full rule blocks — never hand-edit either; only the YAML feeds them.
 - **Scenarios.** `docs/spec/features/<module>/<capability>.feature` holds one capability
   of business-visible behaviour per file. Every scenario carries exactly one
   `@rule:R-...` tag. Authoring rules: `gherkin-style.md`.
@@ -31,10 +32,11 @@ docs/spec/
   allowlist: every word a step uses must be declared in its module's section (or in
   `common`), and policy 13 denies undeclared vocabulary as well as transport/SQL
   words. A new scenario word is a deliberate glossary edit.
-- **Checker.** `cmd/spec`: `gen` regenerates the Markdown (or `--diff` to detect
-  staleness); `check` validates the catalog's schema policies and traces every site,
-  test pointer and Gherkin pointer to something that exists, in both catalog → tree and
-  tree → catalog directions. The policies are `rules.schema.md` §3: enums and
+- **Checker.** `cmd/spec`: `gen` regenerates the Markdown — the dashboard and every
+  module view (or `--diff` to detect staleness in either); `check` validates the
+  catalog's schema policies and traces every site, test pointer and Gherkin pointer to
+  something that exists, in both catalog → tree and tree → catalog directions. The
+  policies are `rules.schema.md` §3: enums and
   pointers (1–12), the step vocabulary (13), the category's verification/refusal
   binding (14), the `//rule:` annotations on Go enforcement sites (15) and
   `knowledge-ref` (16). `--strict` makes any check error fatal.
@@ -57,10 +59,10 @@ implementation, then green. Nothing lands without the gate, and this recipe is w
    scenario is red (and so is an untraceable catalog entry, since `spec/check` runs
    `--strict`).
 3. Implement the change.
-4. Run `make spec/gen` to regenerate `docs/spec/business-rules.md`.
+4. Run `make spec/gen` to regenerate the dashboard and the module views.
 5. Run `make audit` again; it is done when green.
 
-Never edit `business-rules.md`; never add an enforcement site without updating the
+Never edit the generated Markdown; never add an enforcement site without updating the
 catalog entry that names it.
 
 ### The recipe
@@ -105,9 +107,10 @@ What step 1 of the gate actually means, for a brand-new rule:
 
 | target | what it does |
 |---|---|
-| `make spec/gen` | regenerate `docs/spec/business-rules.md` from `rules.yaml` |
+| `make spec/gen` | regenerate `docs/spec/business-rules.md` (the dashboard) and `docs/spec/views/<module>.md` (the six module views) from `rules.yaml` |
 | `make spec/check` | validate schema policies + catalog/feature traceability; runs `--strict`, so any check error fails the target (and therefore `make audit`) |
-| `make spec/diff` | fail if `business-rules.md` is stale (wired into `make audit`) |
+| `make spec/diff` | fail if the dashboard or any module view is stale (wired into `make audit`) |
+| `make spec/brief args='R-GAME-001'` | print a Markdown work order for one rule — statement, sites, refusal map, fixture, resolved verification pointers, linked scenarios, gate — or `args='--module game'` for every rule of one module |
 | `make db/up` | start the compose test database (CI's postgres:18 service container) and wait until its healthcheck passes |
 | `make db/down` | stop it; the named volume survives; `docker compose down -v` drops the base database too |
 | `make test/spec` | run the godog scenarios against real Postgres; fails without LT_API_TEST_DSN (bring it up with make db/up); AUDIT_SKIP_DB=1 turns that into a loud skip |

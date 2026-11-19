@@ -5,7 +5,6 @@
 #
 # Retired at gate B5 (dupe policy): R-GAME-019 merged into R-KERNEL-003, R-GAME-022 merged into
 # R-KERNEL-014 — kernel owns the statement, game call-sites are enforcement sites on it. Ids are never reused.
-# Gate-decision minutes: docs/spec/history/decisions.md.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # schedule — calendar authority (teams, seasons, rounds, matches)
@@ -840,7 +839,7 @@
     trips round_progress_season_not_live, and a close over unclosed matches trips
     rounds_close_gate, both with no started match anywhere, and both still get
     that message; those causes are indistinguishable to a client.
-    misalignment-report §6 item 5 (docs/spec/history/misalignment-report.md) is
+    misalignment-report §6 item 5 is
     therefore a false premise: it claims a created round in a created season
     cannot be renumbered, but the gate's renumber branch requires
     NEW.status IN ('open','closed'), so such a renumber is allowed and only the

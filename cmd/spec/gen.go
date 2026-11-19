@@ -11,14 +11,26 @@ import (
 	"strings"
 )
 
-// markdownHeader is the stable, timestamp-free preamble. Byte-identical output
-// for identical input is a hard requirement: no clocks, no map iteration order.
-const markdownHeader = `<!-- GENERATED — do not edit. -->
-# Business rules
+// The generated catalog is split in two: a dashboard (the front door: totals,
+// the per-module counts and the index) and one view per module (the full rule
+// blocks). Both are generated from the same catalog by the same run, and
+// `gen --diff` gates both.
+const (
+	// viewsDirName is the per-module view directory, sibling of the dashboard.
+	viewsDirName = "views"
+)
 
-> **GENERATED — do not edit.** This file is a readable view of the canonical,
-> hand-edited catalog ` + "`%s`" + `. Change the YAML, never this file, then
-> regenerate:
+// markdownHeader is the dashboard's stable, timestamp-free preamble.
+// Byte-identical output for identical input is a hard requirement: no clocks,
+// no map iteration order.
+const markdownHeader = `<!-- GENERATED — do not edit. -->
+# Business rules — dashboard
+
+> **GENERATED — do not edit.** This file is the dashboard and index over the
+> per-module views in ` + "`views/`" + `. Both are readable views of the canonical,
+> hand-edited catalog ` + "`%s`" + `.
+>
+> Change the YAML, never these files, then regenerate:
 
 ` + "```sh" + `
 go run ./cmd/spec gen --rules %s --out %s
@@ -29,12 +41,39 @@ the catalog's own invariants are checked by ` + "`go run ./cmd/spec check`" + `.
 
 `
 
+// viewHeader is one module view's preamble. It carries the same generated
+// marker and the same regeneration command as the dashboard.
+const viewHeader = `<!-- GENERATED — do not edit. -->
+# Business rules — ` + "`%s`" + `
+
+> **GENERATED — do not edit.** This is the ` + "`%s`" + ` module's slice of the readable
+> catalog view. The canonical, hand-edited catalog is ` + "`%s`" + `.
+>
+> Change the YAML, never this file, then regenerate from the dashboard:
+
+` + "```sh" + `
+go run ./cmd/spec gen --rules %s --out %s
+` + "```" + `
+
+The rules themselves live in ` + "`../features/%s/`" + `; the format authority is
+` + "`rules.schema.md`" + ` and the checker is ` + "`go run ./cmd/spec check`" + `.
+
+`
+
+// artifact is one generated file: where it goes and the exact bytes it carries.
+type artifact struct {
+	path    string
+	content []byte
+}
+
+// runGen writes the dashboard and every module view, or — with --diff —
+// compares both against the tree without writing anything.
 func runGen(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("spec gen", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	rulesPath := fs.String("rules", "docs/spec/rules.yaml", "path to the canonical YAML catalog")
-	outPath := fs.String("out", "docs/spec/business-rules.md", "path of the generated Markdown")
-	diff := fs.Bool("diff", false, "compare instead of writing; exit 1 if the output would change")
+	outPath := fs.String("out", "docs/spec/business-rules.md", "path of the generated dashboard (the views land in a views/ directory beside it)")
+	diff := fs.Bool("diff", false, "compare instead of writing; exit 1 if any generated file would change")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -48,72 +87,135 @@ func runGen(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "spec gen: %v\n", err)
 		return 1
 	}
-	markdown := renderMarkdown(catalog, *rulesPath, *outPath)
 
+	artifacts := renderArtifacts(catalog, *rulesPath, *outPath)
 	if *diff {
-		existing, err := os.ReadFile(*outPath)
-		switch {
-		case err == nil && bytes.Equal(existing, markdown):
-			fmt.Fprintf(stdout, "spec gen --diff: %s is up to date\n", *outPath)
-			return 0
-		case err == nil:
-			fmt.Fprintf(stdout, "spec gen --diff: %s is stale — run `go run ./cmd/spec gen`\n", *outPath)
-			return 1
-		case os.IsNotExist(err):
-			fmt.Fprintf(stdout, "spec gen --diff: %s does not exist — run `go run ./cmd/spec gen`\n", *outPath)
-			return 1
-		default:
-			fmt.Fprintf(stderr, "spec gen: read %s: %v\n", *outPath, err)
+		return diffArtifacts(artifacts, stdout, stderr)
+	}
+
+	for _, a := range artifacts {
+		if dir := filepath.Dir(a.path); dir != "" && dir != "." {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				fmt.Fprintf(stderr, "spec gen: create %s: %v\n", dir, err)
+				return 1
+			}
+		}
+		if err := os.WriteFile(a.path, a.content, 0o644); err != nil {
+			fmt.Fprintf(stderr, "spec gen: write %s: %v\n", a.path, err)
 			return 1
 		}
 	}
 
-	if dir := filepath.Dir(*outPath); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			fmt.Fprintf(stderr, "spec gen: create %s: %v\n", dir, err)
-			return 1
-		}
-	}
-	if err := os.WriteFile(*outPath, markdown, 0o644); err != nil {
-		fmt.Fprintf(stderr, "spec gen: write %s: %v\n", *outPath, err)
-		return 1
-	}
-	fmt.Fprintf(stdout, "spec gen: wrote %s (%d rules)\n", *outPath, len(catalog))
+	fmt.Fprintf(stdout, "spec gen: wrote %s (%d rules)\n", displayPath(*outPath), len(catalog))
+	fmt.Fprintf(stdout, "spec gen: wrote %d module views in %s\n",
+		len(artifacts)-1, displayPath(viewsDir(*outPath)))
 	return 0
 }
 
-// renderMarkdown renders the whole file. Everything is sorted; none of the
-// output depends on YAML ordering or Go map ordering.
-func renderMarkdown(catalog Catalog, rulesPath, outPath string) []byte {
-	rules := make([]Rule, len(catalog))
-	copy(rules, catalog)
-	sort.SliceStable(rules, func(i, j int) bool { return rules[i].ID < rules[j].ID })
+// viewsDir is the view directory that belongs to a dashboard path.
+func viewsDir(outPath string) string {
+	return filepath.Join(filepath.Dir(outPath), viewsDirName)
+}
 
+// renderArtifacts renders the dashboard and the six module views. Every module
+// gets a view, even the ones with no rule yet, so the dashboard's index links
+// never dangle.
+func renderArtifacts(catalog Catalog, rulesPath, outPath string) []artifact {
+	rules := sortedRules(catalog)
+
+	artifacts := make([]artifact, 0, 1+len(catalogModules()))
+	artifacts = append(artifacts, artifact{
+		path:    outPath,
+		content: renderDashboard(rules, rulesPath, outPath),
+	})
+	for _, module := range catalogModules() {
+		artifacts = append(artifacts, artifact{
+			path:    filepath.Join(viewsDir(outPath), module+".md"),
+			content: renderView(rules, module, rulesPath, outPath),
+		})
+	}
+	return artifacts
+}
+
+// diffArtifacts compares every generated file against the tree. A stale or
+// missing file is a change; the command never writes in diff mode.
+func diffArtifacts(artifacts []artifact, stdout, stderr io.Writer) int {
+	stale := 0
+	for _, a := range artifacts {
+		existing, err := os.ReadFile(a.path)
+		switch {
+		case err == nil && bytes.Equal(existing, a.content):
+			fmt.Fprintf(stdout, "spec gen --diff: %s is up to date\n", displayPath(a.path))
+		case err == nil:
+			fmt.Fprintf(stdout, "spec gen --diff: %s is stale — run `go run ./cmd/spec gen`\n", displayPath(a.path))
+			stale++
+		case os.IsNotExist(err):
+			fmt.Fprintf(stdout, "spec gen --diff: %s does not exist — run `go run ./cmd/spec gen`\n", displayPath(a.path))
+			stale++
+		default:
+			fmt.Fprintf(stderr, "spec gen: read %s: %v\n", displayPath(a.path), err)
+			return 1
+		}
+	}
+	if stale > 0 {
+		return 1
+	}
+	return 0
+}
+
+// renderDashboard renders the front door: totals, the counts the catalog is
+// read by, and the index into the module views.
+func renderDashboard(rules []Rule, rulesPath, outPath string) []byte {
 	var b strings.Builder
 	fmt.Fprintf(&b, markdownHeader, displayPath(rulesPath), displayPath(rulesPath), displayPath(outPath))
 	writeDashboard(&b, rules)
-	writeRules(&b, rules)
-	// Exactly one trailing newline keeps the file byte-stable and diff-friendly.
-	return []byte(strings.TrimRight(b.String(), "\n") + "\n")
+	return finishMarkdown(&b)
+}
+
+// renderView renders one module's full rule blocks — the same block format the
+// generated catalog has always used.
+func renderView(rules []Rule, module, rulesPath, outPath string) []byte {
+	var b strings.Builder
+	fmt.Fprintf(&b, viewHeader, mdCell(module), mdCell(module),
+		displayPath(rulesPath), displayPath(rulesPath), displayPath(outPath), mdCell(module))
+
+	moduleRules := make([]Rule, 0, len(rules))
+	for _, rule := range rules {
+		if rule.Module == module {
+			moduleRules = append(moduleRules, rule)
+		}
+	}
+	if len(moduleRules) == 0 {
+		fmt.Fprintf(&b, "## Module `%s`\n\n_(no rule in this module yet)_\n\n", mdCell(module))
+		return finishMarkdown(&b)
+	}
+
+	fmt.Fprintf(&b, "**%d %s** — %s.\n\n",
+		len(moduleRules), plural(len(moduleRules), "rule", "rules"), briefStatusCounts(moduleRules))
+	writeModule(&b, module, moduleRules)
+	return finishMarkdown(&b)
 }
 
 func writeDashboard(b *strings.Builder, rules []Rule) {
 	modules := map[string]int{}
 	statuses := map[string]int{}
-	categories := map[string]int{}
-	authorities := map[string]int{}
 	for _, r := range rules {
 		modules[r.Module]++
 		statuses[r.Status]++
-		categories[r.Category]++
-		authorities[r.Authority]++
 	}
 
-	fmt.Fprintf(b, "## Dashboard\n\n**%d rules** across %d modules.\n\n", len(rules), len(modules))
-	writeCountTable(b, "By module", "Module", modules, len(rules))
+	fmt.Fprintf(b, "## Dashboard\n\n**%d rules** across %d modules — %s.\n\n",
+		len(rules), len(modules), briefStatusCounts(rules))
 	writeCountTable(b, "By status", "Status", statuses, len(rules))
-	writeCountTable(b, "By category", "Category", categories, len(rules))
-	writeCountTable(b, "By authority", "Authority", authorities, len(rules))
+	writeCountTable(b, "By module", "Module", modules, len(rules))
+
+	// The index. Every module gets a view, so every row links.
+	fmt.Fprint(b, "### Module views\n\n| Module | Rules | View |\n| --- | ---: | --- |\n")
+	for _, module := range catalogModules() {
+		view := viewsDirName + "/" + module + ".md"
+		fmt.Fprintf(b, "| `%s` | %d | [`%s`](%s) |\n", mdCell(module), modules[module], view, view)
+	}
+	fmt.Fprintf(b, "| **total** | **%d** | |\n\n", len(rules))
 }
 
 func writeCountTable(b *strings.Builder, heading, column string, counts map[string]int, total int) {
@@ -124,38 +226,25 @@ func writeCountTable(b *strings.Builder, heading, column string, counts map[stri
 	fmt.Fprintf(b, "| **total** | **%d** |\n\n", total)
 }
 
-func writeRules(b *strings.Builder, rules []Rule) {
-	// Group module → entity. Rules arrive sorted by id, so each bucket is
-	// already in id order.
-	modules := map[string]map[string][]Rule{}
+// writeModule prints one module's rules grouped entity → id. The rules arrive
+// sorted by id, so each bucket is already in id order.
+func writeModule(b *strings.Builder, moduleName string, rules []Rule) {
+	fmt.Fprintf(b, "## Module `%s`\n\n", mdCell(moduleName))
+
+	entities := map[string][]Rule{}
 	for _, r := range rules {
-		entities := modules[r.Module]
-		if entities == nil {
-			entities = map[string][]Rule{}
-			modules[r.Module] = entities
-		}
 		entities[r.Entity] = append(entities[r.Entity], r)
 	}
-
-	moduleNames := make([]string, 0, len(modules))
-	for name := range modules {
-		moduleNames = append(moduleNames, name)
+	entityNames := make([]string, 0, len(entities))
+	for name := range entities {
+		entityNames = append(entityNames, name)
 	}
-	sort.Strings(moduleNames)
+	sort.Strings(entityNames)
 
-	for _, moduleName := range moduleNames {
-		fmt.Fprintf(b, "## Module `%s`\n\n", mdCell(moduleName))
-		entities := modules[moduleName]
-		entityNames := make([]string, 0, len(entities))
-		for name := range entities {
-			entityNames = append(entityNames, name)
-		}
-		sort.Strings(entityNames)
-		for _, entityName := range entityNames {
-			fmt.Fprintf(b, "### Entity `%s`\n\n", mdCell(entityName))
-			for _, rule := range entities[entityName] {
-				writeRule(b, rule)
-			}
+	for _, entityName := range entityNames {
+		fmt.Fprintf(b, "### Entity `%s`\n\n", mdCell(entityName))
+		for _, rule := range entities[entityName] {
+			writeRule(b, rule)
 		}
 	}
 }

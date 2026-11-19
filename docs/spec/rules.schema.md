@@ -339,5 +339,5 @@ model for every future fixture.
 
 ## 6. Open decisions (user gate A2)
 
-> Resolved at gate A2 (D1–D6) and closed at gate B5 — the minutes live in
-> [history/decisions.md](history/decisions.md).
+> Resolved at gate A2 (D1–D6) and closed at gate B5; the resolutions are recorded in
+> the catalog's own rule notes.

@@ -178,10 +178,10 @@ layer, because the database refuses the write itself.
 
 ## 9. `@known-defect:<item>` — the red scenario that is a finding
 
-A scenario that is **red because of a catalogued defect** in
-`docs/spec/history/misalignment-report.md` §6 carries, in addition to its `@rule` tag,
-`@known-defect:<item>` — the §6 item number, e.g. `@known-defect:2` for the unmapped
-SQLSTATEs that surface as an unnamed server error.
+A scenario that is **red because of a catalogued defect** in misalignment-report §6
+carries, in addition to its `@rule` tag, `@known-defect:<item>` — the §6 item number,
+e.g. `@known-defect:2` for the unmapped SQLSTATEs that surface as an unnamed server
+error.
 
 ```gherkin
     # Defect 2 (misalignment-report §6): a check violation from the rides table is not
