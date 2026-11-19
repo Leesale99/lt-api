@@ -143,7 +143,7 @@ audit:
 # SPEC CATALOG
 # ============================================================================================================================ #
 
-## spec/gen: regenerate docs/spec/business-rules.md from the canonical catalog
+## spec/gen: regenerate the catalog Markdown — the dashboard plus one view per module
 .PHONY: spec/gen
 spec/gen:
 	go run ./cmd/spec gen
@@ -153,7 +153,12 @@ spec/gen:
 spec/check:
 	go run ./cmd/spec check --strict
 
-## spec/diff: fail if docs/spec/business-rules.md is stale (wired into `make audit`)
+## spec/brief args=R-XXX-NNN: print a Markdown work order for one rule (or args='--module game')
+.PHONY: spec/brief
+spec/brief:
+	go run ./cmd/spec brief $(args)
+
+## spec/diff: fail if the dashboard or any generated module view is stale (wired into `make audit`)
 .PHONY: spec/diff
 spec/diff:
 	go run ./cmd/spec gen --diff
