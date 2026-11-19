@@ -1,0 +1,29 @@
+# Strict-decoding fixture: the catalog spells the field `knowledge-ref`, this
+# entry writes `knowledge_ref`. yaml's loose decode silently drops the key, and
+# policy 16's "absent is legal" semantics make the typo undetectable; the strict
+# decoder must name the unknown field instead.
+- id: R-KERNEL-001
+  title: A thing always is a thing
+  statement: A thing always is. It is never almost.
+  module: kernel
+  entity: thing
+  category: orchestration
+  status: implemented
+  authority: service
+  mechanism: null
+  scope: null
+  enforcement:
+    - site: internal/kernel/thing/thing.go::Do
+      layer: service
+      role: authoritative
+      pinned_by: null
+  refusal: null
+  fixture: null
+  verification:
+    unit:
+      - internal/kernel/thing/thing_test.go::TestDo
+    e2e: []
+    gherkin: []
+  expert-ref: null
+  knowledge_ref: docs/league-tokens-learning-phases/phase-03.md
+  notes: ""
