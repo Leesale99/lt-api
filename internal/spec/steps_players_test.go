@@ -99,6 +99,7 @@ func registerGamePlayerSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the registration is refused as an unknown season$`, registrationRefusedAsUnknownSeason)
 	sc.Step(`^the command is refused as someone else's registration$`, commandRefusedAsSomeoneElsesRegistration)
 	sc.Step(`^the command is refused as an unknown team$`, commandRefusedAsUnknownTeam)
+	sc.Step(`^the withdrawal is refused as a registration still in use$`, withdrawalRefusedAsRegistrationInUse)
 
 	// The key a command travels under.
 	sc.Step(`^the player locks ([0-9]+) tokens on "([^"]+)" for match day ([0-9]+) under her key "([^"]+)"$`, playerLocksUnderHerKey)
@@ -756,6 +757,29 @@ func commandRefusedAsSomeoneElsesRegistration(ctx context.Context) (context.Cont
 
 func commandRefusedAsUnknownTeam(ctx context.Context) (context.Context, error) {
 	return refusalAsserted(ctx, absentRecord, "an unknown team")
+}
+
+// recordInUseMessage is the game transport's refusal for a delete the database
+// refuses because other rows still reference the record
+// (internal/game/internal/adapter/inbound/http/errors.go::recordInUseResponse).
+// The feature names the business refusal; this sentence is what tells it apart
+// on the wire, exactly as the ride and key-misuse refusals are asserted.
+const recordInUseMessage = "the record is referenced by other records and cannot be deleted"
+
+// withdrawalRefusedAsRegistrationInUse asserts the withdrawal was refused as a
+// record still in use: the database refused the delete because the player's
+// rides still name the registration (rides_player_id_fkey, R-GAME-035), and the
+// transport names that cause instead of failing opaquely.
+func withdrawalRefusedAsRegistrationInUse(ctx context.Context) (context.Context, error) {
+	w := worldFrom(ctx)
+	if w.last == nil {
+		return stepFailed(ctx, fmt.Errorf("no request has been made in this scenario"))
+	}
+	if w.last.Status != http.StatusConflict || w.last.message() != recordInUseMessage {
+		return stepFailed(ctx, fmt.Errorf("the withdrawal was answered %d %q, want the record-in-use refusal %q",
+			w.last.Status, w.last.message(), recordInUseMessage))
+	}
+	return stepOK(ctx)
 }
 
 func refusalAsserted(ctx context.Context, name namedRefusal, what string) (context.Context, error) {

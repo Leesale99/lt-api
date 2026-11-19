@@ -115,21 +115,36 @@ func excludeTags(tags []string) string {
 }
 
 // TestKnownDefectNotes pins the note format (gherkin-style.md §9) and the filter
-// the default run applies. It reads the real feature tree, so a new
-// @known-defect scenario needs nothing but its tag to be announced and excluded.
+// the default run applies. The real feature tree carries no @known-defect
+// scenario today (the pilot's finding was fixed and its tag removed), so the
+// announcer is pinned against a synthetic tree: a new @known-defect scenario
+// needs nothing but its tag to be announced and excluded.
 func TestKnownDefectNotes(t *testing.T) {
-	notes, tags, err := knownDefectNotes(featurePaths, false)
+	root := t.TempDir()
+	feature := filepath.Join(root, "pilot.feature")
+	const body = `Feature: a synthetic pilot
+
+  @known-defect:2
+  Scenario: The refused stake is not yet named for the caller
+    Given a step
+    Then another step
+`
+	if err := os.WriteFile(feature, []byte(body), 0o600); err != nil {
+		t.Fatalf("write synthetic feature: %v", err)
+	}
+
+	notes, tags, err := knownDefectNotes(root, false)
 	if err != nil {
 		t.Fatalf("read known-defect notes: %v", err)
 	}
 	if len(notes) == 0 {
-		t.Fatalf("no known-defect scenarios announced; the pilot tags one")
+		t.Fatalf("no known-defect scenarios announced; the synthetic pilot tags one")
 	}
 
 	joined := strings.Join(notes, "\n")
 	for _, want := range []string{
 		"KNOWN-DEFECT 2 (misalignment-report §6.2)",
-		"\"A player still carrying rides is refused without a named reason\"",
+		"\"The refused stake is not yet named for the caller\"",
 		"— skipped",
 	} {
 		if !strings.Contains(joined, want) {
@@ -141,11 +156,21 @@ func TestKnownDefectNotes(t *testing.T) {
 		t.Errorf("exclusion filter = %q, want %q (godog's filter matches tag names exactly)", got, want)
 	}
 
-	runningNotes, _, err := knownDefectNotes(featurePaths, true)
+	runningNotes, _, err := knownDefectNotes(root, true)
 	if err != nil {
 		t.Fatalf("read known-defect notes: %v", err)
 	}
 	if !strings.Contains(strings.Join(runningNotes, "\n"), "running under SPEC_KNOWN_DEFECTS=1") {
 		t.Errorf("the opt-in run's note does not say it is running:\n%s", strings.Join(runningNotes, "\n"))
+	}
+
+	// The real tree is clean of the tag: the pilot was fixed, so the default run
+	// excludes nothing and announces nothing.
+	realNotes, realTags, err := knownDefectNotes(featurePaths, false)
+	if err != nil {
+		t.Fatalf("read known-defect notes from the feature tree: %v", err)
+	}
+	if len(realNotes) != 0 || len(realTags) != 0 {
+		t.Errorf("the feature tree still tags known defects: %v %v", realNotes, realTags)
 	}
 }

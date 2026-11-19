@@ -43,7 +43,6 @@ func registerSettlementSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the settlement is refused as an illegal transition$`, settlementRefusedAsIllegalTransition)
 	sc.Step(`^the ride on "([^"]+)" waits on a decision$`, rideOnTeamWaitsOnDecision)
 	sc.Step(`^the ride on "([^"]+)" is lost$`, rideOnTeamIsLost)
-	sc.Step(`^the refusal is unnamed for the caller$`, refusalUnnamedForCaller)
 }
 
 // --- money and streak ------------------------------------------------------
@@ -439,26 +438,6 @@ func rideOnTeamIsLost(ctx context.Context, team string) (context.Context, error)
 	}
 	if ride.State != "lost" {
 		return stepFailed(ctx, fmt.Errorf("the ride on %q reads %q, want %q", team, ride.State, "lost"))
-	}
-	return stepOK(ctx)
-}
-
-// refusalUnnamedForCaller asserts the refusal is the opaque one: not one of the
-// ride's named refusals, and not a field-level explanation either — the caller
-// is told only that the server failed (the known-defect scenarios' subject).
-func refusalUnnamedForCaller(ctx context.Context) (context.Context, error) {
-	w := worldFrom(ctx)
-	if w.last == nil {
-		return stepFailed(ctx, fmt.Errorf("no command was issued"))
-	}
-
-	message := w.last.message()
-	if w.last.Status == 409 && (message == illegalTransitionMessage ||
-		message == wrongPhaseMessage || message == roundNotOpenMessage) {
-		return stepFailed(ctx, fmt.Errorf("the refusal is named (%q), want the unnamed one", message))
-	}
-	if w.last.Status != 500 {
-		return stepFailed(ctx, fmt.Errorf("the refusal is not opaque: %d %s", w.last.Status, message))
 	}
 	return stepOK(ctx)
 }

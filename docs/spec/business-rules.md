@@ -14,27 +14,27 @@ the catalog's own invariants are checked by `go run ./cmd/spec check`.
 
 ## Dashboard
 
-**125 rules** across 6 modules.
+**126 rules** across 6 modules.
 
 ### By module
 
 | Module | Rules |
 | --- | ---: |
-| `game` | 32 |
+| `game` | 33 |
 | `identity` | 22 |
 | `kernel` | 17 |
 | `ledger` | 7 |
 | `platform` | 17 |
 | `schedule` | 30 |
-| **total** | **125** |
+| **total** | **126** |
 
 ### By status
 
 | Status | Rules |
 | --- | ---: |
-| `implemented` | 106 |
+| `implemented` | 107 |
 | `specified-only` | 19 |
-| **total** | **125** |
+| **total** | **126** |
 
 ### By category
 
@@ -42,24 +42,24 @@ the catalog's own invariants are checked by `go run ./cmd/spec check`.
 | --- | ---: |
 | `boundary` | 7 |
 | `interface` | 22 |
-| `invariant` | 36 |
+| `invariant` | 37 |
 | `orchestration` | 32 |
 | `persistence-fact` | 3 |
 | `policy` | 24 |
 | `refusal-mapping` | 1 |
-| **total** | **125** |
+| **total** | **126** |
 
 ### By authority
 
 | Authority | Rules |
 | --- | ---: |
 | `composition-root` | 8 |
-| `database` | 33 |
+| `database` | 34 |
 | `domain` | 7 |
 | `handler` | 25 |
 | `repository` | 14 |
 | `service` | 38 |
-| **total** | **125** |
+| **total** | **126** |
 
 ## Module `game`
 
@@ -248,6 +248,28 @@ Registering a player creates the season registration and grants the starting cur
 **Authority** `service`
 
 **Expert ref** `docs/league-tokens-learning-phases/phase-03-transactions-and-atomic-operations.md`
+
+#### R-GAME-035 — A registration the rides still name is not withdrawn
+
+`implemented` · `invariant` · authority `database`
+
+A withdrawal removes the season entry only while nothing else points at it: a registration that still carries rides cannot be deleted, because the rides' history would be left naming a player that is gone. The caller is told the registration is still referenced, never only that the server failed.
+
+**Authority** `database` · mechanism `constraint` · scope `cross-table`
+
+**Enforcement**
+
+| Site | Layer | Role | Pinned by |
+| --- | --- | --- | --- |
+| `migrations/000006_create_rides_table.up.sql` | `db-constraint` | `authoritative` | — |
+| `internal/game/internal/adapter/outbound/postgres/player_repo.go::PlayerRepository.Delete` | `repository` | `advisory-copy` | — |
+
+**Refusal** `23503` → `rides_player_id_fkey` → `ErrRecordInUse` → `409`
+
+**Verification**
+
+- unit: `internal/game/internal/adapter/outbound/postgres/player_repo_test.go::TestPlayerRepository_Delete`
+- e2e: `internal/e2e/players_test.go::TestDeletePlayerHandler`
 
 ### Entity `ride`
 
