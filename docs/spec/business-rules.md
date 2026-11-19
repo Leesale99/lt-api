@@ -362,12 +362,14 @@ A ride carries a positive whole token stake, a positive base price captured at l
 | --- | --- | --- | --- |
 | `migrations/000006_create_rides_table.up.sql` | `db-constraint` | `authoritative` | — |
 | `internal/game/internal/core/domain/ride.go::ValidateRide` | `domain` | `advisory-copy` | — |
+| `internal/game/internal/adapter/outbound/postgres/ride_repo.go::insertRide` | `repository` | `advisory-copy` | — |
 
-**Refusal** `23514` → `rides_tokens_locked_check`, `rides_base_at_lock_check`, `rides_bonus_acc_check`, `rides_streak_check` → _(unmapped)_ → _(falls through to 500)_
+**Refusal** `23514` → `rides_tokens_locked_check`, `rides_base_at_lock_check`, `rides_bonus_acc_check`, `rides_streak_check` → `ValidationError` → `422`
 
 **Verification**
 
 - unit: `internal/game/internal/core/domain/ride_validation_test.go::TestValidateRide`
+- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_InsertCheckViolations`
 - e2e: `internal/e2e/rides_test.go::TestCreateRideHandler`
 
 #### R-GAME-005 — Unlocked and lost rides carry no accrued bonus

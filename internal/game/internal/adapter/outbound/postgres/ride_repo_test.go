@@ -13,6 +13,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -846,4 +847,87 @@ func TestRideRepository_DecisionGuardedTx(t *testing.T) {
 			t.Fatalf("DecisionGuardedTx() = %v, want domain.ErrInvalidTransition", err)
 		}
 	})
+}
+
+// TestRideRepository_InsertCheckViolations pins the money CHECKs' transport
+// surface (R-GAME-004): a 23514 from any of the four rides money constraints is
+// a named validation refusal — the field the column bounds, with the violated
+// check's name — instead of the raw driver error a 500 would report. The ride
+// INSERT is the only writing statement that carries money (every UPDATE omits
+// the money columns), so this is where the four CHECKs are reachable.
+func TestRideRepository_InsertCheckViolations(t *testing.T) {
+	requireDB(t)
+
+	ctx := context.Background()
+
+	tests := []struct {
+		name      string
+		mutate    func(ride *domain.Ride)
+		wantField string
+		wantCheck string
+	}{
+		{
+			name:      "a stake of nothing",
+			mutate:    func(ride *domain.Ride) { ride.TokensLocked = decimal.Zero },
+			wantField: "tokens_locked",
+			wantCheck: "rides_tokens_locked_check",
+		},
+		{
+			name:      "a base price of nothing",
+			mutate:    func(ride *domain.Ride) { ride.BaseAtLock = decimal.Zero },
+			wantField: "base_at_lock",
+			wantCheck: "rides_base_at_lock_check",
+		},
+		{
+			name:      "a negative accrued bonus",
+			mutate:    func(ride *domain.Ride) { ride.Acc = decimal.NewFromInt(-1) },
+			wantField: "bonus_acc",
+			wantCheck: "rides_bonus_acc_check",
+		},
+		{
+			name:      "a negative streak",
+			mutate:    func(ride *domain.Ride) { ride.Streak = -1 },
+			wantField: "streak",
+			wantCheck: "rides_streak_check",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			roundID, homeID, awayID := seedFixture(ctx, t)
+			matchID := insertFutureMatch(ctx, t, 1, roundID, homeID, awayID, "30 days")
+
+			ride := domain.Ride{
+				PlayerID:     plantPlayer(ctx, t, homeID),
+				TeamID:       homeID,
+				MatchID:      matchID,
+				State:        domain.RideLocked,
+				TokensLocked: decimal.NewFromInt(100),
+				BaseAtLock:   decimal.NewFromInt(95),
+			}
+			tt.mutate(&ride)
+
+			_, err := rideRepo.Insert(ctx, ride)
+
+			verr, ok := domain.AsValidationError(err)
+			if !ok {
+				t.Fatalf("Insert() = %v, want a domain.ValidationError (23514 → 422)", err)
+			}
+			message, named := verr.FieldErrors[tt.wantField]
+			if !named {
+				t.Fatalf("validation errors = %v, want a %q field", verr.FieldErrors, tt.wantField)
+			}
+			if !strings.Contains(message, tt.wantCheck) {
+				t.Errorf("message = %q, want it to name %q", message, tt.wantCheck)
+			}
+
+			var count int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM game.rides WHERE match_id = $1`, matchID).Scan(&count); err != nil {
+				t.Fatalf("count rides: %v", err)
+			}
+			if count != 0 {
+				t.Errorf("rides for match %d = %d, want 0 (the refusal must not have written)", matchID, count)
+			}
+		})
+	}
 }
