@@ -66,12 +66,6 @@ func (s *Service) UseLogger(log *slog.Logger) {
 	s.log = log
 }
 
-// UserByEmail returns the user with the given (case-insensitive) email.
-// model.ErrNotFound when the user is unknown.
-func (s *Service) UserByEmail(ctx context.Context, email string) (model.User, error) {
-	return s.users.GetByEmail(ctx, email)
-}
-
 // User reports one user's existence — the read the gateway's player-create
 // handler needs before writing its user reference. model.ErrNotFound when
 // the user is unknown.

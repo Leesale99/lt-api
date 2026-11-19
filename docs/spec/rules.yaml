@@ -3923,7 +3923,7 @@
   verification:
     unit:
       - internal/identity/internal/service/activation_test.go::TestActivate
-      - internal/identity/internal/repository/user_token_repo_test.go::TestDeleteAllForUser
+      - internal/identity/internal/repository/user_token_repo_test.go::TestDeleteAllForUserTx
     gherkin:
       - docs/spec/features/identity/account.feature::The same activation token cannot be spent twice
   notes: >
@@ -3937,14 +3937,15 @@
     the flip back — nothing is left behind" subtest fails first. The cleanup is by scope
     and user, not by the presented token, so an old activation mail cannot be replayed after
     a successful activation, and the deep-link case (two mails in flight) ends with both
-    tokens dead — TestDeleteAllForUser pins that only the target scope of the target user
+    tokens dead — TestDeleteAllForUserTx pins that only the target scope of the target user
     goes. The concurrent-activation subtest pins the exactly-once shape: a committed
     flip, or ErrEditConflict, or ErrNotFound, never a double bump. The refusal is the
     lookup's miss (unknown, expired, wrong-purpose or already-spent token) rendered as
     "invalid or expired activation token" — 422, deliberately not a 401, because the
-    client is activating, not authenticating. Dead code note: the non-transactional
-    UserTokenRepository.DeleteAllForUser is unreachable from production (only
-    TestDeleteAllForUser calls it).
+    client is activating, not authenticating. The non-transactional DeleteAllForUser
+    variant is gone (misalignment-report §6.21): the cleanup exists only in the Tx form the
+    activation use case runs and TestDeleteAllForUserTx commits, so there is no second way
+    to delete tokens outside the unit.
 
 - id: R-IDENTITY-010
   title: A user row is only rewritten by a writer holding the version it read
@@ -3977,16 +3978,18 @@
   fixture: null
   verification:
     unit:
-      - internal/identity/internal/repository/user_repo_test.go::TestUpdate
+      - internal/identity/internal/repository/user_repo_test.go::TestUpdateTx
       - internal/identity/internal/service/activation_test.go::TestActivate
   notes: >
     Authority is the repository, deviating from the invariant default (database): a
     compare-and-set on a version column is not expressible as a constraint, and it is
     path-dependent by nature — a new UPDATE that forgets `AND version = $n` bypasses it
-    silently. Being honest about the cost: nothing pins the call set today (there is one
-    guarded write and two thin wrappers, Update and UpdateTx, both delegating to the same
-    statement), so the repository trade-off the schema warns about is currently cheap only
-    because the surface is one method. The version counter is bumped by the same statement
+    silently. Being honest about the cost: nothing pins the call set today beyond the single
+    wrapper — there is one guarded write (UserRepository.update) and one exported door to it
+    (UpdateTx); the non-transactional Update is gone (misalignment-report §6.21), so the
+    surface cannot grow a second caller that forgets the version. The repository trade-off
+    the schema warns about is therefore cheap only because the surface is one method. The
+    version counter is bumped by the same statement
     (`version = version + 1`) and returned by RETURNING, so the caller never has to
     remember to increment. Tie: the service site fails loudly — Activate reads the row
     inside its own transaction precisely so the flagged write re-checks against the
@@ -3994,9 +3997,7 @@
     concurrent-activation subtest of TestActivate would start double-bumping.
     Distinguishing the two zero-row causes: the same statement also maps a users_email_key
     violation to ErrDuplicateEmail before the no-rows case, so an email clash is never
-    reported as an edit conflict (TestUpdate's duplicate-on-update subtest pins the order).
-    Dead code note: the non-transactional UserRepository.Update has no production caller;
-    the only production write path is UpdateTx from Activate.
+    reported as an edit conflict (TestUpdateTx's duplicate-on-update subtest pins the order).
 
 - id: R-IDENTITY-011
   title: An email address identifies exactly one account, whatever its case
@@ -4039,7 +4040,7 @@
   verification:
     unit:
       - internal/identity/internal/repository/user_repo_test.go::TestInsert
-      - internal/identity/internal/repository/user_repo_test.go::TestUpdate
+      - internal/identity/internal/repository/user_repo_test.go::TestUpdateTx
       - internal/identity/internal/repository/user_repo_test.go::TestGetByEmail
     e2e:
       - internal/e2e/users_test.go::TestRegisterUserHandlerDuplicateIsolatedFromValidation

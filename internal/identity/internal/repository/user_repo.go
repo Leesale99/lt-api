@@ -88,10 +88,6 @@ func (r *UserRepository) Get(ctx context.Context, id int) (model.User, error) {
 	return user, nil
 }
 
-func (r *UserRepository) Update(ctx context.Context, user model.User) (model.User, error) {
-	return r.update(ctx, r.pool, user)
-}
-
 // rowQuerier is the common shape of pgxpool.Pool and pgx.Tx: both answer
 // QueryRow with a pgx.Row. Naming it (rather than overloading) keeps the
 // pool and tx variants of a read from drifting apart.
@@ -99,10 +95,12 @@ type rowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// UpdateTx is Update on a caller's transaction: same guarded write, same
-// error mapping (unique violation 23505, 0 rows is the lost version race).
-// The activation use case runs it beside the token cleanup so the flip and
-// the token deletion are one commit.
+// UpdateTx is the guarded write: the account is rewritten only while the
+// caller's version still matches, a unique violation maps to ErrDuplicateEmail
+// and 0 rows is the lost version race (ErrEditConflict). The activation use
+// case runs it beside the token cleanup so the flip and the token deletion are
+// one commit, which is the only production write path; there is deliberately no
+// non-transactional variant for a caller to reach.
 func (r *UserRepository) UpdateTx(ctx context.Context, tx pgx.Tx, user model.User) (model.User, error) {
 	return r.update(ctx, tx, user)
 }

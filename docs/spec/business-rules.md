@@ -1023,7 +1023,7 @@ Every write to an account carries the version the writer read, the store bumps i
 
 **Verification**
 
-- unit: `internal/identity/internal/repository/user_repo_test.go::TestUpdate`
+- unit: `internal/identity/internal/repository/user_repo_test.go::TestUpdateTx`
 - unit: `internal/identity/internal/service/activation_test.go::TestActivate`
 
 #### R-IDENTITY-011 — An email address identifies exactly one account, whatever its case
@@ -1048,7 +1048,7 @@ Two accounts can never share an email address, and letter case does not distingu
 **Verification**
 
 - unit: `internal/identity/internal/repository/user_repo_test.go::TestInsert`
-- unit: `internal/identity/internal/repository/user_repo_test.go::TestUpdate`
+- unit: `internal/identity/internal/repository/user_repo_test.go::TestUpdateTx`
 - unit: `internal/identity/internal/repository/user_repo_test.go::TestGetByEmail`
 - e2e: `internal/e2e/users_test.go::TestRegisterUserHandlerDuplicateIsolatedFromValidation`
 
@@ -1268,7 +1268,7 @@ An activation token is single-use. The moment an account is activated, the activ
 **Verification**
 
 - unit: `internal/identity/internal/service/activation_test.go::TestActivate`
-- unit: `internal/identity/internal/repository/user_token_repo_test.go::TestDeleteAllForUser`
+- unit: `internal/identity/internal/repository/user_token_repo_test.go::TestDeleteAllForUserTx`
 
 #### R-IDENTITY-018 — A failed login is one refusal, whichever half failed
 

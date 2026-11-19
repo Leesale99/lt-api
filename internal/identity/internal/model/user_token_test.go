@@ -1,7 +1,7 @@
 package model
 
 // Tests for the token generator — pure unit tests, no database. The storage
-// behaviour (New/GetForToken/DeleteAllForUser) is tested in the repository
+// behaviour (New/GetForToken/DeleteAllForUserTx) is tested in the repository
 // package.
 
 import (
