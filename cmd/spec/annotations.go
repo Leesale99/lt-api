@@ -338,9 +338,13 @@ func (c *checker) checkSitesAnnotated(files map[string]goSource, naming map[stri
 		for _, req := range requirements {
 			decl, ok := source.decls[req.symbol]
 			if !ok {
-				// symbolExists already accepted the symbol (policy 3), so a
-				// declaration this index cannot attribute is not worth a second
-				// error.
+				// Fail closed: a site whose declaration this file does not carry is
+				// never a silent pass. The symbol may exist on another receiver, or
+				// not at all -- either way the annotation cannot be at the site, and
+				// policy 3 reports the same missing symbol.
+				c.errorf(policyAnnotations, req.ruleID,
+					"enforcement site %q names symbol %q, which no declaration in the file carries (%s); a site whose symbol cannot be located is never a silent pass",
+					req.site, req.symbol, path)
 				continue
 			}
 			present := map[string]bool{}

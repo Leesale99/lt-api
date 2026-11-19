@@ -503,8 +503,8 @@ func (c *checker) checkCategory(rule Rule) {
 }
 
 // policy 16: a knowledge-ref is additional to expert-ref, and must resolve to a
-// real note under the learning-phases tree. No rule carries one yet; the field
-// exists so the backfill lands through the catalog, not through prose.
+// real note under the learning-phases tree. 17 rules carry one; the backfill
+// lands through the catalog, not through prose.
 func (c *checker) checkKnowledgeRef(rule Rule) {
 	if rule.KnowledgeRef == nil || strings.TrimSpace(*rule.KnowledgeRef) == "" {
 		return
@@ -611,10 +611,15 @@ func testSymbolExists(src, symbol string) bool {
 // top-level func (`func Name(`), a method (`func (r *T) Name(` — the catalog
 // writes these as `T.Name`), a type, and const/var declarations. Symbols are
 // identifiers, never line numbers.
+//
+// A `Type.Name` symbol is receiver-aware: the declaration it matches must name
+// that receiver type, so `Widget.Run` does not match `func (g *Gadget) Run(`.
+// A bare name stays receiver-agnostic (a method this file declares, on whatever
+// receiver).
 func symbolExists(src, symbol string) bool {
-	name := symbol
+	name, receiver := symbol, ""
 	if i := strings.LastIndex(symbol, "."); i >= 0 {
-		name = symbol[i+1:]
+		name, receiver = symbol[i+1:], symbol[:i]
 	}
 	if name == "" {
 		return false
@@ -622,9 +627,15 @@ func symbolExists(src, symbol string) bool {
 	if strings.Contains(src, "func "+symbol+"(") || strings.Contains(src, "func "+symbol+"[") {
 		return true
 	}
+	if receiver == "" {
+		if methodNamePattern(name).MatchString(src) {
+			return true
+		}
+	} else if methodOnReceiverDeclared(src, receiver, name) {
+		return true
+	}
 	quoted := regexp.QuoteMeta(name)
 	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`func\s*\([^)]*\)\s*` + quoted + `\s*[\[(]`),
 		regexp.MustCompile(`(?m)^\s*type\s+` + quoted + `\b`),
 		regexp.MustCompile(`(?m)^\s*(?:const|var)\s+` + quoted + `\b`),
 		regexp.MustCompile(`(?m)^\s*` + quoted + `\s*=`),
@@ -635,6 +646,51 @@ func symbolExists(src, symbol string) bool {
 		}
 	}
 	return false
+}
+
+// methodNamePattern matches any method declaration with this name, whatever its
+// receiver (`func (r *T) Name(`, `func (T) Name[`). Submatch 1 is the receiver
+// list.
+func methodNamePattern(name string) *regexp.Regexp {
+	return regexp.MustCompile(`func\s*\(\s*([^)]*)\)\s*` + regexp.QuoteMeta(name) + `\s*[\[(]`)
+}
+
+// methodOnReceiverDeclared reports whether src declares a method `name` whose
+// receiver type is `receiver`. Every method declaration with that name is
+// inspected, so a same-named method on another type never satisfies the site.
+func methodOnReceiverDeclared(src, receiver, name string) bool {
+	want := bareTypeName(receiver)
+	if want == "" {
+		return false
+	}
+	for _, match := range methodNamePattern(name).FindAllStringSubmatch(src, -1) {
+		if receiverTypeName(match[1]) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// receiverTypeName returns the type name a receiver list declares: `g *Gadget`
+// → Gadget, `Widget` → Widget, `r *pkg.Repo[T]` → Repo.
+func receiverTypeName(recv string) string {
+	fields := strings.Fields(strings.TrimSpace(recv))
+	if len(fields) == 0 {
+		return ""
+	}
+	return bareTypeName(fields[len(fields)-1])
+}
+
+// bareTypeName reduces a type reference to its name: `*pkg.Repo[T]` → Repo.
+func bareTypeName(ref string) string {
+	ref = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ref), "*"))
+	if i := strings.IndexAny(ref, "[ ("); i >= 0 {
+		ref = ref[:i]
+	}
+	if i := strings.LastIndex(ref, "."); i >= 0 {
+		ref = ref[i+1:]
+	}
+	return ref
 }
 
 func sortFindings(findings []Finding) {
