@@ -130,3 +130,24 @@ Feature: Account registration and activation
       Given a member is registered as "Ana" with the email "ana@example.com"
       When the member "Ana" asks for a fresh activation mail
       Then a fresh activation token arrives in her mail
+
+  @rule:R-IDENTITY-006
+  Rule: Only a token's fingerprint is ever kept
+
+    # The table has no column a readable token could sit in, and the fingerprint
+    # is the key: the same token can never be kept twice, whoever writes.
+    Scenario: The database refuses the same token a second time
+      Given a member is registered as "Ana" with the email "ana@example.com"
+      When the Owner pool tries to store the same token a second time
+      Then the write is refused by user_tokens_pkey
+
+  @rule:R-IDENTITY-020
+  Rule: An account's identity facts are stamped by the store
+
+    # The id is the one identity fact the database refuses to take from a
+    # caller: it is generated always, not a default a supplied value falls back
+    # from, so the account is the store's to name.
+    Scenario: The database refuses an account that names its own id
+      Given a member is registered as "Ana" with the email "ana@example.com"
+      When the Owner pool tries to record an account that names its id
+      Then the write is refused for the id the store stamps

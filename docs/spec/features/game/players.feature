@@ -68,6 +68,14 @@ Feature: A registration (a season entry)
       Then the withdrawal is refused as a registration still in use
       And the registration still exists for "Ana" in "Spring 2026"
 
+    # The refusal the caller reads is the adapter's copy; the rule itself is the
+    # rides' reference, so a writer that skips the adapter is refused the same
+    # way.
+    Scenario: The database refuses to withdraw a registration its rides name
+      Given a ride locked by "Ana" on "Team A" for match day 1 with 10 tokens
+      When the Owner pool tries to delete "Ana"'s registration
+      Then the write is refused by rides_player_id_fkey
+
   @rule:R-GAME-013
   Rule: Another context's records are checked when the game writes a reference to them
 
@@ -94,6 +102,12 @@ Feature: A registration (a season entry)
       When the owner registers again in "Spring 2026" favouring "Team B"
       Then the registration is refused as a duplicate
       And "Ana" still holds one registration in "Spring 2026"
+
+    # One entry per member per season is the key's word, not the adapter's: a
+    # writer that skips the duplicate check is refused by the same key.
+    Scenario: The database refuses a second registration for the same member
+      When the Owner pool tries to register "Ana" a second time in the season
+      Then the write is refused by players_season_id_user_id_key
 
   @rule:R-GAME-017
   Rule: A registration edit may claim the version it read
