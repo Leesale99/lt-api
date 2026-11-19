@@ -6,7 +6,7 @@ This document defines how the game engine applies the rules in the Game Design d
 
 The Game Design document is the source of truth for player-facing behavior. This specification is authoritative for engine state definitions, including the four-state Season lifecycle. If a player-facing rule and an engine rule conflict, resolve the conflict explicitly rather than silently inferring behavior.
 
-This document does not describe APIs, database schemas, authentication, deployment, or user-interface implementation. Those belong in `system-design.md`.
+This document does not describe APIs, database schemas, authentication, deployment, or user-interface implementation. Those belong in the system-design document, which is not yet written.
 
 ## 1. Core concepts
 
@@ -162,7 +162,7 @@ type Ride struct {
 }
 ```
 
-These Go types illustrate the domain data; exact implementation types are a system-design decision. The Ride references a wallet Token lock through `TokenLockID`; it does not own the Tokens.
+These Go types illustrate the domain data; exact implementation types are a decision deferred to the system-design document, which is not yet written. The Ride references a wallet Token lock through `TokenLockID`; it does not own the Tokens.
 
 - `MatchID` identifies the match to which the Ride is currently committed.
 - `TokenLockID` identifies the locked Token amount in the player's wallet. The Tokens remain in the wallet; the Ride refers to the wallet lock rather than holding or owning the Tokens.
