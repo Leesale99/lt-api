@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/mail"
 	"net/url"
 	"os"
 	"strconv"
@@ -385,6 +386,33 @@ func validate(cfg Config) error {
 	}
 	if cfg.Limiter.Burst < 1 {
 		return fmt.Errorf("invalid LT_API_LIMITER_BURST %d: must be at least 1 (%s)", cfg.Limiter.Burst, knob("LT_API_LIMITER_BURST", "-limiter-burst"))
+	}
+	// The mail settings are judged here for the same reason every other
+	// setting is: a port outside 1-65535 or a sender that is not an address
+	// must fail at boot, not at the first send (misalignment-report §6 item
+	// 16). An unusable pair that reached the mailer would accept requests the
+	// process cannot honour (R-PLATFORM-006).
+	if cfg.SMTP.Port < 1 || cfg.SMTP.Port > 65535 {
+		return fmt.Errorf("invalid SMTP_PORT %d: must be in range 1-65535 (%s)", cfg.SMTP.Port, knob("SMTP_PORT", "-smtp-port"))
+	}
+	if err := validateSender(cfg.SMTP.Sender); err != nil {
+		return fmt.Errorf("invalid SMTP_SENDER %q: %w (%s)", cfg.SMTP.Sender, err, knob("SMTP_SENDER", "-smtp-sender"))
+	}
+	return nil
+}
+
+// validateSender checks the outbound sender as an RFC 5322 mailbox. net/mail is
+// the authority here, not kernel/validator's EmailRX: the sender may carry a
+// display name — the built-in default is "League Tokens <no-reply@…>" — which
+// EmailRX (the account-address rule identity's registration uses) deliberately
+// refuses. A sender that is not a mailbox is refused at boot so the first
+// delivery is never the first report of a configuration mistake.
+func validateSender(sender string) error {
+	if sender == "" {
+		return errors.New("must be provided")
+	}
+	if _, err := mail.ParseAddress(sender); err != nil {
+		return errors.New("must be an email address")
 	}
 	return nil
 }

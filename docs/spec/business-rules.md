@@ -1788,7 +1788,7 @@ A configuration value that is missing, unparseable or out of its allowed range s
 
 `implemented` · `interface` · authority `handler`
 
-Each setting is either usable or refused: the listen port is a real port, the environment is one of the three the deployment knows, a database connection string is present and parseable, the pool is at least one connection with a positive idle limit, and the throttle rates are positive. A setting is judged on its own merits — a throttle that is switched off must still be configured with usable values, because config that is only correct while something else is off fails unpredictably when it is switched on.
+Each setting is either usable or refused: the listen port and the mail port are real ports, the outbound sender is an address mail can be sent from, the environment is one of the three the deployment knows, a database connection string is present and parseable, the pool is at least one connection with a positive idle limit, and the throttle rates are positive. A setting is judged on its own merits — a throttle that is switched off must still be configured with usable values, because config that is only correct while something else is off fails unpredictably when it is switched on.
 
 **Authority** `handler`
 

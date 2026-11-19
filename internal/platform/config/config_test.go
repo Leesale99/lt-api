@@ -20,6 +20,8 @@ func validConfig() Config {
 	cfg.Limiter.RPS = 2
 	cfg.Limiter.Burst = 4
 	cfg.Limiter.Enabled = true
+	cfg.SMTP.Port = 2525
+	cfg.SMTP.Sender = "League Tokens <no-reply@lt.aleksrdvn.com>"
 	return cfg
 }
 
@@ -106,6 +108,48 @@ func TestValidate(t *testing.T) {
 			mutate:   func(c *Config) { c.Limiter.Enabled = false; c.Limiter.Burst = 0 },
 			wantErr:  "LT_API_LIMITER_BURST",
 			wantFlag: "-limiter-burst",
+		},
+		{
+			name:     "smtp port below range",
+			mutate:   func(c *Config) { c.SMTP.Port = 0 },
+			wantErr:  "SMTP_PORT",
+			wantFlag: "-smtp-port",
+			wantMsg:  "invalid SMTP_PORT 0: must be in range 1-65535 (env SMTP_PORT or -smtp-port flag)",
+		},
+		{
+			name:     "smtp port above range",
+			mutate:   func(c *Config) { c.SMTP.Port = 65536 },
+			wantErr:  "SMTP_PORT",
+			wantFlag: "-smtp-port",
+		},
+		{
+			name:     "smtp port negative",
+			mutate:   func(c *Config) { c.SMTP.Port = -25 },
+			wantErr:  "SMTP_PORT",
+			wantFlag: "-smtp-port",
+		},
+		{
+			name:     "smtp sender is not an address",
+			mutate:   func(c *Config) { c.SMTP.Sender = "no-reply" },
+			wantErr:  "SMTP_SENDER",
+			wantFlag: "-smtp-sender",
+		},
+		{
+			name:     "smtp sender is empty",
+			mutate:   func(c *Config) { c.SMTP.Sender = "" },
+			wantErr:  "SMTP_SENDER",
+			wantFlag: "-smtp-sender",
+			wantMsg:  `invalid SMTP_SENDER "": must be provided (env SMTP_SENDER or -smtp-sender flag)`,
+		},
+		{
+			// The default sender carries a display name: the check is a mailbox
+			// parse, not identity's bare-address EmailRX.
+			name:   "smtp sender with a display name passes",
+			mutate: func(c *Config) { c.SMTP.Sender = "League Tokens <no-reply@lt.aleksrdvn.com>" },
+		},
+		{
+			name:   "smtp sender as a bare address passes",
+			mutate: func(c *Config) { c.SMTP.Sender = "no-reply@lt.aleksrdvn.com" },
 		},
 	}
 
@@ -310,6 +354,32 @@ func TestParse(t *testing.T) {
 			env:     map[string]string{"LT_API_DSN": validDSN},
 			args:    []string{"-port=0"},
 			wantErr: "env PORT or -port flag",
+		},
+		{
+			name: "a malformed SMTP_SENDER fails at boot, naming both spellings",
+			env: map[string]string{
+				"LT_API_DSN":    validDSN,
+				"SMTP_SENDER":   "not-an-address",
+				"SMTP_USERNAME": "user",
+				"SMTP_PASSWORD": "pass",
+			},
+			wantErr: "env SMTP_SENDER or -smtp-sender flag",
+		},
+		{
+			name: "an out-of-range SMTP_PORT fails at boot",
+			env: map[string]string{
+				"LT_API_DSN":  validDSN,
+				"SMTP_PORT":   "0",
+				"SMTP_SENDER": "no-reply@lt.aleksrdvn.com",
+			},
+			wantErr: "invalid SMTP_PORT 0: must be in range 1-65535",
+		},
+		{
+			name: "the default sender with a display name boots",
+			env: map[string]string{
+				"LT_API_DSN":  validDSN,
+				"SMTP_SENDER": "League Tokens <no-reply@lt.aleksrdvn.com>",
+			},
 		},
 		{
 			name: "untyped env value fails at boot, naming the variable",

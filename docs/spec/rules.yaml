@@ -5916,13 +5916,13 @@
 - id: R-PLATFORM-003
   title: Every setting has a bound, and the bound holds when the feature is off
   statement: |
-    Each setting is either usable or refused: the listen port is a real port, the
-    environment is one of the three the deployment knows, a database connection string is
-    present and parseable, the pool is at least one connection with a positive idle
-    limit, and the throttle rates are positive. A setting is judged on its own merits —
-    a throttle that is switched off must still be configured with usable values, because
-    config that is only correct while something else is off fails unpredictably when it
-    is switched on.
+    Each setting is either usable or refused: the listen port and the mail port are real
+    ports, the outbound sender is an address mail can be sent from, the environment is one
+    of the three the deployment knows, a database connection string is present and
+    parseable, the pool is at least one connection with a positive idle limit, and the
+    throttle rates are positive. A setting is judged on its own merits — a throttle that
+    is switched off must still be configured with usable values, because config that is
+    only correct while something else is off fails unpredictably when it is switched on.
   module: platform
   entity: configuration
   category: interface
@@ -5954,12 +5954,18 @@
     by hand ("pgx is the authority on what a DSN is"), and an empty URL is refused
     explicitly because ParseConfig("") would fall back to libpq environment defaults and
     fail later as a connection error instead of a config error; the per-context URL
-    overrides must each parse when present. Not covered by this rule, and worth the
-    report's attention: the SMTP port has no bound (any integer is accepted, including
-    0 and negatives) and the sender address is not format-checked — both are caught only
-    as a non-empty check in the mailer, or not at all. A per-context override that names
-    a *database* the context's role cannot see is also not detectable here; that failure
-    is deferred to the pool ping at boot.
+    overrides must each parse when present. The mail settings are judged here too since
+    item 16 of the misalignment report (gap closed): SMTP_PORT carries the listen port's
+    1-65535 bound, and SMTP_SENDER is parsed as an RFC 5322 mailbox — net/mail, not
+    kernel/validator's EmailRX, because the sender may carry a display name (the built-in
+    default is "League Tokens <no-reply@lt.aleksrdvn.com>") and EmailRX is the
+    account-address rule identity's registration uses. TestValidate's smtp cases pin the
+    refusals (port below/above range, a negative port, a sender with no address, an empty
+    sender) and the two accepted sender forms. A malformed sender therefore fails at boot
+    instead of at the first delivery (R-PLATFORM-006's refusal is still the mailer's —
+    config judges the value, the mailer refuses an incomplete set). A per-context override
+    that names a *database* the context's role cannot see is not detectable here; that
+    failure is deferred to the pool ping at boot.
 
 - id: R-PLATFORM-004
   title: A log level is an enumerated name, never a silent fallback
@@ -6081,9 +6087,11 @@
     ordering is main's, and it is what makes this a boot rule rather than a first-send
     surprise). The mailer suite now constructs the real adapter: it pins the boot
     refusal for each missing setting and pins that a delivery failure is not reported
-    as a configuration error. Recorded asymmetry for the report: the check
-    is non-empty only — a sender string that is not an address passes here and fails at
-    the first send.
+    as a configuration error. This rule's check is non-empty only — deliberately: a
+    *malformed* sender is a bound, so config's validate() judges it at boot (R-PLATFORM-003,
+    item 16 of the misalignment report, gap closed: SMTP_PORT is bounded and SMTP_SENDER
+    must parse as an RFC 5322 mailbox), and an empty one is refused twice (here and
+    there) with this rule's sentinel being the mailer's own.
 
 - id: R-PLATFORM-007
   title: A failed delivery is retried a bounded number of times, then reported
