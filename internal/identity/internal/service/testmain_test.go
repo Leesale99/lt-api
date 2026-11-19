@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 
 	"lt-api.aleksrdvn.com/internal/identity/internal/model"
 	"lt-api.aleksrdvn.com/internal/identity/internal/repository"
@@ -54,6 +55,7 @@ var migFiles = []string{
 	"../../../../migrations/000019_add_status_rank_gates.up.sql",
 	"../../../../migrations/000020_respect_supplied_match_ended_at.up.sql",
 	"../../../../migrations/000021_add_game_delete_players_for_season.up.sql",
+	"../../../../migrations/000022_scope_idempotency_keys_per_caller.up.sql",
 }
 
 var (
@@ -62,6 +64,11 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	// The suite hashes many passwords (fixtures, registrations, resets) and
+	// asserts nothing about how long a hash takes — except the DB-budget test,
+	// which restores the production cost for its own duration.
+	model.PasswordCost = bcrypt.MinCost
+
 	dsn := os.Getenv("LT_API_TEST_DSN")
 	if dsn == "" {
 		fmt.Println("LT_API_TEST_DSN not set; identity service integration tests will be skipped")

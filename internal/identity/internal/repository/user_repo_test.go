@@ -1,9 +1,9 @@
 package repository
 
 // Tests for UserRepository against the real test database: Insert, Get,
-// GetByEmail and Update, including the duplicate-email translation (23505 on
+// GetByEmail and UpdateTx, including the duplicate-email translation (23505 on
 // users_email_key → model.ErrDuplicateEmail) and the optimistic-concurrency
-// behaviour of Update.
+// behaviour of the guarded write.
 //
 // The validators and the password round-trip are pure tests in the model
 // package; the activation transaction is tested in the service package.
@@ -196,9 +196,33 @@ func TestGet(t *testing.T) {
 	})
 }
 
-func TestUpdate(t *testing.T) {
+func TestUpdateTx(t *testing.T) {
 	requireDB(t)
 	users := NewUserRepository(identityPool)
+
+	// updateTx drives the guarded write the way production does — Activate
+	// calls UpdateTx on a transaction it then commits — and commits, so the
+	// follow-up reads see the committed row. An error rolls the transaction
+	// back instead, which is what Activate does.
+	updateTx := func(t *testing.T, user model.User) (model.User, error) {
+		t.Helper()
+
+		tx, err := identityPool.Begin(context.Background())
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback(context.Background()) }()
+
+		updated, err := users.UpdateTx(context.Background(), tx, user)
+		if err != nil {
+			return model.User{}, err
+		}
+		if err := tx.Commit(context.Background()); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+
+		return updated, nil
+	}
 
 	seed := func(t *testing.T) model.User {
 		t.Helper()
@@ -219,9 +243,9 @@ func TestUpdate(t *testing.T) {
 			t.Fatalf("Set: %v", err)
 		}
 
-		got, err := users.Update(context.Background(), user)
+		got, err := updateTx(t, user)
 		if err != nil {
-			t.Fatalf("Update: %v", err)
+			t.Fatalf("UpdateTx: %v", err)
 		}
 		if got.Version != user.Version+1 {
 			t.Errorf("Version after update = %d, want %d", got.Version, user.Version+1)
@@ -250,7 +274,7 @@ func TestUpdate(t *testing.T) {
 		if err := user.Password.Set("concurrent-edit"); err != nil {
 			t.Fatalf("Set: %v", err)
 		}
-		if _, err := users.Update(context.Background(), user); err != nil {
+		if _, err := updateTx(t, user); err != nil {
 			t.Fatalf("concurrent update: %v", err)
 		}
 
@@ -259,9 +283,9 @@ func TestUpdate(t *testing.T) {
 		// model.ErrEditConflict — the sentinel the API layer turns into a 409.
 		user.Version = 1 // stale
 		user.Name = "Loser Of The Race"
-		_, err := users.Update(context.Background(), user)
+		_, err := updateTx(t, user)
 		if !errors.Is(err, model.ErrEditConflict) {
-			t.Errorf("Update with stale version: got %v, want model.ErrEditConflict", err)
+			t.Errorf("UpdateTx with stale version: got %v, want model.ErrEditConflict", err)
 		}
 	})
 
@@ -274,9 +298,9 @@ func TestUpdate(t *testing.T) {
 
 		// citext again: case differs, uniqueness still bites.
 		user.Email = "BOB@EXAMPLE.COM"
-		_, err = users.Update(context.Background(), user)
+		_, err = updateTx(t, user)
 		if !errors.Is(err, model.ErrDuplicateEmail) {
-			t.Fatalf("Update to a duplicate email: got %v, want ErrDuplicateEmail", err)
+			t.Fatalf("UpdateTx to a duplicate email: got %v, want ErrDuplicateEmail", err)
 		}
 	})
 
@@ -285,9 +309,9 @@ func TestUpdate(t *testing.T) {
 
 		defer func() {
 			if recover() == nil {
-				t.Error("Update without a password hash must panic")
+				t.Error("UpdateTx without a password hash must panic")
 			}
 		}()
-		_, _ = users.Update(context.Background(), model.User{ID: 1, Version: 1})
+		_, _ = updateTx(t, model.User{ID: 1, Version: 1})
 	})
 }

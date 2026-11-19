@@ -1,3 +1,6 @@
+> **Superseded — historical record.** Nothing reads docs/spec/history/; kept for provenance.
+> Misalignments now surface via catalog status/notes and `make spec/check`; see docs/spec/README.md.
+
 # Business-rule catalog — misalignment report (Phase B3)
 
 Merged from `/tmp/lt-spec-fragments-{schedule,game,identity,kernel-platform,expert-docs}.yaml`

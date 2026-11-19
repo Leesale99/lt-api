@@ -221,3 +221,77 @@ func TestActivate(t *testing.T) {
 		}
 	})
 }
+
+// TestRequestActivationToken pins the request use case's three outcomes and
+// their side effects (R-IDENTITY-022): the two ineligible causes form verdicts
+// that mint no token (and so book no mail — dispatch only ever follows a
+// minted token), while a genuine request mints exactly one activation token.
+// The HTTP answer those verdicts turn into is the handler's neutral envelope,
+// pinned by the account feature's scenarios.
+func TestRequestActivationToken(t *testing.T) {
+	requireDB(t)
+	h := newHarness()
+
+	countTokens := func(t *testing.T, userID int, scope string) int {
+		t.Helper()
+
+		var count int
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT count(*) FROM identity.user_tokens WHERE user_id = $1 AND scope = $2`, userID, scope).Scan(&count); err != nil {
+			t.Fatalf("count tokens: %v", err)
+		}
+		return count
+	}
+
+	t.Run("an unknown email is ErrNotFound and mints nothing", func(t *testing.T) {
+		resetUsers(t)
+
+		err := h.svc.RequestActivationToken(context.Background(), "nobody@example.com")
+		if !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("RequestActivationToken(unknown email) = %v, want ErrNotFound", err)
+		}
+
+		var tokens int
+		if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM identity.user_tokens`).Scan(&tokens); err != nil {
+			t.Fatal(err)
+		}
+		if tokens != 0 {
+			t.Errorf("tokens minted for an unknown email = %d, want 0", tokens)
+		}
+	})
+
+	t.Run("an already active account is ErrAlreadyActivated and mints nothing", func(t *testing.T) {
+		resetUsers(t)
+
+		user := mustUser("Alice", "alice@example.com", "pa55word123")
+		user.Activated = true
+		inserted, err := h.users.Insert(context.Background(), user)
+		if err != nil {
+			t.Fatalf("seed insert: %v", err)
+		}
+
+		err = h.svc.RequestActivationToken(context.Background(), inserted.Email)
+		if !errors.Is(err, model.ErrAlreadyActivated) {
+			t.Fatalf("RequestActivationToken(active account) = %v, want ErrAlreadyActivated", err)
+		}
+		if got := countTokens(t, inserted.ID, model.ScopeActivation); got != 0 {
+			t.Errorf("activation tokens minted for an active account = %d, want 0", got)
+		}
+	})
+
+	t.Run("an unactivated account collects one fresh activation token", func(t *testing.T) {
+		resetUsers(t)
+
+		inserted, err := h.users.Insert(context.Background(), mustUser("Alice", "alice@example.com", "pa55word123"))
+		if err != nil {
+			t.Fatalf("seed insert: %v", err)
+		}
+
+		if err := h.svc.RequestActivationToken(context.Background(), inserted.Email); err != nil {
+			t.Fatalf("RequestActivationToken: %v", err)
+		}
+		if got := countTokens(t, inserted.ID, model.ScopeActivation); got != 1 {
+			t.Errorf("activation tokens minted for an unactivated account = %d, want 1", got)
+		}
+	})
+}

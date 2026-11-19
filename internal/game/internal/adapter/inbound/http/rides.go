@@ -95,19 +95,46 @@ type rideCommand func(ctx context.Context, id int, token port.Token, marshal ser
 
 // rideCommandToken builds the command's dedup identity (ADR-024). The key
 // rules live next to the model (idempotency.ValidateIdempotencyToken); the
-// hash covers method + request URI, so the same key on a different ride (or
-// any altered request) is the 409 idempotency conflict. ok=false means the
-// header failed validation and the 422 is written. (The body-carrying ride
-// command, create, has its own createRideToken — its bytes join the hash
-// input.)
+// hash covers method + request URI + the raw body, so the same key on a
+// different ride, on any altered request — or on the same ride with different
+// body bytes — is the 409 idempotency conflict (R-KERNEL-002: the same raw
+// body bytes are part of the identity, whether or not the command reads them).
+// The claim is scoped to the caller (R-KERNEL-003): the token carries the
+// authenticated principal's id, so two callers that pick the same key hold two
+// claims. ok=false means the header failed validation, the request carried no
+// principal (the routes are permission-gated, so this is defensive), or the
+// body could not be read — and the response is already written.
 func (h *Handler) rideCommandToken(w http.ResponseWriter, r *http.Request, endpoint string) (port.Token, bool) {
+	user, found := httpx.GetAuthenticatedUser(r)
+	if !found {
+		httpx.AuthenticationRequired(w, r)
+		return port.Token{}, false
+	}
+
 	key := r.Header.Get("Idempotency-Key")
 
-	// The ride commands have no body; when a body-carrying command adopts
-	// keys, its bytes join the hash input.
-	hash := sha256.Sum256([]byte(r.Method + "\n" + r.URL.RequestURI()))
+	// The body is drained exactly like createRideToken's: the cap must wrap it
+	// before the read, so the bytes hashed are the bytes a retry re-reads and
+	// an oversized body claims no key at all (413 before any hash exists). The
+	// commands do not decode a body today, but the digest must not depend on
+	// that — a body appended to a body-less command is a different request.
+	r.Body = http.MaxBytesReader(w, r.Body, httpx.MaxBodyBytes)
 
-	token := idempotency.IdempotencyToken{Key: key, Endpoint: endpoint, Hash: hash[:]}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			httpx.RequestTooLarge(w, r, maxBytesError.Limit)
+			return port.Token{}, false
+		}
+		httpx.BadRequest(w, r, err)
+		return port.Token{}, false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	hash := sha256.Sum256(append([]byte(r.Method+"\n"+r.URL.RequestURI()+"\n"), body...))
+
+	token := idempotency.IdempotencyToken{Key: key, UserID: user.ID, Endpoint: endpoint, Hash: hash[:]}
 
 	v := validator.New()
 
@@ -154,9 +181,19 @@ func (h *Handler) rideCommand(endpoint string, command rideCommand) http.Handler
 // hash input (method + "\n" + request URI + "\n" + body): the same key
 // re-sent with different fields is the 409 idempotency conflict, not a silent
 // replay of the first ride. The body is consumed only once, so it is drained
-// into memory and handed back on r.Body for readJSON. ok=false means the
-// token failed validation and the 422 is written.
+// into memory and handed back on r.Body for readJSON — rideCommandToken keeps
+// the same input shape for the body-less commands. The claim is scoped to the
+// caller (R-KERNEL-003), so the token carries the authenticated principal's
+// id. ok=false means the request carried no principal (defensive: the route is
+// permission-gated) or the token failed validation, and the 422/401 is
+// written.
 func (h *Handler) createRideToken(w http.ResponseWriter, r *http.Request) ([]byte, port.Token, bool) {
+	user, found := httpx.GetAuthenticatedUser(r)
+	if !found {
+		httpx.AuthenticationRequired(w, r)
+		return nil, port.Token{}, false
+	}
+
 	// The size cap must wrap the body before it is drained, not at decode:
 	// create hashes raw request bytes (ADR-024), so hash input and decoded
 	// body must be the same bytes. Capping only in readJSON would buffer an
@@ -182,6 +219,7 @@ func (h *Handler) createRideToken(w http.ResponseWriter, r *http.Request) ([]byt
 
 	token := idempotency.IdempotencyToken{
 		Key:      r.Header.Get("Idempotency-Key"),
+		UserID:   user.ID,
 		Endpoint: "POST /v1/rides",
 		Hash:     hash[:],
 	}

@@ -14,27 +14,27 @@ the catalog's own invariants are checked by `go run ./cmd/spec check`.
 
 ## Dashboard
 
-**125 rules** across 6 modules.
+**126 rules** across 6 modules.
 
 ### By module
 
 | Module | Rules |
 | --- | ---: |
-| `game` | 32 |
+| `game` | 33 |
 | `identity` | 22 |
 | `kernel` | 17 |
 | `ledger` | 7 |
 | `platform` | 17 |
 | `schedule` | 30 |
-| **total** | **125** |
+| **total** | **126** |
 
 ### By status
 
 | Status | Rules |
 | --- | ---: |
-| `implemented` | 106 |
+| `implemented` | 107 |
 | `specified-only` | 19 |
-| **total** | **125** |
+| **total** | **126** |
 
 ### By category
 
@@ -42,24 +42,24 @@ the catalog's own invariants are checked by `go run ./cmd/spec check`.
 | --- | ---: |
 | `boundary` | 7 |
 | `interface` | 22 |
-| `invariant` | 36 |
+| `invariant` | 37 |
 | `orchestration` | 32 |
 | `persistence-fact` | 3 |
 | `policy` | 24 |
 | `refusal-mapping` | 1 |
-| **total** | **125** |
+| **total** | **126** |
 
 ### By authority
 
 | Authority | Rules |
 | --- | ---: |
 | `composition-root` | 8 |
-| `database` | 33 |
+| `database` | 34 |
 | `domain` | 7 |
 | `handler` | 25 |
 | `repository` | 14 |
 | `service` | 38 |
-| **total** | **125** |
+| **total** | **126** |
 
 ## Module `game`
 
@@ -93,7 +93,7 @@ Every ride command first claims its idempotency key inside its own transaction, 
 
 **Notes**
 
-> Four authoritative sites, one per command: the ordering (claim first, then execute, then store, then commit) is the same statement applied to four disjoint commands, so it is one rule with four sites, not four rules. No refusal: a claim that loses is not a refusal — it returns the recorded answer, which is a success. The recorded answer is the transport's presentation callback output (status + marshaled body), stored byte for byte so the replay is byte-identical, and create's Location header is re-derived from the stored body rather than persisted. The claim table and the single-flight mechanics are the kernel engine's; what this rule owns is that the *game* commands call it first and inside one transaction. Related but distinct: R-KERNEL-004 owns the transactional coupling (the claim commits with the command's effect, or not at all); this rule owns the ordering inside the command, and the kernel claim rule (R-KERNEL-003) owns what the caller sees on a replay. stale-pointer: phase-04's §"Later, for HTTP commands, add an idempotency key table" is superseded sequencing, not a disagreement — migrations/000010 and this rule's sites are that table. Nothing else in the doc names a path that no longer exists.
+> Four authoritative sites, one per command: the ordering (claim first, then execute, then store, then commit) is the same statement applied to four disjoint commands, so it is one rule with four sites, not four rules. No refusal: a claim that loses is not a refusal — it returns the recorded answer, which is a success. The recorded answer is the transport's presentation callback output (status + marshaled body), stored byte for byte so the replay is byte-identical, and create's Location header is re-derived from the stored body rather than persisted. The claim table and the single-flight mechanics are the kernel engine's; what this rule owns is that the *game* commands call it first and inside one transaction. The caller is part of the claim's identity since the ride routes became permission-gated: the handlers put the authenticated principal's id on the token (`port.Token.UserID`) and the kernel claims (key, user_id), so two callers that pick the same key hold two claims (R-KERNEL-003 owns the scope and the retention window). Related but distinct: R-KERNEL-004 owns the transactional coupling (the claim commits with the command's effect, or not at all); this rule owns the ordering inside the command, and the kernel claim rule (R-KERNEL-003) owns what the caller sees on a replay. stale-pointer: phase-04's §"Later, for HTTP commands, add an idempotency key table" is superseded sequencing, not a disagreement — migrations/000010 and this rule's sites are that table. Nothing else in the doc names a path that no longer exists.
 
 ### Entity `player`
 
@@ -165,12 +165,13 @@ A registration's season and favourite team must exist in the calendar, and a rid
 **Verification**
 
 - unit: `internal/game/internal/core/service/service_test.go::TestService_RideCreateUnknownParents`
+- unit: `internal/game/internal/adapter/inbound/http/players_test.go::TestCreatePlayerNamesTheUserField`
 - e2e: `internal/e2e/players_test.go::TestCreatePlayerHandler`
 - e2e: `internal/e2e/players_test.go::TestUpdatePlayerHandler`
 
 **Notes**
 
-> Category boundary (the cross-context FKs came out in 000016 so the composition moved into the use cases), but authority is the service, not the composition root, because each use case performs its own check before its write — the deviation from the boundary default is deliberate and this note is the reason. Disjoint cases of one statement, one refusal per case: an unknown favourite team is a field-level 422 on favorite_team_id (the player, not the team, is the resource); an unknown season in the route and an unknown ride team are 404; the ride's match reference is not checked here — it is the round gate's (R-GAME-008) and answers the round refusal. Tie: the handler site fails loudly — it asks identity for the principal's user row and its refusal keeps the field-error shape, but the user reference is checked *only* there and only when the identity directory was installed (`if h.users != nil`): with the FK gone, a module wired without identity silently plants an orphan user_id. Its 422 message also names favorite_team_id, a leftover of the FK-era shape that mislabels the field. Both are defects, not rules. stale-pointer: two repository comments still describe FK-era behaviour after 000016 — ride_repo.go::insertRide's FK branch says "the referenced player, team or match does not exist", though with the cross-context FKs gone the only surviving reference on that INSERT is rides_player_id_fkey (a missing team or match is the port's check), and player_repo.go::GetAll's "favorite_team_id is never 0 in the schema (FK)" names an FK that 000016 dropped (0 still works as the no-filter sentinel).
+> Category boundary (the cross-context FKs came out in 000016 so the composition moved into the use cases), but authority is the service, not the composition root, because each use case performs its own check before its write — the deviation from the boundary default is deliberate and this note is the reason. Disjoint cases of one statement, one refusal per case: an unknown favourite team is a field-level 422 on favorite_team_id (the player, not the team, is the resource); an unknown season in the route and an unknown ride team are 404; the ride's match reference is not checked here — it is the round gate's (R-GAME-008) and answers the round refusal. Tie: the handler site fails loudly — it asks identity for the principal's user row and its refusal keeps the field-error shape, but the user reference is checked *only* there and only when the identity directory was installed (`if h.users != nil`): with the FK gone, a module wired without identity silently plants an orphan user_id. Its 422 used to name favorite_team_id — a leftover of the FK-era shape that mislabelled the failing reference; it now names user_id, the principal's user account (misalignment-report §6 item 12's mislabel half, fixed; the optional-check half is still a defect, not a rule). stale-pointer: two repository comments still describe FK-era behaviour after 000016 — ride_repo.go::insertRide's FK branch says "the referenced player, team or match does not exist", though with the cross-context FKs gone the only surviving reference on that INSERT is rides_player_id_fkey (a missing team or match is the port's check), and player_repo.go::GetAll's "favorite_team_id is never 0 in the schema (FK)" names an FK that 000016 dropped (0 still works as the no-filter sentinel).
 
 #### R-GAME-014 — One registration per principal per season
 
@@ -249,6 +250,28 @@ Registering a player creates the season registration and grants the starting cur
 
 **Expert ref** `docs/league-tokens-learning-phases/phase-03-transactions-and-atomic-operations.md`
 
+#### R-GAME-035 — A registration the rides still name is not withdrawn
+
+`implemented` · `invariant` · authority `database`
+
+A withdrawal removes the season entry only while nothing else points at it: a registration that still carries rides cannot be deleted, because the rides' history would be left naming a player that is gone. The caller is told the registration is still referenced, never only that the server failed.
+
+**Authority** `database` · mechanism `constraint` · scope `cross-table`
+
+**Enforcement**
+
+| Site | Layer | Role | Pinned by |
+| --- | --- | --- | --- |
+| `migrations/000006_create_rides_table.up.sql` | `db-constraint` | `authoritative` | — |
+| `internal/game/internal/adapter/outbound/postgres/player_repo.go::PlayerRepository.Delete` | `repository` | `advisory-copy` | — |
+
+**Refusal** `23503` → `rides_player_id_fkey` → `ErrRecordInUse` → `409`
+
+**Verification**
+
+- unit: `internal/game/internal/adapter/outbound/postgres/player_repo_test.go::TestPlayerRepository_Delete`
+- e2e: `internal/e2e/players_test.go::TestDeletePlayerHandler`
+
 ### Entity `ride`
 
 #### R-GAME-001 — Rides are born locked
@@ -297,7 +320,7 @@ A ride moves only along the legal graph: locked → won_pending or lost; won_pen
 **Verification**
 
 - unit: `internal/game/internal/core/domain/ride_test.go::TestRide_InvalidTransitions`
-- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update`
+- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx`
 - e2e: `internal/e2e/rides_test.go::TestRideCommandHandlers`
 
 **Expert ref** `docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md`
@@ -322,7 +345,7 @@ A burned, lost or unlocked ride is final: its state never changes again and it i
 **Verification**
 
 - unit: `internal/game/internal/core/domain/ride_test.go::TestRide_TerminalStates`
-- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update`
+- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_TerminalRideGate`
 
 **Expert ref** `docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md`
 
@@ -340,12 +363,14 @@ A ride carries a positive whole token stake, a positive base price captured at l
 | --- | --- | --- | --- |
 | `migrations/000006_create_rides_table.up.sql` | `db-constraint` | `authoritative` | — |
 | `internal/game/internal/core/domain/ride.go::ValidateRide` | `domain` | `advisory-copy` | — |
+| `internal/game/internal/adapter/outbound/postgres/ride_repo.go::insertRide` | `repository` | `advisory-copy` | — |
 
-**Refusal** `23514` → `rides_tokens_locked_check`, `rides_base_at_lock_check`, `rides_bonus_acc_check`, `rides_streak_check` → _(unmapped)_ → _(falls through to 500)_
+**Refusal** `23514` → `rides_tokens_locked_check`, `rides_base_at_lock_check`, `rides_bonus_acc_check`, `rides_streak_check` → `ValidationError` → `422`
 
 **Verification**
 
 - unit: `internal/game/internal/core/domain/ride_validation_test.go::TestValidateRide`
+- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_InsertCheckViolations`
 - e2e: `internal/e2e/rides_test.go::TestCreateRideHandler`
 
 #### R-GAME-005 — Unlocked and lost rides carry no accrued bonus
@@ -372,7 +397,7 @@ An unlocked or lost ride forfeits everything it accrued: its accumulated bonus i
 - unit: `internal/game/internal/core/service/constraints_test.go::TestRideMoneyStateCoupling`
 - unit: `internal/game/internal/core/domain/ride_test.go::TestRide_Unlock`
 - unit: `internal/game/internal/core/domain/ride_test.go::TestRide_Lost`
-- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update`
+- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx`
 
 **Notes**
 
@@ -507,7 +532,7 @@ A locked ride may only arrive at won_pending when the committed result of its ma
 - unit: `internal/game/internal/core/service/score_state_rule_test.go::TestScoreStateRuleDB`
 - unit: `internal/schedule/internal/model/matches_winner_test.go::TestWinner`
 - unit: `internal/game/internal/core/service/service_test.go::TestService_OnMatchResultRecorded`
-- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update`
+- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_ArriveTx`
 
 **Expert ref** `docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md`
 
@@ -663,7 +688,7 @@ A ride may change the match it is on only when a won ride continues onto a later
 
 **Verification**
 
-- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update`
+- unit: `internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx`
 - unit: `internal/game/internal/core/domain/ride_test.go::TestRide_Lock`
 
 #### R-GAME-026 — The calendar is reached through game's own vocabulary, never its tables
@@ -998,7 +1023,7 @@ Every write to an account carries the version the writer read, the store bumps i
 
 **Verification**
 
-- unit: `internal/identity/internal/repository/user_repo_test.go::TestUpdate`
+- unit: `internal/identity/internal/repository/user_repo_test.go::TestUpdateTx`
 - unit: `internal/identity/internal/service/activation_test.go::TestActivate`
 
 #### R-IDENTITY-011 — An email address identifies exactly one account, whatever its case
@@ -1023,7 +1048,7 @@ Two accounts can never share an email address, and letter case does not distingu
 **Verification**
 
 - unit: `internal/identity/internal/repository/user_repo_test.go::TestInsert`
-- unit: `internal/identity/internal/repository/user_repo_test.go::TestUpdate`
+- unit: `internal/identity/internal/repository/user_repo_test.go::TestUpdateTx`
 - unit: `internal/identity/internal/repository/user_repo_test.go::TestGetByEmail`
 - e2e: `internal/e2e/users_test.go::TestRegisterUserHandlerDuplicateIsolatedFromValidation`
 
@@ -1113,11 +1138,11 @@ An account's id, its creation time and its version counter are produced by the s
 - unit: `internal/identity/internal/repository/user_repo_test.go::TestInsert`
 - e2e: `internal/e2e/users_test.go::TestRegisterUserHandler`
 
-#### R-IDENTITY-022 — A second activation is refused
+#### R-IDENTITY-022 — Activation happens once and asking discloses nothing
 
 `implemented` · `policy` · authority `service`
 
-Activation happens once. An account that is already active cannot be activated again, and asking for a fresh activation mail for such an account is refused rather than silently re-minted. A token that was already spent, has expired or was minted for another purpose is likewise no longer an activation credential.
+Activation happens once. An account that is already active cannot be activated again, and a token that was already spent, has expired or was minted for another purpose is no longer an activation credential. Asking for a fresh activation mail is answered the same way whoever asks: an address no account holds and an address whose account is already active receive exactly the answer a genuine request receives — the same status, the same body — and neither mints a token nor sends a mail, so the endpoint never says whether an address is registered or whether its account is active.
 
 **Authority** `service`
 
@@ -1126,13 +1151,15 @@ Activation happens once. An account that is already active cannot be activated a
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
 | `internal/identity/internal/service/activation.go::Service.RequestActivationToken` | `service` | `authoritative` | — |
+| `internal/identity/internal/handler/user_tokens.go::Handler.createActivationToken` | `handler` | `defense-in-depth` | — |
 | `internal/identity/internal/service/activation.go::Service.Activate` | `service` | `defense-in-depth` | — |
 
-**Refusal** `synthetic` → _(unnamed)_ → `ErrAlreadyActivated` → `422`
+**Refusal** `synthetic` → _(unnamed)_ → `ErrNotFound` → `422`
 
 **Verification**
 
 - unit: `internal/identity/internal/service/activation_test.go::TestActivate`
+- unit: `internal/identity/internal/service/activation_test.go::TestRequestActivationToken`
 
 ### Entity `user_token`
 
@@ -1241,7 +1268,7 @@ An activation token is single-use. The moment an account is activated, the activ
 **Verification**
 
 - unit: `internal/identity/internal/service/activation_test.go::TestActivate`
-- unit: `internal/identity/internal/repository/user_token_repo_test.go::TestDeleteAllForUser`
+- unit: `internal/identity/internal/repository/user_token_repo_test.go::TestDeleteAllForUserTx`
 
 #### R-IDENTITY-018 — A failed login is one refusal, whichever half failed
 
@@ -1262,6 +1289,7 @@ An email that no account holds and a password that does not match the account pr
 **Verification**
 
 - unit: `internal/identity/internal/model/user_test.go::TestPasswordHashRoundTrip`
+- unit: `internal/identity/internal/service/authenticate_test.go::TestAuthenticate`
 
 ## Module `kernel`
 
@@ -1503,7 +1531,7 @@ Two requests are the same logical request exactly when they carry the same metho
 
 `implemented` · `policy` · authority `repository`
 
-Once a key has been used for one request, reusing it for a different request is refused as key misuse and the second request never executes. The refusal is a conflict, not a retry: a genuine retry resends the identical request and receives the stored answer.
+Once a key has been used by one caller, that same caller reusing it for a different request is refused as key misuse and the second request never executes. The refusal is a conflict, not a retry: a genuine retry resends the identical request and receives the stored answer. A key belongs to its caller — two callers that happen to choose the same key hold two independent claims, so one caller's key can neither collide with another's nor come back with another's answer. A claim is remembered for one day: a key whose claim is older than that is forgotten, and a command sent under it executes again instead of replaying.
 
 **Authority** `repository` · scope `row-local`
 
@@ -1512,6 +1540,7 @@ Once a key has been used for one request, reusing it for a different request is 
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
 | `internal/kernel/idempotency/idempotency.go::Repository.Claim` | `repository` | `authoritative` | — |
+| `migrations/000022_scope_idempotency_keys_per_caller.up.sql` | `db-constraint` | `authoritative` | — |
 | `migrations/000010_add_idempotency_keys_table.up.sql` | `db-constraint` | `defense-in-depth` | — |
 | `internal/game/internal/adapter/inbound/http/errors.go::Handler.idempotencyConflictResponse` | `handler` | `advisory-copy` | — |
 
@@ -1621,6 +1650,7 @@ Requests are throttled per client address: a client may burst a configured numbe
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
 | `internal/kernel/httpx/ratelimiter.go::RateLimiter.Allow` | `handler` | `authoritative` | — |
+| `internal/kernel/httpx/ratelimiter.go::RateLimiter.ClientKey` | `handler` | `authoritative` | — |
 | `internal/kernel/httpx/middleware.go::Middleware.RateLimit` | `handler` | `authoritative` | — |
 | `internal/kernel/httpx/ratelimiter.go::RateLimiter.Sweep` | `handler` | `authoritative` | — |
 
@@ -1632,6 +1662,12 @@ Requests are throttled per client address: a client may burst a configured numbe
 - unit: `internal/kernel/httpx/ratelimiter_test.go::TestRateLimiterSustainedCapped`
 - unit: `internal/kernel/httpx/ratelimiter_test.go::TestRateLimiterIPsIsolated`
 - unit: `internal/kernel/httpx/ratelimiter_test.go::TestRateLimiterStaleBucketsEvicted`
+- unit: `internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyTrustedProxyUsesForwardedClient`
+- unit: `internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyTrustedProxyTakesRightmostUntrustedHop`
+- unit: `internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyUntrustedPeerIgnoresForwardedFor`
+- unit: `internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyEmptyTrustedListIgnoresForwardedFor`
+- unit: `internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyMalformedForwardedForFallsBack`
+- unit: `internal/kernel/httpx/ratelimiter_proxy_test.go::TestRateLimitMiddlewareKeysOnForwardedClientBehindProxy`
 
 ## Module `ledger`
 
@@ -1734,11 +1770,11 @@ A deployment's settings come from its environment, and an operator may override 
 
 - unit: `internal/platform/config/config_test.go::TestParse`
 
-#### R-PLATFORM-002 — Startup refuses a configuration it cannot honour, and names the variable
+#### R-PLATFORM-002 — Startup refuses a configuration it cannot honour, and names the setting
 
 `implemented` · `interface` · authority `handler`
 
-A configuration value that is missing, unparseable or out of its allowed range stops the process before it serves anything, and the message names the variable that must change. Every bad environment value is reported in one refusal instead of one at a time, and nothing degrades into a silent default.
+A configuration value that is missing, unparseable or out of its allowed range stops the process before it serves anything, and the message names the setting that must change — both its environment variable and its command-line flag, because the same value can arrive either way. Every bad environment value is reported in one refusal instead of one at a time, and nothing degrades into a silent default.
 
 **Authority** `handler`
 
@@ -1760,7 +1796,7 @@ A configuration value that is missing, unparseable or out of its allowed range s
 
 `implemented` · `interface` · authority `handler`
 
-Each setting is either usable or refused: the listen port is a real port, the environment is one of the three the deployment knows, a database connection string is present and parseable, the pool is at least one connection with a positive idle limit, and the throttle rates are positive. A setting is judged on its own merits — a throttle that is switched off must still be configured with usable values, because config that is only correct while something else is off fails unpredictably when it is switched on.
+Each setting is either usable or refused: the listen port and the mail port are real ports, the outbound sender is an address mail can be sent from, the environment is one of the three the deployment knows, a database connection string is present and parseable, the pool is at least one connection with a positive idle limit, and the throttle rates are positive. A setting is judged on its own merits — a throttle that is switched off must still be configured with usable values, because config that is only correct while something else is off fails unpredictably when it is switched on.
 
 **Authority** `handler`
 
@@ -1960,10 +1996,12 @@ Every request traverses the same chain in the same order: panic recovery outermo
 
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
+| `internal/platform/httpchain/httpchain.go::Build` | `composition-root` | `authoritative` | — |
 | `cmd/api/routes.go::routes` | `handler` | `authoritative` | — |
 
 **Verification**
 
+- unit: `internal/platform/httpchain/httpchain_test.go::TestBuildOrder`
 - e2e: `internal/e2e/cors_test.go::TestEnableCORS`
 - e2e: `internal/e2e/auth_test.go::TestAuthenticateMiddleware`
 
@@ -2219,7 +2257,7 @@ A match's home and away odds are both strictly greater than one — a book never
 
 **Notes**
 
-> Two halves, one operand contract (ADR-021's scale chain: bonus_acc scale 4 = tokens 0 + odds 2 + streak-rate budget 2). The bound half is a real refusal (23514, app-mirrored, unmapped in the repository so a bypassing writer sees a 500); 000007 narrowed numeric(6,3) to numeric(4,2). stale-pointer: two findings against 000007's prose. (1) The migration says a 3-dp value is "unrepresentable, not rounded on arrival" — that is false: a numeric typmod coerces by *rounding*, so an odds of 1.234 arrives as 1.23 silently, and nothing (no CHECK on round(odds,2)) refuses it. The rule as the database actually enforces it is "at most two places are *stored*", not "a third place is refused"; a CHECK would be needed to make the stated claim true. (2) The create path does not read the stored odds back (MatchRepository.Insert's RETURNING omits home_odds/away_odds), so the 201 response echoes the unrounded request value while the row holds the rounded one. Third, unremarked: precision 4 caps odds at 99.99, and a larger value surfaces as 22003 (numeric overflow), which is unmapped -> 500.
+> Two halves, one operand contract (ADR-021's scale chain: bonus_acc scale 4 = tokens 0 + odds 2 + streak-rate budget 2). The bound half is a real refusal (23514, app-mirrored, unmapped in the repository so a bypassing writer sees a 500); 000007 narrowed numeric(6,3) to numeric(4,2). stale-pointer: one finding against 000007's prose. (1) The migration says a 3-dp value is "unrepresentable, not rounded on arrival" — that is false: a numeric typmod coerces by *rounding*, so an odds of 1.234 arrives as 1.23 silently, and nothing (no CHECK on round(odds,2)) refuses it. The rule as the database actually enforces it is "at most two places are *stored*", not "a third place is refused"; a CHECK would be needed to make the stated claim true. The create path therefore echoes the stored odds, not the requested ones: MatchRepository.Insert's RETURNING carries home_odds/away_odds and the 201 reports the row's rounded value (1.234 in, 1.23 out — the pattern 000020 set for ended_at on the resolve path), so the discrepancy between request and row is visible in the response instead of hidden behind an in-memory copy. Third, unremarked: precision 4 caps odds at 99.99, and a larger value surfaces as 22003 (numeric overflow), which is unmapped -> 500.
 
 #### R-SCHEDULE-010 — A team never plays itself
 
@@ -2433,7 +2471,7 @@ A round may only become open or closed while its season is open or in progress, 
 
 **Notes**
 
-> rounds_progress_gate fires on INSERT beyond created, on every forward transition (created -> open/closed, open -> closed) and on any renumbering of a row (OLD.number IS DISTINCT FROM NEW.number), which is what stops a writer from renaming its way around the order. Both halves read sibling rows (seasons, sibling rounds), so a trigger. Two migration sites, because the function's current body is 000019's: 000008 created it, and 000019 gave the same function R-SCHEDULE-003's rank half — round_status_regression — checked before this gate's own two, so the rank message wins when both could fire (that name belongs to R-SCHEDULE-003's refusal list, not this one's). Two findings. (1) Verification gap: the season-live half is pinned by the close test, the *sequence* half has no direct test anywhere — the two schedule suites instead disable the trigger to build fixtures ("rounds_progress_gate requires an unbroken closed sequence, which no realistic fixture builds"), so the rule's central half is unpinned and the escape hatch is the only evidence it exists. (2) Refusal UX defect: every round-update refusal maps to ErrRecordInUse and the handler answers the *frozen* message ("a match has already started, so the hierarchy cannot move to an earlier stage"). A renumber of a created round in a created season trips round_progress_season_not_live with no started match anywhere and still gets that message; a close over unclosed matches gets it too. The three causes are indistinguishable to a client. stale-pointer: round_repo.go::updateRound's IsTriggerViolation comment names only rounds_freeze_gate as the cause of the P0001 it maps to ErrRecordInUse, but the same SQLSTATE also comes from rounds_progress_gate (000008) and rounds_close_gate; the mapping is by SQLSTATE, not by raise name, so the comment's list of causes is one short (and the handler's frozen-hierarchy message is what makes the gap visible).
+> rounds_progress_gate fires on INSERT beyond created, on every forward transition (created -> open/closed, open -> closed) and on any renumbering of a *live or closed* round (OLD.number IS DISTINCT FROM NEW.number, inside the NEW.status IN ('open','closed') branch), which is what stops a writer from renaming its way around the order; a created round renumbers freely, subject only to the per-season unique number. Both halves read sibling rows (seasons, sibling rounds), so a trigger. Two migration sites, because the function's current body is 000019's: 000008 created it, and 000019 gave the same function R-SCHEDULE-003's rank half — round_status_regression — checked before this gate's own two, so the rank message wins when both could fire (that name belongs to R-SCHEDULE-003's refusal list, not this one's). Two findings. (1) Verification gap: the season-live half is pinned by the close test, the *sequence* half has no direct test anywhere — the two schedule suites instead disable the trigger to build fixtures ("rounds_progress_gate requires an unbroken closed sequence, which no realistic fixture builds"), so the rule's central half is unpinned and the escape hatch is the only evidence it exists. (2) Refusal UX defect: every round-update refusal maps to ErrRecordInUse and the handler answers the *frozen* message ("a match has already started, so the hierarchy cannot move to an earlier stage"). A round going live under a created or closed season trips round_progress_season_not_live, and a close over unclosed matches trips rounds_close_gate, both with no started match anywhere, and both still get that message; those causes are indistinguishable to a client. misalignment-report §6 item 5 (docs/spec/history/misalignment-report.md) is therefore a false premise: it claims a created round in a created season cannot be renumbered, but the gate's renumber branch requires NEW.status IN ('open','closed'), so such a renumber is allowed and only the per-season unique number can refuse it (§6 item 4 repeats the same example). stale-pointer: round_repo.go::updateRound's IsTriggerViolation comment names only rounds_freeze_gate as the cause of the P0001 it maps to ErrRecordInUse, but the same SQLSTATE also comes from rounds_progress_gate (000008) and rounds_close_gate; the mapping is by SQLSTATE, not by raise name, so the comment's list of causes is one short (and the handler's frozen-hierarchy message is what makes the gap visible).
 
 #### R-SCHEDULE-016 — A round closes only when every match in it is closed
 

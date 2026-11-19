@@ -99,13 +99,18 @@ func registerGamePlayerSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the registration is refused as an unknown season$`, registrationRefusedAsUnknownSeason)
 	sc.Step(`^the command is refused as someone else's registration$`, commandRefusedAsSomeoneElsesRegistration)
 	sc.Step(`^the command is refused as an unknown team$`, commandRefusedAsUnknownTeam)
+	sc.Step(`^the withdrawal is refused as a registration still in use$`, withdrawalRefusedAsRegistrationInUse)
 
 	// The key a command travels under.
 	sc.Step(`^the player locks ([0-9]+) tokens on "([^"]+)" for match day ([0-9]+) under her key "([^"]+)"$`, playerLocksUnderHerKey)
+	sc.Step(`^the second member locks ([0-9]+) tokens on "([^"]+)" for match day ([0-9]+) under her key "([^"]+)"$`, secondMemberLocksUnderHerKey)
 	sc.Step(`^the player (burns|unlocks|continues) the ride under her key "([^"]+)"$`, playerDecidesUnderHerKey)
 	sc.Step(`^the recorded answer comes back$`, theRecordedAnswerComesBack)
 	sc.Step(`^the command is refused as a key that already names another command$`, commandRefusedAsKeyReuse)
+	sc.Step(`^the key "([^"]+)" was claimed ([0-9]+) hours ago$`, theKeyWasClaimedHoursAgo)
 	sc.Step(`^no second ride is born for "([^"]+)" on match day ([0-9]+)$`, noSecondRideIsBorn)
+	sc.Step(`^a ride is born for "([^"]+)" on match day ([0-9]+)$`, aRideIsBorn)
+	sc.Step(`^a second ride is born for "([^"]+)" on match day ([0-9]+)$`, aSecondRideIsBorn)
 }
 
 // --- who is acting ---------------------------------------------------------
@@ -758,6 +763,29 @@ func commandRefusedAsUnknownTeam(ctx context.Context) (context.Context, error) {
 	return refusalAsserted(ctx, absentRecord, "an unknown team")
 }
 
+// recordInUseMessage is the game transport's refusal for a delete the database
+// refuses because other rows still reference the record
+// (internal/game/internal/adapter/inbound/http/errors.go::recordInUseResponse).
+// The feature names the business refusal; this sentence is what tells it apart
+// on the wire, exactly as the ride and key-misuse refusals are asserted.
+const recordInUseMessage = "the record is referenced by other records and cannot be deleted"
+
+// withdrawalRefusedAsRegistrationInUse asserts the withdrawal was refused as a
+// record still in use: the database refused the delete because the player's
+// rides still name the registration (rides_player_id_fkey, R-GAME-035), and the
+// transport names that cause instead of failing opaquely.
+func withdrawalRefusedAsRegistrationInUse(ctx context.Context) (context.Context, error) {
+	w := worldFrom(ctx)
+	if w.last == nil {
+		return stepFailed(ctx, fmt.Errorf("no request has been made in this scenario"))
+	}
+	if w.last.Status != http.StatusConflict || w.last.message() != recordInUseMessage {
+		return stepFailed(ctx, fmt.Errorf("the withdrawal was answered %d %q, want the record-in-use refusal %q",
+			w.last.Status, w.last.message(), recordInUseMessage))
+	}
+	return stepOK(ctx)
+}
+
 func refusalAsserted(ctx context.Context, name namedRefusal, what string) (context.Context, error) {
 	w := worldFrom(ctx)
 	if w.last == nil {
@@ -815,6 +843,14 @@ func playerLocksOnAbsentTeam(ctx context.Context, tokens, matchDay string) (cont
 // executing again (ADR-024). The first executed answer is what the key holds;
 // the request's bytes are identical because the body is the same map.
 func (w *world) lockUnderKey(ctx context.Context, player, team string, matchDay, tokens int, key string) (*wireResponse, error) {
+	return w.lockUnderKeyAs(ctx, nil, player, team, matchDay, tokens, key)
+}
+
+// lockUnderKeyAs is the same command sent as a caller: nil is the suite's
+// fixture principal on the bare router, a member is that person herself — her
+// own credential on the real chain, her own user id on the claim. The
+// two-caller scenario (R-KERNEL-003) is the only caller of the second form.
+func (w *world) lockUnderKeyAs(ctx context.Context, caller *member, player, team string, matchDay, tokens int, key string) (*wireResponse, error) {
 	matchID, ok := w.matchDays[matchDay]
 	if !ok {
 		return nil, fmt.Errorf("match day %d was never built", matchDay)
@@ -828,12 +864,23 @@ func (w *world) lockUnderKey(ctx context.Context, player, team string, matchDay,
 		return nil, fmt.Errorf("team %q was never built", team)
 	}
 
-	res, err := w.app.call("POST", "/v1/rides", map[string]any{
+	body := map[string]any{
 		"player_id":     playerID,
 		"team_id":       teamID,
 		"match_id":      matchID,
 		"tokens_locked": tokens,
-	}, map[string]string{"Idempotency-Key": key})
+	}
+	headers := map[string]string{"Idempotency-Key": key}
+
+	var (
+		res *wireResponse
+		err error
+	)
+	if caller == nil {
+		res, err = w.app.call("POST", "/v1/rides", body, headers)
+	} else {
+		res, err = w.asMember(caller, "POST", "/v1/rides", body, headers)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -946,6 +993,75 @@ func commandRefusedAsKeyReuse(ctx context.Context) (context.Context, error) {
 // noSecondRideIsBorn asserts the retry executed nothing: the caller's ride list
 // for the player on the match day carries one ride, not two.
 func noSecondRideIsBorn(ctx context.Context, player, matchDay string) (context.Context, error) {
+	return rideCountIs(ctx, player, matchDay, 1, "one")
+}
+
+// secondMemberLocksUnderHerKey is the two-caller half of R-KERNEL-003: the
+// second member picks the very key text the owner already used, as herself —
+// her own credential on the real chain, so the claim carries her user id. The
+// command executes under her claim; the owner's stored answer is untouched.
+func secondMemberLocksUnderHerKey(ctx context.Context, tokens, team, matchDay, key string) (context.Context, error) {
+	w := worldFrom(ctx)
+	count, err := strconv.Atoi(tokens)
+	if err != nil {
+		return stepFailed(ctx, err)
+	}
+	day, err := strconv.Atoi(matchDay)
+	if err != nil {
+		return stepFailed(ctx, err)
+	}
+	m, err := w.secondMember()
+	if err != nil {
+		return stepFailed(ctx, err)
+	}
+	res, err := w.lockUnderKeyAs(ctx, m, secondMemberName, team, day, count, key)
+	if err != nil {
+		return stepFailed(ctx, err)
+	}
+	if res.Status != http.StatusCreated {
+		return stepFailed(ctx, fmt.Errorf("the second member locks under her key %q: %d %s", key, res.Status, res.message()))
+	}
+	return stepOK(ctx)
+}
+
+// theKeyWasClaimedHoursAgo ages a claim, the way the identity scenarios age a
+// minted credential: the retention window is a fact about the row's own
+// created_at, so the fixture moves that row instead of patching a clock the
+// product reads (R-KERNEL-003's lazy sweep compares the row against now()).
+func theKeyWasClaimedHoursAgo(ctx context.Context, key, hours string) (context.Context, error) {
+	w := worldFrom(ctx)
+	age, err := strconv.Atoi(hours)
+	if err != nil {
+		return stepFailed(ctx, err)
+	}
+	tag, err := w.app.Owner.Exec(ctx,
+		`UPDATE game.idempotency_keys SET created_at = now() - make_interval(hours => $2) WHERE key = $1`,
+		key, age)
+	if err != nil {
+		return stepFailed(ctx, fmt.Errorf("age the claim %q: %w", key, err))
+	}
+	if tag.RowsAffected() != 1 {
+		return stepFailed(ctx, fmt.Errorf("%d claim row(s) carry the key %q, want exactly one", tag.RowsAffected(), key))
+	}
+	return stepOK(ctx)
+}
+
+// aRideIsBorn asserts the command executed: the player holds one ride on the
+// match day.
+func aRideIsBorn(ctx context.Context, player, matchDay string) (context.Context, error) {
+	return rideCountIs(ctx, player, matchDay, 1, "one")
+}
+
+// aSecondRideIsBorn asserts a forgotten claim let the command run again: the
+// player holds two rides on the match day, which a replay would never produce.
+func aSecondRideIsBorn(ctx context.Context, player, matchDay string) (context.Context, error) {
+	return rideCountIs(ctx, player, matchDay, 2, "two")
+}
+
+// rideCountIs lists the player's rides on the match day through the list route
+// and asserts how many there are. The ride list is the caller's own view of the
+// world, so the count is a product fact, not a row count.
+func rideCountIs(ctx context.Context, player, matchDay string, want int, wantWord string) (context.Context, error) {
 	w := worldFrom(ctx)
 	day, err := strconv.Atoi(matchDay)
 	if err != nil {
@@ -976,9 +1092,9 @@ func noSecondRideIsBorn(ctx context.Context, player, matchDay string) (context.C
 	if err := decodeEnvelope(res, "rides", &listed); err != nil {
 		return stepFailed(ctx, err)
 	}
-	if len(listed) != 1 {
-		return stepFailed(ctx, fmt.Errorf("the ride list carries %d ride(s) for %q on match day %d, want one",
-			len(listed), player, day))
+	if len(listed) != want {
+		return stepFailed(ctx, fmt.Errorf("the ride list carries %d ride(s) for %q on match day %d, want %s",
+			len(listed), player, day, wantWord))
 	}
 	return stepOK(ctx)
 }

@@ -17,11 +17,13 @@ import (
 )
 
 // testToken builds a valid token: the hash must be SHA-256-sized (32 bytes),
-// matching the idempotency_keys request_hash check.
+// matching the idempotency_keys request_hash check. The claim row is
+// (key, user_id), so the token names its caller (R-KERNEL-003).
 func testToken(key, endpoint string) IdempotencyToken {
 	hash := sha256.Sum256([]byte(key))
 	return IdempotencyToken{
 		Key:      key,
+		UserID:   7,
 		Endpoint: endpoint,
 		Hash:     hash[:],
 	}

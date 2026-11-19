@@ -602,6 +602,41 @@ func TestDeletePlayerHandler(t *testing.T) {
 	}
 }
 
+// TestDeletePlayerHandlerRecordInUse is the driver refusal's HTTP surface
+// (R-GAME-035): the fixture player still carries a ride, so
+// rides_player_id_fkey refuses the delete and the caller reads the named
+// record-in-use 409 instead of the opaque 500 it used to get
+// (misalignment-report §6 item 2).
+func TestDeletePlayerHandlerRecordInUse(t *testing.T) {
+	requireDB(t)
+
+	reset(t)
+	// Player 1 lives in season 2; a ride on the open round's match names it.
+	plantRideRow(t, 1, 1, 5, "locked", "0", 0)
+
+	app := newTestApplication()
+	req := httptest.NewRequest(http.MethodDelete, "/v1/seasons/2/players/1", nil)
+	rr := httptest.NewRecorder()
+	app.routes().ServeHTTP(rr, withAuth(req, adminAuthToken))
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("got status %d, want %d (body: %s)", rr.Code, http.StatusConflict, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "the record is referenced by other records and cannot be deleted") {
+		t.Errorf("body missing the record-in-use message (body: %s)", rr.Body.String())
+	}
+
+	// The refused delete left the registration in place.
+	var n int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM game.players WHERE id = 1`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("player 1 gone after a refused delete")
+	}
+}
+
 // TestDeletePlayerHandlerHappyPath covers the success case: the fixture
 // player is unreferenced, so the delete must 200 and the row must be gone
 // afterwards.

@@ -14,6 +14,8 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/mail"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -46,6 +48,13 @@ type Config struct {
 		RPS     float64
 		Burst   int
 		Enabled bool
+		// TrustedProxies is the reverse-proxy allowlist: a peer inside one of
+		// these prefixes may name the client in X-Forwarded-For, and the
+		// limiter keys buckets on that client instead of on the proxy. Empty
+		// (the default) trusts no peer, so X-Forwarded-For is ignored and the
+		// bucket key is the connection address — the safe default, since an
+		// untrusted caller writes that header itself.
+		TrustedProxies []netip.Prefix
 	}
 	SMTP struct {
 		Host     string
@@ -99,6 +108,12 @@ func Parse(args []string) (Config, error) {
 	fs.IntVar(&cfg.Limiter.Burst, "limiter-burst", env.limiterBurst, "Rate limiter maximum burst (env: LT_API_LIMITER_BURST)")
 	fs.BoolVar(&cfg.Limiter.Enabled, "limiter-enabled", env.limiterEnabled, "Enable rate limiter (env: LT_API_LIMITER_ENABLED)")
 
+	// Parsed after fs.Parse, for the same reason LOG_LEVEL is: a bare IP has
+	// to become a prefix, and the refusal must name the knob the bad value
+	// came from.
+	trustedProxiesRaw := env.trustedProxiesRaw
+	fs.StringVar(&trustedProxiesRaw, "trusted-proxies", trustedProxiesRaw, "Reverse proxies whose X-Forwarded-For is trusted, as comma-separated IPs/CIDRs; empty trusts none (env: TRUSTED_PROXIES)")
+
 	fs.StringVar(&cfg.SMTP.Host, "smtp-host", env.smtpHost, "SMTP host (env: SMTP_HOST)")
 	fs.IntVar(&cfg.SMTP.Port, "smtp-port", env.smtpPort, "SMTP port (env: SMTP_PORT)")
 	fs.StringVar(&cfg.SMTP.Username, "smtp-username", env.smtpUsername, "SMTP username (env: SMTP_USERNAME)")
@@ -131,6 +146,11 @@ func Parse(args []string) (Config, error) {
 		return Config{}, err
 	}
 
+	cfg.Limiter.TrustedProxies, err = parseTrustedProxies(trustedProxiesRaw)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid TRUSTED_PROXIES: %w (%s)", err, knob("TRUSTED_PROXIES", "-trusted-proxies"))
+	}
+
 	if err := validate(cfg); err != nil {
 		return Config{}, err
 	}
@@ -141,24 +161,25 @@ func Parse(args []string) (Config, error) {
 // surfaces before flag.Parse ever runs (all bad variables at once), and the
 // flag registrations stay plain literals reading from one struct.
 type envDefaults struct {
-	port           int
-	env            string
-	logLevel       string
-	dbDSN          string
-	dbDSNSchedule  string
-	dbDSNGame      string
-	dbDSNIdentity  string
-	dbMaxConns     int
-	dbMaxIdleTime  time.Duration
-	limiterRPS     float64
-	limiterBurst   int
-	limiterEnabled bool
-	smtpHost       string
-	smtpPort       int
-	smtpUsername   string
-	smtpPassword   string
-	smtpSender     string
-	corsRaw        string
+	port              int
+	env               string
+	logLevel          string
+	dbDSN             string
+	dbDSNSchedule     string
+	dbDSNGame         string
+	dbDSNIdentity     string
+	dbMaxConns        int
+	dbMaxIdleTime     time.Duration
+	limiterRPS        float64
+	limiterBurst      int
+	limiterEnabled    bool
+	trustedProxiesRaw string
+	smtpHost          string
+	smtpPort          int
+	smtpUsername      string
+	smtpPassword      string
+	smtpSender        string
+	corsRaw           string
 }
 
 func readEnv() (envDefaults, error) {
@@ -175,6 +196,7 @@ func readEnv() (envDefaults, error) {
 	e.smtpPassword = envString("SMTP_PASSWORD", "")
 	e.smtpSender = envString("SMTP_SENDER", "League Tokens <no-reply@lt.aleksrdvn.com>")
 	e.corsRaw = envString("CORS_ORIGINS", "")
+	e.trustedProxiesRaw = envString("TRUSTED_PROXIES", "")
 
 	var errs []error
 	var err error
@@ -281,6 +303,37 @@ func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 	return d, nil
 }
 
+// parseTrustedProxies turns the raw TRUSTED_PROXIES value into the reverse
+// proxy allowlist. Each entry must be an IP prefix; a bare IP is accepted and
+// means exactly that ONE host — /32 for IPv4, /128 for IPv6 — never a whole
+// /8, because an operator who typed a single address named a single proxy.
+// Prefixes are masked, so host bits in 10.1.2.3/8 cannot make the membership
+// test surprising. Empty (or whitespace/commas only) yields nil: nobody is
+// trusted, which is the pre-proxy behaviour.
+func parseTrustedProxies(raw string) ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+
+	for part := range strings.SplitSeq(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		if prefix, err := netip.ParsePrefix(part); err == nil {
+			prefixes = append(prefixes, prefix.Masked())
+			continue
+		}
+
+		addr, err := netip.ParseAddr(part)
+		if err != nil {
+			return nil, fmt.Errorf("%q is not an IP or CIDR prefix (a bare IP means that single host: /32 or /128)", part)
+		}
+		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+
+	return prefixes, nil
+}
+
 // parseCORSOrigins turns the raw CORS_ORIGINS value into an allowlist.
 // Origins are canonicalized to lowercase scheme+host (scheme and host are
 // case-insensitive in URLs) with any trailing slash stripped, so that exact
@@ -322,57 +375,96 @@ func parseCORSOrigins(raw string) ([]string, error) {
 	return origins, nil
 }
 
+// knob names one setting by BOTH spellings an operator can set it with: the
+// environment variable and the flag. validate cannot know which of the two
+// supplied the value — the stdlib flag package exposes no "was this flag
+// passed" for a typed var — so every refusal names both. A message that named
+// only the env var told an operator who ran with -port to go change a variable
+// they never set (misalignment-report §6 item 17).
+func knob(env, flag string) string {
+	return fmt.Sprintf("env %s or %s flag", env, flag)
+}
+
 // validate enforces semantic rules that type parsing cannot express. Every
-// message names the offending variable — the contract that makes boot
-// failures actionable in a deployment log.
+// message names the offending setting by both spellings — the contract that
+// makes boot failures actionable in a deployment log.
 func validate(cfg Config) error {
 	if cfg.Port < 1 || cfg.Port > 65535 {
-		return fmt.Errorf("invalid PORT %d: must be in range 1-65535", cfg.Port)
+		return fmt.Errorf("invalid PORT %d: must be in range 1-65535 (%s)", cfg.Port, knob("PORT", "-port"))
 	}
 	switch cfg.Env {
 	case "development", "staging", "production":
 	default:
-		return fmt.Errorf("invalid ENV %q: must be development, staging or production", cfg.Env)
+		return fmt.Errorf("invalid ENV %q: must be development, staging or production (%s)", cfg.Env, knob("ENV", "-env"))
 	}
 	// Parse, not hand-check: pgx is the authority on what a DSN is. An
 	// empty DSN is rejected explicitly — ParseConfig("") would happily
 	// fall back to PGHOST/PGUSER-style defaults and blow up later as a
 	// connect error instead of a config error.
 	if cfg.DB.DSN == "" {
-		return fmt.Errorf("invalid LT_API_DSN: is empty; set it in the environment")
+		return fmt.Errorf("invalid LT_API_DSN: is empty; set it in the environment or pass %s", knob("LT_API_DSN", "-db-dsn"))
 	}
 	if _, err := pgxpool.ParseConfig(cfg.DB.DSN); err != nil {
-		return fmt.Errorf("invalid LT_API_DSN: %w", err)
+		return fmt.Errorf("invalid LT_API_DSN (%s): %w", knob("LT_API_DSN", "-db-dsn"), err)
 	}
 	// The per-context overrides must each be a DSN when present: a typo in
-	// one of them must fail at boot with the variable named, not at the
+	// one of them must fail at boot with the setting named, not at the
 	// first acquire.
-	for name, dsn := range map[string]string{
-		"LT_API_DSN_SCHEDULE": cfg.DB.DSNSchedule,
-		"LT_API_DSN_GAME":     cfg.DB.DSNGame,
-		"LT_API_DSN_IDENTITY": cfg.DB.DSNIdentity,
+	for _, override := range []struct {
+		env, flag, dsn string
+	}{
+		{"LT_API_DSN_SCHEDULE", "-db-dsn-schedule", cfg.DB.DSNSchedule},
+		{"LT_API_DSN_GAME", "-db-dsn-game", cfg.DB.DSNGame},
+		{"LT_API_DSN_IDENTITY", "-db-dsn-identity", cfg.DB.DSNIdentity},
 	} {
-		if dsn == "" {
+		if override.dsn == "" {
 			continue
 		}
-		if _, err := pgxpool.ParseConfig(dsn); err != nil {
-			return fmt.Errorf("invalid %s: %w", name, err)
+		if _, err := pgxpool.ParseConfig(override.dsn); err != nil {
+			return fmt.Errorf("invalid %s (%s): %w", override.env, knob(override.env, override.flag), err)
 		}
 	}
 	if cfg.DB.MaxConns < 1 {
-		return fmt.Errorf("invalid LT_API_DB_MAX_CONNS %d: must be at least 1", cfg.DB.MaxConns)
+		return fmt.Errorf("invalid LT_API_DB_MAX_CONNS %d: must be at least 1 (%s)", cfg.DB.MaxConns, knob("LT_API_DB_MAX_CONNS", "-db-max-conns"))
 	}
 	if cfg.DB.MaxIdleTime <= 0 {
-		return fmt.Errorf("invalid LT_API_DB_MAX_IDLE_TIME %s: must be positive", cfg.DB.MaxIdleTime)
+		return fmt.Errorf("invalid LT_API_DB_MAX_IDLE_TIME %s: must be positive (%s)", cfg.DB.MaxIdleTime, knob("LT_API_DB_MAX_IDLE_TIME", "-db-max-idle-time"))
 	}
 	// Validated even when the limiter is disabled: config that is "correct
 	// only when something else is off" fails unpredictably when the other
 	// thing gets switched on.
 	if cfg.Limiter.RPS <= 0 {
-		return fmt.Errorf("invalid LT_API_LIMITER_RPS %f: must be positive", cfg.Limiter.RPS)
+		return fmt.Errorf("invalid LT_API_LIMITER_RPS %f: must be positive (%s)", cfg.Limiter.RPS, knob("LT_API_LIMITER_RPS", "-limiter-rps"))
 	}
 	if cfg.Limiter.Burst < 1 {
-		return fmt.Errorf("invalid LT_API_LIMITER_BURST %d: must be at least 1", cfg.Limiter.Burst)
+		return fmt.Errorf("invalid LT_API_LIMITER_BURST %d: must be at least 1 (%s)", cfg.Limiter.Burst, knob("LT_API_LIMITER_BURST", "-limiter-burst"))
+	}
+	// The mail settings are judged here for the same reason every other
+	// setting is: a port outside 1-65535 or a sender that is not an address
+	// must fail at boot, not at the first send (misalignment-report §6 item
+	// 16). An unusable pair that reached the mailer would accept requests the
+	// process cannot honour (R-PLATFORM-006).
+	if cfg.SMTP.Port < 1 || cfg.SMTP.Port > 65535 {
+		return fmt.Errorf("invalid SMTP_PORT %d: must be in range 1-65535 (%s)", cfg.SMTP.Port, knob("SMTP_PORT", "-smtp-port"))
+	}
+	if err := validateSender(cfg.SMTP.Sender); err != nil {
+		return fmt.Errorf("invalid SMTP_SENDER %q: %w (%s)", cfg.SMTP.Sender, err, knob("SMTP_SENDER", "-smtp-sender"))
+	}
+	return nil
+}
+
+// validateSender checks the outbound sender as an RFC 5322 mailbox. net/mail is
+// the authority here, not kernel/validator's EmailRX: the sender may carry a
+// display name — the built-in default is "League Tokens <no-reply@…>" — which
+// EmailRX (the account-address rule identity's registration uses) deliberately
+// refuses. A sender that is not a mailbox is refused at boot so the first
+// delivery is never the first report of a configuration mistake.
+func validateSender(sender string) error {
+	if sender == "" {
+		return errors.New("must be provided")
+	}
+	if _, err := mail.ParseAddress(sender); err != nil {
+		return errors.New("must be an email address")
 	}
 	return nil
 }

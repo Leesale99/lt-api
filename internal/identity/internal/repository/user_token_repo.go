@@ -42,18 +42,10 @@ func (r *UserTokenRepository) insert(ctx context.Context, userToken model.UserTo
 	return err
 }
 
-func (r *UserTokenRepository) DeleteAllForUser(ctx context.Context, scope string, userID int) error {
-	query := `
-		DELETE FROM user_tokens
-		WHERE scope = $1 AND user_id = $2
-	`
-	_, err := r.pool.Exec(ctx, query, scope, userID)
-	return err
-}
-
-// DeleteAllForUserTx is DeleteAllForUser on a caller's transaction: the
-// activation use case runs it beside the activated flip so the cleanup is
-// one commit with the flag it cleans up after.
+// DeleteAllForUserTx deletes every token of a scope the user holds, on a
+// caller's transaction: the activation use case runs it beside the activated
+// flip so the cleanup is one commit with the flag it cleans up after. There is
+// no non-transactional variant: this cleanup only ever belongs to that unit.
 func (r *UserTokenRepository) DeleteAllForUserTx(ctx context.Context, tx pgx.Tx, scope string, userID int) error {
 	query := `
 		DELETE FROM user_tokens

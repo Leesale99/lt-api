@@ -56,14 +56,16 @@ Feature: A registration (a season entry)
       When the administrator withdraws "Ana"'s registration
       Then no registration exists for "Ana" in "Spring 2026"
 
-    # Defect 2 (misalignment-report §6): a removal the database itself refuses is
-    # not translated into a named refusal — the caller learns only that something
-    # failed, never that the player still carries rides.
-    @known-defect:2
-    Scenario: A player still carrying rides is refused without a named reason
+  # A withdrawal the database refuses is still a named refusal: the registration
+  # is referenced by its rides, so the caller is told that rather than only that
+  # the server failed (misalignment-report §6 item 2, fixed).
+  @rule:R-GAME-035
+  Rule: A registration its rides still name cannot be withdrawn
+
+    Scenario: A player still carrying rides is refused as a registration in use
       Given a ride locked by "Ana" on "Team A" for match day 1 with 10 tokens
       When the owner withdraws her registration
-      Then the refusal is unnamed for the caller
+      Then the withdrawal is refused as a registration still in use
       And the registration still exists for "Ana" in "Spring 2026"
 
   @rule:R-GAME-013

@@ -1,3 +1,6 @@
+> **Superseded — historical record.** Nothing reads docs/spec/history/; kept for provenance.
+> Current workflow: docs/spec/README.md. Live rule status: docs/spec/rules.yaml + `make audit`.
+
 # Executable Specification — Working Plan
 
 > Living checklist. The orchestrator updates it at every gate.
@@ -79,7 +82,7 @@ Audit order after Phase D: `tidy -diff` → `mod verify` → `gofmt` → `vet` �
 - [x] C3 **GATE**: pilot readability ("could a non-Go reader verify intent?") — approved; two polish items carried into C-fanout: rewrite/repoint the `@known-defect:2` pilot scenario (premise doesn't hold at the create route) and fix R-GAME-006 outline step indentation
 - [x] C4 general×3: features per capability (schedule lifecycle/freeze; identity authz+activation; game players+idempotency) (schedule 25 rules / 61 scenarios, identity 11 / 22, game remainder 6 + kernel guest R-KERNEL-003 / 17; defect 2 repointed to the player-delete surface)
 - [x] C5 go-worker×3: step impls, red→green (local DSN) (167 scenarios green; the @known-defect:2 finding reproduces under SPEC_KNOWN_DEFECTS=1)
-- [x] C6 general: vocabulary cross-review + coverage report (docs/spec/coverage.md: 55 of 106 implemented rules carry scenarios — inside the locked 45–60 band)
+- [x] C6 general: vocabulary cross-review + coverage report (coverage.md: 55 of 106 implemented rules carry scenarios — inside the locked 45–60 band)
 - [x] C7 **GATE**: readability sample + coverage numbers (approved on user 'continue'; readability samples live in docs/spec/features/** — revision on request)
 
 ### Phase D — Automation & CI

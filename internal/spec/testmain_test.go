@@ -19,7 +19,9 @@ import (
 	"testing"
 
 	"github.com/cucumber/godog"
+	"golang.org/x/crypto/bcrypt"
 
+	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/testdb"
 )
 
@@ -48,6 +50,10 @@ func TestMain(m *testing.M) {
 // runMain owns the single os.Exit: harness setup, the known-defect notes, the
 // godog suite, then m.Run(). The exit status is the worse of the two.
 func runMain(m *testing.M) int {
+	// The registration and password scenarios hash for real (dozens of them);
+	// the catalog pins the behaviour, never how long a hash takes.
+	identity.SetPasswordHashCost(bcrypt.MinCost)
+
 	dsn := os.Getenv("LT_API_TEST_DSN")
 	if dsn == "" {
 		fmt.Println("LT_API_TEST_DSN not set; spec suite will be skipped")
@@ -79,6 +85,7 @@ func runMain(m *testing.M) int {
 		"../../migrations/000019_add_status_rank_gates.up.sql",
 		"../../migrations/000020_respect_supplied_match_ended_at.up.sql",
 		"../../migrations/000021_add_game_delete_players_for_season.up.sql",
+		"../../migrations/000022_scope_idempotency_keys_per_caller.up.sql",
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "test database setup: %v\n", err)

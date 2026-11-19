@@ -20,68 +20,136 @@ func validConfig() Config {
 	cfg.Limiter.RPS = 2
 	cfg.Limiter.Burst = 4
 	cfg.Limiter.Enabled = true
+	cfg.SMTP.Port = 2525
+	cfg.SMTP.Sender = "League Tokens <no-reply@lt.aleksrdvn.com>"
 	return cfg
 }
 
 func TestValidate(t *testing.T) {
 	tests := []struct {
-		name    string
-		mutate  func(*Config)
-		wantErr string // substring; empty means must pass
+		name string
+		// mutate breaks exactly one setting.
+		mutate func(*Config)
+		// wantErr is the setting's env spelling; wantFlag is its flag
+		// spelling. Every refusal must name both (misalignment-report §6
+		// item 17: stdlib flag cannot say whether a typed value was passed
+		// on the command line, so the message names both knobs).
+		wantErr  string
+		wantFlag string
+		wantMsg  string // exact message, when the wording itself is the pin
 	}{
 		{
 			name:   "baseline passes",
 			mutate: func(*Config) {},
 		},
 		{
-			name:    "port below range",
-			mutate:  func(c *Config) { c.Port = 0 },
-			wantErr: "PORT",
+			name:     "port below range",
+			mutate:   func(c *Config) { c.Port = 0 },
+			wantErr:  "PORT",
+			wantFlag: "-port",
+			wantMsg:  "invalid PORT 0: must be in range 1-65535 (env PORT or -port flag)",
 		},
 		{
-			name:    "port above range",
-			mutate:  func(c *Config) { c.Port = 65536 },
-			wantErr: "PORT",
+			name:     "port above range",
+			mutate:   func(c *Config) { c.Port = 65536 },
+			wantErr:  "PORT",
+			wantFlag: "-port",
 		},
 		{
-			name:    "unknown environment",
-			mutate:  func(c *Config) { c.Env = "prod" },
-			wantErr: "ENV",
+			name:     "unknown environment",
+			mutate:   func(c *Config) { c.Env = "prod" },
+			wantErr:  "ENV",
+			wantFlag: "-env",
 		},
 		{
-			name:    "empty DSN",
-			mutate:  func(c *Config) { c.DB.DSN = "" },
-			wantErr: "LT_API_DSN",
+			name:     "empty DSN",
+			mutate:   func(c *Config) { c.DB.DSN = "" },
+			wantErr:  "LT_API_DSN",
+			wantFlag: "-db-dsn",
 		},
 		{
-			name:    "unparseable DSN (bad sslmode)",
-			mutate:  func(c *Config) { c.DB.DSN = "postgres://user@localhost/db?sslmode=bogus" },
-			wantErr: "LT_API_DSN",
+			name:     "unparseable DSN (bad sslmode)",
+			mutate:   func(c *Config) { c.DB.DSN = "postgres://user@localhost/db?sslmode=bogus" },
+			wantErr:  "LT_API_DSN",
+			wantFlag: "-db-dsn",
 		},
 		{
-			name:    "zero max conns",
-			mutate:  func(c *Config) { c.DB.MaxConns = 0 },
-			wantErr: "LT_API_DB_MAX_CONNS",
+			name:     "unparseable per-context DSN",
+			mutate:   func(c *Config) { c.DB.DSNGame = "postgres://user@localhost/db?sslmode=bogus" },
+			wantErr:  "LT_API_DSN_GAME",
+			wantFlag: "-db-dsn-game",
 		},
 		{
-			name:    "zero max idle time",
-			mutate:  func(c *Config) { c.DB.MaxIdleTime = 0 },
-			wantErr: "LT_API_DB_MAX_IDLE_TIME",
+			name:     "zero max conns",
+			mutate:   func(c *Config) { c.DB.MaxConns = 0 },
+			wantErr:  "LT_API_DB_MAX_CONNS",
+			wantFlag: "-db-max-conns",
 		},
 		{
-			name:    "zero limiter rps",
-			mutate:  func(c *Config) { c.Limiter.RPS = 0 },
-			wantErr: "LT_API_LIMITER_RPS",
+			name:     "zero max idle time",
+			mutate:   func(c *Config) { c.DB.MaxIdleTime = 0 },
+			wantErr:  "LT_API_DB_MAX_IDLE_TIME",
+			wantFlag: "-db-max-idle-time",
 		},
 		{
-			name:    "zero limiter burst",
-			mutate:  func(c *Config) { c.Limiter.Burst = 0 },
-			wantErr: "LT_API_LIMITER_BURST",
+			name:     "zero limiter rps",
+			mutate:   func(c *Config) { c.Limiter.RPS = 0 },
+			wantErr:  "LT_API_LIMITER_RPS",
+			wantFlag: "-limiter-rps",
 		},
 		{
-			name:    "limiter disabled does not excuse bad values",
-			mutate:  func(c *Config) { c.Limiter.Enabled = false; c.Limiter.Burst = 0 },
-			wantErr: "LT_API_LIMITER_BURST",
+			name:     "zero limiter burst",
+			mutate:   func(c *Config) { c.Limiter.Burst = 0 },
+			wantErr:  "LT_API_LIMITER_BURST",
+			wantFlag: "-limiter-burst",
+		},
+		{
+			name:     "limiter disabled does not excuse bad values",
+			mutate:   func(c *Config) { c.Limiter.Enabled = false; c.Limiter.Burst = 0 },
+			wantErr:  "LT_API_LIMITER_BURST",
+			wantFlag: "-limiter-burst",
+		},
+		{
+			name:     "smtp port below range",
+			mutate:   func(c *Config) { c.SMTP.Port = 0 },
+			wantErr:  "SMTP_PORT",
+			wantFlag: "-smtp-port",
+			wantMsg:  "invalid SMTP_PORT 0: must be in range 1-65535 (env SMTP_PORT or -smtp-port flag)",
+		},
+		{
+			name:     "smtp port above range",
+			mutate:   func(c *Config) { c.SMTP.Port = 65536 },
+			wantErr:  "SMTP_PORT",
+			wantFlag: "-smtp-port",
+		},
+		{
+			name:     "smtp port negative",
+			mutate:   func(c *Config) { c.SMTP.Port = -25 },
+			wantErr:  "SMTP_PORT",
+			wantFlag: "-smtp-port",
+		},
+		{
+			name:     "smtp sender is not an address",
+			mutate:   func(c *Config) { c.SMTP.Sender = "no-reply" },
+			wantErr:  "SMTP_SENDER",
+			wantFlag: "-smtp-sender",
+		},
+		{
+			name:     "smtp sender is empty",
+			mutate:   func(c *Config) { c.SMTP.Sender = "" },
+			wantErr:  "SMTP_SENDER",
+			wantFlag: "-smtp-sender",
+			wantMsg:  `invalid SMTP_SENDER "": must be provided (env SMTP_SENDER or -smtp-sender flag)`,
+		},
+		{
+			// The default sender carries a display name: the check is a mailbox
+			// parse, not identity's bare-address EmailRX.
+			name:   "smtp sender with a display name passes",
+			mutate: func(c *Config) { c.SMTP.Sender = "League Tokens <no-reply@lt.aleksrdvn.com>" },
+		},
+		{
+			name:   "smtp sender as a bare address passes",
+			mutate: func(c *Config) { c.SMTP.Sender = "no-reply@lt.aleksrdvn.com" },
 		},
 	}
 
@@ -100,10 +168,15 @@ func TestValidate(t *testing.T) {
 			if err == nil {
 				t.Fatalf("validate() = nil, want error containing %q", tt.wantErr)
 			}
-			// Every message names the offending variable — that is the
-			// contract that makes boot failures actionable.
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Errorf("validate() error %q does not name %q", err, tt.wantErr)
+			// Every message names the offending setting by BOTH spellings —
+			// that is the contract that makes boot failures actionable.
+			for _, want := range []string{tt.wantErr, tt.wantFlag, "flag"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("validate() error %q does not name %q", err, want)
+				}
+			}
+			if tt.wantMsg != "" && err.Error() != tt.wantMsg {
+				t.Errorf("validate() error = %q, want %q", err, tt.wantMsg)
 			}
 		})
 	}
@@ -184,6 +257,89 @@ func TestParseCORSOrigins(t *testing.T) {
 			for i := range got {
 				if got[i] != tt.want[i] {
 					t.Errorf("origin[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestParseTrustedProxies(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    []string // prefix strings, in order; nil means no allowlist
+		wantErr string
+	}{
+		{
+			name: "empty raw is nil (nobody trusted)",
+			raw:  "",
+			want: nil,
+		},
+		{
+			name: "whitespace and commas only is nil (nobody trusted)",
+			raw:  "  ,  ",
+			want: nil,
+		},
+		{
+			name: "single prefix",
+			raw:  "10.0.0.0/8",
+			want: []string{"10.0.0.0/8"},
+		},
+		{
+			name: "several prefixes, spaces and empties tolerated",
+			raw:  " 10.0.0.0/8 , , 192.168.0.0/16 ,",
+			want: []string{"10.0.0.0/8", "192.168.0.0/16"},
+		},
+		{
+			// The convention: a bare IP is a single host, never a guess at the
+			// surrounding network.
+			name: "bare IPv4 is a /32",
+			raw:  "203.0.113.7",
+			want: []string{"203.0.113.7/32"},
+		},
+		{
+			name: "bare IPv6 is a /128",
+			raw:  "2001:db8::1",
+			want: []string{"2001:db8::1/128"},
+		},
+		{
+			name: "host bits are masked away",
+			raw:  "10.1.2.3/8",
+			want: []string{"10.0.0.0/8"},
+		},
+		{
+			name:    "hostname rejected (no DNS lookup at boot)",
+			raw:     "proxy.internal",
+			wantErr: "not an IP or CIDR prefix",
+		},
+		{
+			name:    "out-of-range prefix length rejected",
+			raw:     "10.0.0.0/33",
+			wantErr: "not an IP or CIDR prefix",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseTrustedProxies(tt.raw)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("parseTrustedProxies(%q) = nil error, want error containing %q", tt.raw, tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseTrustedProxies(%q) = %v, want nil", tt.raw, err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i].String() != tt.want[i] {
+					t.Errorf("prefix[%d] = %q, want %q", i, got[i].String(), tt.want[i])
 				}
 			}
 		})
@@ -274,6 +430,41 @@ func TestParse(t *testing.T) {
 			},
 		},
 		{
+			// The value arrived as a flag, not a variable: the message must
+			// name the flag too, or the operator is told to change something
+			// they never set (misalignment-report §6 item 17).
+			name:    "bad flag port names both spellings",
+			env:     map[string]string{"LT_API_DSN": validDSN},
+			args:    []string{"-port=0"},
+			wantErr: "env PORT or -port flag",
+		},
+		{
+			name: "a malformed SMTP_SENDER fails at boot, naming both spellings",
+			env: map[string]string{
+				"LT_API_DSN":    validDSN,
+				"SMTP_SENDER":   "not-an-address",
+				"SMTP_USERNAME": "user",
+				"SMTP_PASSWORD": "pass",
+			},
+			wantErr: "env SMTP_SENDER or -smtp-sender flag",
+		},
+		{
+			name: "an out-of-range SMTP_PORT fails at boot",
+			env: map[string]string{
+				"LT_API_DSN":  validDSN,
+				"SMTP_PORT":   "0",
+				"SMTP_SENDER": "no-reply@lt.aleksrdvn.com",
+			},
+			wantErr: "invalid SMTP_PORT 0: must be in range 1-65535",
+		},
+		{
+			name: "the default sender with a display name boots",
+			env: map[string]string{
+				"LT_API_DSN":  validDSN,
+				"SMTP_SENDER": "League Tokens <no-reply@lt.aleksrdvn.com>",
+			},
+		},
+		{
 			name: "untyped env value fails at boot, naming the variable",
 			env: map[string]string{
 				"LT_API_DSN": validDSN,
@@ -314,6 +505,62 @@ func TestParse(t *testing.T) {
 					}
 				}
 			},
+		},
+		{
+			name: "TRUSTED_PROXIES flows through Parse",
+			env: map[string]string{
+				"LT_API_DSN":      validDSN,
+				"TRUSTED_PROXIES": " 10.0.0.0/8, 203.0.113.7 ",
+			},
+			check: func(t *testing.T, cfg Config) {
+				want := []string{"10.0.0.0/8", "203.0.113.7/32"}
+				if len(cfg.Limiter.TrustedProxies) != len(want) {
+					t.Fatalf("got %v, want %v", cfg.Limiter.TrustedProxies, want)
+				}
+				for i := range want {
+					if cfg.Limiter.TrustedProxies[i].String() != want[i] {
+						t.Errorf("prefix[%d] = %q, want %q", i, cfg.Limiter.TrustedProxies[i].String(), want[i])
+					}
+				}
+			},
+		},
+		{
+			// The default is the safe one: no allowlist, so the limiter keeps
+			// keying on the connection peer.
+			name: "TRUSTED_PROXIES unset trusts nobody",
+			env:  map[string]string{"LT_API_DSN": validDSN},
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Limiter.TrustedProxies) != 0 {
+					t.Errorf("got %v, want no trusted proxies", cfg.Limiter.TrustedProxies)
+				}
+			},
+		},
+		{
+			name: "a malformed TRUSTED_PROXIES fails at boot, naming both spellings",
+			env: map[string]string{
+				"LT_API_DSN":      validDSN,
+				"TRUSTED_PROXIES": "10.0.0.0/8,proxy.internal",
+			},
+			wantErr: "env TRUSTED_PROXIES or -trusted-proxies flag",
+		},
+		{
+			name: "the flag overrides a bad env TRUSTED_PROXIES",
+			env: map[string]string{
+				"LT_API_DSN":      validDSN,
+				"TRUSTED_PROXIES": "proxy.internal",
+			},
+			args: []string{"-trusted-proxies=10.0.0.0/8"},
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Limiter.TrustedProxies) != 1 || cfg.Limiter.TrustedProxies[0].String() != "10.0.0.0/8" {
+					t.Errorf("got %v, want [10.0.0.0/8]", cfg.Limiter.TrustedProxies)
+				}
+			},
+		},
+		{
+			name:    "a bad -trusted-proxies names both spellings and the IP convention",
+			env:     map[string]string{"LT_API_DSN": validDSN},
+			args:    []string{"-trusted-proxies=not-an-ip"},
+			wantErr: "/32 or /128",
 		},
 	}
 

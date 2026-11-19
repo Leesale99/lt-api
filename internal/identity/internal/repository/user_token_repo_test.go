@@ -92,10 +92,30 @@ func TestNewAndGetForToken(t *testing.T) {
 	})
 }
 
-func TestDeleteAllForUser(t *testing.T) {
+func TestDeleteAllForUserTx(t *testing.T) {
 	requireDB(t)
 	users := NewUserRepository(identityPool)
 	tokens := NewUserTokenRepository(identityPool)
+
+	// deleteAllForUserTx runs the cleanup the way production does — Activate
+	// calls it on the transaction that also flips the flag — and commits, so the
+	// assertions read committed rows.
+	deleteAllForUserTx := func(t *testing.T, scope string, userID int) {
+		t.Helper()
+
+		tx, err := identityPool.Begin(context.Background())
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback(context.Background()) }()
+
+		if err := tokens.DeleteAllForUserTx(context.Background(), tx, scope, userID); err != nil {
+			t.Fatalf("DeleteAllForUserTx: %v", err)
+		}
+		if err := tx.Commit(context.Background()); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+	}
 
 	t.Run("deletes only the target scope of the target user", func(t *testing.T) {
 		resetUsers(t)
@@ -125,9 +145,7 @@ func TestDeleteAllForUser(t *testing.T) {
 			}
 		}
 
-		if err := tokens.DeleteAllForUser(context.Background(), model.ScopeAuthentication, alice.ID); err != nil {
-			t.Fatalf("DeleteAllForUser: %v", err)
-		}
+		deleteAllForUserTx(t, model.ScopeAuthentication, alice.ID)
 
 		var count int
 		if err := testPool.QueryRow(context.Background(),

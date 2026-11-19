@@ -269,6 +269,13 @@ func (r wireResponse) refusalFields() map[string]string {
 	return fields
 }
 
+// fixtureCallerUserID is the principal the bare router's steps travel as — the
+// fixture's caller, not an account: the identity scenarios mint real users and
+// their serial ids start at 1, so the fixture's id is reserved far above them.
+// The ride claims are scoped per caller (R-KERNEL-003), so a collision here
+// would make a two-caller scenario replay instead of execute.
+const fixtureCallerUserID = 900_000
+
 // call drives one module route in-process: a recorder instead of a connection,
 // the principal the wire handlers read supplied directly (no middleware chain),
 // and the modules' own route table as the handler.
@@ -294,7 +301,7 @@ func (a *specApp) call(method, path string, body any, headers map[string]string)
 	// would have resolved. The player handlers are the only ones that read
 	// them; the fixtures carry no identity users, so the principal is a
 	// fixture-only user id and the permission set is the writable one.
-	req = httpx.SetAuthenticatedUser(req, httpx.AuthUser{ID: 1, Activated: true, RoleID: 1})
+	req = httpx.SetAuthenticatedUser(req, httpx.AuthUser{ID: fixtureCallerUserID, Activated: true, RoleID: 1})
 	req = httpx.SetPermissions(req, httpx.Permissions{"players:write", "players:write:any"})
 
 	recorder := httptest.NewRecorder()

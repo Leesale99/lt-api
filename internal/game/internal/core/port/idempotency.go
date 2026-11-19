@@ -15,12 +15,16 @@ import (
 
 // Token is the request's dedup identity:
 //   - Key: the client's Idempotency-Key header, one value per logical request
+//   - UserID: the authenticated caller the key belongs to — the claim row is
+//     (key, user_id), so two callers that pick the same key hold two claims.
+//     Zero is the system caller (settlement events, no request behind them).
 //   - Endpoint: the route pattern, for ops visibility
 //   - Hash: SHA-256 over method + request URI (+ body when present) —
 //     identical requests share it, a re-used key with a different request
 //     does not
 type Token struct {
 	Key      string
+	UserID   int
 	Endpoint string
 	Hash     []byte
 }

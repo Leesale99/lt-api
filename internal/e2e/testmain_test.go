@@ -15,7 +15,9 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 
+	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/testdb"
 )
 
@@ -31,6 +33,11 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	// Registration flows hash through the real handler; the assertions read
+	// the stored hash back (bcrypt.CompareHashAndPassword), so the cheapest
+	// cost proves the same thing.
+	identity.SetPasswordHashCost(bcrypt.MinCost)
+
 	dsn := os.Getenv("LT_API_TEST_DSN")
 	if dsn == "" {
 		fmt.Println("LT_API_TEST_DSN not set; E2E integration tests will be skipped")
@@ -86,6 +93,7 @@ func TestMain(m *testing.M) {
 		// policy — the E2E season tests exercise it over the role pools
 		// 000018 creates.
 		"../../migrations/000021_add_game_delete_players_for_season.up.sql",
+		"../../migrations/000022_scope_idempotency_keys_per_caller.up.sql",
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "test database setup: %v\n", err)

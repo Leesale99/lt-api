@@ -93,11 +93,12 @@ type world struct {
 	// real set against it.
 	listedCodes []string
 
-	// mailCount is the number of mails held for a member just before a request
-	// asked for another one, and mailMember the account it was asked for ("a
-	// fresh activation token arrives in her mail").
-	mailMember *member
-	mailCount  int
+	// mailAsked is the address the last "asks for a fresh activation mail" step
+	// asked about, and mailCount the number of mails held for it just before the
+	// request ("a fresh activation token arrives in her mail" compares against
+	// the count, "no activation mail arrives" against the same count).
+	mailAsked string
+	mailCount int
 
 	// teamsRecorded is the number of teams on the calendar just before a page
 	// tried to record one ("no team was recorded").

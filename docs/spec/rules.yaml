@@ -1,27 +1,11 @@
-# docs/spec/rules.yaml
+# docs/spec/rules.yaml — CANONICAL, HAND-EDITED business-rule catalog.
 #
-# CANONICAL, HAND-EDITED business-rule catalog. The field-by-field schema, the
-# frozen enums, the catalog's own invariants and the "how to add a rule" recipe
-# live in docs/spec/rules.schema.md.
+# docs/spec/business-rules.md is GENERATED from this file — never edit it.
+# Field schema, frozen enums, policies: docs/spec/rules.schema.md. Workflow + how to add a rule: docs/spec/README.md §2.
 #
-# docs/spec/business-rules.md is GENERATED from this file — do not edit it.
-#
-# Do not guess: every `site` and every `verification` pointer below was resolved
-# against the working tree on main, not against an earlier recon snapshot.
-# Sites are `path::Symbol` (Go) or the migration id (SQL); never line numbers.
-#
-# Enums are frozen in docs/spec/rules.schema.md as approved at gate A2: authority is
-# database|domain|service|repository|composition-root|handler, layer is
-# handler|validator|service|domain|repository|db-constraint|db-trigger (the vault Lessons
-# call the repository layer *store*; the Go type was renamed Store → Repository).
-#
-# Validate with (either):
-#   python3 -c "import yaml; yaml.safe_load(open('docs/spec/rules.yaml'))"
-#   ruby -ryaml -e 'p YAML.safe_load(File.read("docs/spec/rules.yaml")).size'
-#
-# Retired at gate B5 (dupe policy): R-GAME-019 merged into R-KERNEL-003, R-GAME-022
-# merged into R-KERNEL-014 — kernel owns the statement, game call-sites are enforcement
-# sites on the kernel rule. Ids are never reused.
+# Retired at gate B5 (dupe policy): R-GAME-019 merged into R-KERNEL-003, R-GAME-022 merged into
+# R-KERNEL-014 — kernel owns the statement, game call-sites are enforcement sites on it. Ids are never reused.
+# Gate-decision minutes: docs/spec/history/decisions.md.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # schedule — calendar authority (teams, seasons, rounds, matches)
@@ -539,16 +523,18 @@
     tokens 0 + odds 2 + streak-rate budget 2). The bound half is a real
     refusal (23514, app-mirrored, unmapped in the repository so a bypassing
     writer sees a 500); 000007 narrowed numeric(6,3) to numeric(4,2).
-    stale-pointer: two findings against 000007's prose. (1) The migration says a 3-dp value
+    stale-pointer: one finding against 000007's prose. (1) The migration says a 3-dp value
     is "unrepresentable, not rounded on arrival" — that is false: a numeric
     typmod coerces by *rounding*, so an odds of 1.234 arrives as 1.23 silently,
     and nothing (no CHECK on round(odds,2)) refuses it. The rule as the database
     actually enforces it is "at most two places are *stored*", not "a third
     place is refused"; a CHECK would be needed to make the stated claim true.
-    (2) The create path does not read the stored odds back
-    (MatchRepository.Insert's RETURNING omits home_odds/away_odds), so the 201
-    response echoes the unrounded request value while the row holds the rounded
-    one. Third, unremarked: precision 4 caps odds at 99.99, and a larger value
+    The create path therefore echoes the stored odds, not the requested ones:
+    MatchRepository.Insert's RETURNING carries home_odds/away_odds and the 201
+    reports the row's rounded value (1.234 in, 1.23 out — the pattern 000020 set
+    for ended_at on the resolve path), so the discrepancy between request and
+    row is visible in the response instead of hidden behind an in-memory copy.
+    Third, unremarked: precision 4 caps odds at 99.99, and a larger value
     surfaces as 22003 (numeric overflow), which is unmapped -> 500.
 
 - id: R-SCHEDULE-010
@@ -833,8 +819,10 @@
   notes: >
     rounds_progress_gate fires on INSERT beyond created, on every forward
     transition (created -> open/closed, open -> closed) and on any renumbering of
-    a row (OLD.number IS DISTINCT FROM NEW.number), which is what stops a writer
-    from renaming its way around the order. Both halves read sibling rows
+    a *live or closed* round (OLD.number IS DISTINCT FROM NEW.number, inside the
+    NEW.status IN ('open','closed') branch), which is what stops a writer from
+    renaming its way around the order; a created round renumbers freely, subject
+    only to the per-season unique number. Both halves read sibling rows
     (seasons, sibling rounds), so a trigger. Two migration sites, because the
     function's current body is 000019's: 000008 created it, and 000019 gave the
     same function R-SCHEDULE-003's rank half — round_status_regression — checked
@@ -847,10 +835,15 @@
     and the escape hatch is the only evidence it exists. (2) Refusal UX defect:
     every round-update refusal maps to ErrRecordInUse and the handler answers the
     *frozen* message ("a match has already started, so the hierarchy cannot move
-    to an earlier stage"). A renumber of a created round in a created season
-    trips round_progress_season_not_live with no started match anywhere and still
-    gets that message; a close over unclosed matches gets it too. The three
-    causes are indistinguishable to a client.
+    to an earlier stage"). A round going live under a created or closed season
+    trips round_progress_season_not_live, and a close over unclosed matches trips
+    rounds_close_gate, both with no started match anywhere, and both still get
+    that message; those causes are indistinguishable to a client.
+    misalignment-report §6 item 5 (docs/spec/history/misalignment-report.md) is
+    therefore a false premise: it claims a created round in a created season
+    cannot be renumbered, but the gate's renumber branch requires
+    NEW.status IN ('open','closed'), so such a renumber is allowed and only the
+    per-season unique number can refuse it (§6 item 4 repeats the same example).
     stale-pointer: round_repo.go::updateRound's IsTriggerViolation comment names only
     rounds_freeze_gate as the cause of the P0001 it maps to ErrRecordInUse, but the same
     SQLSTATE also comes from rounds_progress_gate (000008) and rounds_close_gate; the
@@ -1771,7 +1764,7 @@
   verification:
     unit:
       - internal/game/internal/core/domain/ride_test.go::TestRide_InvalidTransitions
-      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx
     e2e:
       - internal/e2e/rides_test.go::TestRideCommandHandlers
     gherkin:
@@ -1786,7 +1779,10 @@
     `canTransition` is the lookup, listed separately because a change to the map alone
     would not show up in a diff of the command methods. Tie: both Go sites fail loudly —
     they never drift silently, because the trigger refuses the arrival and the refused
-    ride's own test fails first.
+    ride's own test fails first. The store's guarded writes are the two transactional
+    production paths (DecisionGuardedTx for decisions, ArriveTx for settlement arrivals);
+    the test-only RideRepository.Update that used to stand in for them was removed in
+    Phase G, and its cases moved onto those paths (misalignment-report §6 item 21).
 
 - id: R-GAME-003
   title: Terminal rides are frozen
@@ -1819,7 +1815,7 @@
   verification:
     unit:
       - internal/game/internal/core/domain/ride_test.go::TestRide_TerminalStates
-      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_TerminalRideGate
     gherkin:
       - docs/spec/features/game/ride_lifecycle.feature::A burned ride accepts no further command
   expert-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
@@ -1855,6 +1851,10 @@
       layer: domain
       role: advisory-copy
       pinned_by: null
+    - site: internal/game/internal/adapter/outbound/postgres/ride_repo.go::insertRide
+      layer: repository
+      role: advisory-copy
+      pinned_by: null
   refusal:
     code: "23514"
     constraint:
@@ -1862,28 +1862,38 @@
       - rides_base_at_lock_check
       - rides_bonus_acc_check
       - rides_streak_check
-    sentinel: null
-    http: null
+    sentinel: ValidationError
+    http: 422
   fixture: null
   verification:
     unit:
       - internal/game/internal/core/domain/ride_validation_test.go::TestValidateRide
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_InsertCheckViolations
     e2e:
       - internal/e2e/rides_test.go::TestCreateRideHandler
     gherkin:
       - docs/spec/features/game/settlement.feature::A stake of nothing is refused and no ride is born
+      - docs/spec/features/game/settlement.feature::The database refuses a ride carrying money outside its domain
   notes: >
     Four CHECKs, one rule: the bounds are the same kind of fact, so they are catalogued
-    together (constraint names stay individually mappable). The Go copy covers only
-    `tokens_locked` and only to give a clean 422 at the request edge; base_at_lock is
-    server-stamped from the ledger's token lookup (a stub today — the ride handler
-    hard-codes the base), and acc/streak are written by the ledger and the domain, never
-    by the request, so there is nothing for the handler to validate there. Two recorded
-    gaps: (a) no test probes the four CHECKs directly — TestValidateRide pins only the
-    app copy, so the two sides are not tied by a shared fixture; (b) a 23514 from any of
-    the four CHECKs is unmapped in the repository, so a caller that reaches it gets a
-    500, not a 422/409. A fixture (moneyBoundsRule: 5 vectors, run through ValidateRide
-    and through direct SQL) closes both.
+    together (constraint names stay individually mappable). The Go copies cover only
+    `tokens_locked` (the request edge's own field, so the caller reads a clean 422 on the
+    field) — base_at_lock is server-stamped from the ledger's token lookup (a stub today
+    — the ride handler hard-codes the base), and acc/streak are written by the ledger and
+    the domain, never by the request. The store maps every one of the four by name: a
+    23514 becomes a domain.ValidationError naming the field the column bounds and the
+    violated check (``tokens_locked: violates rides_tokens_locked_check`` …), which the
+    handler renders as the module's 422 — until Phase G the four fell through as raw
+    driver errors, so a caller that reached them got a 500 (misalignment-report §6 item
+    2, recorded at gate A2/D6, now fixed). The ride INSERT is the only statement in this
+    store that carries money — every UPDATE deliberately omits the money columns, the
+    ledger's own write owns them — so insertRide is the one classification site; a money
+    write that bypasses it is the ledger's to classify (R-LEDGER). No facade scenario can
+    reach the mapping: the request edge refuses the only input-side money field
+    (tokens_locked) before the store, so the transport half is pinned at the adapter
+    (TestRideRepository_InsertCheckViolations) and the database half by the sabotage
+    outline in settlement.feature — gherkin-style §10's rule that a rule provable only
+    below the facades is recorded in the catalog, not invented as a step.
 
 - id: R-GAME-005
   title: Unlocked and lost rides carry no accrued bonus
@@ -1926,7 +1936,7 @@
       - internal/game/internal/core/service/constraints_test.go::TestRideMoneyStateCoupling
       - internal/game/internal/core/domain/ride_test.go::TestRide_Unlock
       - internal/game/internal/core/domain/ride_test.go::TestRide_Lost
-      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx
     gherkin:
       - docs/spec/features/game/settlement.feature::Unlocking a won ride forfeits the bonus it accrued
   notes: >
@@ -2235,7 +2245,7 @@
       - internal/game/internal/core/service/score_state_rule_test.go::TestScoreStateRuleDB
       - internal/schedule/internal/model/matches_winner_test.go::TestWinner
       - internal/game/internal/core/service/service_test.go::TestService_OnMatchResultRecorded
-      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_ArriveTx
     gherkin:
       - docs/spec/features/game/settlement.feature::Each ride arrives where the committed result puts it
       - docs/spec/features/game/settlement.feature::A settlement that misreports the odds is refused and pays nothing
@@ -2428,6 +2438,7 @@
   verification:
     unit:
       - internal/game/internal/core/service/service_test.go::TestService_RideCreateUnknownParents
+      - internal/game/internal/adapter/inbound/http/players_test.go::TestCreatePlayerNamesTheUserField
     e2e:
       - internal/e2e/players_test.go::TestCreatePlayerHandler
       - internal/e2e/players_test.go::TestUpdatePlayerHandler
@@ -2447,9 +2458,10 @@
     and its refusal keeps the field-error shape, but the user reference is
     checked *only* there and only when the identity directory was installed
     (`if h.users != nil`): with the FK gone, a module wired without identity
-    silently plants an orphan user_id. Its 422 message also names
-    favorite_team_id, a leftover of the FK-era shape that mislabels the field.
-    Both are defects, not rules.
+    silently plants an orphan user_id. Its 422 used to name favorite_team_id — a
+    leftover of the FK-era shape that mislabelled the failing reference; it now
+    names user_id, the principal's user account (misalignment-report §6 item 12's
+    mislabel half, fixed; the optional-check half is still a defect, not a rule).
     stale-pointer: two repository comments still describe FK-era behaviour after 000016 —
     ride_repo.go::insertRide's FK branch says "the referenced player, team or match does not
     exist", though with the cross-context FKs gone the only surviving reference on that
@@ -2626,8 +2638,12 @@
     Deliberately not part of this rule: what the destination must be (R-GAME-010),
     the event claim (R-KERNEL-014) and the per-round serialization (R-GAME-023).
     Verification gap: no unit test calls ArriveTx with a stale pre-state
-    directly; the CAS is pinned through the settlement races and through
-    TestRideRepository_Update (the same guarded-update shape on the player path).
+    directly; the CAS is pinned through the settlement races and the store's
+    other guarded write (TestRideRepository_DecisionGuardedTx), which applies the
+    same from-state + version predicate. The one ArriveTx case that is unit-pinned
+    is the store boundary itself (TestRideRepository_ArriveTx): the write lands
+    without a result-agreement check, because that refusal is the service's
+    (R-GAME-010).
     Related but distinct: R-KERNEL-014 claims the *event* at the service, this rule claims
     the *ride row* at the repository — the authorities differ, so they are two rules (a
     replay can be dropped by the claim and still be settled idempotently per ride, and
@@ -2748,7 +2764,11 @@
     so the replay is byte-identical, and create's Location header is re-derived
     from the stored body rather than persisted. The claim table and the
     single-flight mechanics are the kernel engine's; what this rule owns is that
-    the *game* commands call it first and inside one transaction.
+    the *game* commands call it first and inside one transaction. The caller is part of
+    the claim's identity since the ride routes became permission-gated: the handlers put
+    the authenticated principal's id on the token (`port.Token.UserID`) and the kernel
+    claims (key, user_id), so two callers that pick the same key hold two claims
+    (R-KERNEL-003 owns the scope and the retention window).
     Related but distinct: R-KERNEL-004 owns the transactional coupling (the claim commits
     with the command's effect, or not at all); this rule owns the ordering inside the
     command, and the kernel claim rule (R-KERNEL-003) owns what the caller sees on a
@@ -3038,7 +3058,7 @@
   fixture: null
   verification:
     unit:
-      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_Update
+      - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx
       - internal/game/internal/core/domain/ride_test.go::TestRide_Lock
     gherkin:
       - docs/spec/features/game/ride_lifecycle.feature::Continuing moves the won ride onto its next match
@@ -3050,7 +3070,8 @@
     untouched and is still refused). The domain site is the only operation that
     writes the match at all, so it is a copy that fails loudly — Tie: if the
     domain let another command move the match, the trigger refuses the UPDATE
-    (P0001 → 409) and TestRideRepository_Update's re-point case fails first. On
+    (P0001 → 409) and TestRideRepository_DecisionGuardedTx's re-point case fails
+    first. On
     terminal rows this check and R-GAME-003's freeze both fire; the freeze name
     is the one that wins there because it is evaluated first, which is why the
     continuation carve-out is stated in both rules' statements rather than
@@ -3401,6 +3422,56 @@
     The money side is R-LEDGER-004/007's design.
     Numbered from the phase-doc sweep (was provisional R-GAME-207).
 
+- id: R-GAME-035
+  title: A registration the rides still name is not withdrawn
+  statement: |
+    A withdrawal removes the season entry only while nothing else points at it: a
+    registration that still carries rides cannot be deleted, because the rides' history
+    would be left naming a player that is gone. The caller is told the registration is
+    still referenced, never only that the server failed.
+  module: game
+  entity: player
+  category: invariant
+  status: implemented
+  authority: database
+  mechanism: constraint
+  scope: cross-table
+  enforcement:
+    - site: migrations/000006_create_rides_table.up.sql
+      layer: db-constraint
+      role: authoritative
+      pinned_by: null
+    - site: internal/game/internal/adapter/outbound/postgres/player_repo.go::PlayerRepository.Delete
+      layer: repository
+      role: advisory-copy
+      pinned_by: null
+  refusal:
+    code: "23503"
+    constraint: rides_player_id_fkey
+    sentinel: ErrRecordInUse
+    http: 409
+  fixture: null
+  verification:
+    unit:
+      - internal/game/internal/adapter/outbound/postgres/player_repo_test.go::TestPlayerRepository_Delete
+    e2e:
+      - internal/e2e/players_test.go::TestDeletePlayerHandler
+    gherkin:
+      - docs/spec/features/game/players.feature::A player still carrying rides is refused as a registration in use
+  notes: >
+    The reference is the game context's own (rides_player_id_fkey, ON DELETE RESTRICT),
+    so the delete itself can never succeed while a ride names the player; the repository
+    site is an advisory copy that only turns the driver's 23503 into the module's
+    ErrRecordInUse so the caller reads the record-in-use 409 instead of a 500. It was a
+    real 500 until the fix: Delete had no IsDeleteRestricted branch (unlike
+    DeleteForSeasonTx), which is misalignment-report §6 item 2's player-DELETE surface —
+    the @known-defect:2 scenario that proved it is now a normal green scenario. Catalogued
+    as its own rule rather than folded into R-GAME-011, whose group it sat under as the
+    withdraw command's surface: R-GAME-011 owns *who* may withdraw (ErrForbidden, 403)
+    and a rule carries one refusal, so the referential refusal gets its own entry, the way
+    R-SCHEDULE-025 records the calendar's team half. The season-delete composition asks
+    the same FK through DeleteForSeasonTx and is R-SCHEDULE-027's refusal, not this one.
+
 # ─────────────────────────────────────────────────────────────────────────────
 # kernel — transactional outbox (phase-08)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3657,9 +3728,14 @@
     round trip (the lookup would have missed anyway), so its drift is a UX/cost divergence
     and never a security one. Authority deviates from the invariant default (database)
     because nothing in storage knows what a token should look like: the column is bytea and
-    any length fits. crypto/rand.Text is the standard-library source the generator calls —
-    the alphabet is RFC 4648 base32 and the guarantee is "at least 128 bits", which is why
-    the comment names the length rather than inlining 26.
+    any length fits. Generation no longer delegates to crypto/rand.Text (misalignment-report
+    §6.20): the plaintext is minted here — tokenEntropyBytes from crypto/rand, RFC 4648
+    base32 with no padding, the first plaintextTokenLength characters — so the
+    26-character/130-bit shape is this package's own contract and a stdlib change to
+    rand.Text's alphabet or letter count can no longer silently make the validator reject
+    freshly minted tokens. plaintextTokenLength is still the single home the generator, the
+    trim and the validator read; TestGenerateUserToken pins the minted length, the base32
+    alphabet, and that the constants still yield the 26-character shape.
 
 - id: R-IDENTITY-006
   title: Only a token's hash is ever stored
@@ -3851,7 +3927,7 @@
   verification:
     unit:
       - internal/identity/internal/service/activation_test.go::TestActivate
-      - internal/identity/internal/repository/user_token_repo_test.go::TestDeleteAllForUser
+      - internal/identity/internal/repository/user_token_repo_test.go::TestDeleteAllForUserTx
     gherkin:
       - docs/spec/features/identity/account.feature::The same activation token cannot be spent twice
   notes: >
@@ -3865,14 +3941,15 @@
     the flip back — nothing is left behind" subtest fails first. The cleanup is by scope
     and user, not by the presented token, so an old activation mail cannot be replayed after
     a successful activation, and the deep-link case (two mails in flight) ends with both
-    tokens dead — TestDeleteAllForUser pins that only the target scope of the target user
+    tokens dead — TestDeleteAllForUserTx pins that only the target scope of the target user
     goes. The concurrent-activation subtest pins the exactly-once shape: a committed
     flip, or ErrEditConflict, or ErrNotFound, never a double bump. The refusal is the
     lookup's miss (unknown, expired, wrong-purpose or already-spent token) rendered as
     "invalid or expired activation token" — 422, deliberately not a 401, because the
-    client is activating, not authenticating. Dead code note: the non-transactional
-    UserTokenRepository.DeleteAllForUser is unreachable from production (only
-    TestDeleteAllForUser calls it).
+    client is activating, not authenticating. The non-transactional DeleteAllForUser
+    variant is gone (misalignment-report §6.21): the cleanup exists only in the Tx form the
+    activation use case runs and TestDeleteAllForUserTx commits, so there is no second way
+    to delete tokens outside the unit.
 
 - id: R-IDENTITY-010
   title: A user row is only rewritten by a writer holding the version it read
@@ -3905,16 +3982,18 @@
   fixture: null
   verification:
     unit:
-      - internal/identity/internal/repository/user_repo_test.go::TestUpdate
+      - internal/identity/internal/repository/user_repo_test.go::TestUpdateTx
       - internal/identity/internal/service/activation_test.go::TestActivate
   notes: >
     Authority is the repository, deviating from the invariant default (database): a
     compare-and-set on a version column is not expressible as a constraint, and it is
     path-dependent by nature — a new UPDATE that forgets `AND version = $n` bypasses it
-    silently. Being honest about the cost: nothing pins the call set today (there is one
-    guarded write and two thin wrappers, Update and UpdateTx, both delegating to the same
-    statement), so the repository trade-off the schema warns about is currently cheap only
-    because the surface is one method. The version counter is bumped by the same statement
+    silently. Being honest about the cost: nothing pins the call set today beyond the single
+    wrapper — there is one guarded write (UserRepository.update) and one exported door to it
+    (UpdateTx); the non-transactional Update is gone (misalignment-report §6.21), so the
+    surface cannot grow a second caller that forgets the version. The repository trade-off
+    the schema warns about is therefore cheap only because the surface is one method. The
+    version counter is bumped by the same statement
     (`version = version + 1`) and returned by RETURNING, so the caller never has to
     remember to increment. Tie: the service site fails loudly — Activate reads the row
     inside its own transaction precisely so the flagged write re-checks against the
@@ -3922,9 +4001,7 @@
     concurrent-activation subtest of TestActivate would start double-bumping.
     Distinguishing the two zero-row causes: the same statement also maps a users_email_key
     violation to ErrDuplicateEmail before the no-rows case, so an email clash is never
-    reported as an edit conflict (TestUpdate's duplicate-on-update subtest pins the order).
-    Dead code note: the non-transactional UserRepository.Update has no production caller;
-    the only production write path is UpdateTx from Activate.
+    reported as an edit conflict (TestUpdateTx's duplicate-on-update subtest pins the order).
 
 - id: R-IDENTITY-011
   title: An email address identifies exactly one account, whatever its case
@@ -3967,7 +4044,7 @@
   verification:
     unit:
       - internal/identity/internal/repository/user_repo_test.go::TestInsert
-      - internal/identity/internal/repository/user_repo_test.go::TestUpdate
+      - internal/identity/internal/repository/user_repo_test.go::TestUpdateTx
       - internal/identity/internal/repository/user_repo_test.go::TestGetByEmail
     e2e:
       - internal/e2e/users_test.go::TestRegisterUserHandlerDuplicateIsolatedFromValidation
@@ -4369,6 +4446,7 @@
   verification:
     unit:
       - internal/identity/internal/model/user_test.go::TestPasswordHashRoundTrip
+      - internal/identity/internal/service/authenticate_test.go::TestAuthenticate
     gherkin:
       - docs/spec/features/identity/access.feature::An unknown email is refused as an invalid credential
   notes: >
@@ -4557,12 +4635,15 @@
     Renumbered at merge (was provisional R-IDENTITY-022): R-IDENTITY-021 was folded into R-PLATFORM-013.
 
 - id: R-IDENTITY-022
-  title: A second activation is refused
+  title: Activation happens once and asking discloses nothing
   statement: |
     Activation happens once. An account that is already active cannot be activated again,
-    and asking for a fresh activation mail for such an account is refused rather than
-    silently re-minted. A token that was already spent, has expired or was minted for
-    another purpose is likewise no longer an activation credential.
+    and a token that was already spent, has expired or was minted for another purpose is no
+    longer an activation credential. Asking for a fresh activation mail is answered the same
+    way whoever asks: an address no account holds and an address whose account is already
+    active receive exactly the answer a genuine request receives — the same status, the same
+    body — and neither mints a token nor sends a mail, so the endpoint never says whether an
+    address is registered or whether its account is active.
   module: identity
   entity: user
   category: policy
@@ -4575,6 +4656,10 @@
       layer: service
       role: authoritative
       pinned_by: null
+    - site: internal/identity/internal/handler/user_tokens.go::Handler.createActivationToken
+      layer: handler
+      role: defense-in-depth
+      pinned_by: null
     - site: internal/identity/internal/service/activation.go::Service.Activate
       layer: service
       role: defense-in-depth
@@ -4582,31 +4667,48 @@
   refusal:
     code: synthetic
     constraint: null
-    sentinel: ErrAlreadyActivated
+    sentinel: ErrNotFound
     http: 422
   fixture: null
   verification:
     unit:
       - internal/identity/internal/service/activation_test.go::TestActivate
+      - internal/identity/internal/service/activation_test.go::TestRequestActivationToken
     gherkin:
-      - docs/spec/features/identity/account.feature::An activated account cannot collect another activation mail
+      - docs/spec/features/identity/account.feature::An activated account collects no second activation mail
+      - docs/spec/features/identity/account.feature::An address no account holds is answered like a registered one
   notes: >
-    Authority is the service, deviating from the policy default (domain): the refusal is a
-    use-case verdict taken on a row read (is this account already active?) before any token
-    is minted, and no domain operation knows about an account's activation state. The second
-    site is the other half of "once": Activate's guarded write and the token cleanup
-    (R-IDENTITY-009) are what make a spent token worthless, and the activation test's
+    Authority is the service, deviating from the policy default (domain): the verdict is a
+    use-case reading (is this account already active?) taken before any token is minted, and
+    no domain operation knows about an account's activation state. The second service site is
+    the other half of "once": Activate's guarded write and the token cleanup (R-IDENTITY-009)
+    are what make a spent token worthless, and the activation test's
     unknown/expired/out-of-scope subtest pins that a token which no longer resolves is
     ErrNotFound rather than a new activation. Tie: the service site cannot drift silently —
     dropping the check would let an active account collect activation mails, which nothing
     else would refuse (the flag is already true, so the flip is a no-op write that would
-    still succeed). The refusal has two shapes on the wire and only one is catalogued: an
-    already-active account is a 422 with the email field error "user has already been
-    activated", while an unknown email is a 404 — the second is a deliberate existence
-    disclosure on this endpoint (see R-IDENTITY-018's note), and it is why the two branches
-    must not be collapsed into one refusal without a product decision. Coverage gap: no test
-    drives RequestActivationToken at all — neither the already-active refusal nor the
-    re-mint path — so the rule is pinned only through Activate's half.
+    still succeed), and TestRequestActivationToken pins that the already-active verdict mints
+    no token. The endpoint is deliberately existence-neutral (misalignment-report §6.9,
+    resolved by decision): the service still forms its two verdicts (ErrNotFound for an
+    unknown email, ErrAlreadyActivated for an active account) and mints nothing and mails
+    nothing for either, but the handler answers both with the very envelope a successful
+    request receives — 202 and "an email will be sent to you containing activation
+    instructions" — so neither the status nor the body carries an existence bit. Neutralizing
+    only the unknown-email half would not have been enough: a 422 for an active account still
+    says the address is registered and its account active, so the oracle would have moved
+    rather than closed. The handler site is that disclosure boundary and is a copy, not a
+    second decision: Tie: if it reintroduced a distinguishable status, the account feature's
+    two neutralization scenarios fail first — each compares the answer byte for byte with the
+    answer a known unactivated account receives, and asserts no mail was booked for the
+    ineligible address. Nothing else is weakened: the token TTL (R-IDENTITY-007), the scope
+    and single-use lookup (R-IDENTITY-008, R-IDENTITY-009) and the refusal of a spent
+    activation token at Activate are untouched, and the refusal catalogued here is that
+    Activate refusal (422, "invalid or expired activation token"). The request half has no
+    refusal left to catalogue — its two ineligible causes are answered as success — and
+    calling that answer a small lie ("an email will be sent") is the accepted price of the
+    neutral answer: the alternative is an account oracle. Coverage: TestRequestActivationToken
+    drives the request use case's three outcomes and their token side effects; the gherkin
+    scenarios drive the same cases through the HTTP handler.
     Renumbered at merge (was provisional R-IDENTITY-023): R-IDENTITY-021 was folded into R-PLATFORM-013.
 
 
@@ -4877,12 +4979,11 @@
     table's CHECK is the path-independent backstop, carrying the same 255-byte bound.
     Tie: a wrong copy fails loudly — a key the validator accepts but the table refuses
     makes the command's transaction fail (500), and the CHECK is the only half a
-    non-Go writer meets. Two recorded absences the statement deliberately does not
-    claim: keys are NOT scoped to a player or a route (000010: "no player scoping yet";
-    the endpoint column is ops visibility only, and the primary key is the bare key
-    text, so two clients that pick the same key collide in one global namespace), and
-    there is NO retention policy — a claimed key lives forever (000010: "no retention
-    policy yet"). Both are defect candidates for the Phase B report, not drift.
+    non-Go writer meets. The namespace and the lifetime are not this rule's: since
+    migration 000022 the claim row is (key, user_id), so keys are scoped to their caller
+    (and 000010's rows carried over as system claims, user_id 0), and the kernel's claim
+    sweeps rows older than a day. R-KERNEL-003 owns both facts; misalignment-report §6
+    item 13 recorded the defect this closes.
 
 - id: R-KERNEL-002
   title: A request's dedup identity is a digest of the request itself
@@ -4928,14 +5029,22 @@
     fragment whose draft slot was later reused and has since been retired), so they are
     one rule with the union of sites — module
     kernel, because the kernel owns the claim/hash contract and game only instantiates
-    it at /v1/rides (the IRequestToken/claim seam the game handler feeds). Two
-    disjoint cases of one statement, one per request shape: body-less ride commands
-    hash method + "\n" + URI, so a body sent to a body-less command is ignored by the
-    digest (a recorded defect candidate, not a rule); create — the first
-    body-carrying command — appends "\n" + the raw body, which is why it drains and
-    restores r.Body before decoding. The table's request_hash CHECK (exactly 32 bytes)
+    it at /v1/rides (the IRequestToken/claim seam the game handler feeds). One request
+    shape, one formula: every ride command — create and the body-less
+    lock/burn/unlock alike — hashes method + "\n" + URI + "\n" + the raw body bytes,
+    which is why both token builders drain and restore r.Body. The body-less commands
+    used to hash method + URI only, so appending a body to POST /v1/rides/:id/burn left
+    the dedup identity unchanged (misalignment-report §6 item 15, recorded then fixed):
+    the shared formula makes the statement true for every command instead of only the
+    one that decodes a body, and the e2e "same key with different body bytes" case
+    pins it. Deployment note: the formula change is not backward compatible with keys
+    claimed under the old one — a row stored before the deploy carries a URI-only
+    digest, so a retry of that request afterwards is the 409 idempotency conflict, not
+    a replay; the table sweeps rows older than a day (R-KERNEL-003, migration 000022), so
+    those stale rows disappear within that window instead of living forever. The table's
+    request_hash CHECK (exactly 32 bytes)
     is the only backstop and it cannot verify the digest covers the right bytes; a
-    second body-carrying command must remember createRideToken's shape by hand. The
+    second ride-shaped command must remember createRideToken's shape by hand. The
     cap-before-hash half is not decoration: the size limit wraps the body before it is
     drained, so an oversized body is refused with 413 before any hash exists and the
     key is discarded, which is what lets a correct retry with a legal body execute
@@ -4945,19 +5054,23 @@
     identical retry into a 409, and the e2e replay subtest fails first. No refusal of
     its own: a digest is a computation and refuses nothing — the 409 a changed request
     under one key produces is R-KERNEL-003's (which owns the caller-facing replay
-    statement too), and the 413 is R-KERNEL-013's. Verification gap: the create-side e2e
-    case (same key, different body -> 409) is the only pin on the body half; the
-    URI-only formula's "same key, different ride" case is asserted at the service level
-    with hand-built tokens, so nothing ties the formula itself to a test — a change
-    that dropped the URI from the hash would replay silently instead of conflicting.
+    statement too), and the 413 is R-KERNEL-013's. Verification gap: the create-side and
+    command-side e2e cases (same key, different body -> 409) are the pins on the body
+    half; the formula's "same key, different ride" case is asserted at the service level
+    with hand-built tokens, so nothing ties the URI half to a test — a change that
+    dropped the URI from the hash would replay silently instead of conflicting.
 
 - id: R-KERNEL-003
   title: An idempotency key names exactly one logical request
   statement: |
-    Once a key has been used for one request, reusing it for a different request is
-    refused as key misuse and the second request never executes. The refusal is a
-    conflict, not a retry: a genuine retry resends the identical request and receives
-    the stored answer.
+    Once a key has been used by one caller, that same caller reusing it for a different
+    request is refused as key misuse and the second request never executes. The refusal is
+    a conflict, not a retry: a genuine retry resends the identical request and receives
+    the stored answer. A key belongs to its caller — two callers that happen to choose the
+    same key hold two independent claims, so one caller's key can neither collide with
+    another's nor come back with another's answer. A claim is remembered for one day: a
+    key whose claim is older than that is forgotten, and a command sent under it executes
+    again instead of replaying.
   module: kernel
   entity: idempotency_key
   category: policy
@@ -4968,6 +5081,10 @@
   enforcement:
     - site: internal/kernel/idempotency/idempotency.go::Repository.Claim
       layer: repository
+      role: authoritative
+      pinned_by: null
+    - site: migrations/000022_scope_idempotency_keys_per_caller.up.sql
+      layer: db-constraint
       role: authoritative
       pinned_by: null
     - site: migrations/000010_add_idempotency_keys_table.up.sql
@@ -4993,18 +5110,42 @@
       - internal/e2e/rides_test.go::TestCreateRideIdempotentHandler
     gherkin:
       - docs/spec/features/game/idempotency.feature::The same key on a different command is refused, never replayed
+      - docs/spec/features/game/idempotency.feature::Two callers that pick the same key do not collide
+      - docs/spec/features/game/idempotency.feature::A claim older than the day it is kept is forgotten
   notes: >
     Authority deviates from the category default (policy → domain): the decision is not
     a business policy but a stored-fact comparison — "does this key already name a
     different request" — executed inside the claim, by the repository that owns the
-    table. Tie: the table contributes only key uniqueness (its primary key), which is why
-    it is a data-carrying backstop for two rows of one key and never for two different
-    requests under one key — the claim's comparison is the only site that can tell them
-    apart, and it fails loudly (a misuse returns the sentinel, the handler renders 409,
-    and the conflict subtest of both idempotency suites fails first). The handler site is an advisory copy in the refusal sense
-    only: game translates the kernel's sentinel into the 409 envelope. Recorded gap: the
-    kernel's own sentinel is unmapped outside game — any other context that adopts the
-    key must add the mapping or answer 500.
+    table. Tie: the claim's comparison is the only site that tells a genuine retry from
+    key misuse (a misuse returns the sentinel, the handler renders 409, and the conflict
+    subtest of both idempotency suites fails first). The table contributes the namespace
+    and the lifetime instead: its primary key (key, user_id) since migration 000022 is
+    what makes two callers' claims independent (misalignment-report §6 item 13, defect
+    fixed: the key was the bare text in one global namespace, so two clients that picked
+    the same key collided), and the claim's own sweep is what makes the day-long lifetime
+    real. The handler site is an advisory copy in the refusal sense only: game translates
+    the kernel's sentinel into the 409 envelope. Recorded gap: the kernel's own sentinel
+    is unmapped outside game — any other context that adopts the key must add the mapping
+    or answer 500.
+    Scope, as built by 000022: the claim row is (key, user_id), the authenticated
+    principal's id — the transport puts it on the token (`port.Token.UserID`, set by the
+    ride handlers from httpx.GetAuthenticatedUser) and the settlement handlers claim as
+    the reserved system caller 0, since an event has no request principal (0 is not an
+    identity id: users.id is serial). The endpoint stays part of the request identity
+    (the digest, R-KERNEL-002) rather than of the namespace, so one caller's key is one
+    key across routes and a different route under it is still misuse. Legacy rows from
+    000010 were claimed before caller scoping existed; 000022 carries them over as system
+    claims (user_id 0), which keeps the settlement events' own dedup intact across the
+    deploy and leaves every ride retry that was in flight to execute once more.
+    Retention, as built: the claim deletes rows older than 24 hours
+    (`retentionWindow` in the kernel engine) on its own transaction before it inserts —
+    a lazy sweep, one statement per claim, because a real background sweeper is the
+    Phase 07 worker's job and R-PLATFORM-016 is still specified-only. The interim's
+    boundary is recorded, not hidden: every claim pays for the sweep, the sweep is
+    global (any caller's stale rows), and the window is a constant rather than config
+    until the worker owns it. The Gherkin pair pins both halves — two callers on one key
+    (both execute, neither is refused) and a claim aged past the window (the same key
+    executes again).
     Merged at gate B5 (dupe policy): the game sweep had catalogued this same decision a
     second time, from the ride command's caller-facing side — same `Repository.Claim`
     site, same 409, same two idempotency suites — and it is now this rule's game
@@ -5308,6 +5449,10 @@
       layer: handler
       role: authoritative
       pinned_by: null
+    - site: internal/kernel/httpx/ratelimiter.go::RateLimiter.ClientKey
+      layer: handler
+      role: authoritative
+      pinned_by: null
     - site: internal/kernel/httpx/middleware.go::Middleware.RateLimit
       layer: handler
       role: authoritative
@@ -5328,19 +5473,32 @@
       - internal/kernel/httpx/ratelimiter_test.go::TestRateLimiterSustainedCapped
       - internal/kernel/httpx/ratelimiter_test.go::TestRateLimiterIPsIsolated
       - internal/kernel/httpx/ratelimiter_test.go::TestRateLimiterStaleBucketsEvicted
+      - internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyTrustedProxyUsesForwardedClient
+      - internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyTrustedProxyTakesRightmostUntrustedHop
+      - internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyUntrustedPeerIgnoresForwardedFor
+      - internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyEmptyTrustedListIgnoresForwardedFor
+      - internal/kernel/httpx/ratelimiter_proxy_test.go::TestClientKeyMalformedForwardedForFallsBack
+      - internal/kernel/httpx/ratelimiter_proxy_test.go::TestRateLimitMiddlewareKeysOnForwardedClientBehindProxy
     e2e: []
   notes: >
     Authority deviates from the category default (policy → domain): throttling is a
-    transport decision with no domain participant. Facts the statement relies on: the
-    key is the connection's RemoteAddr, never X-Forwarded-For (attacker-controlled unless
-    a trusted proxy guarantees it); the denial carries Retry-After as a ceil'd
-    whole-second count; a disabled limiter is transparent; a bucket idle longer than
-    three minutes is evicted, and a denied request cancels its reservation so a rejection
-    does not push the client's next slot further out. Two recorded boundaries, both
-    stated in code and neither built: buckets are in memory, so limiting is per process
-    (cross-replica limiting needs a shared store), and because the key is RemoteAddr, a
-    deployment behind a load balancer throttles the balancer's address — every client
-    shares one bucket. The second is a defect candidate, not drift.
+    transport decision with no domain participant. The bucket key is a client address
+    derived from the transport (RateLimiter.ClientKey): with the trusted-proxy allowlist
+    empty — the default, and the safe one — it is the connection peer alone and
+    X-Forwarded-For is ignored, so a caller cannot move its own bucket by inventing a
+    header; when the peer is inside TRUSTED_PROXIES (the Caddy reverse proxy the
+    deployment runs in front of this process), the key is the rightmost hop of
+    X-Forwarded-For that is not itself trusted, falling back to the leftmost hop when
+    every hop is trusted and to the peer when no entry is parseable. Other facts the
+    statement relies on: the denial carries Retry-After as a ceil'd whole-second count;
+    a disabled limiter is transparent; a bucket idle longer than three minutes is
+    evicted, and a denied request cancels its reservation so a rejection does not push
+    the client's next slot further out. One recorded boundary, stated in code and not
+    built: buckets are in memory, so limiting is per process — a second replica keeps
+    its own counters, and cross-replica limiting needs a shared store (phase 07). The
+    proxy collapse this note used to record (every client sharing one bucket behind a
+    load balancer, misalignment-report §6 item 14) is fixed by the allowlist; the
+    per-process fact is unchanged.
     Renumbered at merge (was provisional R-KERNEL-010): R-KERNEL-009 was folded into R-IDENTITY-016/R-IDENTITY-017.
 
 - id: R-KERNEL-010
@@ -5759,12 +5917,13 @@
     from.
 
 - id: R-PLATFORM-002
-  title: Startup refuses a configuration it cannot honour, and names the variable
+  title: Startup refuses a configuration it cannot honour, and names the setting
   statement: |
     A configuration value that is missing, unparseable or out of its allowed range stops
-    the process before it serves anything, and the message names the variable that must
-    change. Every bad environment value is reported in one refusal instead of one at a
-    time, and nothing degrades into a silent default.
+    the process before it serves anything, and the message names the setting that must
+    change — both its environment variable and its command-line flag, because the same
+    value can arrive either way. Every bad environment value is reported in one refusal
+    instead of one at a time, and nothing degrades into a silent default.
   module: platform
   entity: configuration
   category: interface
@@ -5796,22 +5955,26 @@
     the process, which logs and exits 1. Contract details the tests pin: env values are
     parsed and joined before flags ever parse, so all bad variables surface together;
     flag parse errors are ordinary errors, not exits; a returned error is always safe to
-    log verbatim. Two recorded gaps in the "name the variable" contract: the SMTP
-    variables are not validated here at all (R-PLATFORM-006 validates them later, in the
-    mailer), and the values that do have semantic checks never name the *flag* form —
-    validate() reports the env name (PORT, LT_API_DB_MAX_CONNS) even when the bad value
-    arrived as a flag.
+    log verbatim. Every semantic refusal names its setting by both spellings —
+    `invalid PORT 0: must be in range 1-65535 (env PORT or -port flag)` — because the
+    stdlib flag package exposes no "was this flag passed" for a typed value, so validate()
+    cannot know which one supplied it. The earlier behaviour named only the env var and
+    sent a -port caller to a variable they had not set (defect resolved,
+    misalignment-report §6 item 17; TestValidate's wantErr/wantFlag pair and TestParse's
+    "bad flag port names both spellings" case pin it). The SMTP variables are not
+    validated here at all: R-PLATFORM-006 owns them, at construction and (since item 16)
+    in config's own validate.
 
 - id: R-PLATFORM-003
   title: Every setting has a bound, and the bound holds when the feature is off
   statement: |
-    Each setting is either usable or refused: the listen port is a real port, the
-    environment is one of the three the deployment knows, a database connection string is
-    present and parseable, the pool is at least one connection with a positive idle
-    limit, and the throttle rates are positive. A setting is judged on its own merits —
-    a throttle that is switched off must still be configured with usable values, because
-    config that is only correct while something else is off fails unpredictably when it
-    is switched on.
+    Each setting is either usable or refused: the listen port and the mail port are real
+    ports, the outbound sender is an address mail can be sent from, the environment is one
+    of the three the deployment knows, a database connection string is present and
+    parseable, the pool is at least one connection with a positive idle limit, and the
+    throttle rates are positive. A setting is judged on its own merits — a throttle that
+    is switched off must still be configured with usable values, because config that is
+    only correct while something else is off fails unpredictably when it is switched on.
   module: platform
   entity: configuration
   category: interface
@@ -5843,12 +6006,18 @@
     by hand ("pgx is the authority on what a DSN is"), and an empty URL is refused
     explicitly because ParseConfig("") would fall back to libpq environment defaults and
     fail later as a connection error instead of a config error; the per-context URL
-    overrides must each parse when present. Not covered by this rule, and worth the
-    report's attention: the SMTP port has no bound (any integer is accepted, including
-    0 and negatives) and the sender address is not format-checked — both are caught only
-    as a non-empty check in the mailer, or not at all. A per-context override that names
-    a *database* the context's role cannot see is also not detectable here; that failure
-    is deferred to the pool ping at boot.
+    overrides must each parse when present. The mail settings are judged here too since
+    item 16 of the misalignment report (gap closed): SMTP_PORT carries the listen port's
+    1-65535 bound, and SMTP_SENDER is parsed as an RFC 5322 mailbox — net/mail, not
+    kernel/validator's EmailRX, because the sender may carry a display name (the built-in
+    default is "League Tokens <no-reply@lt.aleksrdvn.com>") and EmailRX is the
+    account-address rule identity's registration uses. TestValidate's smtp cases pin the
+    refusals (port below/above range, a negative port, a sender with no address, an empty
+    sender) and the two accepted sender forms. A malformed sender therefore fails at boot
+    instead of at the first delivery (R-PLATFORM-006's refusal is still the mailer's —
+    config judges the value, the mailer refuses an incomplete set). A per-context override
+    that names a *database* the context's role cannot see is not detectable here; that
+    failure is deferred to the pool ping at boot.
 
 - id: R-PLATFORM-004
   title: A log level is an enumerated name, never a silent fallback
@@ -5970,9 +6139,11 @@
     ordering is main's, and it is what makes this a boot rule rather than a first-send
     surprise). The mailer suite now constructs the real adapter: it pins the boot
     refusal for each missing setting and pins that a delivery failure is not reported
-    as a configuration error. Recorded asymmetry for the report: the check
-    is non-empty only — a sender string that is not an address passes here and fails at
-    the first send.
+    as a configuration error. This rule's check is non-empty only — deliberately: a
+    *malformed* sender is a bound, so config's validate() judges it at boot (R-PLATFORM-003,
+    item 16 of the misalignment report, gap closed: SMTP_PORT is bounded and SMTP_SENDER
+    must parse as an RFC 5322 mailbox), and an empty one is refused twice (here and
+    there) with this rule's sentinel being the mailer's own.
 
 - id: R-PLATFORM-007
   title: A failed delivery is retried a bounded number of times, then reported
@@ -6345,6 +6516,10 @@
   mechanism: null
   scope: null
   enforcement:
+    - site: internal/platform/httpchain/httpchain.go::Build
+      layer: composition-root
+      role: authoritative
+      pinned_by: null
     - site: cmd/api/routes.go::routes
       layer: handler
       role: authoritative
@@ -6352,6 +6527,8 @@
   refusal: null
   fixture: null
   verification:
+    unit:
+      - internal/platform/httpchain/httpchain_test.go::TestBuildOrder
     e2e:
       - internal/e2e/cors_test.go::TestEnableCORS
       - internal/e2e/auth_test.go::TestAuthenticateMiddleware
@@ -6360,12 +6537,19 @@
     assembled once, at the composition root, over modules that register their own routes
     behind a gate they are handed — no module can reorder the chain, and the router's
     own 404/405 writers sit inside it. The nesting
-    RecoverPanic(EnableCORS(RateLimit(Authenticate(router)))) is stated in both
-    cmd/api/routes.go and the middleware doc, and the CORS suite asserts the
-    preflight-before-router short-circuit. Recorded pinning gap: the e2e harness rebuilds
-    the same chain in internal/e2e/compose_test.go::newTestApplication, and nothing ties
-    the copy to cmd/api/routes.go — a chain-order change in one place leaves the suite
-    green while production differs.
+    RecoverPanic(EnableCORS(RateLimit(Authenticate(router)))) lives in ONE builder,
+    internal/platform/httpchain.Build, and both call sites ask it: cmd/api/routes.go and
+    the end-to-end harness (internal/e2e/compose_test.go::routes) hand it their own
+    router and Middleware — the suite keeps its substitutions (its origin allowlist, its
+    limiter) without owning the order. The fidelity gap the report recorded (§6 item 19:
+    the harness rebuilt the chain independently, so a reordering in one place left the
+    suite green) is closed by that single site; TestBuildOrder then pins the order itself,
+    one case per adjacent pair — a panicking route is answered (recovery outermost), an
+    allowed preflight spends no throttle token (CORS outside throttling), an empty bucket
+    answers 429 to a request with a bad credential (throttling outside authentication),
+    and a bad credential is refused on an unserved path (authentication outside the
+    router). The CORS suite asserts the preflight-before-router short-circuit from the
+    other end.
 
 - id: R-PLATFORM-015
   title: A context's pool speaks as that context's role

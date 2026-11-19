@@ -90,6 +90,9 @@ func main() {
 		cfg.Limiter.RPS,
 		cfg.Limiter.Burst,
 		cfg.Limiter.Enabled,
+		// The reverse-proxy allowlist is deployment data (TRUSTED_PROXIES):
+		// empty means buckets stay keyed on the connection peer.
+		httpx.WithTrustedProxies(cfg.Limiter.TrustedProxies),
 	)
 
 	// Composition root (bounded-context split): each context module is wired to

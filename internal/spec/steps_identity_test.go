@@ -41,6 +41,7 @@ package spec
 // always the real gate's answer, never a harness verdict about who she is.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -94,7 +95,9 @@ func registerIdentitySteps(sc *godog.ScenarioContext) {
 	sc.Step(`^her activation is refused as an expired or spent activation token$`, herActivationIsRefusedAsExpiredOrSpent)
 	sc.Step(`^the member "([^"]+)" asks for a fresh activation mail$`, theMemberAsksForAFreshActivationMail)
 	sc.Step(`^the member "([^"]+)" asked for a second activation mail$`, theMemberAskedForASecondActivationMail)
-	sc.Step(`^the member "([^"]+)" is refused as an already activated account$`, theMemberIsRefusedAsAnAlreadyActivatedAccount)
+	sc.Step(`^a visitor asks for a fresh activation mail for "([^"]+)"$`, theVisitorAsksForAFreshActivationMail)
+	sc.Step(`^no activation mail arrives for "([^"]+)"$`, noActivationMailArrivesFor)
+	sc.Step(`^the answer is the one the unactivated member "([^"]+)" receives$`, theAnswerIsTheOneTheUnactivatedMemberReceives)
 	sc.Step(`^a fresh activation token arrives in her mail$`, aFreshActivationTokenArrivesInHerMail)
 
 	// The lifetime a credential is minted with.
@@ -803,13 +806,96 @@ func theMemberAsksForAFreshActivationMail(ctx context.Context, name string) (con
 	if err != nil {
 		return stepFailed(ctx, err)
 	}
-	w.mailMember = m
-	w.mailCount = len(w.app.Mail.to(m.Email))
-	// The request may be refused (an activated account cannot collect one):
-	// the scenario's Then says which of the two it is.
+	return w.askForActivationMail(ctx, m.Email)
+}
+
+// theVisitorAsksForAFreshActivationMail asks for a mail for an address the
+// scenario may never have registered — the unknown-address half of the neutral
+// answer (R-IDENTITY-022).
+func theVisitorAsksForAFreshActivationMail(ctx context.Context, email string) (context.Context, error) {
+	return worldFrom(ctx).askForActivationMail(ctx, email)
+}
+
+// askForActivationMail books the request and remembers how many mails the
+// address held beforehand, so the Then can prove whether the request mailed one.
+func (w *world) askForActivationMail(ctx context.Context, email string) (context.Context, error) {
+	w.mailAsked = email
+	w.mailCount = len(w.app.Mail.to(email))
 	if _, err := w.gated("", "POST", "/v1/user-tokens/activation",
-		map[string]any{"email": m.Email}, nil); err != nil {
+		map[string]any{"email": email}, nil); err != nil {
 		return stepFailed(ctx, err)
+	}
+	return stepOK(ctx)
+}
+
+// noActivationMailArrivesFor proves the request minted and mailed nothing: the
+// mail held for the address is exactly what it held before the request.
+func noActivationMailArrivesFor(ctx context.Context, email string) (context.Context, error) {
+	w := worldFrom(ctx)
+	if w.mailAsked != email {
+		return stepFailed(ctx, fmt.Errorf("no activation mail was asked for %q in this scenario (the last request was for %q)", email, w.mailAsked))
+	}
+	if held := len(w.app.Mail.to(email)); held != w.mailCount {
+		return stepFailed(ctx, fmt.Errorf("an activation mail arrived for %q (%d held before the request, %d after)", email, w.mailCount, held))
+	}
+	return stepOK(ctx)
+}
+
+// theAnswerIsTheOneTheUnactivatedMemberReceives is R-IDENTITY-022's
+// indistinguishability assertion: the scenario's last answer must be, byte for
+// byte, the one a genuine request for a known unactivated account receives —
+// same status, same body. The genuine request is driven here as the control and
+// must actually mail a token, so the compared answer is the success path's and
+// not another neutral one. w.last keeps the scenario's own answer for any later
+// step.
+func theAnswerIsTheOneTheUnactivatedMemberReceives(ctx context.Context, name string) (context.Context, error) {
+	w := worldFrom(ctx)
+	m, err := w.memberOf(name)
+	if err != nil {
+		return stepFailed(ctx, err)
+	}
+	if m.Activated {
+		return stepFailed(ctx, fmt.Errorf("%q is already activated, so she is no control for what an unactivated account receives", name))
+	}
+	if w.last == nil {
+		return stepFailed(ctx, fmt.Errorf("no request has been made in this scenario"))
+	}
+	tested := *w.last
+
+	heldBefore := len(w.app.Mail.to(m.Email))
+	control, err := w.app.callGated("POST", "/v1/user-tokens/activation",
+		map[string]any{"email": m.Email}, nil, "")
+	if err != nil {
+		return stepFailed(ctx, err)
+	}
+	if len(w.app.Mail.to(m.Email)) <= heldBefore {
+		return stepFailed(ctx, fmt.Errorf("the control request for %q mailed nothing, so its answer is not the genuine one", m.Email))
+	}
+
+	if tested.Status != control.Status {
+		return stepFailed(ctx, fmt.Errorf("the answer is %d (%s), but a genuine request answers %d (%s)",
+			tested.Status, tested.message(), control.Status, control.message()))
+	}
+	if !bytes.Equal(tested.Body, control.Body) {
+		return stepFailed(ctx, fmt.Errorf("the answer's body differs from a genuine request's:\n  got:  %s\n  want: %s",
+			string(tested.Body), string(control.Body)))
+	}
+	return stepOK(ctx)
+}
+
+func aFreshActivationTokenArrivesInHerMail(ctx context.Context) (context.Context, error) {
+	w := worldFrom(ctx)
+	if w.mailAsked == "" {
+		return stepFailed(ctx, fmt.Errorf("no fresh activation mail was asked for in this scenario"))
+	}
+
+	held := w.app.Mail.to(w.mailAsked)
+	if len(held) <= w.mailCount {
+		return stepFailed(ctx, fmt.Errorf("no fresh activation mail arrived for %q (%d held before the request)",
+			w.mailAsked, w.mailCount))
+	}
+	if held[len(held)-1].Token == "" {
+		return stepFailed(ctx, fmt.Errorf("the newest mail to %q carries no activation token", w.mailAsked))
 	}
 	return stepOK(ctx)
 }
@@ -828,37 +914,6 @@ func theMemberAskedForASecondActivationMail(ctx context.Context, name string) (c
 	if res.Status != http.StatusAccepted {
 		return stepFailed(ctx, fmt.Errorf("a second activation mail for %q: %d %s",
 			m.Email, res.Status, res.message()))
-	}
-	return stepOK(ctx)
-}
-
-func theMemberIsRefusedAsAnAlreadyActivatedAccount(ctx context.Context, name string) (context.Context, error) {
-	w := worldFrom(ctx)
-	if w.last == nil {
-		return stepFailed(ctx, fmt.Errorf("no request has been made in this scenario"))
-	}
-	if w.last.Status != http.StatusUnprocessableEntity {
-		return stepFailed(ctx, fmt.Errorf("the request was not refused: %d %s", w.last.Status, w.last.message()))
-	}
-	if message, ok := w.last.refusalFields()["email"]; !ok || message == "" {
-		return stepFailed(ctx, fmt.Errorf("the refusal does not name the account's email: %s", string(w.last.Body)))
-	}
-	return stepOK(ctx)
-}
-
-func aFreshActivationTokenArrivesInHerMail(ctx context.Context) (context.Context, error) {
-	w := worldFrom(ctx)
-	if w.mailMember == nil {
-		return stepFailed(ctx, fmt.Errorf("no fresh activation mail was asked for in this scenario"))
-	}
-
-	held := w.app.Mail.to(w.mailMember.Email)
-	if len(held) <= w.mailCount {
-		return stepFailed(ctx, fmt.Errorf("no fresh activation mail arrived for %q (%d held before the request)",
-			w.mailMember.Email, w.mailCount))
-	}
-	if held[len(held)-1].Token == "" {
-		return stepFailed(ctx, fmt.Errorf("the newest mail to %q carries no activation token", w.mailMember.Email))
 	}
 	return stepOK(ctx)
 }

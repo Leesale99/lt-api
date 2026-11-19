@@ -188,6 +188,11 @@ func (r *PlayerRepository) Update(ctx context.Context, player domain.Player) (do
 	return player, nil
 }
 
+// Delete removes the registration, scoped to its season. A registration that
+// still carries rides cannot go: rides_player_id_fkey (a game-internal FK,
+// ON DELETE RESTRICT) refuses the delete, and the store translates that driver
+// refusal into domain.ErrRecordInUse so the caller reads the record-in-use 409
+// instead of a 500 (R-GAME-035).
 func (r *PlayerRepository) Delete(ctx context.Context, id, seasonID int) error {
 	query := `
 		DELETE FROM players
@@ -195,6 +200,9 @@ func (r *PlayerRepository) Delete(ctx context.Context, id, seasonID int) error {
 	`
 	result, err := r.pool.Exec(ctx, query, id, seasonID)
 	if err != nil {
+		if persistence.IsDeleteRestricted(err) {
+			return domain.ErrRecordInUse
+		}
 		return err
 	}
 

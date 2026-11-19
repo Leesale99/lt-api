@@ -9,6 +9,10 @@ Feature: A ride command runs once
   The key names one command and only one. The same key sent with a different
   command is a mistake the game refuses, never a replay of the other command.
 
+  The key is the caller's own: two callers who happen to pick the same key are
+  two claims, not a collision. A claim is remembered for one day — a key last
+  used longer ago than that is free again.
+
   Background:
     Given the season "Spring 2026" has 2 rounds
     And the teams "Team A", "Team B" and "Team C" play in "Spring 2026"
@@ -51,3 +55,24 @@ Feature: A ride command runs once
       When the player unlocks the ride under her key "ana-decides"
       Then the command is refused as a key that already names another command
       And the ride still reads "burned"
+
+    # The key is not a global namespace: the second member picks the same text
+    # and gets her own command executed — neither caller learns the other's
+    # answer, and neither is told the key is taken.
+    Scenario: Two callers that pick the same key do not collide
+      Given the second member registers in "Spring 2026" favouring "Team A"
+      And it is 3 hours before round 1's first match
+      When the player locks 10 tokens on "Team A" for match day 1 under her key "shared-key"
+      Then a ride is born for "Ana" on match day 1
+      When the second member locks 10 tokens on "Team A" for match day 1 under her key "shared-key"
+      Then a ride is born for "Bruno" on match day 1
+
+    # The claim's lifetime is one day: once its claim is older than that, the
+    # key is free and the command it names runs again instead of replaying.
+    Scenario: A claim older than the day it is kept is forgotten
+      Given it is 3 hours before round 1's first match
+      When the player locks 10 tokens on "Team A" for match day 1 under her key "ana-stale"
+      Then a ride is born for "Ana" on match day 1
+      And the key "ana-stale" was claimed 25 hours ago
+      When the player locks 10 tokens on "Team A" for match day 1 under her key "ana-stale"
+      Then a second ride is born for "Ana" on match day 1

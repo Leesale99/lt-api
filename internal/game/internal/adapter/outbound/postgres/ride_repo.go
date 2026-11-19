@@ -83,11 +83,43 @@ func insertRide(ctx context.Context, q persistence.Querier, ride domain.Ride) (d
 			// (ADR-019). Same 409 surface as every other gate refusal.
 			return domain.Ride{}, domain.ErrInvalidTransition
 		default:
+			if verr, ok := rideCheckViolation(err); ok {
+				return domain.Ride{}, verr
+			}
 			return domain.Ride{}, err
 		}
 	}
 
 	return ride, nil
+}
+
+// rideMoneyBounds maps each of the four rides money CHECKs (000006) to the
+// column it bounds. The INSERT is this store's only money-carrying statement
+// — every UPDATE omits tokens_locked, base_at_lock and bonus_acc, so these
+// CHECKs are reachable at birth only.
+var rideMoneyBounds = []struct {
+	constraint string
+	field      string
+}{
+	{"rides_tokens_locked_check", "tokens_locked"},
+	{"rides_base_at_lock_check", "base_at_lock"},
+	{"rides_bonus_acc_check", "bonus_acc"},
+	{"rides_streak_check", "streak"},
+}
+
+// rideCheckViolation turns a 23514 from one of the rides money CHECKs into the
+// module's 422: a domain.ValidationError on the column the constraint bounds,
+// naming the violated check (R-GAME-004). Mapped by constraint name, so the
+// rides table's other CHECKs (rides_state_check) keep falling through.
+func rideCheckViolation(err error) (*domain.ValidationError, bool) {
+	for _, bound := range rideMoneyBounds {
+		if persistence.IsCheckViolation(err, bound.constraint) {
+			return domain.NewValidationError(map[string]string{
+				bound.field: "violates " + bound.constraint,
+			}), true
+		}
+	}
+	return nil, false
 }
 
 // InsertTx writes the created ride on the caller's transaction — RideCreate
@@ -355,48 +387,6 @@ func (r *RideRepository) classifyArrivalRefusal(ctx context.Context, rideID, cla
 		// saw): a refusal without a cause must not pass as a named one.
 		return fmt.Errorf("ride arrival refused while ride %d at version %d", rideID, claimedVersion)
 	}
-}
-
-func (r *RideRepository) Update(ctx context.Context, ride domain.Ride) (domain.Ride, error) {
-	// bonus_acc is deliberately absent from the SET clause: the money
-	// columns are the ledger's since the intent seam — this statement moves
-	// state, continuation and streak; the ledger moves money (and the
-	// money-state coupling still checks the row as a whole).
-	query := `
-		UPDATE rides
-		SET match_id = $1, state = $2, streak = $3, version = version + 1
-		WHERE id = $4 AND version = $5
-		RETURNING id, player_id, team_id, version
-	`
-	args := []any{ride.MatchID, ride.State, ride.Streak, ride.ID, ride.Version}
-
-	err := r.pool.QueryRow(ctx, query, args...).Scan(
-		&ride.ID,
-		&ride.PlayerID,
-		&ride.TeamID,
-		&ride.Version,
-	)
-	if err != nil {
-		switch {
-		case errors.Is(err, pgx.ErrNoRows):
-			return domain.Ride{}, domain.ErrEditConflict
-		case persistence.IsTriggerViolation(err):
-			// rides_state_gate (ADR-020): the DB refused the transition.
-			// Deliberately ErrInvalidTransition — the invalid-state 409 —
-			// NOT an edit conflict: the row is not referenced by anything,
-			// its state machine rejected the write.
-			return domain.Ride{}, domain.ErrInvalidTransition
-		case persistence.IsCheckViolation(err, ridesMoneyStateCoupling):
-			// rides_money_state_coupling (000013): the declarative check
-			// that took trigger check 4's job — unlocked|lost arrivals
-			// carry no acc. Same 409 surface the P0001 refusal produced.
-			return domain.Ride{}, domain.ErrInvalidTransition
-		default:
-			return domain.Ride{}, err
-		}
-	}
-
-	return ride, nil
 }
 
 // ridesMoneyStateCoupling is the declarative money-state-coupling gate
