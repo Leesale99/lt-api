@@ -4,7 +4,20 @@
 business rule is and who decides it; the scenarios say what those rules look like from
 outside; the checker keeps catalog, code, tests and scenarios tied to each other; the
 audit gate refuses a stale or contradictory spec. This file is the workflow.
-`rules.schema.md` is the format authority; `plan.md` is the plan.
+`rules.schema.md` is the format authority; superseded records live in `history/`.
+
+Where things live:
+
+```
+docs/spec/
+├── README.md — this workflow (the front door)
+├── rules.yaml — canonical, hand-edited catalog; header is a pointer block, the entries are the law
+├── rules.schema.md — format authority (enums §1, fields §2, policies §3)
+├── gherkin-style.md — Gherkin authoring style
+├── business-rules.md — GENERATED from rules.yaml; never edit
+├── features/ — the Gherkin tree, one capability per file
+└── history/ — superseded records (plan, misalignment report, coverage, gate-decision minutes); nothing reads it, and no .feature file ever goes there
+```
 
 ## 1. The pieces
 
@@ -25,19 +38,52 @@ audit gate refuses a stale or contradictory spec. This file is the workflow.
 
 ## 2. Rule-change protocol
 
-A rule change starts in the spec and goes red before it lands green:
+This is the one canonical account of how a rule is added or changed: red first, then
+implementation, then green. Nothing lands without the gate, and this recipe is what
+`rules.schema.md` §5 points at.
+
+### The gate
 
 1. Change the catalog entry in `docs/spec/rules.yaml` **and** its scenario under
-   `docs/spec/features/**` first (new rule → schema §5).
+   `docs/spec/features/**` first.
 2. Run `make audit`: the gap between the spec and the code is the failure — the
    scenario is red (and so is an untraceable catalog entry, since `spec/check` runs
    `--strict`).
 3. Implement the change.
 4. Run `make spec/gen` to regenerate `docs/spec/business-rules.md`.
-5. Run `make audit` again; it is done when green. Nothing lands without this gate.
+5. Run `make audit` again; it is done when green.
 
 Never edit `business-rules.md`; never add an enforcement site without updating the
 catalog entry that names it.
+
+### The recipe
+
+What step 1 of the gate actually means, for a brand-new rule:
+
+1. **Find the authority.** Ask what kind of rule it is — the kind-of-rule table in
+   `rules.schema.md` §1 names the default authority for each. Write the `statement` in
+   business language; if it needs code-speak, it is probably two rules.
+2. **Read the code, not the docs, for `enforcement`.** Resolve every site against the
+   tree today (`grep` the symbol, `ls` the migration). Migration headers and old
+   comments are the most common source of stale pointers — verify, then record what you
+   verified.
+3. **Decide each site's `role`.** One authority layer; everything else is a copy that
+   needs `pinned_by` or a loud-refusal `Tie:` note in `notes`.
+4. **Name the refusal.** SQLSTATE → constraint/raise name → sentinel → HTTP status. If
+   the refusal is unmapped, record `sentinel: null` and say so in `notes`.
+5. **Point at tests that exist.** Grep for the test before writing the pointer. If none
+   exists, the rule is `drifted` (or `implemented` with the gap in `notes` when it is a
+   coverage gap, not a disagreement).
+6. **Assign the next id** for that module; never reuse or renumber.
+7. **Validate the YAML parses.** Stock macOS `python3` has no `yaml` module, so Ruby's
+   stdlib `psych` is the reliable one:
+   ```sh
+   ruby -ryaml -e 'p YAML.safe_load(File.read("docs/spec/rules.yaml")).size'
+   python3 -c "import yaml; yaml.safe_load(open('docs/spec/rules.yaml'))"
+   ```
+8. **Run the gate** (steps 2–5 above). `make spec/check` enforces the
+   `rules.schema.md` §3 policies mechanically; then `make spec/gen`; finish when
+   `make audit` is green.
 
 ## 3. Running each piece
 
@@ -60,9 +106,9 @@ database-backed half skips.
 Implement against the behavior those two describe. Run `make audit`; done when green.
 If the behavior must change, change the catalog and scenario first (§2).
 
-**Adding a rule.** Follow `rules.schema.md` §5: pick the authority and id, verify every
-site and test against the code today, add the catalog entry and its `@rule` scenario,
-run `make spec/gen`, then `make audit`.
+**Adding a rule.** Follow §2 — the recipe is canonical there. Pick the authority and id,
+verify every site and test against the code today, add the catalog entry and its `@rule`
+scenario, run `make spec/gen`, then `make audit`.
 
 **Adding a scenario to an existing rule.** One scenario, one rule; name it so
 `<feature-file>::<scenario name>` is the pointer in `verification.gherkin`. Reuse

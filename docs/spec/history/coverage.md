@@ -1,3 +1,6 @@
+> **Superseded — historical record.** Nothing reads docs/spec/history/; kept for provenance.
+> Coverage is reported live by `make audit` (`spec/check`); this hand-maintained copy is stale by design.
+
 # Coverage — where every implemented rule is proved
 
 This is the C6 snapshot of the C-fanout: it pairs `docs/spec/rules.yaml` (the canonical
