@@ -50,6 +50,25 @@ const probePassword = "pa55word123"
 // deadline-position check below fails it independently.
 const budgetSlack = 100 * time.Millisecond
 
+// withProductionHashCost pins this package's bcrypt cost back to the
+// production value for one test. TestMain lowers model.PasswordCost to
+// bcrypt.MinCost for the suite (most tests only need a hash that reads back),
+// but this file is the exception: its assertions are about WHERE the crypto
+// runs relative to the DB budget, so the crypto has to stay measurably bigger
+// than both budgetSlack and the store call it neighbours. At MinCost a hash is
+// a few hundred microseconds, and a regression that paid for it out of the 3s
+// budget would hide inside the slack — the test would pass while proving
+// nothing. At the production cost (~200ms) both checks keep their documented
+// margin. Tests here run sequentially (no t.Parallel anywhere in the repo), so
+// the restore in Cleanup cannot race another test's hashing.
+func withProductionHashCost(t *testing.T) {
+	t.Helper()
+
+	restore := model.PasswordCost
+	model.PasswordCost = model.ProductionPasswordCost
+	t.Cleanup(func() { model.PasswordCost = restore })
+}
+
 // deadlineSample is one store call's DB-budget window: the deadline of the
 // context it was handed, whether it had one at all, and when it was handed it.
 type deadlineSample struct {
@@ -161,6 +180,8 @@ func (d *deadPoolTracer) seen() []deadlineSample {
 // assertions trip — the fresh-window check by the hash's share of the budget,
 // the deadline-position check by ~hash/2.
 func TestRegisterHashesOutsideDBBudget(t *testing.T) {
+	withProductionHashCost(t)
+
 	cfg, err := pgxpool.ParseConfig("postgres://probe@127.0.0.1:1/probe")
 	if err != nil {
 		t.Fatalf("parse probe pool config: %v", err)
@@ -177,8 +198,8 @@ func TestRegisterHashesOutsideDBBudget(t *testing.T) {
 
 	svc, _ := serviceOn(pool)
 
-	// Calibration: one hash of the same plaintext, same fixed bcrypt cost (12),
-	// measured immediately before the call under test.
+	// Calibration: one hash of the same plaintext, at the production bcrypt
+	// cost this test pinned, measured immediately before the call under test.
 	probe := model.User{Name: "Probe", Email: "probe@example.com"}
 	hashStart := time.Now()
 	if err := probe.Password.Set(probePassword); err != nil {
@@ -242,6 +263,7 @@ func (q *queryBudgetTracer) seen() []deadlineSample {
 // assertion demands.
 func TestAuthenticateComparesOutsideDBBudget(t *testing.T) {
 	requireDB(t)
+	withProductionHashCost(t)
 
 	tracer := &queryBudgetTracer{}
 
@@ -275,7 +297,8 @@ func TestAuthenticateComparesOutsideDBBudget(t *testing.T) {
 		t.Fatalf("seed user: %v", err)
 	}
 
-	// Calibration: one compare of the same plaintext against a cost-12 hash.
+	// Calibration: one compare of the same plaintext against a hash at the
+	// production bcrypt cost this test pinned.
 	probe := model.User{Name: "Probe", Email: "probe@example.com"}
 	if err := probe.Password.Set(probePassword); err != nil {
 		t.Fatalf("calibration hash: %v", err)

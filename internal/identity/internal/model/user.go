@@ -28,8 +28,35 @@ type password struct {
 	hash      []byte
 }
 
+// ProductionPasswordCost is the bcrypt cost production hashes with: 12 rounds
+// of key setup (a couple of hundred milliseconds on the reference machine),
+// the deliberate price of a slow hash. It is PasswordCost's default and the
+// only value non-test code uses.
+const ProductionPasswordCost = 12
+
+// PasswordCost is the bcrypt cost password.Set applies to every hash this
+// package produces. Production never writes it: the default is
+// ProductionPasswordCost and no non-test code overrides it.
+//
+// Test suites write it instead, once at TestMain, and only with
+// bcrypt.MinCost: the identity service and repository suites set it directly
+// (they live inside this package's internal tree), internal/spec and
+// internal/e2e through the facade's identity.SetPasswordHashCost (Go's
+// internal-package rule keeps this package out of their reach). A hash those
+// suites produce exists only to be read back by a login or a fixture, never to
+// be slow, and a cost-12 round trip under -race dominates a suite's wall time
+// while guarding nothing. The one test that DOES measure hashing time (the
+// service suite's DB-budget calibration) restores ProductionPasswordCost for
+// its duration.
+//
+// An exported var rather than a setter: the suites inside the module need to
+// write it, and the package sits under internal/, so the knob never leaves the
+// module. Nothing hashes concurrently with a test that writes it — no test in
+// this repo runs t.Parallel.
+var PasswordCost = ProductionPasswordCost
+
 func (p *password) Set(plaintextPassword string) error {
-	hash, err := bcrypt.GenerateFromPassword([]byte(plaintextPassword), 12)
+	hash, err := bcrypt.GenerateFromPassword([]byte(plaintextPassword), PasswordCost)
 	if err != nil {
 		return err
 	}
