@@ -545,6 +545,13 @@ func (c *checker) checkRefusal(rule Rule) {
 	if rule.Refusal == nil {
 		return
 	}
+	// A handler writes a real HTTP status: 100–599. The range is checked
+	// independently of the code, because `synthetic` refusals (Go-only, no
+	// SQLSTATE) still name the status the caller sees.
+	if http := rule.Refusal.HTTP; http != nil && (*http < 100 || *http > 599) {
+		c.errorf("refusal", rule.ID,
+			"refusal http %d is outside the HTTP status range 100–599", *http)
+	}
 	code := rule.Refusal.Code
 	if code == "" {
 		c.errorf("refusal", rule.ID, "refusal has no code")
