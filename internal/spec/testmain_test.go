@@ -4,13 +4,20 @@ package spec
 // repository's migrations, the modules composed over it (see doc.go), then the
 // godog suite, then the plain Go tests.
 //
-// The contract mirrors internal/e2e/testmain_test.go:
+// The DSN contract is testdb.DecideSkip's (internal/testdb/skip.go), and it is
+// deliberately the opposite of a quiet skip:
 //
-//   - LT_API_TEST_DSN unset → the suite skips (a note is printed), so
-//     `go test ./...` still passes on a DB-less machine.
+//   - LT_API_TEST_DSN unset and AUDIT_SKIP_DB unset → the suite FAILS (exit 1)
+//     with instructions for bringing the compose database up and exporting the
+//     DSN. A green run that tested nothing is worse than a red one.
+//   - LT_API_TEST_DSN unset and AUDIT_SKIP_DB=1 → a loud SKIP banner, then the
+//     DB-free tests in this package still run (exit 0 if they pass). Opting out
+//     has to be said out loud.
 //   - LT_API_TEST_DSN set but the database unreachable → hard failure with
-//     testdb's actionable message. A green run that silently tested nothing is
-//     worse than a red one.
+//     testdb's actionable message.
+//
+// internal/e2e still skips quietly without the DSN; moving it onto the same
+// policy is a separate change.
 
 import (
 	"context"
@@ -54,9 +61,18 @@ func runMain(m *testing.M) int {
 	// the catalog pins the behaviour, never how long a hash takes.
 	identity.SetPasswordHashCost(bcrypt.MinCost)
 
-	dsn := os.Getenv("LT_API_TEST_DSN")
-	if dsn == "" {
-		fmt.Println("LT_API_TEST_DSN not set; spec suite will be skipped")
+	dsn := os.Getenv(testdb.DSNEnv)
+	switch decision := testdb.DecideSkip(dsn, os.Getenv(testdb.SkipOptOutEnv)); decision.Action {
+	case testdb.ActionFail:
+		// Not a skip: the enforcement half of the audit did not run, so the
+		// exit status says so. The message carries the way out.
+		fmt.Fprintln(os.Stderr, decision.Message)
+		return 1
+	case testdb.ActionSkip:
+		// Announced, not merely printed: `go test ./...` discards a green
+		// package's output, and an unseen skip is the silent skip this
+		// policy exists to prevent.
+		testdb.Announce(decision.Message)
 		return m.Run()
 	}
 
