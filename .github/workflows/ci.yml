@@ -58,5 +58,17 @@ jobs:
           # Vendor dir is committed: builds download nothing, so the module
           # cache would be dead weight.
           cache: false
+      # setup-go's cache: false only kills the *module* cache; GOCACHE is a
+      # separate thing and still worth keeping. make audit compiles the whole
+      # tree under -race, which is slow, and without this every run pays for it
+      # from scratch. vendor/ means nothing is downloaded, so the key tracks
+      # go.sum alone (go.mod's toolchain is already pinned above).
+      - name: Go build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/go-build
+          key: go-build-${{ runner.os }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            go-build-${{ runner.os }}-
       - name: Audit
         run: make audit
