@@ -14,6 +14,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/game"
 	"lt-api.aleksrdvn.com/internal/identity"
 	"lt-api.aleksrdvn.com/internal/kernel/httpx"
+	"lt-api.aleksrdvn.com/internal/platform/httpchain"
 	"lt-api.aleksrdvn.com/internal/platform/server"
 	"lt-api.aleksrdvn.com/internal/schedule"
 )
@@ -25,7 +26,9 @@ import (
 //	RecoverPanic(EnableCORS(RateLimit(Authenticate(router))))
 //
 // with the router's own writers for 404/405 and one GET route per the
-// healthcheck plus the three module route tables.
+// healthcheck plus the three module route tables. The nesting itself is
+// httpchain.Build's (one builder, shared with the end-to-end suite, so the two
+// chains cannot drift — R-PLATFORM-014).
 func routes(srv *server.Server, chain *httpx.Middleware, calendar *schedule.Module, gameplay *game.Module, users *identity.Module) http.Handler {
 	router := httprouter.New()
 
@@ -49,5 +52,5 @@ func routes(srv *server.Server, chain *httpx.Middleware, calendar *schedule.Modu
 	// permission gate. The logger is the process logger, as before.
 	users.RegisterRoutes(router, srv.Logger)
 
-	return chain.RecoverPanic(chain.EnableCORS(chain.RateLimit(chain.Authenticate(router))))
+	return httpchain.Build(chain, router)
 }

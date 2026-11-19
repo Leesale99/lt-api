@@ -1988,10 +1988,12 @@ Every request traverses the same chain in the same order: panic recovery outermo
 
 | Site | Layer | Role | Pinned by |
 | --- | --- | --- | --- |
+| `internal/platform/httpchain/httpchain.go::Build` | `composition-root` | `authoritative` | — |
 | `cmd/api/routes.go::routes` | `handler` | `authoritative` | — |
 
 **Verification**
 
+- unit: `internal/platform/httpchain/httpchain_test.go::TestBuildOrder`
 - e2e: `internal/e2e/cors_test.go::TestEnableCORS`
 - e2e: `internal/e2e/auth_test.go::TestAuthenticateMiddleware`
 

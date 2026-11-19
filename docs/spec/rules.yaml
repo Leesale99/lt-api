@@ -6464,6 +6464,10 @@
   mechanism: null
   scope: null
   enforcement:
+    - site: internal/platform/httpchain/httpchain.go::Build
+      layer: composition-root
+      role: authoritative
+      pinned_by: null
     - site: cmd/api/routes.go::routes
       layer: handler
       role: authoritative
@@ -6471,6 +6475,8 @@
   refusal: null
   fixture: null
   verification:
+    unit:
+      - internal/platform/httpchain/httpchain_test.go::TestBuildOrder
     e2e:
       - internal/e2e/cors_test.go::TestEnableCORS
       - internal/e2e/auth_test.go::TestAuthenticateMiddleware
@@ -6479,12 +6485,19 @@
     assembled once, at the composition root, over modules that register their own routes
     behind a gate they are handed — no module can reorder the chain, and the router's
     own 404/405 writers sit inside it. The nesting
-    RecoverPanic(EnableCORS(RateLimit(Authenticate(router)))) is stated in both
-    cmd/api/routes.go and the middleware doc, and the CORS suite asserts the
-    preflight-before-router short-circuit. Recorded pinning gap: the e2e harness rebuilds
-    the same chain in internal/e2e/compose_test.go::newTestApplication, and nothing ties
-    the copy to cmd/api/routes.go — a chain-order change in one place leaves the suite
-    green while production differs.
+    RecoverPanic(EnableCORS(RateLimit(Authenticate(router)))) lives in ONE builder,
+    internal/platform/httpchain.Build, and both call sites ask it: cmd/api/routes.go and
+    the end-to-end harness (internal/e2e/compose_test.go::routes) hand it their own
+    router and Middleware — the suite keeps its substitutions (its origin allowlist, its
+    limiter) without owning the order. The fidelity gap the report recorded (§6 item 19:
+    the harness rebuilt the chain independently, so a reordering in one place left the
+    suite green) is closed by that single site; TestBuildOrder then pins the order itself,
+    one case per adjacent pair — a panicking route is answered (recovery outermost), an
+    allowed preflight spends no throttle token (CORS outside throttling), an empty bucket
+    answers 429 to a request with a bad credential (throttling outside authentication),
+    and a bad credential is refused on an unserved path (authentication outside the
+    router). The CORS suite asserts the preflight-before-router short-circuit from the
+    other end.
 
 - id: R-PLATFORM-015
   title: A context's pool speaks as that context's role

@@ -23,6 +23,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/kernel/httpx"
 	"lt-api.aleksrdvn.com/internal/kernel/idempotency"
 	"lt-api.aleksrdvn.com/internal/ledger"
+	"lt-api.aleksrdvn.com/internal/platform/httpchain"
 	"lt-api.aleksrdvn.com/internal/platform/server"
 	"lt-api.aleksrdvn.com/internal/schedule"
 )
@@ -67,9 +68,10 @@ func newTestApplication() *testApplication {
 }
 
 // routes mirrors cmd/api/routes.go: the same router, the same registration
-// order, the same router writers and the same middleware nesting. The
-// healthcheck route is registered too, so the E2E suite sees the production
-// route set — no test may pass on a chain main does not build.
+// order, the same router writers and — through httpchain.Build, the ONE
+// builder both call sites use — the same middleware nesting. The healthcheck
+// route is registered too, so the E2E suite sees the production route set — no
+// test may pass on a chain main does not build (R-PLATFORM-014).
 func (app *testApplication) routes() http.Handler {
 	chain := &httpx.Middleware{
 		Logger:         app.Server.Logger,
@@ -106,7 +108,9 @@ func (app *testApplication) routes() http.Handler {
 	// Users and User Tokens: pre-authentication flows, no permission gate.
 	app.Identity.RegisterRoutes(router, app.Server.Logger)
 
-	return chain.RecoverPanic(chain.EnableCORS(chain.RateLimit(chain.Authenticate(router))))
+	// The chain's order is httpchain.Build's, not this file's: the suite's
+	// substitutions (origins, limiter) ride on the Middleware it is handed.
+	return httpchain.Build(chain, router)
 }
 
 // testGameRefs adapts the game facade to the calendar's consumer-side port

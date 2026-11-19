@@ -13,7 +13,8 @@
 //     (kernel/persistence → kernel:persistence): httpx, persistence,
 //     eventbus, validator, idempotency.
 //   - "platform:<name>" — the technical platform under internal/platform/
-//     (platform/config → platform:config): config, logging, mailer, server.
+//     (platform/config → platform:config): config, logging, mailer, server,
+//     httpchain.
 //   - "shared:<name>" — the test-only remainder that is neither kernel nor
 //     platform: internal/testdb (the DB harness) and internal/arch (this
 //     package).
@@ -343,6 +344,7 @@ var allowedImports = map[string]map[string]bool{
 		"kernel:httpx":       true,
 		"kernel:idempotency": true,
 		"kernel:persistence": true,
+		"platform:httpchain": true,
 		"platform:server":    true, // the suite drives the process lifecycle
 	},
 
@@ -371,10 +373,14 @@ var allowedImports = map[string]map[string]bool{
 	// platform:server owns the process lifecycle: it serves a fully-built
 	// handler and knows no module, so it reaches nothing internal — its
 	// shutdown budgets are local consts.
-	"platform:server":  {},
-	"kernel:validator": {},
-	"shared:testdb":    {},
-	"shared:arch":      {}, // this package: walks the tree, imports nothing internal
+	"platform:server": {},
+	// platform:httpchain owns the served chain's ORDER and nothing else: it
+	// takes the httpx middleware as parameters and nests them, so it reaches
+	// kernel:httpx only — never a module, and it decides no business fact.
+	"platform:httpchain": {"kernel:httpx": true},
+	"kernel:validator":   {},
+	"shared:testdb":      {},
+	"shared:arch":        {}, // this package: walks the tree, imports nothing internal
 }
 
 // testOnlyImports widens a class's edge set for _test.go files only. The
