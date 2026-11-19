@@ -6,7 +6,9 @@ package model
 
 import (
 	"crypto/sha256"
+	"encoding/base32"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,6 +18,35 @@ func TestGenerateUserToken(t *testing.T) {
 		token := GenerateUserToken(1, time.Hour, ScopeAuthentication)
 		if len(token.Plaintext) != plaintextTokenLength {
 			t.Errorf("plaintext length = %d, want %d", len(token.Plaintext), plaintextTokenLength)
+		}
+	})
+
+	t.Run("plaintext uses the base32 alphabet", func(t *testing.T) {
+		// The alphabet the validator's length check assumes: RFC 4648's, the
+		// one crypto/rand.Text used before generation moved into this package.
+		const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+
+		for range 100 {
+			token := GenerateUserToken(1, time.Hour, ScopeAuthentication)
+			if len(token.Plaintext) != plaintextTokenLength {
+				t.Fatalf("plaintext %q length = %d, want %d", token.Plaintext, len(token.Plaintext), plaintextTokenLength)
+			}
+			for _, r := range token.Plaintext {
+				if !strings.ContainsRune(alphabet, r) {
+					t.Fatalf("plaintext %q holds %q, outside the RFC 4648 base32 alphabet", token.Plaintext, r)
+				}
+			}
+		}
+	})
+
+	t.Run("the length is the encoding's output trimmed, at 128 bits or more", func(t *testing.T) {
+		encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodedLen(tokenEntropyBytes)
+		if encoded < plaintextTokenLength {
+			t.Errorf("base32 of %d bytes is %d characters, shorter than the %d-character token",
+				tokenEntropyBytes, encoded, plaintextTokenLength)
+		}
+		if bits := plaintextTokenLength * 5; bits < 128 {
+			t.Errorf("a %d-character base32 token carries %d bits, fewer than 128", plaintextTokenLength, bits)
 		}
 	})
 
@@ -47,7 +78,7 @@ func TestGenerateUserToken(t *testing.T) {
 		first := GenerateUserToken(1, time.Hour, ScopeAuthentication)
 		second := GenerateUserToken(1, time.Hour, ScopeAuthentication)
 		if first.Plaintext == second.Plaintext {
-			t.Error("two tokens share a plaintext: crypto/rand reuse")
+			t.Error("two tokens share a plaintext: crypto/rand entropy reused")
 		}
 	})
 }
