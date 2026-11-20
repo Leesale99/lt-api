@@ -222,6 +222,24 @@ func scanGoFiles(c *checker, root string) []goSource {
 	return sources
 }
 
+// skippedDirectoryOf returns the first path component of a site's relative path
+// that scanGoFiles skips (vendor, testdata, or a dot-directory), or "" when the
+// file would be scanned. It names the directory a key finding reports, so the
+// reader learns why the annotation was never verified rather than only that it
+// was not.
+func skippedDirectoryOf(rel string) string {
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	for _, part := range parts[:len(parts)-1] {
+		if part == "." || part == ".." {
+			continue
+		}
+		if skippedGoDirs[part] || strings.HasPrefix(part, ".") {
+			return part
+		}
+	}
+	return ""
+}
+
 // declarationsOf indexes the top-level declarations a catalog site can name:
 // functions, methods (under both `Type.Name` and `Name`), types, constants and
 // variables.
@@ -372,6 +390,40 @@ func (c *checker) checkAnnotationsResolve(files map[string]goSource, ruleIDs map
 	}
 }
 
+// reportSkippedSite fails closed on the one case the forward direction cannot
+// read: the site's file exists on disk, but it lives in a directory scanGoFiles
+// skips, so no annotation inside it can ever be verified. Policy 3 accepts such
+// a site (the file exists), which used to make the pair a silent pass — the
+// plugin's fixture/vendor code would satisfy an authoritative site on paper
+// only. Only a genuinely missing file stays silent here, because policy 3 owns
+// that finding.
+func (c *checker) reportSkippedSite(path string, requirements []siteRequirement) {
+	dir := skippedDirectoryOf(path)
+	if dir == "" {
+		return // a scanned location: the file is genuinely missing (policy 3)
+	}
+	if info, err := os.Stat(filepath.Join(c.root, filepath.FromSlash(path))); err != nil || info.IsDir() {
+		return // absent file: policy 3 reports the site, not this policy
+	}
+	for _, req := range sortedRequirements(requirements) {
+		c.errorf(policyAnnotations, req.ruleID,
+			"required site %s lives in the skipped directory %q — policy 3 accepts it but policy 15 cannot verify fixture/vendor code; move the enforcement or make it specified-only",
+			req.site, dir)
+	}
+}
+
+// sortedRequirements orders one file's requirements by symbol then rule id, so
+// findings render deterministically whatever order the catalog named them in.
+func sortedRequirements(requirements []siteRequirement) []siteRequirement {
+	sort.SliceStable(requirements, func(i, j int) bool {
+		if requirements[i].symbol != requirements[j].symbol {
+			return requirements[i].symbol < requirements[j].symbol
+		}
+		return requirements[i].ruleID < requirements[j].ruleID
+	})
+	return requirements
+}
+
 // checkSitesAnnotated is the catalog → tree direction: every implemented rule's
 // Go site carries that rule's annotation at the declaration.
 func (c *checker) checkSitesAnnotated(files map[string]goSource, naming map[string][]siteRequirement) {
@@ -384,16 +436,11 @@ func (c *checker) checkSitesAnnotated(files map[string]goSource, naming map[stri
 	for _, path := range paths {
 		source, ok := files[path]
 		if !ok {
-			continue // policy 3 reports a site whose file does not exist
+			c.reportSkippedSite(path, naming[path])
+			continue
 		}
 
-		requirements := naming[path]
-		sort.SliceStable(requirements, func(i, j int) bool {
-			if requirements[i].symbol != requirements[j].symbol {
-				return requirements[i].symbol < requirements[j].symbol
-			}
-			return requirements[i].ruleID < requirements[j].ruleID
-		})
+		requirements := sortedRequirements(naming[path])
 
 		for _, req := range requirements {
 			decl, ok := source.decls[req.symbol]
