@@ -387,6 +387,41 @@ list is the frequency.
     rule; `expert-ref` is unchanged by it, so `specified-only` rules keep their
     `expert-ref` and may add `knowledge-ref` beside it.
 
+18. Scenarios must assert something an observer can see, and the assertion must
+    match the rule's category (checker id `18-oracle`). It is a cross-cutting
+    collector over the parsed feature tree, like policy 13:
+    - **No vacuous Then.** A Then step — and every `And`/`But` continuation of one,
+      which gherkin types as an outcome step — may not only report that the code
+      did not explode: `runs without throwing`, `does not panic`,
+      `completes successfully`, `the call succeeds`, `no error occurs` and their
+      close variants are ERRORs. Such a step would still pass after the rule was
+      deleted. Findings name the scenario's `file::scenario` pointer and the
+      offending step.
+    - **Category binding.** Policy 14's binding is reused: an `interface` rule with
+      at least one executable scenario must have at least one scenario whose Then
+      asserts a refusal observable (the refused-write family, refusal vocabulary,
+      or one of the rule's `refusal.constraint` / `refusal.sentinel` names). An
+      `invariant` or `policy` rule with at least one executable scenario must have
+      at least one scenario with a non-vacuous Then outcome (a state or side
+      effect), because those categories are business-visible. `orchestration`,
+      `boundary`, `refusal-mapping` and `persistence-fact` bind nothing here and
+      are exempt; a rule with no executable scenario is outside policy 18 (policy
+      14 already reports its missing proof, and `specified-only` rules have no
+      scenario by construction).
+    - **No re-derived expectations.** A Then step's quoted string, decimal number,
+      or integer above the scenario-coordinate range (1–38) that appears verbatim
+      in the executable Go source at one of the rule's annotated enforcement sites
+      is an ERROR: the expected value was copied from the implementation and can
+      no longer disagree with it. "Executable" is precise: literals are collected
+      from function bodies only, never from `const`/`var`/`type` declarations
+      (domain vocabulary such as `"locked"` legitimately lives there) or from
+      comments. A bare integer 1–38 is treated as a scenario coordinate (match
+      day / round number), not an asserted value. SQL migration sites and test
+      files contribute no literals, and a rule with no Go enforcement site is
+      skipped silently. The detector is deliberately a static, same-literal test:
+      it catches a scenario that spells the implementation's constant, not a
+      scenario whose expected value is merely computed the same way.
+
 ---
 
 ## 4. Fixtures (change detectors)
