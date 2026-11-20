@@ -119,6 +119,7 @@ What step 1 of the gate actually means, for a brand-new rule:
 | `make spec/check` | validate schema policies + catalog/feature traceability; runs `--strict`, so any check error fails the target (and therefore `make audit`) |
 | `make spec/diff` | fail if the dashboard or any module view is stale, or if `views/` holds a file the run does not render (an orphan; `gen` reports it but never deletes it) |
 | `make spec/brief args='R-GAME-001'` | print a Markdown work order for one rule — statement, sites, refusal map, fixture, resolved verification pointers, linked scenarios, gate — or `args='--module game'` for every rule of one module |
+| `make spec/queue` | print the read-only work queue in priority order — drifted, specified-only, then implemented rules with an enforcement site or verification pointer that does not resolve today — as Markdown, or `args='--json'` for task packets; `args='--module game'` scopes it |
 | `make db/up` | start the compose test database (CI's postgres:18 service container) and wait until its healthcheck passes |
 | `make db/down` | stop it; the named volume survives; `docker compose down -v` drops the base database too |
 | `make test/spec` | run the godog scenarios against real Postgres; fails without LT_API_TEST_DSN (bring it up with make db/up); AUDIT_SKIP_DB=1 turns that into a loud skip |
@@ -138,6 +139,14 @@ enforcement half; the other `go test` targets (`make test`, `make test/unit`,
 creates and drops itself) → `make db/down` when done.
 
 ## 4. Agent quickstart
+
+**Turn-start ritual.** Before picking anything up, run `make spec/queue` and take the
+top row — drifted rules first, then specified-only ones, then implemented rules whose
+enforcement site or verification pointer does not resolve today. Run that row's
+`brief_cmd` (`make spec/brief args='<id>'`) and use the brief as the task packet; add
+the matching `SPEC-SCOPE:` line from §5 so the worker's gates stay scoped. The queue
+is a cheap triage view, not a verdict: policies 13, 15 and 18 still only run in
+`make spec/check`.
 
 **Picking up a task.** Find the rule in `docs/spec/rules.yaml`; read its `statement`,
 `enforcement`, `verification` and `notes`, then open the feature file it points at.

@@ -165,6 +165,11 @@ spec/check:
 spec/brief:
 	go run ./cmd/spec brief $(args)
 
+## spec/queue: print the read-only work queue (drifted → specified-only → broken pointer); args='--json' or args='--module game'
+.PHONY: spec/queue
+spec/queue:
+	go run ./cmd/spec queue $(args)
+
 ## spec/diff: fail if the dashboard or any generated module view is stale (wired into `make audit`)
 .PHONY: spec/diff
 spec/diff:
