@@ -58,6 +58,7 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./agents.ts";
+import { runReconciliation } from "./gates.ts";
 import { getFinalOutput, parseChildJsonl, truncateParallelOutput } from "./output.ts";
 
 const execFileP = promisify(execFile);
@@ -94,6 +95,12 @@ export interface JobEntry {
    * unbound, exactly as before.
    */
   awaitingApprovalHeadSha?: string;
+  /**
+   * Batch 2 (reconciliation-lite): attached once, when the entry first reaches
+   * a terminal status (done/failed/aborted). Telemetry only — a failed
+   * reconciliation annotates the entry and never fails the job registry.
+   */
+  reconciliation?: { ok: boolean; report: string };
 }
 
 export function jobsDirFor(cwd: string): string {
@@ -394,7 +401,9 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
     // orchestrator's privilege, so every background child runs in the
     // orchestrator role (both the tmux and the headless-fallback variant;
     // the assignment prefix also overrides any inherited role value).
-    let cmd = "PI_DELEGATE_CHILD=1 PI_DELEGATE_ROLE=orchestrator " + piBin + " --session-dir " + shq(dir) + " --session-id " + shq(tmuxSession);
+    // Batch 2: PI_DELEGATE_JOB_ID gives the child (and its own foreground
+    // workers) a stable claims-log namespace — `.pi/jobs/<id>/claims.jsonl`.
+    let cmd = "PI_DELEGATE_CHILD=1 PI_DELEGATE_ROLE=orchestrator PI_DELEGATE_JOB_ID=" + shq(id) + " " + piBin + " --session-dir " + shq(dir) + " --session-id " + shq(tmuxSession);
     if (!interactive) cmd += " --mode json -p";
     if (opts.model) cmd += " --model " + shq(opts.model);
     if (opts.thinking) cmd += " --thinking " + shq(opts.thinking);
@@ -446,6 +455,46 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
  * done flips); pre-phase-7 registry entries never carry the new status and
  * keep reading correctly. Persisted (atomically) whenever the status changes.
  */
+/**
+ * Batch 2 (reconciliation-lite) for background jobs: when an entry reaches a
+ * terminal status, re-run the cheap gate ladder and diff it against the
+ * newest passing receipt of the day, then record the report ON the entry.
+ *
+ * Contract: this is telemetry — a failed/ crashed reconciliation annotates the
+ * entry and NEVER fails the job registry (the job's own status stays whatever
+ * the runner/registry decided). Runs at most once per entry id: the report is
+ * persisted, and an in-flight set keeps parallel pollers from duplicating it.
+ */
+const reconcilingJobs = new Set<string>();
+
+async function attachJobReconciliation(dir: string, entry: JobEntry): Promise<void> {
+  if (entry.reconciliation || reconcilingJobs.has(entry.id)) return;
+  reconcilingJobs.add(entry.id);
+  try {
+    // dir is <cwd>/.pi/jobs — the repo root is two levels up.
+    const cwd = path.dirname(path.dirname(dir));
+    const result = await runReconciliation(cwd, {
+      agent: "job:" + entry.agent,
+      session: entry.id,
+      scopeEnv: undefined,
+    });
+    entry.reconciliation = { ok: result.ok, report: result.report };
+    await persistEntry(dir, entry);
+  } catch (error) {
+    entry.reconciliation = {
+      ok: false,
+      report: "reconciliation crashed (job status unaffected): " + (error instanceof Error ? error.message : String(error)),
+    };
+    try {
+      await persistEntry(dir, entry);
+    } catch {
+      /* a registry write failure must not be reported as the job's failure */
+    }
+  } finally {
+    reconcilingJobs.delete(entry.id);
+  }
+}
+
 async function refreshStatus(dir: string, entry: JobEntry): Promise<JobEntry> {
   if (entry.status === "aborted") {
     // A false "aborted" (transient runner probe failure while the child was
@@ -457,6 +506,7 @@ async function refreshStatus(dir: string, entry: JobEntry): Promise<JobEntry> {
     entry.status = lateExitCode === 0 ? "done" : "failed";
     entry.finishedAt ??= new Date().toISOString();
     await persistEntry(dir, entry);
+    await attachJobReconciliation(dir, entry);
     return entry;
   }
   if (entry.status === "awaiting_approval") {
@@ -470,6 +520,7 @@ async function refreshStatus(dir: string, entry: JobEntry): Promise<JobEntry> {
       entry.status = exitCode === 0 ? "done" : "failed";
       entry.finishedAt = new Date().toISOString();
       await persistEntry(dir, entry);
+      await attachJobReconciliation(dir, entry);
       return entry;
     }
     const state = sessionRoundState(dir, entry.id);
@@ -477,6 +528,7 @@ async function refreshStatus(dir: string, entry: JobEntry): Promise<JobEntry> {
       entry.status = "done";
       entry.finishedAt = new Date().toISOString();
       await persistEntry(dir, entry);
+      await attachJobReconciliation(dir, entry);
     } else if (state.awaitingApproval && state.awaitingApprovalHeadSha && state.awaitingApprovalHeadSha !== entry.awaitingApprovalHeadSha) {
       // A rejection round ends with a FRESH AWAITING_APPROVAL block; keep the
       // bound SHA in step with the block the user is now looking at.
@@ -492,6 +544,7 @@ async function refreshStatus(dir: string, entry: JobEntry): Promise<JobEntry> {
     entry.status = exitCode === 0 ? "done" : "failed";
     entry.finishedAt = new Date().toISOString();
     await persistEntry(dir, entry);
+    await attachJobReconciliation(dir, entry);
     return entry;
   }
 
@@ -508,6 +561,8 @@ async function refreshStatus(dir: string, entry: JobEntry): Promise<JobEntry> {
     // Batch 1: bind the approval to the HEAD SHA printed in the block.
     if (round.awaitingApproval) entry.awaitingApprovalHeadSha = round.awaitingApprovalHeadSha;
     await persistEntry(dir, entry);
+    // awaiting_approval is a WAITING status, not terminal: no reconciliation.
+    if (!round.awaitingApproval) await attachJobReconciliation(dir, entry);
     return entry;
   }
 
@@ -526,6 +581,7 @@ async function refreshStatus(dir: string, entry: JobEntry): Promise<JobEntry> {
     entry.status = "aborted";
     entry.finishedAt = new Date().toISOString();
     await persistEntry(dir, entry);
+    await attachJobReconciliation(dir, entry);
   }
   return entry;
 }

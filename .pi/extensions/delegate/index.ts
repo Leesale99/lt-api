@@ -80,23 +80,43 @@ import {
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import {
+  type ClaimRecord,
+  type SpawnRequest,
+  completeSpawnClaim,
+  formatClaimConflict,
+  jobIdForEnv,
+  prepareSpawnClaims,
+  siblingContextFor,
+} from "./claims.ts";
+import {
   type GateRun,
-  SETTLE_GATE_MAX_ATTEMPTS,
+  type ReconciliationResult,
   bumpSettleGateAttempts,
   evaluateGateFileWrite,
   formatGateReport,
+  formatSettleEscalation,
+  formatSettleTrail,
   formatSpecScope,
   isGateRelevantWrite,
   logGateDebug,
   markPostWriteGateEnd,
   markPostWriteGateStart,
   parseSpecScope,
+  planSettleGateAttempt,
   receiptCommandsOf,
+  recentSettleFailures,
+  reconciliationGateRun,
+  recordSettleGateAttempt,
   resetSettleGateAttempts,
+  runReconciliation,
   runScopedGate,
+  settleBackoffBaseMs,
+  settleGateMaxAttempts,
+  settleGateStateFor,
   shouldRunPostWriteGate,
   writeReceipt,
 } from "./gates.ts";
+import { formatStallReason, startStallWatchdog, workerStallTimeoutMs } from "./runtime.ts";
 import {
   createChildStreamParser,
   emptyUsage,
@@ -154,6 +174,58 @@ function pollCooldownMs(): number {
 /** True in a spawned worker child (foreground spawns only — background children are orchestrators). */
 function isWorkerChild(): boolean {
   return process.env.PI_DELEGATE_CHILD === "1" && process.env.PI_DELEGATE_ROLE === "worker";
+}
+
+/**
+ * The worker gate ladder with the batch-1 fail-closed crash fallback: a throw
+ * in the runner becomes a failed GateRun, never a silent pass.
+ */
+async function runWorkerGate(cwd: string, scopeEnv: string | undefined): Promise<GateRun> {
+  try {
+    return await runScopedGate({ cwd, scopeEnv });
+  } catch (error) {
+    console.error("[delegate] worker gate crashed:", error);
+    return {
+      ok: false,
+      steps: [
+        {
+          command: "(worker gate)",
+          argv: [],
+          ok: false,
+          exitCode: null,
+          timedOut: false,
+          durationMs: 0,
+          stdout: "",
+          stderr: error instanceof Error ? error.message : String(error),
+          spawnError: null,
+          reason: "gate runner threw",
+        },
+      ],
+    };
+  }
+}
+
+/** Receipt append for a settle/worker attempt; a failure never changes a verdict. */
+async function writeSettleReceipt(input: {
+  cwd: string;
+  agent: string;
+  commands: ReturnType<typeof receiptCommandsOf>;
+  ok: boolean;
+  note: string;
+}): Promise<string | null> {
+  try {
+    return await writeReceipt({
+      cwd: input.cwd,
+      agent: input.agent,
+      session: process.env.PI_SESSION_ID,
+      commands: input.commands,
+      ok: input.ok,
+      note: input.note,
+    });
+  } catch (error) {
+    console.error("[delegate] settle receipt failed:", error);
+    return null;
+  }
 }
 
 /**
@@ -303,6 +375,8 @@ interface SingleResult {
   errorMessage?: string;
   terminationSignal?: NodeJS.Signals;
   step?: number;
+  /** Batch 2: the run was killed by the stall watchdog (see runtime.ts). */
+  stallTimeout?: boolean;
 }
 
 interface SubagentDetails {
@@ -499,17 +573,26 @@ function createUnstartedResult(
  * multiple skills only the first is inlined; the rest are named explicitly — pi
  * advertises every skill (name + SKILL.md path) in the child's system prompt, so
  * the child reads those SKILL.md files itself.
+ *
+ * Batch 2: `siblingContext` is the claims-log broadcast of recent completions
+ * (built by claims.ts), appended as a separate trailing block so it never
+ * runs into the task text or the skill instructions.
  */
-function buildTaskPrompt(agent: AgentConfig, task: string): string {
+function buildTaskPrompt(agent: AgentConfig, task: string, siblingContext?: string): string {
   const skills = agent.skills ?? [];
-  if (skills.length === 0) return `Task: ${task}`;
-  const [first, ...rest] = skills;
-  let prompt = `/skill:${first} Task: ${task}`;
-  if (rest.length > 0) {
-    prompt +=
-      `\n\nAlso required: load and follow the skills ${rest.map((s) => `"${s}"`).join(", ")}` +
-      ` (each skill's SKILL.md path is advertised in your context) before doing the task.`;
+  let prompt: string;
+  if (skills.length === 0) {
+    prompt = `Task: ${task}`;
+  } else {
+    const [first, ...rest] = skills;
+    prompt = `/skill:${first} Task: ${task}`;
+    if (rest.length > 0) {
+      prompt +=
+        `\n\nAlso required: load and follow the skills ${rest.map((s) => `"${s}"`).join(", ")}` +
+        ` (each skill's SKILL.md path is advertised in your context) before doing the task.`;
+    }
   }
+  if (siblingContext && siblingContext.trim()) prompt += "\n\n" + siblingContext.trim();
   return prompt;
 }
 
@@ -592,18 +675,28 @@ async function runSingleAgent(
       return currentResult;
     }
 
-    args.push(buildTaskPrompt(agent, task));
+    args.push(buildTaskPrompt(agent, task, await siblingContextFor(effectiveCwd, jobIdForEnv())));
     emitUpdate();
     let wasAborted = false;
+    // Batch 2 stall guard: every parsed child event (and every raw stdout
+    // chunk — a superset, deliberately forgiving) refreshes lastActivityMs; a
+    // referenced 1s watchdog aborts through the normal SIGTERM→SIGKILL path
+    // once the silence exceeds the (env-tunable, 0-disabled) timeout.
+    const stallTimeoutMs = workerStallTimeoutMs();
+    const activity = { lastMs: Date.now() };
+    let stalled = false;
+    let stallReason = "";
     const outcome = await new Promise<ProcessOutcome>((resolve) => {
       const invocation = getPiInvocation(args);
       let settled = false;
       let exited = false;
       let closed = false;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
+      let watchdog: { stop(): void } | undefined;
       let buffer = "";
 
       const processLine = (line: string) => {
+        activity.lastMs = Date.now();
         if (stream.processLine(line)) emitUpdate();
       };
 
@@ -613,6 +706,7 @@ async function runSingleAgent(
         settled = true;
         closed = true;
         if (killTimer) clearTimeout(killTimer);
+        watchdog?.stop();
         if (signal) signal.removeEventListener("abort", abortProcess);
         resolve(result);
       };
@@ -670,6 +764,7 @@ async function runSingleAgent(
       }
 
       proc.stdout?.on("data", (data) => {
+        activity.lastMs = Date.now();
         buffer += data.toString();
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
@@ -693,6 +788,19 @@ async function runSingleAgent(
         if (signal.aborted) abortProcess();
         else signal.addEventListener("abort", abortProcess, { once: true });
       }
+
+      // Batch 2: start the stall watchdog once the child is live. It aborts
+      // through the SAME path as a user abort (SIGTERM, then SIGKILL after
+      // 5s), so a wedged child cannot leak a process; finish() stops it.
+      watchdog = startStallWatchdog({
+        timeoutMs: stallTimeoutMs,
+        getLastActivityMs: () => activity.lastMs,
+        onStall: (decision) => {
+          stalled = true;
+          stallReason = formatStallReason(decision.idleMs, stallTimeoutMs);
+          abortProcess();
+        },
+      });
     });
 
     currentResult.exitCode = outcome.code;
@@ -701,7 +809,25 @@ async function runSingleAgent(
     currentResult.stopReason = stream.stopReason;
     currentResult.errorMessage ||= stream.errorMessage;
 
-    if (wasAborted) {
+    if (stalled) {
+      // Fail closed: the run produced no verdict, so the worker result is an
+      // error, and the extension (not the worker) records what happened.
+      currentResult.status = "failed";
+      currentResult.stallTimeout = true;
+      currentResult.errorMessage = stallReason;
+      try {
+        await writeReceipt({
+          cwd: effectiveCwd,
+          agent: agentName,
+          session: process.env.PI_SESSION_ID,
+          commands: [],
+          ok: false,
+          note: "stall-timeout: " + stallReason,
+        });
+      } catch (error) {
+        console.error("[delegate] stall-timeout receipt failed:", error);
+      }
+    } else if (wasAborted) {
       currentResult.status = "aborted";
       currentResult.errorMessage ||= "Subagent was aborted";
     } else if (outcome.spawnError) {
@@ -1791,6 +1917,68 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
+      // Batch 2: claims log + overlap blocking. Foreground single and tasks[]
+      // spawns claim their SPEC-SCOPE / CLAIMS-PATHS before any child
+      // launches; an overlapping ACTIVE claim blocks the WHOLE call (no child
+      // starts, no claim is written). Background orchestrator spawns are not
+      // claimed here: their lifetime is tracked by the job registry, not by
+      // this tool result, so a claim would stay active for the whole job.
+      // Parameter errors that return before a child exists are handled ABOVE
+      // (the MAX_PARALLEL_TASKS guard below too): a claim must never outlive a
+      // refused call.
+      if (hasTasks && params.tasks && params.tasks.length > MAX_PARALLEL_TASKS) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`,
+            },
+          ],
+          details: makeDetails("parallel", true)([]),
+        };
+      }
+      const claimsJobId = jobIdForEnv();
+      const claimsSessionId = process.env.PI_SESSION_ID ?? "";
+      const singleAgentForClaims = resolvedSingle?.agent;
+      const singleIsBackground = Boolean(
+        hasSingle && singleAgentForClaims && (params.background ?? singleAgentForClaims.background),
+      );
+      const spawnRequests: SpawnRequest[] = hasTasks
+        ? (params.tasks ?? []).map((entry) => ({ worker: entry.agent, task: entry.task }))
+        : hasSingle && singleAgentForClaims && !singleIsBackground && params.agent && params.task
+          ? [{ worker: params.agent, task: params.task }]
+          : [];
+      let spawnClaims: ClaimRecord[] = [];
+      const releasedClaimIds = new Set<string>();
+      // Release exactly once per claim: the completion record is what makes a
+      // claim inactive, so it must be appended on every exit path (a crashed
+      // spawn included) — an orphaned active claim would block the next worker.
+      const releaseClaim = async (claim: ClaimRecord | undefined, ok: boolean): Promise<void> => {
+        if (!claim || releasedClaimIds.has(claim.claimId)) return;
+        releasedClaimIds.add(claim.claimId);
+        try {
+          await completeSpawnClaim({ cwd: ctx.cwd, jobId: claimsJobId, claim, ok });
+        } catch (error) {
+          console.error("[delegate] claim completion write failed:", error);
+        }
+      };
+      if (spawnRequests.length > 0) {
+        const prepared = await prepareSpawnClaims({
+          cwd: ctx.cwd,
+          jobId: claimsJobId,
+          sessionId: claimsSessionId,
+          requests: spawnRequests,
+        });
+        if (prepared.blocked.length > 0) {
+          const text = prepared.blocked.map((conflict) => formatClaimConflict(conflict)).join("\n\n");
+          return {
+            content: [{ type: "text", text }],
+            details: makeDetails(hasTasks ? "parallel" : "single", true)([]),
+          };
+        }
+        spawnClaims = prepared.claims;
+      }
+
       if (params.chain && params.chain.length > 0) {
         const results: SingleResult[] = [];
         let previousOutput = "";
@@ -1899,24 +2087,33 @@ export default function (pi: ExtensionAPI) {
         };
 
         const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
-          const result = await runSingleAgent(
-            dispatchDefaults,
-            resolvedTasks[index],
-            t.agent,
-            t.task,
-            undefined,
-            signal,
-            // Per-task update callback
-            (partial) => {
-              if (partial.details?.results[0]) {
-                allResults[index] = partial.details.results[0];
-                emitParallelUpdate();
-              }
-            },
-            makeDetails("parallel"),
-          );
+          let result: SingleResult;
+          try {
+            result = await runSingleAgent(
+              dispatchDefaults,
+              resolvedTasks[index],
+              t.agent,
+              t.task,
+              undefined,
+              signal,
+              // Per-task update callback
+              (partial) => {
+                if (partial.details?.results[0]) {
+                  allResults[index] = partial.details.results[0];
+                  emitParallelUpdate();
+                }
+              },
+              makeDetails("parallel"),
+            );
+          } catch (error) {
+            // A thrown spawn must still release its claim (fail-open telemetry).
+            await releaseClaim(spawnClaims[index], false);
+            throw error;
+          }
           allResults[index] = result;
           emitParallelUpdate();
+          // Batch 2: release the claim with the paths that actually changed.
+          await releaseClaim(spawnClaims[index], !isFailedResult(result));
           return result;
         });
 
@@ -1995,16 +2192,25 @@ export default function (pi: ExtensionAPI) {
           }
           return await startBackgroundRun(dispatchDefaults, singleAgent, params.task, ctx, params.handoff);
         }
-        const result = await runSingleAgent(
-          dispatchDefaults,
-          resolvedSingle,
-          params.agent,
-          params.task,
-          undefined,
-          signal,
-          onUpdate,
-          makeDetails("single"),
-        );
+        let result: SingleResult;
+        try {
+          result = await runSingleAgent(
+            dispatchDefaults,
+            resolvedSingle,
+            params.agent,
+            params.task,
+            undefined,
+            signal,
+            onUpdate,
+            makeDetails("single"),
+          );
+        } catch (error) {
+          // A thrown spawn must still release its claim (fail-open telemetry).
+          await releaseClaim(spawnClaims[0], false);
+          throw error;
+        }
+        // Batch 2: release the claim with the paths that actually changed.
+        await releaseClaim(spawnClaims[0], !isFailedResult(result));
         const isError = isFailedResult(result);
         if (isError) {
           const errorMsg = getResultOutput(result);
@@ -2766,10 +2972,25 @@ export default function (pi: ExtensionAPI) {
     return { entries: drafts, continue: true };
   });
 
-  // Batch 1: WORKER-SETTLE gate. A worker child may not settle as "done" while
-  // the scoped gate fails: the same two commands as the post-write gate run
-  // again (no debounce), the extension writes a receipt, and a bounded
-  // continue:true hands the worker up to three turns to fix the failures.
+  // Batch 1 + batch 2: WORKER-SETTLE gate. A worker child may not settle as
+  // "done" while the scoped gate fails: the same two commands as the
+  // post-write gate run again (no debounce), the extension writes a receipt,
+  // and a bounded continue:true hands the worker turns to fix the failures.
+  //
+  // Batch 2 additions: (a) past the batch-1 immediate window the continuation
+  // waits an exponential backoff (2s, 4s at the default base) and its reason
+  // text is ESCALATING; after the last attempt the hard stop prints the full
+  // per-attempt receipt trail. (b) A PASSING ladder is followed by
+  // reconciliation-lite: the ladder is re-run and diffed against the newest
+  // passing receipt (HEAD sha, rules.yaml hash, exit codes). The receipt for
+  // THIS attempt is written first, so the checkpoint is the tree state the
+  // green ladder just described — the drift it catches is a concurrent writer
+  // (another worker committing mid-ladder), not a day-old receipt from a
+  // sibling. That matters: `<cwd>/.pi/receipts/` is per REPO, not per worker,
+  // and a mismatch against a stale day-long checkpoint would block a
+  // legitimately green worker forever. A mismatch still counts as a failed
+  // attempt and is reported in full.
+  //
   // Loop safety: continue is conditional on NEW state — the attempt counter
   // (module state, reset by a PASSING run) strictly increases per failure, so
   // the attempt cap hands out the HARD STOP message as a TERMINAL turn
@@ -2787,43 +3008,59 @@ export default function (pi: ExtensionAPI) {
     }
     if (event.outcome !== "completed") return;
 
-    let run: GateRun;
-    try {
-      run = await runScopedGate({ cwd: ctx.cwd, scopeEnv: process.env.PI_DELEGATE_SPEC_SCOPE });
-    } catch (error) {
-      // Internal error ⇒ failure, never a silent settle (fail closed).
-      console.error("[delegate] settle gate crashed:", error);
-      run = {
-        ok: false,
-        steps: [
-          {
-            command: "(settle gate)",
-            argv: [],
-            ok: false,
-            exitCode: null,
-            timedOut: false,
-            durationMs: 0,
-            stdout: "",
-            stderr: error instanceof Error ? error.message : String(error),
-            spawnError: null,
-            reason: "gate runner threw",
-          },
-        ],
-      };
-    }
+    const maxAttempts = settleGateMaxAttempts();
+    const baseMs = settleBackoffBaseMs();
+    const attempt = settleGateStateFor().attempts + 1;
+    const agentName = process.env.PI_DELEGATE_ROLE ?? "worker";
+    const scopeEnv = process.env.PI_DELEGATE_SPEC_SCOPE;
 
-    let receiptPath: string | null = null;
-    try {
-      receiptPath = await writeReceipt({
-        cwd: ctx.cwd,
-        agent: process.env.PI_DELEGATE_ROLE ?? "worker",
-        session: process.env.PI_SESSION_ID,
-        commands: receiptCommandsOf(run),
-        ok: run.ok,
-        note: "settle gate",
-      });
-    } catch (error) {
-      console.error("[delegate] settle receipt failed:", error);
+    let run = await runWorkerGate(ctx.cwd, scopeEnv);
+
+    // Receipt FIRST (note names the attempt number for every attempt): on a
+    // green ladder this receipt is the reconciliation checkpoint.
+    const receiptPath = await writeSettleReceipt({
+      cwd: ctx.cwd,
+      agent: agentName,
+      commands: receiptCommandsOf(run),
+      ok: run.ok,
+      note: "settle gate attempt " + String(attempt) + "/" + String(maxAttempts),
+    });
+
+    let reconciliation: ReconciliationResult | undefined;
+    if (run.ok) {
+      // Reconciliation-lite: only worth running on a green ladder, and only
+      // once per settle. A crash is a failure (fail closed), never a pass.
+      try {
+        reconciliation = await runReconciliation(ctx.cwd, {
+          agent: agentName,
+          session: process.env.PI_SESSION_ID,
+          scopeEnv,
+        });
+      } catch (error) {
+        console.error("[delegate] reconciliation crashed:", error);
+        reconciliation = {
+          ok: false,
+          report:
+            "── RECONCILIATION ──\nstatus: MISMATCH — reconciliation crashed: " +
+            (error instanceof Error ? error.message : String(error)),
+          steps: [],
+          receipt: null,
+        };
+      }
+      if (!reconciliation.ok) {
+        run = reconciliationGateRun(reconciliation);
+        if (reconciliation.steps.length > 0) {
+          // The reconciliation ladder's own commands go into their own receipt
+          // so a later trail can name exactly which run drifted.
+          await writeSettleReceipt({
+            cwd: ctx.cwd,
+            agent: agentName,
+            commands: receiptCommandsOf({ ok: reconciliation.ok, steps: reconciliation.steps }),
+            ok: false,
+            note: "reconciliation attempt " + String(attempt) + "/" + String(maxAttempts),
+          });
+        }
+      }
     }
 
     if (run.ok) {
@@ -2832,19 +3069,28 @@ export default function (pi: ExtensionAPI) {
       return undefined;
     }
 
-    const attempt = bumpSettleGateAttempts();
-    const hardStop = attempt >= SETTLE_GATE_MAX_ATTEMPTS;
+    const plan = planSettleGateAttempt(attempt, { maxAttempts, baseMs });
+    bumpSettleGateAttempts();
+    recordSettleGateAttempt({ run, receiptPath });
+    // Wait BEFORE handing the continuation back: the backoff is the point, and
+    // an entries-only early return would burn the turn instead.
+    if (plan.waitMs > 0) await sleepMs(plan.waitMs);
+
+    const escalation = formatSettleEscalation(plan, recentSettleFailures());
     const header =
-      "\u2500\u2500 SETTLE GATE BLOCKED (attempt " + String(attempt) + "/" + String(SETTLE_GATE_MAX_ATTEMPTS) + ") \u2500\u2500";
-    const footer = hardStop
-      ? "HARD STOP \u2014 TERMINAL TURN: " + String(SETTLE_GATE_MAX_ATTEMPTS) + " failed gate attempts. " +
-        "This is your LAST turn: make NO further changes (no edits, no fixes), run no more gate commands, " +
-        "and reply with your verbatim failure report \u2014 each failing command, its exit code, the failing " +
-        "output lines above, and the receipt path. That report is what your parent receives."
-      : "Do not report done; fix the gate failures.";
+      "\u2500\u2500 SETTLE GATE BLOCKED (attempt " + String(attempt) + "/" + String(maxAttempts) + ") \u2500\u2500";
+    const failureFooter =
+      "HARD STOP \u2014 TERMINAL TURN: " + String(maxAttempts) + " failed gate attempts. " +
+      "This is your LAST turn: make NO further changes (no edits, no fixes), run no more gate commands, " +
+      "and reply with your verbatim failure report \u2014 each failing command, its exit code, the failing " +
+      "output lines above, and the receipt path. That report is what your parent receives.";
+    const footer = plan.terminal
+      ? escalation + "\n" + formatSettleTrail(settleGateStateFor()) + "\n" + failureFooter
+      : escalation + "\nDo not report done; fix the gate failures.";
     const content =
-      formatGateReport(run, { header, footer, maxLines: 30 }) +
-      "\nreceipt: " + (receiptPath ?? "(not written)");
+      formatGateReport(run, { header, footer, maxLines: plan.terminal ? 20 : 30 }) +
+      "\nreceipt: " + (receiptPath ?? "(not written)") +
+      (reconciliation && !reconciliation.ok ? "\n" + reconciliation.report : "");
     const entries: SessionBoundaryDraft[] = [
       ...event.entries,
       { type: "custom_message", customType: "delegate-gate", content, display: true },
@@ -2852,7 +3098,7 @@ export default function (pi: ExtensionAPI) {
     // Hard stop: still continue ONCE (the terminal turn) so the run ends on an
     // assistant message instead of an entries-only return (see the
     // settleGateTerminal comment above).
-    if (hardStop) settleGateTerminal = true;
+    if (plan.terminal) settleGateTerminal = true;
     return { entries, continue: true };
   });
 }

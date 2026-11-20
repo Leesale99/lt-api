@@ -523,27 +523,187 @@ export function markPostWriteGateEnd(sessionKey: string): void {
   else debounceBySession.set(sessionKey, { lastRunAt: Date.now(), inFlight: false });
 }
 
-// ── Worker-settle gate attempts ─────────────────────────────────────────────
+// ── Worker-settle gate attempts + backoff ───────────────────────────────────
 
 /**
- * Settle-gate attempts for this session (module state, session lifetime).
- * Reset by a PASSING settle gate; incremented by a failing one. 3 failures ⇒
- * hard stop (no more continue:true).
+ * Batch 2: attempts 1..SETTLE_GATE_IMMEDIATE_ATTEMPTS behave EXACTLY like batch
+ * 1 (immediate block + continue). Every later attempt waits an exponential
+ * backoff before its continuation (`base * 2^(n-4)`: 2s, 4s at the default
+ * base) and the LAST attempt is the hard stop. Backoff exists because a worker
+ * retrying a slow `make audit/static` ladder in a tight loop burns turns on a
+ * transient failure (another worker mid-write, a stale lock); the wait lets
+ * the tree settle.
  */
-export const SETTLE_GATE_MAX_ATTEMPTS = 3;
-let settleGateAttempts = 0;
+export const SETTLE_GATE_MAX_ATTEMPTS = 5;
+/** First backoff wait (ms); doubled per attempt past the immediate window. */
+export const SETTLE_BACKOFF_BASE_MS = 2_000;
+/** Attempts that retry with no wait (batch-1 semantics). */
+export const SETTLE_GATE_IMMEDIATE_ATTEMPTS = 3;
+/** Doublings cap, so a hand-set huge max cannot make the gate wait for hours. */
+export const SETTLE_BACKOFF_MAX_DOUBLINGS = 5;
 
-export function settleGateAttemptsFor(): number {
-  return settleGateAttempts;
+/** Total attempts: env override, clamped to at least the immediate window. */
+export function settleGateMaxAttempts(): number {
+  const raw = Number(process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS);
+  if (!Number.isFinite(raw) || raw < SETTLE_GATE_IMMEDIATE_ATTEMPTS) return SETTLE_GATE_MAX_ATTEMPTS;
+  return Math.floor(raw);
 }
 
-export function bumpSettleGateAttempts(): number {
-  settleGateAttempts += 1;
-  return settleGateAttempts;
+/** Backoff base (ms): env override, 0 keeps the escalation text but no wait. */
+export function settleBackoffBaseMs(): number {
+  const raw = Number(process.env.PI_DELEGATE_BACKOFF_BASE_MS);
+  if (!Number.isFinite(raw) || raw < 0) return SETTLE_BACKOFF_BASE_MS;
+  return Math.floor(raw);
+}
+
+/** One failed settle-gate attempt, as it lands in the terminal receipt trail. */
+export interface SettleAttemptRecord {
+  attempt: number;
+  /** Epoch ms of the failed run. */
+  at: number;
+  /** Every command of that run, joined with ', '. */
+  command: string;
+  commands: ReceiptCommand[];
+  receiptPath: string | null;
+  /** First failing step's reason — the 'previous failures' tail. */
+  reason: string;
+}
+
+/**
+ * Settle-gate state for this session (module state, session lifetime): a state
+ * record instead of the batch-1 counter, so backoff can tell 'which attempt'
+ * from 'how long ago' and the hard stop can print the whole trail. Reset by a
+ * PASSING settle gate.
+ */
+export interface SettleGateState {
+  attempts: number;
+  lastAttemptAt: number;
+  history: SettleAttemptRecord[];
+}
+
+let settleGateState: SettleGateState = { attempts: 0, lastAttemptAt: 0, history: [] };
+
+/** Live state record (read-only by convention; mutate through the helpers). */
+export function settleGateStateFor(): SettleGateState {
+  return settleGateState;
+}
+
+export function settleGateAttemptsFor(): number {
+  return settleGateState.attempts;
+}
+
+export function bumpSettleGateAttempts(now: number = Date.now()): number {
+  settleGateState.attempts += 1;
+  settleGateState.lastAttemptAt = now;
+  return settleGateState.attempts;
+}
+
+/** Append the failed attempt to the trail (call AFTER bump). */
+export function recordSettleGateAttempt(
+  input: { run: GateRun; receiptPath: string | null; at?: number },
+  now: number = Date.now(),
+): SettleAttemptRecord {
+  const failing = input.run.steps.find((step) => !step.ok);
+  const record: SettleAttemptRecord = {
+    attempt: settleGateState.attempts,
+    at: input.at ?? now,
+    command: input.run.steps.map((step) => step.command).join(", ") || "(no command)",
+    commands: receiptCommandsOf(input.run),
+    receiptPath: input.receiptPath,
+    reason: failing ? failing.reason : "(no failing step recorded — internal error)",
+  };
+  settleGateState.history.push(record);
+  return record;
 }
 
 export function resetSettleGateAttempts(): void {
-  settleGateAttempts = 0;
+  settleGateState = { attempts: 0, lastAttemptAt: 0, history: [] };
+}
+
+/** Backoff wait (ms) before the continuation of `attempt` (0 = immediate). */
+export function settleBackoffMsFor(attempt: number, baseMs: number = settleBackoffBaseMs()): number {
+  if (attempt <= SETTLE_GATE_IMMEDIATE_ATTEMPTS) return 0;
+  const doublings = Math.min(attempt - SETTLE_GATE_IMMEDIATE_ATTEMPTS - 1, SETTLE_BACKOFF_MAX_DOUBLINGS);
+  return Math.max(0, baseMs) * 2 ** doublings;
+}
+
+export interface SettleAttemptPlan {
+  attempt: number;
+  maxAttempts: number;
+  /** Wait before handing the continuation back (0 = immediate retry). */
+  waitMs: number;
+  /** true ⇒ this attempt's continuation is the TERMINAL (hard-stop) turn. */
+  terminal: boolean;
+  kind: "immediate" | "backoff" | "terminal";
+}
+
+/**
+ * Pure decision for one failing attempt: how long to wait, and whether this
+ * attempt is the hard stop. Attempts past the cap (only reachable when the
+ * state was hand-driven) stay terminal with a capped wait.
+ */
+export function planSettleGateAttempt(
+  attempt: number,
+  opts: { maxAttempts?: number; baseMs?: number } = {},
+): SettleAttemptPlan {
+  const maxAttempts = opts.maxAttempts ?? settleGateMaxAttempts();
+  const waitMs = settleBackoffMsFor(attempt, opts.baseMs ?? settleBackoffBaseMs());
+  const terminal = attempt >= maxAttempts;
+  const kind: SettleAttemptPlan["kind"] = terminal ? "terminal" : waitMs > 0 ? "backoff" : "immediate";
+  return { attempt, maxAttempts, waitMs, terminal, kind };
+}
+
+/** Human wait string: '2s', '500ms', 'none'. */
+export function describeWaitMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "none";
+  if (ms < 1000) return String(Math.round(ms)) + "ms";
+  const seconds = ms / 1000;
+  return (Number.isInteger(seconds) ? String(seconds) : String(Math.round(seconds * 10) / 10)) + "s";
+}
+
+/** The 'previous failures' tail (oldest first, capped). */
+export function recentSettleFailures(limit: number = 3): string[] {
+  return settleGateState.history
+    .slice(-limit)
+    .map((record) => "attempt " + String(record.attempt) + ": " + record.command + " \u2192 " + record.reason);
+}
+
+/**
+ * ESCALATING reason line for a continuing attempt, e.g.
+ * `attempt 4/5 — retrying after 2s backoff; previous failures: attempt 1: …`.
+ */
+export function formatSettleEscalation(plan: SettleAttemptPlan, failures: string[] = recentSettleFailures()): string {
+  const tail = failures.length > 0 ? failures.join(" | ") : "(none recorded)";
+  if (plan.kind === "immediate") {
+    return (
+      "attempt " + String(plan.attempt) + "/" + String(plan.maxAttempts) +
+      " \u2014 immediate retry; previous failures: " + tail
+    );
+  }
+  const wait = describeWaitMs(plan.waitMs);
+  const suffix = plan.terminal ? ", then HARD STOP" : "";
+  return (
+    "attempt " + String(plan.attempt) + "/" + String(plan.maxAttempts) +
+    " \u2014 retrying after " + wait + " backoff" + suffix +
+    "; previous failures: " + tail
+  );
+}
+
+/** Full per-attempt receipt trail for the terminal report. */
+export function formatSettleTrail(state: SettleGateState = settleGateState): string {
+  if (state.history.length === 0) return "Settle gate trail: (no failed attempt recorded)";
+  const lines: string[] = ["Settle gate trail (every failed attempt, oldest first):"];
+  for (const record of state.history) {
+    const codes = record.commands
+      .map((entry) => entry.command + " \u2192 " + (entry.exitCode === null ? "no exit code" : "exit " + String(entry.exitCode)))
+      .join("; ");
+    lines.push(
+      "- attempt " + String(record.attempt) + " \u00b7 " + (codes || record.command) +
+      " \u00b7 receipt: " + (record.receiptPath ?? "(not written)") +
+      " \u00b7 reason: " + record.reason,
+    );
+  }
+  return lines.join("\n");
 }
 
 // ── Path classification ─────────────────────────────────────────────────────
@@ -698,4 +858,223 @@ export function isGateRelevantWrite(repoRoot: string, inputPath: string): boolea
   if (!rel) return false;
   if (rel.startsWith("docs/spec/")) return true;
   return rel.endsWith(".go") || rel.endsWith(".feature") || rel.endsWith(".yaml");
+}
+
+// ── Reconciliation-lite ─────────────────────────────────────────────────────
+
+/** Shared receipt shape (what writeReceipt appends). */
+export interface ReceiptRecord {
+  timestamp: string;
+  agent: string;
+  session: string;
+  commands: ReceiptCommand[];
+  rulesHash: string;
+  headSha: string;
+  ok: boolean;
+  note: string;
+}
+
+/** `<cwd>/.pi/receipts/<YYYY-MM-DD>.jsonl` — the day's receipt log. */
+export function receiptsFileFor(cwd: string, day: string = new Date().toISOString().slice(0, 10)): string {
+  return path.join(receiptsDirFor(cwd), day + ".jsonl");
+}
+
+/**
+ * Every readable receipt of `day` (default: today), oldest first. Malformed
+ * lines are skipped: the receipt log is telemetry and must never throw.
+ */
+export async function readDayReceipts(cwd: string, day?: string): Promise<ReceiptRecord[]> {
+  const file = receiptsFileFor(cwd, day);
+  let raw: string;
+  try {
+    raw = await fs.promises.readFile(file, "utf8");
+  } catch {
+    return [];
+  }
+  const records: ReceiptRecord[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line) as Partial<ReceiptRecord>;
+      if (!parsed || typeof parsed !== "object") continue;
+      records.push({
+        timestamp: typeof parsed.timestamp === "string" ? parsed.timestamp : "",
+        agent: typeof parsed.agent === "string" ? parsed.agent : "",
+        session: typeof parsed.session === "string" ? parsed.session : "",
+        commands: Array.isArray(parsed.commands) ? (parsed.commands as ReceiptCommand[]) : [],
+        rulesHash: typeof parsed.rulesHash === "string" ? parsed.rulesHash : "",
+        headSha: typeof parsed.headSha === "string" ? parsed.headSha : "",
+        ok: parsed.ok === true,
+        note: typeof parsed.note === "string" ? parsed.note : "",
+      });
+    } catch {
+      /* unreadable receipt line — skip */
+    }
+  }
+  return records;
+}
+
+/**
+ * The newest PASSING receipt of the day, i.e. the checkpoint to reconcile
+ * against. A failing receipt is not a checkpoint (comparing against one would
+ * make every later green run "mismatch" until it, too, was failing).
+ */
+export async function latestPassingReceipt(cwd: string, day?: string): Promise<ReceiptRecord | null> {
+  const records = await readDayReceipts(cwd, day);
+  for (let index = records.length - 1; index >= 0; index--) {
+    if (records[index].ok) return records[index];
+  }
+  return null;
+}
+
+export interface ReconciliationCurrent {
+  headSha: string;
+  rulesHash: string;
+  commands: ReceiptCommand[];
+}
+
+/**
+ * Field-by-field diff of a recorded receipt against the current tree + a fresh
+ * ladder run. Returns one human line per discrepancy (empty array = match).
+ */
+export function diffReceiptAgainst(record: ReceiptRecord | null, current: ReconciliationCurrent): string[] {
+  if (!record) return [];
+  const discrepancies: string[] = [];
+  const recordedSha = record.headSha || "(not recorded)";
+  const currentSha = current.headSha || "(not recorded)";
+  if (record.headSha !== current.headSha) {
+    discrepancies.push("headSha: receipt " + recordedSha + ", now " + currentSha);
+  }
+  const recordedHash = record.rulesHash || "(not recorded)";
+  const currentHash = current.rulesHash || "(not recorded)";
+  if (record.rulesHash !== current.rulesHash) {
+    discrepancies.push("rulesHash: receipt " + recordedHash + ", now " + currentHash);
+  }
+  for (const recorded of record.commands) {
+    const fresh = current.commands.find((entry) => entry.command === recorded.command);
+    if (!fresh) {
+      discrepancies.push(recorded.command + ": exit " + formatExit(recorded.exitCode) + " recorded, not run now");
+      continue;
+    }
+    if (fresh.exitCode !== recorded.exitCode) {
+      discrepancies.push(recorded.command + ": exit " + formatExit(recorded.exitCode) + " recorded, exit " + formatExit(fresh.exitCode) + " now");
+    }
+  }
+  return discrepancies;
+}
+
+function formatExit(code: number | null): string {
+  return code === null ? "(none)" : String(code);
+}
+
+export interface ReconciliationResult {
+  ok: boolean;
+  report: string;
+  /** Steps of the fresh ladder (for a receipt/trail; empty when it never ran). */
+  steps: GateStep[];
+  /** The checkpoint receipt compared against (null when none exists yet). */
+  receipt: ReceiptRecord | null;
+}
+
+/**
+ * Reconciliation-lite: re-run the cheap gate ladder (`make audit/static` +
+ * the scoped spec check via runScopedGate) and diff the fresh result against
+ * the newest passing receipt of the day — HEAD sha, rules.yaml hash, and every
+ * recorded command's exit code. Any difference is a mismatch, and a failing
+ * fresh ladder is always a mismatch (fail closed on the ladder, fail open on
+ * the receipt metadata).
+ */
+export async function runReconciliation(
+  cwd: string,
+  opts: {
+    agent: string;
+    session?: string;
+    scopeEnv?: string;
+    makeTimeoutMs?: number;
+    specTimeoutMs?: number;
+    /** Test seam: which receipt day to read (default: today). */
+    day?: string;
+    /** Test seam: skip the fresh ladder and use this run instead. */
+    freshRun?: GateRun;
+  },
+): Promise<ReconciliationResult> {
+  let fresh: GateRun;
+  try {
+    fresh =
+      opts.freshRun ??
+      (await runScopedGate({
+        cwd,
+        scopeEnv: opts.scopeEnv,
+        makeTimeoutMs: opts.makeTimeoutMs,
+        specTimeoutMs: opts.specTimeoutMs,
+      }));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    fresh = {
+      ok: false,
+      steps: [
+        {
+          command: "(reconciliation)",
+          argv: [],
+          ok: false,
+          exitCode: null,
+          timedOut: false,
+          durationMs: 0,
+          stdout: "",
+          stderr: message,
+          spawnError: null,
+          reason: "reconciliation ladder threw",
+        },
+      ],
+    };
+  }
+
+  const current: ReconciliationCurrent = {
+    headSha: await headShaOf(cwd),
+    rulesHash: await hashSpecRules(cwd),
+    commands: receiptCommandsOf(fresh),
+  };
+  const recorded = await latestPassingReceipt(cwd, opts.day);
+  const discrepancies = diffReceiptAgainst(recorded, current);
+  const gateFailures = fresh.steps.filter((step) => !step.ok);
+
+  const lines: string[] = ["\u2500\u2500 RECONCILIATION \u2500\u2500"];
+  lines.push("agent: " + opts.agent + (opts.session ? " \u00b7 session: " + opts.session : ""));
+  lines.push("receipt: " + (recorded ? receiptsFileFor(cwd, opts.day) + " (" + recorded.timestamp + ")" : "(no passing receipt today)"));
+  for (const step of gateFailures) {
+    lines.push(
+      "- fresh ladder FAILED: " + step.command + " \u00b7 " +
+        (step.exitCode === null ? "no exit code" : "exit " + String(step.exitCode)) + " \u00b7 " + step.reason,
+    );
+  }
+  for (const discrepancy of discrepancies) lines.push("- MISMATCH " + discrepancy);
+  const ok = fresh.ok && discrepancies.length === 0;
+  lines.push(
+    ok
+      ? "status: ok \u2014 the ladder matches the recorded checkpoint."
+      : "status: MISMATCH \u2014 do not settle on the recorded receipt; re-check the named fields above.",
+  );
+  return { ok, report: lines.join("\n"), steps: fresh.steps, receipt: recorded };
+}
+
+/**
+ * Turn a failed reconciliation into a GateRun so the settle-gate report /
+ * receipt / hard-stop trail path is shared instead of forked.
+ */
+export function reconciliationGateRun(result: ReconciliationResult): GateRun {
+  if (result.ok) return { ok: true, steps: [] };
+  const step: GateStep = {
+    command: "(reconciliation)",
+    argv: [],
+    ok: false,
+    exitCode: null,
+    timedOut: false,
+    durationMs: 0,
+    stdout: "",
+    stderr: result.report,
+    spawnError: null,
+    reason: "reconciliation mismatch",
+    note: "fresh ladder vs recorded receipt",
+  };
+  return { ok: false, steps: result.steps.length > 0 ? [...result.steps.filter((entry) => !entry.ok), step] : [step] };
 }
