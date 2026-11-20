@@ -192,9 +192,11 @@ func diffArtifacts(artifacts []artifact, stdout, stderr io.Writer) int {
 }
 
 // viewOrphans lists the entries under the views directory that this run does
-// not render, sorted for deterministic output. The directory is the parent of
-// the rendered `views/<module>.md` artifacts; when it does not exist, there is
-// nothing to report (the missing artifacts already fail the diff).
+// not render, sorted for deterministic output. Dotfiles are skipped: they are
+// never views, and an OS dropping like .DS_Store must not fail the diff. The
+// directory is the parent of the rendered `views/<module>.md` artifacts; when it
+// does not exist, there is nothing to report (the missing artifacts already fail
+// the diff).
 func viewOrphans(artifacts []artifact) ([]string, error) {
 	dir := ""
 	for _, a := range artifacts {
@@ -221,6 +223,12 @@ func viewOrphans(artifacts []artifact) ([]string, error) {
 	}
 	var orphans []string
 	for _, entry := range entries {
+		// Dotfiles are OS/editor droppings (.DS_Store, swap files), not views:
+		// an ignored one must not fail the diff. Same rule as the source walk in
+		// annotations.go.
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
 		full := filepath.Join(dir, entry.Name())
 		if !rendered[filepath.Clean(full)] {
 			orphans = append(orphans, full)
