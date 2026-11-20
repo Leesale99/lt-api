@@ -17,17 +17,27 @@
  * drive the decision logic without real time.
  */
 
+import { loadWorkflowPolicy } from "./policy.ts";
+
 /** Default stall timeout: 10 minutes of child silence. */
 export const WORKER_STALL_TIMEOUT_MS = 600_000;
 /** Watchdog tick. */
 export const STALL_TICK_MS = 1_000;
 
 /**
- * Stall timeout in ms. Env override `PI_DELEGATE_WORKER_STALL_TIMEOUT_MS`;
- * `0` disables the guard; invalid/negative falls back to the default (the same
- * clamp style as pollCooldownMs in index.ts).
+ * Stall timeout in ms. Batch 3 resolution order: the WORKFLOW.md field
+ * `worker_stall_timeout_ms` when present and well-typed → the env override
+ * `PI_DELEGATE_WORKER_STALL_TIMEOUT_MS` → the default. `0` disables the guard;
+ * invalid/negative falls through (the same clamp style as pollCooldownMs).
  */
-export function workerStallTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+export function workerStallTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
+): number {
+  const loaded = loadWorkflowPolicy(cwd);
+  if (loaded.ok && loaded.declared.has("worker_stall_timeout_ms")) {
+    return loaded.policy.workerStallTimeoutMs;
+  }
   const raw = env.PI_DELEGATE_WORKER_STALL_TIMEOUT_MS;
   if (raw === undefined || raw.trim() === "") return WORKER_STALL_TIMEOUT_MS;
   const value = Number(raw);

@@ -30,6 +30,7 @@ import {
   parseSpecScopeEnv,
   planSettleGateAttempt,
   receiptsFileFor,
+  receiptCommandsOf,
   recentSettleFailures,
   reconciliationGateRun,
   recordSettleGateAttempt,
@@ -41,7 +42,9 @@ import {
   settleBackoffMsFor,
   settleGateMaxAttempts,
   settleGateStateFor,
+  settleImmediateAttempts,
   shouldRunPostWriteGate,
+  splitCommandLine,
   markPostWriteGateEnd,
   markPostWriteGateStart,
   writeReceipt,
@@ -53,6 +56,17 @@ import {
   startStallWatchdog,
   workerStallTimeoutMs,
 } from "./runtime.ts";
+import {
+  DEFAULT_AUDIT_STATIC_CMD,
+  DEFAULT_MAX_CONCURRENT_WORKERS,
+  DEFAULT_PROTECTED_PATHS,
+  DEFAULT_SETTLE_BACKOFF_BASE_MS,
+  DEFAULT_SETTLE_MAX_ATTEMPTS,
+  DEFAULT_WORKER_STALL_TIMEOUT_MS,
+  loadWorkflowPolicy,
+  parseWorkflowFrontMatter,
+  workflowPolicyRefusal,
+} from "./policy.ts";
 import {
   activeClaims,
   buildSiblingContext,
@@ -82,6 +96,24 @@ async function check(name, fn) {
 }
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "gates-smoke-"));
+
+// ── WORKFLOW.md fixtures ───────────────────────────────────────────────────
+// Batch 3: gate paths load the repo-root policy and REFUSE when it is absent.
+// Every fixture repo that runs a gate needs one; the minimal form (version
+// only) exercises the omitted-field defaults.
+const MINIMAL_POLICY = "---\nversion: 1\n---\n\n# Workflow policy\n";
+
+function writeWorkflow(dir, body = MINIMAL_POLICY) {
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "WORKFLOW.md");
+  fs.writeFileSync(file, body);
+  return file;
+}
+
+/** A directory with NO WORKFLOW.md: env knobs stay the fallback there. */
+const policyFree = path.join(tmp, "policy-free");
+fs.mkdirSync(policyFree, { recursive: true });
+
 
 // ── runGate: fail-closed contract ───────────────────────────────────────────
 await check("runGate: exit 0 is ok", async () => {
@@ -170,6 +202,7 @@ await check("evaluateGateFileWrite: deny list + exceptions + fail-closed allowli
   fs.writeFileSync(path.join(repo, "Makefile"), "all:\n");
   fs.writeFileSync(path.join(repo, "docs", "spec", "rules.schema.md"), "# schema\n");
   fs.writeFileSync(path.join(repo, "main.go"), "package main\n");
+  writeWorkflow(repo);
 
   // Ordinary files stay editable.
   assert.equal(evaluateGateFileWrite(repo, "main.go").blocked, false);
@@ -250,6 +283,7 @@ await check("shouldRunPostWriteGate: 10s window", async () => {
 await check("runScopedGate: missing Makefile targets fail closed", async () => {
   const empty = path.join(tmp, "empty-repo");
   fs.mkdirSync(empty, { recursive: true });
+  writeWorkflow(empty);
   const run = await runScopedGate({
     cwd: empty,
     scopeEnv: "module=game",
@@ -266,6 +300,7 @@ await check("runScopedGate: missing Makefile targets fail closed", async () => {
 });
 
 await check("runScopedGate: unset scope ⇒ full check only", async () => {
+  writeWorkflow(tmp);
   const run = await runScopedGate({ cwd: tmp, makeTimeoutMs: 10_000, specTimeoutMs: 10_000 });
   assert.equal(run.steps.length, 2);
   assert.equal(run.steps[1].command, "go run ./cmd/spec check --strict");
@@ -324,18 +359,18 @@ await check("settle knobs: env overrides clamp like pollCooldownMs", async () =>
   try {
     delete process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS;
     delete process.env.PI_DELEGATE_BACKOFF_BASE_MS;
-    assert.equal(settleGateMaxAttempts(), 5);
-    assert.equal(settleBackoffBaseMs(), 2000);
+    assert.equal(settleGateMaxAttempts(policyFree), 5);
+    assert.equal(settleBackoffBaseMs(policyFree), 2000);
     process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS = "2";
-    assert.equal(settleGateMaxAttempts(), 5, "below the immediate window clamps to the default");
+    assert.equal(settleGateMaxAttempts(policyFree), 5, "below the immediate window clamps to the default");
     process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS = "7";
-    assert.equal(settleGateMaxAttempts(), 7);
+    assert.equal(settleGateMaxAttempts(policyFree), 7);
     process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS = "garbage";
-    assert.equal(settleGateMaxAttempts(), 5);
+    assert.equal(settleGateMaxAttempts(policyFree), 5);
     process.env.PI_DELEGATE_BACKOFF_BASE_MS = "20";
-    assert.equal(settleBackoffBaseMs(), 20);
+    assert.equal(settleBackoffBaseMs(policyFree), 20);
     process.env.PI_DELEGATE_BACKOFF_BASE_MS = "-1";
-    assert.equal(settleBackoffBaseMs(), 2000, "negative base falls back to the default");
+    assert.equal(settleBackoffBaseMs(policyFree), 2000, "negative base falls back to the default");
   } finally {
     if (previousMax === undefined) delete process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS;
     else process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS = previousMax;
@@ -409,13 +444,13 @@ await check("stallDecision: pure threshold cases (0 disables)", async () => {
   const previous = process.env.PI_DELEGATE_WORKER_STALL_TIMEOUT_MS;
   try {
     delete process.env.PI_DELEGATE_WORKER_STALL_TIMEOUT_MS;
-    assert.equal(workerStallTimeoutMs(), 600_000);
+    assert.equal(workerStallTimeoutMs(process.env, policyFree), 600_000);
     process.env.PI_DELEGATE_WORKER_STALL_TIMEOUT_MS = "0";
-    assert.equal(workerStallTimeoutMs(), 0);
+    assert.equal(workerStallTimeoutMs(process.env, policyFree), 0);
     process.env.PI_DELEGATE_WORKER_STALL_TIMEOUT_MS = "1500";
-    assert.equal(workerStallTimeoutMs(), 1500);
+    assert.equal(workerStallTimeoutMs(process.env, policyFree), 1500);
     process.env.PI_DELEGATE_WORKER_STALL_TIMEOUT_MS = "nope";
-    assert.equal(workerStallTimeoutMs(), 600_000);
+    assert.equal(workerStallTimeoutMs(process.env, policyFree), 600_000);
   } finally {
     if (previous === undefined) delete process.env.PI_DELEGATE_WORKER_STALL_TIMEOUT_MS;
     else process.env.PI_DELEGATE_WORKER_STALL_TIMEOUT_MS = previous;
@@ -859,6 +894,7 @@ await check("latestPassingReceipt: only passing receipts are checkpoints", async
 
 await check("runReconciliation: matching checkpoint ok, moved HEAD reported", async () => {
   const repo = makeGitRepo(path.join(tmp, "recon-repo"));
+  writeWorkflow(repo);
   fs.writeFileSync(path.join(repo, "Makefile"), "audit/static:\n\t@true\n");
   fs.writeFileSync(path.join(repo, "go.mod"), "module recontmp\n\ngo 1.21\n");
   fs.mkdirSync(path.join(repo, "cmd", "spec"), { recursive: true });
@@ -898,6 +934,311 @@ await check("runReconciliation: matching checkpoint ok, moved HEAD reported", as
   assert.match(drifted.report, /status: MISMATCH/);
   const asGateRun = reconciliationGateRun(drifted);
   assert.match(formatGateReport(asGateRun, { header: "── SETTLE GATE BLOCKED ──", footer: "fix" }), /RECONCILIATION/);
+});
+
+// ── Batch 3: WORKFLOW.md is the declarative policy source ───────────────────
+
+/** A front matter body from field lines (no fences), for policy fixtures. */
+function fieldsPolicy(fields) {
+  return "---\nversion: 1\n" + fields.join("\n") + "\n---\n\nprose\n";
+}
+
+const FULL_POLICY_BODY = fieldsPolicy([
+  "audit_static_cmd: make audit/static",
+  "audit_cmd: make audit",
+  "prove_cmd: make prove",
+  'scoped_check_cmd: "go run ./cmd/spec check --strict"',
+  "protected_paths:",
+  "  - Makefile",
+  "  - cmd/spec",
+  "  - cmd/spec/**",
+  "  - docs/spec/**",
+  "  - .pi/**",
+  "pi_editable_paths:",
+  "  - .pi/agents/**",
+  "  - .pi/prompts/**",
+  "  - .pi/delegate/**",
+  "  - .pi/plans/**",
+  "allowlist_path: .pi/delegate/gate-allowlist.json",
+  "receipts_dir: .pi/receipts",
+  "claims_dir: .pi/jobs",
+  "settle_max_attempts: 5",
+  "settle_immediate_attempts: 3",
+  "settle_backoff_base_ms: 2000",
+  "settle_backoff_max_doublings: 5",
+  "worker_stall_timeout_ms: 600000",
+  "max_concurrent_workers: 8",
+  "approval_binding: head-sha",
+  "red_approval_marker: AWAITING_APPROVAL",
+  'red_approval_head_sha_line: "HEAD SHA:"',
+  "handoff_terminal_tokens:",
+  "  - HANDOFF_COMPLETE",
+  "  - HANDOFF_BLOCKED",
+]);
+
+await check("policy: full front matter loads and every field reads back", async () => {
+  const dir = path.join(tmp, "policy-full");
+  writeWorkflow(dir, FULL_POLICY_BODY);
+  const loaded = loadWorkflowPolicy(dir);
+  assert.equal(loaded.ok, true, loaded.ok ? "" : loaded.reason);
+  const p = loaded.policy;
+  assert.equal(p.version, 1);
+  assert.equal(p.auditStaticCmd, "make audit/static");
+  assert.equal(p.auditCmd, "make audit");
+  assert.equal(p.proveCmd, "make prove");
+  assert.equal(p.scopedCheckCmd, "go run ./cmd/spec check --strict");
+  assert.deepEqual(p.protectedPaths, ["Makefile", "cmd/spec", "cmd/spec/**", "docs/spec/**", ".pi/**"]);
+  assert.deepEqual(p.piEditablePaths, [".pi/agents/**", ".pi/prompts/**", ".pi/delegate/**", ".pi/plans/**"]);
+  assert.equal(p.allowlistPath, ".pi/delegate/gate-allowlist.json");
+  assert.equal(p.receiptsDir, ".pi/receipts");
+  assert.equal(p.claimsDir, ".pi/jobs");
+  assert.equal(p.settleMaxAttempts, 5);
+  assert.equal(p.settleImmediateAttempts, 3);
+  assert.equal(p.settleBackoffBaseMs, 2000);
+  assert.equal(p.settleBackoffMaxDoublings, 5);
+  assert.equal(p.workerStallTimeoutMs, 600000);
+  assert.equal(p.maxConcurrentWorkers, 8);
+  assert.equal(p.approvalBinding, "head-sha");
+  assert.equal(p.redApprovalMarker, "AWAITING_APPROVAL");
+  assert.equal(p.redApprovalHeadShaLine, "HEAD SHA:");
+  assert.deepEqual(p.handoffTerminalTokens, ["HANDOFF_COMPLETE", "HANDOFF_BLOCKED"]);
+  assert.equal(loaded.declared.size, 19, "every declared field is marked present");
+});
+
+await check("policy: parser handles quotes, comments, lists and the command splitter", async () => {
+  const parsed = parseWorkflowFrontMatter(
+    "---\nversion: 1\n# a comment\ncmd: \"a b c\"  # trailing comment\nlist:\n  - one\n  - 'two'\nempty:\n---\nbody text is not front matter\n",
+  );
+  assert.equal(parsed.ok, true, parsed.reason);
+  assert.equal(parsed.values.cmd, "a b c");
+  assert.deepEqual(parsed.values.list, ["one", "two"]);
+  assert.equal(parsed.values.empty, "");
+  assert.deepEqual(splitCommandLine("go run ./cmd/spec check --strict"), [
+    "go",
+    "run",
+    "./cmd/spec",
+    "check",
+    "--strict",
+  ]);
+  assert.deepEqual(splitCommandLine('sh -c "echo hi"'), ["sh", "-c", "echo hi"]);
+  assert.deepEqual(splitCommandLine("./audit.sh"), ["./audit.sh"]);
+});
+
+await check("policy: omitted fields take the batch-1/2 defaults", async () => {
+  const dir = path.join(tmp, "policy-minimal");
+  writeWorkflow(dir);
+  const loaded = loadWorkflowPolicy(dir);
+  assert.equal(loaded.ok, true, loaded.ok ? "" : loaded.reason);
+  assert.equal(loaded.policy.auditStaticCmd, DEFAULT_AUDIT_STATIC_CMD);
+  assert.equal(loaded.policy.settleMaxAttempts, DEFAULT_SETTLE_MAX_ATTEMPTS);
+  assert.equal(loaded.policy.settleBackoffBaseMs, DEFAULT_SETTLE_BACKOFF_BASE_MS);
+  assert.equal(loaded.policy.workerStallTimeoutMs, DEFAULT_WORKER_STALL_TIMEOUT_MS);
+  assert.equal(loaded.policy.maxConcurrentWorkers, DEFAULT_MAX_CONCURRENT_WORKERS);
+  assert.deepEqual(loaded.policy.protectedPaths, [...DEFAULT_PROTECTED_PATHS]);
+  assert.equal(loaded.declared.size, 0, "nothing is declared in a version-only file");
+  // The gate knobs fall through to the env override when the field is omitted.
+  assert.equal(settleGateMaxAttempts(dir), 5);
+  assert.equal(settleImmediateAttempts(dir), 3);
+  assert.equal(workerStallTimeoutMs({}, dir), 600_000);
+});
+
+await check("policy: missing WORKFLOW.md refuses with a specific reason", async () => {
+  const dir = path.join(tmp, "policy-missing");
+  fs.mkdirSync(dir, { recursive: true });
+  const loaded = loadWorkflowPolicy(dir);
+  assert.equal(loaded.ok, false);
+  assert.match(loaded.reason, /WORKFLOW\.md not found/);
+  assert.match(loaded.reason, /policy-missing/);
+});
+
+await check("policy: malformed front matter refuses (no fence / unclosed fence / dup key)", async () => {
+  const dir = path.join(tmp, "policy-malformed");
+  const cases = [
+    ["no fence", "version: 1\n"],
+    ["unclosed", "---\nversion: 1\n"],
+    ["duplicate", "---\nversion: 1\nversion: 1\n---\n"],
+    ["not a key-value", "---\nversion: 1\njust some text\n---\n"],
+    ["unterminated quote", '---\nversion: 1\naudit_cmd: "make audit\n---\n'],
+  ];
+  for (const [name, body] of cases) {
+    writeWorkflow(dir, body);
+    const loaded = loadWorkflowPolicy(dir);
+    assert.equal(loaded.ok, false, name + " must refuse");
+    assert.ok(loaded.reason.length > 0, name + " names a reason");
+  }
+});
+
+await check("policy: missing version and unknown version refuse", async () => {
+  const dir = path.join(tmp, "policy-version");
+  writeWorkflow(dir, "---\naudit_cmd: make audit\n---\n");
+  const missing = loadWorkflowPolicy(dir);
+  assert.equal(missing.ok, false);
+  assert.match(missing.reason, /missing required field `version`/);
+  writeWorkflow(dir, "---\nversion: 2\n---\n");
+  const newer = loadWorkflowPolicy(dir);
+  assert.equal(newer.ok, false);
+  assert.match(newer.reason, /unsupported policy version 2/);
+  writeWorkflow(dir, "---\nversion: one\n---\n");
+  assert.equal(loadWorkflowPolicy(dir).ok, false);
+});
+
+await check("policy: unknown field refuses (typo protection)", async () => {
+  const dir = path.join(tmp, "policy-unknown");
+  writeWorkflow(dir, fieldsPolicy(["setle_max_attempts: 3"]));
+  const loaded = loadWorkflowPolicy(dir);
+  assert.equal(loaded.ok, false);
+  assert.match(loaded.reason, /unknown field\(s\).*setle_max_attempts/);
+});
+
+await check("policy: invalid-typed field falls back to the default and keeps the env path", async () => {
+  const dir = path.join(tmp, "policy-invalid");
+  writeWorkflow(dir, fieldsPolicy(["settle_max_attempts: lots", "worker_stall_timeout_ms: -3"]));
+  const loaded = loadWorkflowPolicy(dir);
+  assert.equal(loaded.ok, true, loaded.ok ? "" : loaded.reason);
+  assert.equal(loaded.policy.settleMaxAttempts, DEFAULT_SETTLE_MAX_ATTEMPTS);
+  assert.equal(loaded.policy.workerStallTimeoutMs, DEFAULT_WORKER_STALL_TIMEOUT_MS);
+  assert.equal(loaded.declared.has("settle_max_attempts"), false, "invalid ⇒ not declared");
+  const previous = process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS;
+  try {
+    process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS = "7";
+    assert.equal(settleGateMaxAttempts(dir), 7, "the env override still applies");
+  } finally {
+    if (previous === undefined) delete process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS;
+    else process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS = previous;
+  }
+});
+
+await check("policy: a present field overrides both the default and the env knob", async () => {
+  const dir = path.join(tmp, "policy-override");
+  writeWorkflow(
+    dir,
+    fieldsPolicy([
+      "settle_max_attempts: 9",
+      "settle_immediate_attempts: 4",
+      "settle_backoff_base_ms: 50",
+      "settle_backoff_max_doublings: 1",
+      "worker_stall_timeout_ms: 1234",
+    ]),
+  );
+  const previousMax = process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS;
+  const previousBase = process.env.PI_DELEGATE_BACKOFF_BASE_MS;
+  const previousStall = process.env.PI_DELEGATE_WORKER_STALL_TIMEOUT_MS;
+  try {
+    process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS = "7";
+    process.env.PI_DELEGATE_BACKOFF_BASE_MS = "99";
+    process.env.PI_DELEGATE_WORKER_STALL_TIMEOUT_MS = "5";
+    assert.equal(settleGateMaxAttempts(dir), 9, "policy beats the env override");
+    assert.equal(settleBackoffBaseMs(dir), 50, "policy beats the env override");
+    assert.equal(workerStallTimeoutMs(process.env, dir), 1234, "policy beats the env override");
+    assert.equal(settleImmediateAttempts(dir), 4);
+    // 4 immediate attempts, then one doubling (cap 1): 50ms, 100ms, 100ms.
+    assert.equal(settleBackoffMsFor(4, 50, dir), 0);
+    assert.equal(settleBackoffMsFor(5, 50, dir), 50);
+    assert.equal(settleBackoffMsFor(6, 50, dir), 100);
+    assert.equal(settleBackoffMsFor(7, 50, dir), 100, "doublings cap holds");
+  } finally {
+    if (previousMax === undefined) delete process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS;
+    else process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS = previousMax;
+    if (previousBase === undefined) delete process.env.PI_DELEGATE_BACKOFF_BASE_MS;
+    else process.env.PI_DELEGATE_BACKOFF_BASE_MS = previousBase;
+    if (previousStall === undefined) delete process.env.PI_DELEGATE_WORKER_STALL_TIMEOUT_MS;
+    else process.env.PI_DELEGATE_WORKER_STALL_TIMEOUT_MS = previousStall;
+  }
+});
+
+await check("policy: the declared gate commands are the ones executed", async () => {
+  const dir = path.join(tmp, "policy-commands");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "audit.sh"), "#!/bin/sh\nexit 0\n");
+  fs.writeFileSync(path.join(dir, "spec.sh"), "#!/bin/sh\necho scoped \"$@\"\nexit 0\n");
+  fs.chmodSync(path.join(dir, "audit.sh"), 0o755);
+  fs.chmodSync(path.join(dir, "spec.sh"), 0o755);
+  writeWorkflow(dir, fieldsPolicy(["audit_static_cmd: ./audit.sh", "scoped_check_cmd: ./spec.sh"]));
+  const full = await runScopedGate({ cwd: dir, makeTimeoutMs: 10_000, specTimeoutMs: 10_000 });
+  assert.equal(full.ok, true, "declared commands pass: " + full.steps.map((s) => s.command).join(" | "));
+  assert.deepEqual(full.steps.map((step) => step.command), ["./audit.sh", "./spec.sh"]);
+  const scoped = await runScopedGate({
+    cwd: dir,
+    scopeEnv: "rules=R-A-1",
+    makeTimeoutMs: 10_000,
+    specTimeoutMs: 10_000,
+  });
+  assert.deepEqual(scoped.steps.map((step) => step.command), ["./audit.sh", "./spec.sh --rule R-A-1"]);
+});
+
+await check("policy: protected/editable path sets come from the file, not the hardcode", async () => {
+  const dir = path.join(tmp, "policy-paths");
+  writeWorkflow(dir, fieldsPolicy(["protected_paths:", "  - src/**"]));
+  assert.equal(evaluateGateFileWrite(dir, "src/a.go").blocked, true, "declared path is denied");
+  assert.equal(evaluateGateFileWrite(dir, "Makefile").blocked, false, "hardcoded Makefile is NOT denied by this policy");
+  assert.equal(evaluateGateFileWrite(dir, "docs/spec/rules.yaml").blocked, false, "hardcoded docs/spec is NOT denied by this policy");
+  assert.equal(evaluateGateFileWrite(dir, "main.go").blocked, false);
+
+  const piDir = path.join(tmp, "policy-pi-editable");
+  writeWorkflow(
+    piDir,
+    fieldsPolicy(["protected_paths:", "  - .pi/**", "pi_editable_paths:", "  - .pi/delegate/**", "  - .pi/plans/**"]),
+  );
+  assert.equal(evaluateGateFileWrite(piDir, ".pi/agents/x.md").blocked, true, "not in the declared editable set");
+  assert.equal(evaluateGateFileWrite(piDir, ".pi/delegate/orchestrator.md").blocked, false);
+  assert.equal(evaluateGateFileWrite(piDir, ".pi/plans/p.md").blocked, false);
+  assert.equal(evaluateGateFileWrite(piDir, "docs/spec/rules.yaml").blocked, false, "outside the declared set");
+  // The allowlist file is ALWAYS self-denied, even when the file declares a
+  // different protected set and even with a matching allowlist glob.
+  fs.mkdirSync(path.join(piDir, ".pi", "plans"), { recursive: true });
+  assert.equal(evaluateGateFileWrite(piDir, ".pi/delegate/gate-allowlist.json").blocked, true);
+  // So is the policy file itself: a worker must not rewrite its own gates.
+  assert.equal(evaluateGateFileWrite(dir, "WORKFLOW.md").blocked, true, "policy file is self-denied");
+  fs.mkdirSync(path.join(dir, ".pi", "delegate"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".pi", "delegate", "gate-allowlist.json"), '["WORKFLOW.md"]');
+  assert.equal(evaluateGateFileWrite(dir, "WORKFLOW.md").blocked, true, "not grantable via the allowlist");
+});
+
+await check("policy: approval-contract mismatch refuses (marker / sha line / tokens / binding)", async () => {
+  const dir = path.join(tmp, "policy-approval");
+  const cases = [
+    ["marker", fieldsPolicy(["red_approval_marker: NEEDS_APPROVAL"]), /red_approval_marker/],
+    ["sha line", fieldsPolicy(['red_approval_head_sha_line: "HEAD:"']), /red_approval_head_sha_line/],
+    ["tokens", fieldsPolicy(["handoff_terminal_tokens:", "  - HANDOFF_DONE"]), /handoff_terminal_tokens/],
+    ["binding", fieldsPolicy(["approval_binding: tree-hash"]), /approval_binding/],
+  ];
+  for (const [name, body, pattern] of cases) {
+    writeWorkflow(dir, body);
+    const loaded = loadWorkflowPolicy(dir);
+    assert.equal(loaded.ok, false, name + " mismatch must refuse");
+    assert.match(loaded.reason, /approval contract mismatch/);
+    assert.match(loaded.reason, pattern);
+  }
+});
+
+await check("policy: gate paths refuse loudly when the policy is missing", async () => {
+  const dir = path.join(tmp, "policy-refuse");
+  fs.mkdirSync(dir, { recursive: true });
+  const run = await runScopedGate({ cwd: dir, makeTimeoutMs: 5_000, specTimeoutMs: 5_000 });
+  assert.equal(run.ok, false, "a missing policy is a failed gate");
+  assert.equal(run.steps.length, 1, "NO command ran: " + run.steps.map((s) => s.command).join(" | "));
+  assert.equal(run.steps[0].command, "(workflow policy)");
+  assert.match(run.steps[0].reason, /workflow policy unavailable: WORKFLOW\.md not found/);
+  assert.match(run.steps[0].reason, /gates refuse rather than run unpoliced/);
+  assert.equal(workflowPolicyRefusal("x"), "workflow policy unavailable: x \u2014 gates refuse rather than run unpoliced");
+  const report = formatGateReport(run, { header: "\u2500\u2500 SETTLE GATE BLOCKED \u2500\u2500", footer: "fix" });
+  assert.match(report, /workflow policy unavailable/);
+  // The deny hook refuses every in-repo write under an undeclared policy.
+  const decision = evaluateGateFileWrite(dir, "main.go");
+  assert.equal(decision.blocked, true, "writes are denied, not silently policed by an old hardcode");
+  assert.match(decision.reason, /workflow policy unavailable/);
+  // The refusal is RECORDED (ok:false), so a settle gate counts it as a failed attempt.
+  const receipt = await writeReceipt({
+    cwd: dir,
+    agent: "worker",
+    commands: receiptCommandsOf(run),
+    ok: run.ok,
+    note: "policy refuse",
+  });
+  assert.ok(receipt, "a receipt is written even under a missing policy");
+  const record = JSON.parse(fs.readFileSync(receipt, "utf8").trim().split("\n").pop());
+  assert.equal(record.ok, false);
+  assert.equal(record.commands[0].command, "(workflow policy)");
 });
 
 fs.rmSync(tmp, { recursive: true, force: true });

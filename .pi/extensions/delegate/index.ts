@@ -141,8 +141,21 @@ import {
   startBackgroundJob,
   taskPreview,
 } from "./jobs.ts";
+import { loadWorkflowPolicy } from "./policy.ts";
 
 const MAX_PARALLEL_TASKS = 8;
+/**
+ * Batch 3: cap on tasks[] in one subagent call. The WORKFLOW.md field
+ * `max_concurrent_workers` wins when present; otherwise today's constant.
+ */
+function maxParallelTasksFor(cwd: string): number {
+  const loaded = loadWorkflowPolicy(cwd);
+  if (loaded.ok && loaded.declared.has("max_concurrent_workers")) {
+    return Math.max(1, loaded.policy.maxConcurrentWorkers);
+  }
+  return MAX_PARALLEL_TASKS;
+}
+
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const TRUNCATION_NOTICE_RESERVE = 256;
@@ -682,7 +695,7 @@ async function runSingleAgent(
     // chunk — a superset, deliberately forgiving) refreshes lastActivityMs; a
     // referenced 1s watchdog aborts through the normal SIGTERM→SIGKILL path
     // once the silence exceeds the (env-tunable, 0-disabled) timeout.
-    const stallTimeoutMs = workerStallTimeoutMs();
+    const stallTimeoutMs = workerStallTimeoutMs(process.env, effectiveCwd);
     const activity = { lastMs: Date.now() };
     let stalled = false;
     let stallReason = "";
@@ -966,6 +979,9 @@ Merge conflicts and blocked merges are reported as HANDOFF_BLOCKED with the conf
 ## After spawning background work
 End your turn right after the spawn with a status line to the user ("<id> running; I'll report when it lands") — never end with "let me check on it", never poll or wait on the job. Completion is surfaced automatically at the next turn boundary; a repeat job_status poll of an unchanged running job is refused by a cooldown (doubling on consecutive refusals).
 Session start: read the vault Home.md (~/Projects/vaults/lt-api/Home.md) via librarian. Its Now section declares the current task; load only what that task needs.
+
+## Worker gates
+All mechanical policy — gates, caps, backoff, stall, claims, receipts, protected paths, approval binding — is declared in \`/WORKFLOW.md\` (front matter) and enforced by the extension; read it before spawning. The extension gates workers after their writes and at settle, and it writes the receipts — never the worker. One task-packet convention still belongs to you: state the worker's scope on a \`SPEC-SCOPE:\` line so its gate can be scoped. If a gate says the workflow policy is unavailable, the tree cannot be gated at all: stop and report it instead of working around it.
 `;
 
 /**
@@ -1926,12 +1942,13 @@ export default function (pi: ExtensionAPI) {
       // Parameter errors that return before a child exists are handled ABOVE
       // (the MAX_PARALLEL_TASKS guard below too): a claim must never outlive a
       // refused call.
-      if (hasTasks && params.tasks && params.tasks.length > MAX_PARALLEL_TASKS) {
+      if (hasTasks && params.tasks && params.tasks.length > maxParallelTasksFor(ctx.cwd)) {
+        const maxTasks = maxParallelTasksFor(ctx.cwd);
         return {
           content: [
             {
               type: "text",
-              text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`,
+              text: `Too many parallel tasks (${params.tasks.length}). Max is ${maxTasks}.`,
             },
           ],
           details: makeDetails("parallel", true)([]),
@@ -2041,12 +2058,13 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (params.tasks && params.tasks.length > 0) {
-        if (params.tasks.length > MAX_PARALLEL_TASKS)
+        const maxTasks = maxParallelTasksFor(ctx.cwd);
+        if (params.tasks.length > maxTasks)
           return {
             content: [
               {
                 type: "text",
-                text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`,
+                text: `Too many parallel tasks (${params.tasks.length}). Max is ${maxTasks}.`,
               },
             ],
             details: makeDetails("parallel", true)([]),
@@ -3008,8 +3026,8 @@ export default function (pi: ExtensionAPI) {
     }
     if (event.outcome !== "completed") return;
 
-    const maxAttempts = settleGateMaxAttempts();
-    const baseMs = settleBackoffBaseMs();
+    const maxAttempts = settleGateMaxAttempts(ctx.cwd);
+    const baseMs = settleBackoffBaseMs(ctx.cwd);
     const attempt = settleGateStateFor().attempts + 1;
     const agentName = process.env.PI_DELEGATE_ROLE ?? "worker";
     const scopeEnv = process.env.PI_DELEGATE_SPEC_SCOPE;
@@ -3069,7 +3087,7 @@ export default function (pi: ExtensionAPI) {
       return undefined;
     }
 
-    const plan = planSettleGateAttempt(attempt, { maxAttempts, baseMs });
+    const plan = planSettleGateAttempt(attempt, { maxAttempts, baseMs, cwd: ctx.cwd });
     bumpSettleGateAttempts();
     recordSettleGateAttempt({ run, receiptPath });
     // Wait BEFORE handing the continuation back: the backoff is the point, and

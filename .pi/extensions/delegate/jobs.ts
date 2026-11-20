@@ -58,6 +58,11 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./agents.ts";
+import {
+  APPROVAL_HEAD_SHA_PREFIX,
+  APPROVAL_MARKER,
+  HANDOFF_TERMINAL_TOKENS,
+} from "./contracts.ts";
 import { runReconciliation } from "./gates.ts";
 import { getFinalOutput, parseChildJsonl, truncateParallelOutput } from "./output.ts";
 
@@ -67,12 +72,16 @@ export type JobStatus = "running" | "awaiting_approval" | "done" | "failed" | "a
 
 /**
  * Exact marker a confirm-handoff (phase 6) orchestrator ends its approval-request
- * round with. Shared string between the orchestrator prompts and the registry
- * detection below — change both or neither.
+ * round with. Defined in contracts.ts (shared with the policy loader, which
+ * validates the WORKFLOW.md declaration against it); re-exported here so the
+ * approval machinery keeps one public home.
  */
-export const APPROVAL_MARKER = "AWAITING_APPROVAL";
-/** Terminal handoff tokens; the orchestrator protocol puts them on the final line. */
-const HANDOFF_TERMINAL_TOKENS = ["HANDOFF_COMPLETE", "HANDOFF_BLOCKED"] as const;
+export {
+  APPROVAL_BINDING,
+  APPROVAL_HEAD_SHA_PREFIX,
+  APPROVAL_MARKER,
+  HANDOFF_TERMINAL_TOKENS,
+} from "./contracts.ts";
 
 export type RunnerKind = "tmux" | "fallback";
 
@@ -317,7 +326,8 @@ export function sessionRoundState(dir: string, id: string): SessionRoundState {
   // the SAME message (never from the task text, which can name other SHAs).
   let awaitingApprovalHeadSha: string | undefined;
   if (awaitingApproval) {
-    const shaMatch = /^\s*HEAD SHA:\s*([0-9a-fA-F]{40})\b/m.exec(assistantText);
+    const shaLine = APPROVAL_HEAD_SHA_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const shaMatch = new RegExp("^\\s*" + shaLine + "\\s*([0-9a-fA-F]{40})\\b", "m").exec(assistantText);
     if (shaMatch) awaitingApprovalHeadSha = shaMatch[1].toLowerCase();
   }
   return { complete: true, awaitingApproval, awaitingApprovalHeadSha };

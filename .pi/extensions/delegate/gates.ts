@@ -13,15 +13,23 @@
  *    falls back to the full `go run ./cmd/spec check --strict`. A failed full
  *    run is a failed gate.
  * 3. The EXTENSION writes receipts; workers never do. Receipts are appended to
- *    `<cwd>/.pi/receipts/<ISO-date>.jsonl` (gitignored). Receipt metadata is
- *    fail-open (a missing rules.yaml or a broken git just records an empty
- *    field) — ONLY the receipt degrades, never the gate verdict.
+ *    `<cwd>/<receipts_dir>/<ISO-date>.jsonl` (default `.pi/receipts`,
+ *    gitignored). Receipt metadata is fail-open (a missing rules.yaml or a
+ *    broken git just records an empty field) — ONLY the receipt degrades,
+ *    never the gate verdict.
  * 4. Gate-file protection is a DENY list with a single file-based escape
- *    hatch: `.pi/delegate/gate-allowlist.json` (JSON array of repo-root-
- *    relative globs). There are deliberately NO env-var bypasses. A missing,
+ *    hatch: the policy's `allowlist_path` (default
+ *    `.pi/delegate/gate-allowlist.json`, a JSON array of repo-root-relative
+ *    globs). There are deliberately NO env-var bypasses. A missing,
  *    unreadable or invalid allowlist behaves exactly like an empty one (deny).
  *    The allowlist file itself is always denied, even if its own globs match
- *    it, so no worker can self-authorize.
+ *    it, so no worker can self-authorize — and so is WORKFLOW.md itself.
+ * 5. THE POLICY IS DECLARED, NOT HARDCODED (batch 3). Gate commands, the
+ *    protected/editable path sets, the allowlist path, the receipt/claims
+ *    dirs, the settle limits, the stall timeout and the concurrency cap come
+ *    from the repo-root WORKFLOW.md front matter (policy.ts). A missing or
+ *    invalid policy is a REFUSAL: no command runs and every in-repo write is
+ *    denied until the file exists and parses.
  *
  * Task-packet convention (SPEC-SCOPE):
  *   The orchestrator includes a line in the worker task text —
@@ -40,6 +48,17 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import {
+  DEFAULT_ALLOWLIST_PATH,
+  DEFAULT_CLAIMS_DIR,
+  DEFAULT_PI_EDITABLE_PATHS,
+  DEFAULT_PROTECTED_PATHS,
+  DEFAULT_RECEIPTS_DIR,
+  type WorkflowPolicy,
+  WORKFLOW_FILE_REL_PATH,
+  loadWorkflowPolicy,
+  workflowPolicyRefusal,
+} from "./policy.ts";
 
 // ── Fail-closed command runner ───────────────────────────────────────────────
 
@@ -287,7 +306,77 @@ export function formatSpecScope(scope: SpecScope): string {
 }
 
 /**
- * Run the worker gate: `make audit/static` plus the scoped spec check.
+ * Split a declared policy command string ("go run ./cmd/spec check --strict")
+ * into argv: whitespace-separated, single/double quotes group a token, a
+ * backslash escapes inside double quotes. No shell interpretation anywhere.
+ */
+export function splitCommandLine(command: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let started = false;
+  let quote: string | null = null;
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index];
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+        continue;
+      }
+      if (char === "\\" && quote === '"' && index + 1 < command.length) {
+        current += command[++index];
+        continue;
+      }
+      current += char;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (started) {
+        tokens.push(current);
+        current = "";
+        started = false;
+      }
+      continue;
+    }
+    current += char;
+    started = true;
+  }
+  if (started) tokens.push(current);
+  return tokens;
+}
+
+/**
+ * The fail-closed GateRun for an unavailable WORKFLOW.md policy: no command
+ * ran, one step carries the reason, and the report names the missing policy.
+ */
+export function policyRefusalGateRun(reason: string): GateRun {
+  return {
+    ok: false,
+    steps: [
+      {
+        command: "(workflow policy)",
+        argv: [],
+        ok: false,
+        exitCode: null,
+        timedOut: false,
+        durationMs: 0,
+        stdout: "",
+        stderr: reason,
+        spawnError: null,
+        reason: workflowPolicyRefusal(reason),
+        note: "WORKFLOW.md front matter",
+      },
+    ],
+  };
+}
+
+/**
+ * Run the worker gate: the declared `audit_static_cmd` plus the scoped spec
+ * check (`scoped_check_cmd` from WORKFLOW.md, scope flags appended).
  *
  * Spec check resolution (never weaker than full):
  *   - no scope      → `go run ./cmd/spec check --strict`
@@ -303,9 +392,15 @@ export async function runScopedGate(opts: {
   makeTimeoutMs?: number;
   specTimeoutMs?: number;
 }): Promise<GateRun> {
+  // Batch 3: the ladder's commands come from WORKFLOW.md. An unavailable
+  // policy means the gate set is undeclared, so NOTHING runs and the gate is a
+  // loud failure — never an unpoliced "pass".
+  const loaded = loadWorkflowPolicy(opts.cwd);
+  if (!loaded.ok) return policyRefusalGateRun(loaded.reason);
+
   const steps: GateStep[] = [];
   const makeStep = await runStep(
-    ["make", "audit/static"],
+    splitCommandLine(loaded.policy.auditStaticCmd),
     opts.cwd,
     opts.makeTimeoutMs ?? DEFAULT_TIMEOUT_MS,
   );
@@ -313,7 +408,7 @@ export async function runScopedGate(opts: {
 
   const scope = parseSpecScopeEnv(opts.scopeEnv);
   const specTimeout = opts.specTimeoutMs ?? SPEC_CHECK_TIMEOUT_MS;
-  const base = ["go", "run", "./cmd/spec", "check", "--strict"];
+  const base = splitCommandLine(loaded.policy.scopedCheckCmd);
   const scopedArgv: string[][] = [];
   if (scope?.module) scopedArgv.push([...base, "--module", scope.module]);
   for (const rule of scope?.rules ?? []) scopedArgv.push([...base, "--rule", rule]);
@@ -404,8 +499,14 @@ export interface ReceiptInput {
   ok?: boolean;
 }
 
+/**
+ * `<cwd>/.pi/receipts` (or the declared `receipts_dir`). Batch 3: the policy
+ * field wins when present; the default keeps today's path.
+ */
 export function receiptsDirFor(cwd: string): string {
-  return path.join(cwd, ".pi", "receipts");
+  const loaded = loadWorkflowPolicy(cwd);
+  const rel = loaded.ok && loaded.declared.has("receipts_dir") ? loaded.policy.receiptsDir : DEFAULT_RECEIPTS_DIR;
+  return path.join(cwd, rel);
 }
 
 /**
@@ -534,6 +635,12 @@ export function markPostWriteGateEnd(sessionKey: string): void {
  * transient failure (another worker mid-write, a stale lock); the wait lets
  * the tree settle.
  */
+/**
+ * Batch 3: the settle knobs are declared in WORKFLOW.md. Resolution order per
+ * knob — a field PRESENT and well-typed in the policy wins; otherwise the
+ * batch-2 env override applies; otherwise the code default. `cwd` is the
+ * project root (process.cwd() by default; callers pass ctx.cwd).
+ */
 export const SETTLE_GATE_MAX_ATTEMPTS = 5;
 /** First backoff wait (ms); doubled per attempt past the immediate window. */
 export const SETTLE_BACKOFF_BASE_MS = 2_000;
@@ -542,15 +649,42 @@ export const SETTLE_GATE_IMMEDIATE_ATTEMPTS = 3;
 /** Doublings cap, so a hand-set huge max cannot make the gate wait for hours. */
 export const SETTLE_BACKOFF_MAX_DOUBLINGS = 5;
 
-/** Total attempts: env override, clamped to at least the immediate window. */
-export function settleGateMaxAttempts(): number {
+/** Immediate (no-wait) attempts: policy field → default. */
+export function settleImmediateAttempts(cwd: string = process.cwd()): number {
+  const loaded = loadWorkflowPolicy(cwd);
+  if (loaded.ok && loaded.declared.has("settle_immediate_attempts")) {
+    return loaded.policy.settleImmediateAttempts;
+  }
+  return SETTLE_GATE_IMMEDIATE_ATTEMPTS;
+}
+
+/** Backoff doublings cap: policy field → default. */
+export function settleBackoffMaxDoublings(cwd: string = process.cwd()): number {
+  const loaded = loadWorkflowPolicy(cwd);
+  if (loaded.ok && loaded.declared.has("settle_backoff_max_doublings")) {
+    return loaded.policy.settleBackoffMaxDoublings;
+  }
+  return SETTLE_BACKOFF_MAX_DOUBLINGS;
+}
+
+/** Total attempts: policy field → env override → default (never below immediate). */
+export function settleGateMaxAttempts(cwd: string = process.cwd()): number {
+  const immediate = settleImmediateAttempts(cwd);
+  const loaded = loadWorkflowPolicy(cwd);
+  if (loaded.ok && loaded.declared.has("settle_max_attempts")) {
+    return Math.max(loaded.policy.settleMaxAttempts, immediate);
+  }
   const raw = Number(process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS);
-  if (!Number.isFinite(raw) || raw < SETTLE_GATE_IMMEDIATE_ATTEMPTS) return SETTLE_GATE_MAX_ATTEMPTS;
+  if (!Number.isFinite(raw) || raw < immediate) return SETTLE_GATE_MAX_ATTEMPTS;
   return Math.floor(raw);
 }
 
-/** Backoff base (ms): env override, 0 keeps the escalation text but no wait. */
-export function settleBackoffBaseMs(): number {
+/** Backoff base (ms): policy field → env override → default; 0 keeps no wait. */
+export function settleBackoffBaseMs(cwd: string = process.cwd()): number {
+  const loaded = loadWorkflowPolicy(cwd);
+  if (loaded.ok && loaded.declared.has("settle_backoff_base_ms")) {
+    return loaded.policy.settleBackoffBaseMs;
+  }
   const raw = Number(process.env.PI_DELEGATE_BACKOFF_BASE_MS);
   if (!Number.isFinite(raw) || raw < 0) return SETTLE_BACKOFF_BASE_MS;
   return Math.floor(raw);
@@ -621,9 +755,14 @@ export function resetSettleGateAttempts(): void {
 }
 
 /** Backoff wait (ms) before the continuation of `attempt` (0 = immediate). */
-export function settleBackoffMsFor(attempt: number, baseMs: number = settleBackoffBaseMs()): number {
-  if (attempt <= SETTLE_GATE_IMMEDIATE_ATTEMPTS) return 0;
-  const doublings = Math.min(attempt - SETTLE_GATE_IMMEDIATE_ATTEMPTS - 1, SETTLE_BACKOFF_MAX_DOUBLINGS);
+export function settleBackoffMsFor(
+  attempt: number,
+  baseMs: number = settleBackoffBaseMs(),
+  cwd: string = process.cwd(),
+): number {
+  const immediate = settleImmediateAttempts(cwd);
+  if (attempt <= immediate) return 0;
+  const doublings = Math.min(attempt - immediate - 1, settleBackoffMaxDoublings(cwd));
   return Math.max(0, baseMs) * 2 ** doublings;
 }
 
@@ -644,10 +783,11 @@ export interface SettleAttemptPlan {
  */
 export function planSettleGateAttempt(
   attempt: number,
-  opts: { maxAttempts?: number; baseMs?: number } = {},
+  opts: { maxAttempts?: number; baseMs?: number; cwd?: string } = {},
 ): SettleAttemptPlan {
-  const maxAttempts = opts.maxAttempts ?? settleGateMaxAttempts();
-  const waitMs = settleBackoffMsFor(attempt, opts.baseMs ?? settleBackoffBaseMs());
+  const cwd = opts.cwd ?? process.cwd();
+  const maxAttempts = opts.maxAttempts ?? settleGateMaxAttempts(cwd);
+  const waitMs = settleBackoffMsFor(attempt, opts.baseMs ?? settleBackoffBaseMs(cwd), cwd);
   const terminal = attempt >= maxAttempts;
   const kind: SettleAttemptPlan["kind"] = terminal ? "terminal" : waitMs > 0 ? "backoff" : "immediate";
   return { attempt, maxAttempts, waitMs, terminal, kind };
@@ -763,11 +903,16 @@ export function matchGlob(pattern: string, relPath: string): boolean {
   return regex.test(toPosix(relPath));
 }
 
-/** Repo-root-relative path of the single gate-file escape hatch. */
-export const GATE_ALLOWLIST_REL_PATH = ".pi/delegate/gate-allowlist.json";
+/**
+ * Repo-root-relative path of the single gate-file escape hatch. Batch 3: the
+ * effective path comes from the WORKFLOW.md policy (`allowlist_path`); this
+ * constant is the default, kept for the callers/tests that never load policy.
+ */
+export const GATE_ALLOWLIST_REL_PATH = DEFAULT_ALLOWLIST_PATH;
 
-/** Files a delegated worker may still edit: prose the orchestrator rewrites. */
-const PI_EDITABLE_PATTERNS = [".pi/agents/**", ".pi/prompts/**", ".pi/delegate/**", ".pi/plans/**"];
+/** Default deny set / editable set (the policy file's defaults when omitted). */
+export const DEFAULT_GATE_PROTECTED_PATHS = DEFAULT_PROTECTED_PATHS;
+export const DEFAULT_GATE_EDITABLE_PATHS = DEFAULT_PI_EDITABLE_PATHS;
 
 export interface GatePathDecision {
   /** true ⇒ block the edit/write. */
@@ -784,8 +929,8 @@ export interface GatePathDecision {
  * Read the escape-hatch allowlist. Missing / unreadable / non-array / non-
  * string entries ⇒ empty list (fail closed: gate files stay denied).
  */
-export function readGateAllowlist(repoRoot: string): string[] {
-  const file = path.join(repoRoot, GATE_ALLOWLIST_REL_PATH);
+export function readGateAllowlist(repoRoot: string, relPath: string = GATE_ALLOWLIST_REL_PATH): string[] {
+  const file = path.join(repoRoot, relPath);
   let raw: string;
   try {
     raw = fs.readFileSync(file, "utf8");
@@ -795,54 +940,79 @@ export function readGateAllowlist(repoRoot: string): string[] {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) {
-      console.error("[delegate] " + GATE_ALLOWLIST_REL_PATH + ": expected a JSON array of globs; ignoring (gate files stay denied)");
+      console.error("[delegate] " + relPath + ": expected a JSON array of globs; ignoring (gate files stay denied)");
       return [];
     }
     return parsed.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
   } catch (error) {
-    console.error("[delegate] " + GATE_ALLOWLIST_REL_PATH + ": invalid JSON; ignoring (gate files stay denied):", error);
+    console.error("[delegate] " + relPath + ": invalid JSON; ignoring (gate files stay denied):", error);
     return [];
   }
 }
 
 /**
  * Gate-file protection for child-session edits/writes: DENY by default for
- * docs/spec/rules.schema.md, cmd/spec/**, Makefile and .pi/** — except
- * .pi/agents|prompts|delegate|plans prose and any path matched by the
- * .pi/delegate/gate-allowlist.json escape hatch.
+ * every path in the policy's `protected_paths` — except the policy's
+ * `pi_editable_paths` prose and any path matched by the allowlist escape
+ * hatch. An unavailable policy denies every in-repo write loudly: a worker
+ * must not edit under an undeclared rule set.
  */
 export function evaluateGateFileWrite(repoRoot: string, inputPath: string): GatePathDecision {
   const rel = repoRelativePath(repoRoot, inputPath);
   if (!rel) return { blocked: false, rel: null, allowedBy: "outside-repo" };
 
-  // Always denied, even when the allowlist matches it: a worker must not be
-  // able to authorize itself (the file is the ONLY mechanism).
-  if (rel === GATE_ALLOWLIST_REL_PATH) {
-    return { blocked: true, rel, reason: gateFileReason(rel) };
+  const loaded = loadWorkflowPolicy(repoRoot);
+  if (!loaded.ok) {
+    return { blocked: true, rel, reason: workflowPolicyRefusal(loaded.reason) };
+  }
+  const policy = loaded.policy;
+
+  // Always denied, even when a protected-path or allowlist glob matches it: a
+  // worker must not be able to authorize itself (the file is the ONLY
+  // mechanism). This invariant is code, not policy.
+  if (rel === policy.allowlistPath) {
+    return { blocked: true, rel, reason: gateFileReason(rel, policy) };
+  }
+  // Same invariant for the policy itself (batch 3): a child that can rewrite
+  // WORKFLOW.md can rewrite its own gates. Never grantable, not even through
+  // the allowlist — that needs a human edit outside a delegated session.
+  if (rel === WORKFLOW_FILE_REL_PATH) {
+    return { blocked: true, rel, reason: workflowPolicySelfDeny(rel) };
   }
 
-  const isGateFile =
-    rel === "Makefile" || rel === "cmd/spec" || matchGlob("cmd/spec/**", rel) || matchGlob("docs/spec/**", rel) || matchGlob(".pi/**", rel);
+  const isGateFile = policy.protectedPaths.some((pattern) => matchGlob(pattern, rel));
   if (!isGateFile) return { blocked: false, rel, allowedBy: "not-gate-file" };
 
-  if (PI_EDITABLE_PATTERNS.some((pattern) => matchGlob(pattern, rel))) {
+  if (policy.piEditablePaths.some((pattern) => matchGlob(pattern, rel))) {
     return { blocked: false, rel, allowedBy: "editable-pi-prose" };
   }
 
-  const allowlist = readGateAllowlist(repoRoot);
+  const allowlist = readGateAllowlist(repoRoot, policy.allowlistPath);
   if (allowlist.some((pattern) => matchGlob(pattern, rel))) {
     return { blocked: false, rel, allowedBy: "allowlist" };
   }
 
-  return { blocked: true, rel, reason: gateFileReason(rel) };
+  return { blocked: true, rel, reason: gateFileReason(rel, policy) };
 }
 
-function gateFileReason(rel: string): string {
+function workflowPolicySelfDeny(rel: string): string {
+  return (
+    "The workflow policy file is protected from delegated edits: " + rel + ". " +
+    "It declares the gates, caps and protected paths that bind this session, so a worker must not " +
+    "rewrite it (not grantable through the allowlist either). Report the needed policy change to the " +
+    "orchestrator/user instead."
+  );
+}
+
+function gateFileReason(rel: string, policy?: WorkflowPolicy): string {
+  const protectedList = (policy ? policy.protectedPaths : DEFAULT_GATE_PROTECTED_PATHS).join(", ");
+  const editableList = (policy ? policy.piEditablePaths : DEFAULT_GATE_EDITABLE_PATHS).join(", ");
+  const allowlist = policy ? policy.allowlistPath : GATE_ALLOWLIST_REL_PATH;
   return (
     "Gate file is protected from delegated edits: " + rel + ". " +
-    "Protected: docs/spec/rules.schema.md, docs/spec/**, cmd/spec/**, Makefile, .pi/extensions/**, " +
-    ".pi/delegate/gate-allowlist.json and every other .pi/ path that is not agents|prompts|delegate|plans prose. " +
-    "Only a matching glob in .pi/delegate/gate-allowlist.json (repo-root-relative) allows this edit; " +
+    "Protected by WORKFLOW.md protected_paths: " + protectedList + ". " +
+    "Worker-editable exception (pi_editable_paths): " + editableList + ". " +
+    "Only a matching glob in " + allowlist + " (repo-root-relative) allows this edit; " +
     "no env-var bypass exists. Report the needed change to the orchestrator instead."
   );
 }

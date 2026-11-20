@@ -29,6 +29,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { GIT_TIMEOUT_MS, matchGlob, parseSpecScope, runGate } from "./gates.ts";
+import { DEFAULT_CLAIMS_DIR, loadWorkflowPolicy } from "./policy.ts";
 
 /** How many recent completions ride along in a task prompt. */
 export const SIBLING_CONTEXT_MAX = 3;
@@ -101,9 +102,11 @@ function sanitizeJobId(value: string): string {
   return cleaned || "session-unknown";
 }
 
-/** `<cwd>/.pi/jobs/<jobId>/claims.jsonl`. */
+/** `<cwd>/<claims_dir>/<jobId>/claims.jsonl` (batch 3: claims_dir from WORKFLOW.md). */
 export function claimsLogPath(cwd: string, jobId: string): string {
-  return path.join(cwd, ".pi", "jobs", sanitizeJobId(jobId), "claims.jsonl");
+  const loaded = loadWorkflowPolicy(cwd);
+  const dir = loaded.ok && loaded.declared.has("claims_dir") ? loaded.policy.claimsDir : DEFAULT_CLAIMS_DIR;
+  return path.join(cwd, dir, sanitizeJobId(jobId), "claims.jsonl");
 }
 
 // ── Task-text parsing ───────────────────────────────────────────────────────
