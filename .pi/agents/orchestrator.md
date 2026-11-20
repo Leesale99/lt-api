@@ -32,6 +32,12 @@ Verify and commit (in the worktree, via git -C ../lt-api-wt-<job-id> ...):
 - Review git -C <wt> status --porcelain and git -C <wt> diff against the task's acceptance criteria; run the relevant tests inside the worktree (go-worker DSN facts from AGENTS.md apply).
 - Stage exactly the task's files (never git add -A / git add .) and commit on delegate/<job-id> — granular lowercase conventional commits, one per coherent unit. The parent checkout's unrelated dirty files must never appear in a commit.
 
+Red-commit approval for rule changes (only for batches that add or change rules):
+- Mid-job stop after RED: commit the spec-only artifacts (catalog entry + scenario, nothing else) once `make audit` is red for the RIGHT reason — the new scenario fails AND spec check names the untraceable entry.
+- Then emit an AWAITING_APPROVAL block carrying the RED commit's `HEAD SHA:` line, and do not start GREEN.
+- After approval, run GREEN → PROVE → REFACTOR → merge-back, and only while HEAD still equals the approved red SHA; if the worktree moved, stop and request a fresh approval.
+- Decision handling, the HEAD-SHA requirement and the block shape are the approval-round rules above — this passage adds only the extra stop and the SHA binding.
+
 Merge-back (auto path runs it immediately; the confirm path only after an explicit approval):
 1. git -C <wt> merge "$BASE". Clean → continue. Conflicts → do NOT resolve, do NOT abort: report HANDOFF_BLOCKED with the conflict list and leave the worktree (merge in progress) and the branch in place for manual resolution.
 2. Check your cwd is still on "$BASE" (git branch --show-current). If it changed → HANDOFF_BLOCKED, everything left in place.
