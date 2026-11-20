@@ -12,6 +12,10 @@ package main
 //	TestPinSabotageObjectNameRealityGate          — fix J (§8 object names keep their phrase fragments only when the name is real)
 //	TestPinDisguisedStatusNarrowed               — fix H (only HTTP-shaped lettered figures are disguises)
 //	TestPinGlossaryRejectsConcatenatedTransport   — fix I (concatenated transport words are not addable)
+//	TestPinGlossaryRejectsExhaustiveConcatenation — fix K (ANY concatenation length is a disguise)
+//	TestPinGlossaryRejectsTrailingOStatus         — fix L (a trailing-o figure is a disguised status)
+//	TestPinTrailingOStatusDeniedInStep            — fix L (the same, on the step side; three-char shapes guarded)
+//	TestPinDigitLeadingWordsStayAddable           — fix L guard (digit-leading words stay unflagged and addable)
 //
 // Fixtures are synthetic checkouts (t.TempDir via newTestRepo): an inline
 // glossary plus one feature file, so a test fails for exactly the rule it pins.
@@ -947,6 +951,331 @@ Feature: A glossed concatenation
 	t.Run("addable: a database object name", func(t *testing.T) {
 		if !g.sections["game"]["rides_tokens_locked_check"] {
 			t.Errorf("glossary term \"rides_tokens_locked_check\" was rejected:\n%s", joined)
+		}
+	})
+}
+
+// TestPinGlossaryRejectsExhaustiveConcatenation is fix K: fix I's concatenation
+// check cuts the term in exactly ONE place, so `httpstatus` (http + status) and
+// `statuscode` (status + code) are refused while a THREE-part concatenation
+// walks straight past it: `httpstatuscode` (http + status + code) and
+// `statuscodehttp` (status + code + http) are glossary-addable today, and the
+// remedy message then launders them permanently. The rule is the exhaustive
+// one: a term is a disguise when its whole text partitions into TWO OR MORE
+// parts, every part denylisted transport vocabulary (denylistedTransportTokens
+// ∪ statusNouns). The two-part forms keep their existing rejection, and a step
+// that says one of the refused terms falls out of the allowlist with it.
+func TestPinGlossaryRejectsExhaustiveConcatenation(t *testing.T) {
+	repo := vocabularyPinnedRepo(t, `common:
+  - the
+game:
+  - httpstatus
+  - httpstatuscode
+  - ride
+  - statuscode
+  - statuscodehttp
+identity: []
+schedule: []
+ledger: []
+kernel: []
+platform: []
+`, `@game
+Feature: A glossed concatenation of any length
+
+  @rule:R-KERNEL-001
+  Scenario: The ride
+    Then the ride
+
+  @rule:R-KERNEL-002
+  Scenario: A three-part transport concatenation
+    Then httpstatuscode
+
+  @rule:R-KERNEL-003
+  Scenario: A three-part transport concatenation, reversed
+    Then statuscodehttp
+`)
+
+	c := &checker{root: repo.root}
+	g := c.loadGlossary()
+	glossaryFindings := describeFindings(c.findings)
+	findings, _ := vocabularyFindings(t, repo)
+	byScenario := map[string]string{}
+	for _, f := range findings {
+		byScenario[f.RuleID] += f.Message + "\n"
+	}
+	pointer := func(scenario string) string {
+		return "docs/spec/features/game/pinned.feature::" + scenario
+	}
+
+	// (a) Every concatenation length is refused, and NO refused term enters the
+	// allowlist. The reason's wording is deliberately not pinned beyond the
+	// finding's fixed prefix: a fix may report a three-part partition
+	// differently from the two-part `%q + %q` phrasing, and the existing
+	// TestPinGlossaryRejectsConcatenatedTransport already owns the two-part
+	// wording.
+	for _, term := range []string{"httpstatus", "statuscode", "httpstatuscode", "statuscodehttp"} {
+		t.Run("rejected: "+term, func(t *testing.T) {
+			if !strings.Contains(glossaryFindings,
+				`glossary term "`+term+`" in section "game" is not a legitimate step word:`) {
+				t.Errorf("glossary term %q was accepted:\n%s", term, glossaryFindings)
+			}
+			if g.sections["game"][term] {
+				t.Errorf("glossary term %q entered the allowlist despite being a concatenated disguise", term)
+			}
+		})
+	}
+
+	// (b) The allowlist hole is the point: a step that says a refused term must
+	// report it, not pass silently because the glossary laundering it was
+	// accepted. RED today for the three-part forms (accepted, so the step is
+	// clean); GREEN today for the two-part ones, which fix I already refuses.
+	for _, pin := range []struct {
+		scenario string
+		term     string
+	}{
+		{"A three-part transport concatenation", "httpstatuscode"},
+		{"A three-part transport concatenation, reversed", "statuscodehttp"},
+	} {
+		t.Run("step: "+pin.term+" is not addable", func(t *testing.T) {
+			got := byScenario[pointer(pin.scenario)]
+			if !strings.Contains(got, `step token "`+pin.term+`" is not declared`) {
+				t.Errorf("a step said %q, which the glossary may not declare, and it passed:\n%s",
+					pin.term, got)
+			}
+		})
+	}
+
+	// (c) The fixture's own baseline: the words the feature needs stay quiet, so
+	// the findings above belong to the concatenations alone.
+	t.Run("baseline: the ride", func(t *testing.T) {
+		if got := byScenario[pointer("The ride")]; got != "" {
+			t.Errorf("the fixture's baseline step was flagged:\n%s", got)
+		}
+	})
+}
+
+// TestPinGlossaryRejectsTrailingOStatus is fix L: `disguisedStatusPattern` is
+// EXACTLY three characters (`^[1-5][0-9o]{2}$`), so `2oo` is refused while
+// `200o` — the same figure with a trailing `o` standing for nothing — is four
+// characters, passes disguiseReason, and is glossary-addable today. The rule is
+// the normalized one: strip trailing o/O characters, substitute the remaining
+// o/O with 0, then require a bare three-digit HTTP-range figure. The
+// three-character shapes keep their existing rejection.
+func TestPinGlossaryRejectsTrailingOStatus(t *testing.T) {
+	repo := vocabularyPinnedRepo(t, `common:
+  - the
+game:
+  - "200o"
+  - "2o0o"
+  - "2oo"
+  - ride
+identity: []
+schedule: []
+ledger: []
+kernel: []
+platform: []
+`, `@game
+Feature: A glossed trailing-o status
+
+  @rule:R-KERNEL-001
+  Scenario: The ride
+    Then the ride
+`)
+
+	c := &checker{root: repo.root}
+	g := c.loadGlossary()
+	joined := describeFindings(c.findings)
+
+	// (a) The trailing-o forms are disguised statuses and never enter the
+	// allowlist. RED today: both are four characters, so the three-character
+	// pattern does not see them.
+	for _, term := range []string{"200o", "2o0o"} {
+		t.Run("rejected: "+term, func(t *testing.T) {
+			if !strings.Contains(joined,
+				`glossary term "`+term+`" in section "game" is not a legitimate step word: it is a numeric status`) {
+				t.Errorf("glossary term %q was accepted:\n%s", term, joined)
+			}
+			if g.sections["game"][term] {
+				t.Errorf("glossary term %q entered the allowlist despite being a disguised status", term)
+			}
+		})
+	}
+
+	// (b) The guard: the three-character shape is refused as it always was, so
+	// a normalized check cannot become a narrowing of the existing ban.
+	t.Run("guard: 2oo", func(t *testing.T) {
+		if !strings.Contains(joined,
+			`glossary term "2oo" in section "game" is not a legitimate step word: it is a numeric status`) {
+			t.Errorf("the glossary accepted the letterspelled status `2oo`:\n%s", joined)
+		}
+		if g.sections["game"]["2oo"] {
+			t.Error("glossary term \"2oo\" entered the allowlist despite being a disguise")
+		}
+	})
+}
+
+// pinTrailingOGlossary declares only the words the fixture says on purpose and
+// NONE of the figures under test: the numeric-status rule (not the allowlist)
+// has to catch them, so the remedy must name the status ban and never "add it
+// to the glossary".
+const pinTrailingOGlossary = `common:
+  - the
+game:
+  - answer
+  - says
+identity: []
+schedule: []
+ledger: []
+kernel: []
+platform: []
+`
+
+// TestPinTrailingOStatusDeniedInStep is fix L on the step side: `2oo`, `2OO`,
+// `4O4` and `2o0` are already denied as step tokens (three characters), while
+// `200o` falls through the three-character pattern and reaches the glossary
+// binding, which reports it as a mere undeclared word — inviting the author to
+// add the disguise. After the fix every one of the five forms is a numeric
+// status, and none of them is offered the glossary remedy.
+func TestPinTrailingOStatusDeniedInStep(t *testing.T) {
+	repo := vocabularyPinnedRepo(t, pinTrailingOGlossary, `@game
+Feature: A letterspelled figure is a status however it is spelled
+
+  @rule:R-KERNEL-001
+  Scenario: A trailing-o figure
+    Then the answer says 200o
+
+  @rule:R-KERNEL-002
+  Scenario: The three-character disguises
+    Then the answer says 2oo
+    And the answer says 4O4
+    And the answer says 2o0
+
+  @rule:R-KERNEL-003
+  Scenario: An uppercase disguise
+    Then the answer says 2OO
+`)
+
+	findings, _ := vocabularyFindings(t, repo)
+	byScenario := map[string]string{}
+	for _, f := range findings {
+		byScenario[f.RuleID] += f.Message + "\n"
+	}
+	pointer := func(scenario string) string {
+		return "docs/spec/features/game/pinned.feature::" + scenario
+	}
+
+	// (a) RED today: `200o` is not a step-token disguise, so the only finding is
+	// the undeclared-word remedy — which is exactly the laundering path the
+	// glossary rejection (TestPinGlossaryRejectsTrailingOStatus) has to close
+	// from the other side.
+	t.Run("status: a trailing-o figure", func(t *testing.T) {
+		got := byScenario[pointer("A trailing-o figure")]
+		if !strings.Contains(got, `step token "200o" is a numeric status`) {
+			t.Errorf("`200o` was not a numeric status in a step:\n%s", got)
+		}
+		if strings.Contains(got, `step token "200o" is not declared`) {
+			t.Errorf("findings offer the glossary remedy for a disguise:\n%s", got)
+		}
+	})
+
+	// (b) The guards: the three-character shapes keep their existing rejection —
+	// normalized matching must ADD the trailing-o forms, never narrow this set.
+	t.Run("status: the three-character disguises", func(t *testing.T) {
+		got := byScenario[pointer("The three-character disguises")]
+		for _, token := range []string{"2oo", "4o4", "2o0"} {
+			if !strings.Contains(got, `step token "`+token+`" is a numeric status`) {
+				t.Errorf("step token %q was not a numeric status:\n%s", token, got)
+			}
+			if strings.Contains(got, `step token "`+token+`" is not declared`) {
+				t.Errorf("findings offer the glossary remedy for %q:\n%s", token, got)
+			}
+		}
+	})
+
+	// (c) The tokenizer lowercases, so the uppercase respelling is the same
+	// token: `2OO` reports as `2oo` and stays a status.
+	t.Run("status: an uppercase disguise", func(t *testing.T) {
+		got := byScenario[pointer("An uppercase disguise")]
+		if !strings.Contains(got, `step token "2oo" is a numeric status`) {
+			t.Errorf("`2OO` was not a numeric status in a step:\n%s", got)
+		}
+		if strings.Contains(got, "is not declared") {
+			t.Errorf("findings offer the glossary remedy for an uppercase disguise:\n%s", got)
+		}
+	})
+}
+
+// pinDigitLeadingGlossary declares the five digit-leading words the features say
+// as business facts. None of them is a lookalike of a three-digit HTTP figure,
+// so all five stay addable — and that is the guard that keeps a normalized
+// trailing-o check from swallowing `60s` or `7th`.
+const pinDigitLeadingGlossary = `common:
+  - after
+  - on
+  - the
+game:
+  - "1st"
+  - "30min"
+  - "3d"
+  - "60s"
+  - "7th"
+  - attempt
+  - finishes
+  - player
+  - waits
+identity: []
+schedule: []
+ledger: []
+kernel: []
+platform: []
+`
+
+// TestPinDigitLeadingWordsStayAddable is the other half of fix L: the disguise
+// check must refuse the letterspelled FIGURE without refusing every
+// digit-leading word. `1st`, `30min`, `3d`, `60s` and `7th` are business facts:
+// they are declared by the glossary (no finding) and a step may say them (no
+// finding). GREEN today; it must stay green after the fix.
+func TestPinDigitLeadingWordsStayAddable(t *testing.T) {
+	repo := vocabularyPinnedRepo(t, pinDigitLeadingGlossary, `@game
+Feature: A digit-leading word is not a status
+
+  @rule:R-KERNEL-001
+  Scenario: An ordinal, a duration and a rank
+    Given the player finishes 1st after 30min
+    And the player waits 60s on the 7th attempt
+    And the player waits 3d
+`)
+
+	c := &checker{root: repo.root}
+	g := c.loadGlossary()
+	glossaryFindings := describeFindings(c.findings)
+	findings, messages := vocabularyFindings(t, repo)
+	joined := strings.Join(messages, "\n")
+	byScenario := map[string]string{}
+	for _, f := range findings {
+		byScenario[f.RuleID] += f.Message + "\n"
+	}
+
+	// (a) Addable: no glossary finding, and the term is in the allowlist.
+	for _, term := range []string{"1st", "30min", "3d", "60s", "7th"} {
+		t.Run("addable: "+term, func(t *testing.T) {
+			if strings.Contains(glossaryFindings, `glossary term "`+term+`"`) {
+				t.Errorf("glossary term %q was refused as a disguised status:\n%s", term, glossaryFindings)
+			}
+			if !g.sections["game"][term] {
+				t.Errorf("glossary term %q did not enter the allowlist:\n%s", term, glossaryFindings)
+			}
+		})
+	}
+
+	// (b) Usable: the step says all five and is clean.
+	t.Run("step: an ordinal, a duration and a rank", func(t *testing.T) {
+		got := byScenario["docs/spec/features/game/pinned.feature::An ordinal, a duration and a rank"]
+		if got != "" {
+			t.Errorf("digit-leading business words were flagged in a step:\n%s", got)
+		}
+		if strings.Contains(joined, `is a numeric status`) {
+			t.Errorf("a digit-leading business word was a numeric status:\n%s", joined)
 		}
 	})
 }
