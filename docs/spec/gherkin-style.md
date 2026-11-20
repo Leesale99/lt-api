@@ -108,7 +108,9 @@ fabricated name gets the denylist normally: the exemption covers a name the data
 has, not the disguise of one. The SQL words are partitioned: the homographs
 that are ordinary English too (`check`, `unique`, `index`, `references`, `create`,
 `table`, `column`) fire only beside another SQL word or a database object noun (`create
-table`, `unique index`); `the check passes` is fine. The rest error alone (`insert into
+table`, `unique index`) — seeing through the closed stopword set `a`, `an`, `the`, `new`,
+`temporary`, `each`, `every`, `per`, so `create a table` is the same SQL shape — while
+`the check passes` is fine. The rest error alone (`insert into
 game.rides`). A step's docstring body and data-table cells are scanned by the same
 rules, and the denylist also reads every token split on `_`, so `status_code`, `2OO` or a
 keyword glued into a name is not a way past it. Extending the glossary is part of the

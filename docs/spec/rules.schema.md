@@ -275,11 +275,15 @@ list is the frequency.
       - **Homographs** — `check`, `unique`, `index`, `references`, `create`,
         `table`, `column` — never error **alone**: `the check passes`, `each pair
         of teams is unique` and `the table is set for match day 1` are business
-        prose. A homograph fires only on **adjacency**: it is an ERROR iff a
-        neighbouring token of the same step (i±1 in its token stream) is itself
-        SQL vocabulary — homograph or hard keyword — or one of the database object
-        nouns `key`, `database`, `schema`, `row`. So `create table`, `check
-        constraint`, `unique index` and `unique key` are ERRORs.
+        prose. A homograph fires only on **adjacency**: it is an ERROR iff the
+        neighbouring token of the same step is itself SQL vocabulary — homograph
+        or hard keyword — or one of the database object nouns `key`, `database`,
+        `schema`, `row`. Adjacency is i±1 **after skipping the closed stopword
+        set** `a`, `an`, `the`, `new`, `temporary`, `each`, `every`, `per`: the
+        walk passes over consecutive stopwords, the first non-stopword
+        neighbour decides, and the boundary of the token stream is not
+        adjacency. So `create table`, `create a table`, `create a new table`,
+        `check constraint`, `unique index` and `unique key` are ERRORs.
       - **Hard keywords** — `select`, `insert`, `update`, `delete`, `join`,
         `drop`, `alter`, `constraint`, `trigger`, `grant`, `revoke`, `cascade`,
         `upsert`, `truncate` — have no English reading in this domain and error

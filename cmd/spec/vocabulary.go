@@ -114,6 +114,17 @@ var sqlHomographTokens = enum(
 // they only license the homograph beside them.
 var sqlAdjacencyNouns = enum("key", "database", "schema", "row")
 
+// sqlAdjacencyStopwords are the words adjacency sees THROUGH when deciding
+// whether a homograph is SQL-shaped: English function words that cannot make a
+// homograph SQL by themselves, so `create a table` and `create a new table` are
+// the same SQL shape as `create table`. The set is CLOSED on purpose — the walk
+// only ever extends the reach of the i±1 rule by a run of these words, and any
+// other token still decides adjacency on its own merits (a `ride` behind an `a`
+// leaves `create a ride` prose).
+var sqlAdjacencyStopwords = enum(
+	"a", "an", "the", "new", "temporary", "each", "every", "per",
+)
+
 // denylistedPhrases are multi-word §6 bans, matched over the token stream so a
 // quoted literal ("...") stays exempt. `code` alone is business vocabulary ("a
 // permission code"); `status code` is the transport fact.
@@ -877,16 +888,24 @@ func gluedFragments(tokens []string) []bool {
 	return glued
 }
 
-// isSQLAdjacency reports whether a token at index i has a neighbour (i±1 in the
-// same stream) that makes a homograph SQL-shaped: SQL vocabulary of either kind,
-// or a database object noun.
+// isSQLAdjacency reports whether a token at index i has a neighbour that makes
+// a homograph SQL-shaped: SQL vocabulary of either kind, or a database object
+// noun. The neighbour is the first non-stopword token in each direction (i±1
+// after skipping a run of sqlAdjacencyStopwords), so `create a table` and
+// `create a new table` are adjacent exactly as `create table` is, while a
+// non-stopword that is neither SQL nor an object noun ends the walk — and the
+// boundary of the stream is not a neighbour, so a trailing run of stopwords
+// never invents adjacency.
 func isSQLAdjacency(tokens []string, i int) bool {
-	for _, j := range []int{i - 1, i + 1} {
-		if j < 0 || j >= len(tokens) {
-			continue
-		}
-		if denylistedSQLTokens[tokens[j]] || sqlAdjacencyNouns[tokens[j]] {
-			return true
+	for _, step := range []int{-1, 1} {
+		for j := i + step; j >= 0 && j < len(tokens); j += step {
+			if sqlAdjacencyStopwords[tokens[j]] {
+				continue
+			}
+			if denylistedSQLTokens[tokens[j]] || sqlAdjacencyNouns[tokens[j]] {
+				return true
+			}
+			break
 		}
 	}
 	return false
