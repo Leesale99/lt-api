@@ -26,25 +26,25 @@ confirm:
 run/api: 
 	go run ./cmd/api -db-dsn=${LT_API_DSN} -smtp-username=${SMTP_USERNAME} -smtp-password=${SMTP_PASSWORD}
 
-## test: run the full suite; the spec suite FAILS without LT_API_TEST_DSN (bring it up with db/up)
+## test: run the full suite with -count=1 (never a cached ok); the spec suite FAILS without LT_API_TEST_DSN (bring it up with db/up)
 .PHONY: test
 test:
-	go test ./...
+	go test -count=1 ./...
 
-## test/unit: run the pure-logic tests (no database needed)
+## test/unit: run the pure-logic tests with -count=1 (no database needed)
 .PHONY: test/unit
 test/unit:
-	go test ./internal/schedule/... -run 'TestValidateNewMatch|TestValidateMatchUpdate|TestWinner|TestPhase' -v
+	go test -count=1 ./internal/schedule/... -run 'TestValidateNewMatch|TestValidateMatchUpdate|TestWinner|TestPhase' -v
 
 ## test/db: run the full suite against the test database (LT_API_TEST_DSN from .envrc; fails loudly if unreachable)
 .PHONY: test/db
 test/db:
 	go test -count=1 ./... -v
 
-## test/spec: run the godog suite against real Postgres (needs LT_API_TEST_DSN; `make db/up` provides it)
+## test/spec: run the godog suite against real Postgres with -count=1 (never a cached ok; needs LT_API_TEST_DSN, `make db/up` provides it)
 .PHONY: test/spec
 test/spec:
-	go test ./internal/spec/...
+	go test -count=1 ./internal/spec/...
 
 ## db/up: start the compose test database (CI's postgres 18 service container) and wait until it is healthy
 .PHONY: db/up

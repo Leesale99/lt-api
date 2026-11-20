@@ -131,7 +131,8 @@ as CI's service container) and waits for it to be healthy. A missing
 green run always includes those scenarios; `AUDIT_SKIP_DB=1` announces the skip and
 is the only opt-out. `make audit` never trusts the go test cache: it re-executes the
 whole tree with `-count=1` on every run, so a cached `ok` can never stand in for the
-enforcement half. Quickstart: `make db/up` →
+enforcement half; the other `go test` targets (`make test`, `make test/unit`,
+`make test/db`, `make test/spec`) pass `-count=1` for the same reason. Quickstart: `make db/up` →
 `export LT_API_TEST_DSN='postgres://lt_test:test@localhost:5433/lt_api_test?sslmode=disable'`
 → `make test/spec` (the first run applies migrations 000001–000022 to a database it
 creates and drops itself) → `make db/down` when done.

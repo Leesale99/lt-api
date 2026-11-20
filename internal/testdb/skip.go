@@ -128,7 +128,9 @@ const MissingDSNHelp = "SPEC SUITE DID NOT RUN: LT_API_TEST_DSN is unset and AUD
 // failure dumps) and to the controlling terminal, when there is one (a
 // developer's `make audit`); with no terminal (CI, pipes) the two captured
 // copies are all that is possible. The load-bearing guard is therefore the FAIL
-// path (ActionFail → stderr, exit 1), which -count=1 in `make audit` always exercises.
+// path (ActionFail → stderr, and a non-zero `go test` exit), which -count=1 in
+// `make audit` always exercises: the suite fails, so make reports its own
+// failed-recipe exit and the audit is red.
 func Announce(message string) {
 	announce(message, os.Stdout, os.Stderr)
 }

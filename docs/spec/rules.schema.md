@@ -288,6 +288,11 @@ list is the frequency.
         `drop`, `alter`, `constraint`, `trigger`, `grant`, `revoke`, `cascade`,
         `upsert`, `truncate` — have no English reading in this domain and error
         alone, exactly as before: `insert into game.rides` is an ERROR.
+      Matching is on **exact tokens** and does no stemming, which is what gives the
+      two halves the asymmetry above: a hard keyword errors **alone**, a homograph
+      only on adjacency. Their inflected forms (`deletes`, `updates`, `inserting`,
+      `created`) are therefore ordinary words that trigger nothing on their own —
+      they bind through the glossary below like every other undeclared word.
       - The SQL half is **scoped to facade steps**: the sabotage family of
         `gherkin-style.md` §8 (`the Owner pool …`, `the write is refused by …`,
         `the refusal names …`, `the write is allowed`) exists to bypass the
@@ -314,10 +319,12 @@ list is the frequency.
       `file::scenario` and the section to extend. The seed describes the vocabulary
       the tree uses today; extending it is part of the change that needs the word.
       A term that merely respells denylisted **transport** vocabulary over its `_`-split
-      form (`status_code`, `http_status`), that glues two such words together with no
-      separator at all (`httpstatus`, `statuscode`), or that is a status figure written with
-      letters in place of digits — exactly three characters, a leading 1–5 and then digits or
-      the letter `o` (`2oo`, `4O4`) — is an ERROR naming the section and the term, and never
+      form (`status_code`, `http_status`), that glues any two or more such words
+      together with no separator at all (`httpstatus`, `httpstatuscode`,
+      `statuscodehttp`), or that is a status figure written with letters in place of
+      digits — the three-character figure, a leading 1–5 and then digits or the letter
+      `o` (`2oo`, `4O4`, `2o0`), or that same figure with its trailing `o`s standing in
+      for nothing (`200o`, `2o0o`) — is an ERROR naming the section and the term, and never
       enters the allowlist: the remedy may not launder the disguise. The SQL half of the
       denylist is deliberately **not** applied to glossary terms, so the database object names
       the sabotage steps declare (`rides_tokens_locked_check`) stay addable here.
