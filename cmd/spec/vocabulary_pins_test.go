@@ -8,6 +8,7 @@ package main
 //	TestPinnedBareThreeDigitQuantityOrStatus     — fix C (a three-digit figure, quantity vs status)
 //	TestPinnedDocStringAndTableCellVocabulary    — fix D (docstrings and data-table cells are scanned)
 //	TestPinSQLHomographAdjacency                 — fix E (SQL homographs fire on adjacency, not alone)
+//	TestPinSQLHomographStopwordAdjacency         — fix E, second half (a closed stopword set is transparent to adjacency)
 //	TestPinnedQuantityFollowerIsClosed           — fix F (the quantity follower set is closed)
 //	TestPinSabotageObjectNameRealityGate          — fix J (§8 object names keep their phrase fragments only when the name is real)
 //	TestPinDisguisedStatusNarrowed               — fix H (only HTTP-shaped lettered figures are disguises)
@@ -501,6 +502,155 @@ Feature: SQL vocabulary is a shape, not a spelling
 			}
 		}
 	})
+}
+
+// pinStopwordGlossary declares every word the stopword-adjacency pin says on
+// purpose, the homographs themselves (`create`, `table`, `check`, `unique`)
+// included: a homograph is ordinary English, so the glossary may carry it. What
+// policy 13 has to decide is whether the STEP used it as SQL, never whether the
+// word may be declared at all (a declared-but-denied word errors anyway, because
+// the denylist runs before the glossary binding).
+const pinStopwordGlossary = `common:
+  - a
+  - each
+  - for
+  - is
+  - of
+  - the
+game:
+  - can
+  - check
+  - create
+  - game
+  - new
+  - pair
+  - passes
+  - ride
+  - round
+  - set
+  - table
+  - teams
+  - temporary
+  - unique
+identity: []
+schedule: []
+ledger: []
+kernel: []
+platform: []
+`
+
+// TestPinSQLHomographStopwordAdjacency pins the second half of fix E: adjacency
+// is decided over the words a step actually commits to, not over the literal
+// distance of 1 in the token stream. A CLOSED stopword set — `a`, `an`, `the`,
+// `new`, `temporary`, `each`, `every`, `per` — is transparent when deciding
+// adjacency: from a homograph, walk past consecutive stopwords in either
+// direction, and the first non-stopword neighbour decides exactly as the i±1
+// rule does today (SQL vocabulary of either kind, or one of the database object
+// nouns `key`, `database`, `schema`, `row`, makes the homograph SQL; anything
+// else, or the end of the stream, does not). Hard keywords keep firing alone.
+//
+// The hole this closes: with strict i±1, `create a table`, `create a new table`
+// and `create a temporary table` read as English to the checker and as SQL to a
+// human — one filler word is enough to launder the shape. The guards pin the
+// other direction: skipping a stopword may only SHORTEN the walk, never invent a
+// neighbour past a word that is neither SQL nor a stopword, and never across the
+// boundary of the step.
+//
+// Strict adjacency with no stopword at all (`create table`, `unique key`, and a
+// hard keyword alone) is already pinned by TestPinSQLHomographAdjacency and is
+// not duplicated here.
+func TestPinSQLHomographStopwordAdjacency(t *testing.T) {
+	repo := vocabularyPinnedRepo(t, pinStopwordGlossary, `@game
+Feature: A filler word does not launder the SQL shape
+
+  @rule:R-KERNEL-001
+  Scenario: A table created behind one filler word
+    Then the game can create a table
+
+  @rule:R-KERNEL-002
+  Scenario: A new table created behind two filler words
+    Then the game can create a new table
+
+  @rule:R-KERNEL-003
+  Scenario: A temporary table created behind two filler words
+    Then the game can create a temporary table
+
+  @rule:R-KERNEL-004
+  Scenario: A ride created behind a filler word
+    Then the game can create a ride
+
+  @rule:R-KERNEL-005
+  Scenario: A table set for the round
+    Then the table is set for the round
+
+  @rule:R-KERNEL-006
+  Scenario: A business fact about uniqueness
+    Then each pair of teams is unique
+
+  @rule:R-KERNEL-007
+  Scenario: A check in plain English
+    Then the check passes
+`)
+
+	findings, _ := vocabularyFindings(t, repo)
+	// The fixture is a closed world: every step word is declared, so an
+	// undeclared-token finding would mean the pin itself is wrong, not the
+	// rule. Fail loudly instead of mistaking it for SQL shape.
+	for _, f := range findings {
+		if strings.Contains(f.Message, "is not declared") {
+			t.Fatalf("the pin declares every step word, so the only possible finding is an SQL one; got: %s", f.Message)
+		}
+	}
+
+	byScenario := map[string]string{}
+	for _, f := range findings {
+		byScenario[f.RuleID] += f.Message + "\n"
+	}
+	pointer := func(scenario string) string {
+		return "docs/spec/features/game/pinned.feature::" + scenario
+	}
+
+	// RED today: the homograph pair is separated by the stopwords `a` / `new` /
+	// `temporary`, so strict i±1 sees no SQL neighbour and the step passes. It
+	// reads as SQL to a human; the stopword walk must make it an ERROR. Either
+	// member of the pair firing is enough — the walk may report `create`, or
+	// `table`, or both.
+	for _, pin := range []struct {
+		scenario string
+		step     string
+	}{
+		{"A table created behind one filler word", "create a table"},
+		{"A new table created behind two filler words", "create a new table"},
+		{"A temporary table created behind two filler words", "create a temporary table"},
+	} {
+		t.Run("RED today: "+pin.step, func(t *testing.T) {
+			got := byScenario[pointer(pin.scenario)]
+			if !strings.Contains(got, `step uses the SQL word "create"`) &&
+				!strings.Contains(got, `step uses the SQL word "table"`) {
+				t.Errorf("step %q is SQL shape hidden behind a stopword and was not flagged:\n%s",
+					pin.step, got)
+			}
+		})
+	}
+
+	// GREEN today and after the fix: a stopword walk never invents adjacency.
+	// `ride` is not SQL vocabulary, `is` is not a stopword, and the stream
+	// boundary is not a neighbour — so the walk stops and the step stays prose.
+	for _, pin := range []struct {
+		scenario string
+		step     string
+	}{
+		{"A ride created behind a filler word", "create a ride"},
+		{"A table set for the round", "the table is set for the round"},
+		{"A business fact about uniqueness", "each pair of teams is unique"},
+		{"A check in plain English", "the check passes"},
+	} {
+		t.Run("guard: "+pin.step, func(t *testing.T) {
+			if got := byScenario[pointer(pin.scenario)]; got != "" {
+				t.Errorf("step %q is English, not SQL, but was flagged:\n%s", pin.step, got)
+			}
+		})
+	}
 }
 
 // TestPinnedQuantityFollowerIsClosed is fix F: the quantity exemption is a
