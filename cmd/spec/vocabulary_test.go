@@ -292,7 +292,7 @@ func TestPrintFindingsReportsVocabularyPolicy(t *testing.T) {
 	rendered := report.String()
 
 	for _, want := range []string{
-		"## " + policyVocabulary + " — step text: denylisted transport/SQL tokens and the seeded glossary",
+		"## " + policyVocabulary + " — step text: denylisted transport tokens, SQL adjacency, and the seeded glossary",
 		"| `" + policyVocabulary + "` | 6 | 0 |",
 	} {
 		if !strings.Contains(rendered, want) {

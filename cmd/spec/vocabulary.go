@@ -4,9 +4,11 @@ package main
 // docs/spec/rules.schema.md §3): the step text's vocabulary is bounded from
 // both sides.
 //
-//   - An absolute DENYLIST (gherkin-style.md §6): transport vocabulary — the
-//     words that describe how a message is shaped rather than what the business
-//     decides — digit-form status-like numbers, and SQL vocabulary.
+//   - A DENYLIST (gherkin-style.md §6): transport vocabulary — the words that
+//     describe how a message is shaped rather than what the business decides —
+//     digit-form status-like numbers, all absolute, and SQL vocabulary, which is
+//     partitioned: a homograph errors only on adjacency, a hard keyword alone
+//     (sqlHomographTokens).
 //   - A seeded ALLOWLIST, docs/spec/glossary.yaml: every remaining token in a
 //     step must be declared in that module's section or in `common`. The seed
 //     is today's tree, so the glossaries start as a description of the
@@ -59,10 +61,10 @@ var denylistedTransportTokens = enum(
 	"endpoint", "route", "handler", "dto", "payload",
 )
 
-// denylistedSQLTokens are the SQL keywords and object nouns §6 forbids in
-// facade steps. The set is the DML/DDL surface a facade step would have to
-// borrow to describe a query: read/write verbs, schema verbs, and the object
-// nouns a step would name only if it were talking about the database.
+// denylistedSQLTokens are the SQL words §6 forbids in facade steps: the
+// DML/DDL surface a facade step would have to borrow to describe a query. The
+// set is partitioned, because not every SQL word is only SQL (see
+// sqlHomographTokens).
 //
 // Two keywords every SQL list carries are deliberately ABSENT: `from` and
 // `where`. Both are ordinary English function words that business prose needs
@@ -75,6 +77,25 @@ var denylistedSQLTokens = enum(
 	"table", "index", "column", "check", "constraint", "trigger", "unique",
 	"references", "grant", "revoke", "cascade", "upsert", "truncate",
 )
+
+// sqlHomographTokens is the HOMOGRAPH half of denylistedSQLTokens: words that
+// are SQL vocabulary and ordinary English at once. `the check passes` and `each
+// pair of teams is unique` are business prose, so a homograph alone may not
+// error; it fires only on adjacency (isSQLAdjacency), which is what separates
+// `the check passes` from `check constraint` and a lone `table` from `create
+// table`. The complement of this set inside denylistedSQLTokens is the HARD
+// keywords (`select`, `insert`, `update`, `delete`, `join`, `drop`, `alter`,
+// `constraint`, `trigger`, `grant`, `revoke`, `cascade`, `upsert`, `truncate`),
+// which have no English reading in this domain and still error alone.
+var sqlHomographTokens = enum(
+	"check", "unique", "index", "references", "create", "table", "column",
+)
+
+// sqlAdjacencyNouns are the database object nouns that make a neighbouring
+// homograph SQL-shaped: `unique key`, `table row`, `column schema`. They are
+// not SQL words themselves (a `key` is business data), so they never error;
+// they only license the homograph beside them.
+var sqlAdjacencyNouns = enum("key", "database", "schema", "row")
 
 // denylistedPhrases are multi-word §6 bans, matched over the token stream so a
 // quoted literal ("...") stays exempt. `code` alone is business vocabulary ("a
@@ -452,10 +473,11 @@ func (c *checker) checkStep(report func(pointer, msg string), g *glossary, modul
 }
 
 // scanVocabulary applies both halves of policy 13 to one token stream (a step
-// line, a docstring body or a data-table cell): the absolute denylist first,
-// over the `_`-split stream, then the glossary binding for the
-// underscore-preserving tokens the denylist did not already name (one finding
-// per problem step token is enough to act on).
+// line, a docstring body or a data-table cell): the denylist first, over the
+// `_`-split stream (absolute for transport words and figures, adjacency-scoped
+// for SQL homographs), then the glossary binding for the underscore-preserving
+// tokens the denylist did not already name (one finding per problem step token
+// is enough to act on).
 func (c *checker) scanVocabulary(report func(pointer, msg string), g *glossary, module, pointer string, tokens []string, sabotage bool) {
 	scrutiny := splitTokenStream(tokens)
 	denied := map[string]bool{}
@@ -463,6 +485,8 @@ func (c *checker) scanVocabulary(report func(pointer, msg string), g *glossary, 
 		denied[token] = true
 		report(pointer, msg)
 	}
+
+	glued := gluedFragments(tokens)
 
 	for i, token := range scrutiny {
 		switch {
@@ -488,6 +512,14 @@ func (c *checker) scanVocabulary(report func(pointer, msg string), g *glossary, 
 				"step uses %q, which describes the wire, not the decision (gherkin-style.md §6 transport vocabulary)",
 				token))
 		case denylistedSQLTokens[token] && !sabotage:
+			// A homograph is English until a neighbour makes it SQL; a hard
+			// keyword has no such reading and always fires. A fragment cut out
+			// of an underscore-joined database name (`matches_ended_at_check`)
+			// keeps firing: an identifier is SQL-shaped by its form, so `_` must
+			// not become the bypass hatch fix A closed.
+			if sqlHomographTokens[token] && !glued[i] && !isSQLAdjacency(scrutiny, i) {
+				continue
+			}
 			deny(token, fmt.Sprintf(
 				"step uses the SQL word %q (gherkin-style.md §6 forbids SQL vocabulary outside the sabotage family)",
 				token))
@@ -528,6 +560,38 @@ func (c *checker) scanVocabulary(report func(pointer, msg string), g *glossary, 
 			"step token %q is not declared for module %q; add it to the %q section of %s (or to %q)",
 			token, module, section(module), glossaryFile, glossaryCommonSection))
 	}
+}
+
+// gluedFragments reports, per token of the `_`-split stream, whether it was cut
+// out of an underscore-joined name (a database object name) rather than written
+// as a word of its own. Such a fragment is SQL-shaped by the FORM of the name it
+// belongs to, so the homograph adjacency rule does not apply to it: the split
+// stream the denylist reads must not turn `matches_ended_at_check` back into an
+// innocent `check`.
+func gluedFragments(tokens []string) []bool {
+	glued := make([]bool, 0, len(tokens))
+	for _, token := range tokens {
+		fields := splitTokenStream([]string{token})
+		for range fields {
+			glued = append(glued, len(fields) > 1)
+		}
+	}
+	return glued
+}
+
+// isSQLAdjacency reports whether a token at index i has a neighbour (i±1 in the
+// same stream) that makes a homograph SQL-shaped: SQL vocabulary of either kind,
+// or a database object noun.
+func isSQLAdjacency(tokens []string, i int) bool {
+	for _, j := range []int{i - 1, i + 1} {
+		if j < 0 || j >= len(tokens) {
+			continue
+		}
+		if denylistedSQLTokens[tokens[j]] || sqlAdjacencyNouns[tokens[j]] {
+			return true
+		}
+	}
+	return false
 }
 
 // windowContains reports whether the token stream carries the phrase.

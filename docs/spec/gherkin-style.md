@@ -98,9 +98,13 @@ the subject of the sentence. Concrete nouns, not abstractions: `"Spring 2026"`, 
 `1.80`), scores as `2–1`.
 
 This section is enforced mechanically by checker policy 13 (`13-vocabulary`,
-`rules.schema.md` §3): the denylist above is an absolute ERROR in every step, and every
-remaining step token must be declared in the module's section of `docs/spec/glossary.yaml`
-(or in `common`). A step's docstring body and data-table cells are scanned by the same
+`rules.schema.md` §3): the transport half of the denylist above is an absolute ERROR in
+every step, and every remaining step token must be declared in the module's section of
+`docs/spec/glossary.yaml` (or in `common`). The SQL words are partitioned: the homographs
+that are ordinary English too (`check`, `unique`, `index`, `references`, `create`,
+`table`, `column`) fire only beside another SQL word or a database object noun (`create
+table`, `unique index`); `the check passes` is fine. The rest error alone (`insert into
+game.rides`). A step's docstring body and data-table cells are scanned by the same
 rules, and the denylist also reads every token split on `_`, so `status_code`, `2OO` or a
 keyword glued into a name is not a way past it. Extending the glossary is part of the
 change that needs the word — but a term that merely respells denylisted vocabulary is

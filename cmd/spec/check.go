@@ -50,7 +50,7 @@ var policies = []policy{
 	{"10-gherkin", "verification.gherkin resolves to a real scenario"},
 	{"11-fixture", "pinned_by names a declared fixture"},
 	{"12-features", "feature files parse; every scenario names exactly one known rule"},
-	{policyVocabulary, "step text: denylisted transport/SQL tokens and the seeded glossary"},
+	{policyVocabulary, "step text: denylisted transport tokens, SQL adjacency, and the seeded glossary"},
 	{policyCategory, "category ⇒ verification and refusal binding"},
 	{policyAnnotations, "Go enforcement sites carry //rule: annotations, and every annotation resolves"},
 	{policyKnowledgeRef, "knowledge-ref is a real path under the learning phases"},

@@ -257,25 +257,42 @@ list is the frequency.
     catalog rule, and every scenario names exactly one (checker id `12-features`).
 13. Every step in `docs/spec/features/**` is bounded by the vocabulary, in both
     directions (checker id `13-vocabulary`):
-    - **Denylist (absolute).** A step may not use the transport words of
-      `gherkin-style.md` §6 — `http`, `https`, `json`, `request`, `response`, `header`,
-      `headers`, `endpoint`, `route`, `handler`, `dto`, `payload`, `status code` — a bare
-      three-digit HTTP-range figure (`200`, `401`, `409`, `422`, `500`), or the SQL
-      vocabulary (`select`, `insert`, `update`, `delete`, `join`, `create`, `drop`,
-      `alter`, `table`, `index`, `column`, `check`, `constraint`, `trigger`,
-      `unique`, `references`, `grant`, `revoke`, `cascade`, `upsert`, `truncate`).
-      A three-digit figure that quantifies a business noun (`100 tokens`, `200 entries`)
-      is a quantity, not a status; it is a status at the end of a step or before a
-      transport noun (`409 status`, `409 code`, `409 error`, `409 response`, `409
-      request`). The SQL half is **scoped to facade steps**: the sabotage family of
-      `gherkin-style.md` §8 (`the Owner pool …`, `the write is refused by …`, `the
-      refusal names …`, `the write is allowed`) exists to bypass the application with
-      raw writes and legitimately says `insert`; the transport half applies to it.
+    - **Denylist (absolute for transport).** A step may not use the transport
+      words of `gherkin-style.md` §6 — `http`, `https`, `json`, `request`,
+      `response`, `header`, `headers`, `endpoint`, `route`, `handler`, `dto`,
+      `payload`, `status code` — or a bare three-digit HTTP-range figure (`200`,
+      `401`, `409`, `422`, `500`). A three-digit figure that quantifies a business
+      noun (`100 tokens`, `200 entries`) is a quantity, not a status; it is a status
+      at the end of a step or before a transport noun (`409 status`, `409 code`,
+      `409 error`, `409 response`, `409 request`).
+    - **SQL vocabulary (adjacency).** The §6 SQL words are partitioned, because some
+      of them are ordinary English:
+      - **Homographs** — `check`, `unique`, `index`, `references`, `create`,
+        `table`, `column` — never error **alone**: `the check passes`, `each pair
+        of teams is unique` and `the table is set for match day 1` are business
+        prose. A homograph fires only on **adjacency**: it is an ERROR iff a
+        neighbouring token of the same step (i±1 in its token stream) is itself
+        SQL vocabulary — homograph or hard keyword — or one of the database object
+        nouns `key`, `database`, `schema`, `row`. So `create table`, `check
+        constraint`, `unique index` and `unique key` are ERRORs.
+      - **Hard keywords** — `select`, `insert`, `update`, `delete`, `join`,
+        `drop`, `alter`, `constraint`, `trigger`, `grant`, `revoke`, `cascade`,
+        `upsert`, `truncate` — have no English reading in this domain and error
+        alone, exactly as before: `insert into game.rides` is an ERROR.
+      - The SQL half is **scoped to facade steps**: the sabotage family of
+        `gherkin-style.md` §8 (`the Owner pool …`, `the write is refused by …`,
+        `the refusal names …`, `the write is allowed`) exists to bypass the
+        application with raw writes and legitimately says `insert`; no SQL word,
+        homograph or hard, is reported there, and the exemption is decided once
+        per step and covers its step arguments. The transport half applies to it.
       The denylist also reads each token **split on `_`**, so joining words is not a
       way past it: `status_code` denies as the phrase `status code`, `http_status` as
       the transport word `http`, and a figure respelled with letters (`2OO`) as the
       numeric status it imitates. A database object name's fragments are scanned that
-      way too; they surface only in §8 steps, which the sabotage exemption covers.
+      way too, and a homograph fragment is SQL by the **form** of the identifier it
+      belongs to — `check` in `matches_ended_at_check` is an ERROR without needing a
+      neighbour, since splitting names must not reopen the `_` bypass — and such
+      names surface only in §8 steps, which the sabotage exemption covers.
     - **Allowlist (the seeded glossary).** Every remaining token of every step must be
       declared in `docs/spec/glossary.yaml` — in the section named after the feature
       file's module directory (`game`, `identity`, `schedule`, `ledger`, `kernel`,
