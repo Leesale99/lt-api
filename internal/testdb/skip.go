@@ -127,7 +127,8 @@ const MissingDSNHelp = "SPEC SUITE DID NOT RUN: LT_API_TEST_DSN is unset and AUD
 // caller that keeps only one of them still carries the banner: tests, -v runs,
 // failure dumps) and to the controlling terminal, when there is one (a
 // developer's `make audit`); with no terminal (CI, pipes) the two captured
-// copies are all that is possible.
+// copies are all that is possible. The load-bearing guard is therefore the FAIL
+// path (ActionFail → stderr, exit 1), which -count=1 in `make audit` always exercises.
 func Announce(message string) {
 	announce(message, os.Stdout, os.Stderr)
 }
