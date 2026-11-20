@@ -107,7 +107,7 @@ What step 1 of the gate actually means, for a brand-new rule:
    ruby -ryaml -e 'p YAML.safe_load(File.read("docs/spec/rules.yaml")).size'
    python3 -c "import yaml; yaml.safe_load(open('docs/spec/rules.yaml'))"
    ```
-11. **Run the gate** (steps 2–5 above). `make spec/check` enforces the
+11. **Run the gate** (§2's gate steps 2–5, above). `make spec/check` enforces the
     `rules.schema.md` §3 policies mechanically; then `make spec/gen`; finish when
     `make audit` is green.
 
