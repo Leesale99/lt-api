@@ -110,7 +110,6 @@ Feature: Who may act
     # A code exists once because it is the key: a code that already exists is
     # refused by the key it exists under, so a writer that skips every migration
     # still cannot widen the vocabulary.
-    @rule:R-IDENTITY-013
     Scenario: The database refuses a permission code the seed already carries
       When the Owner pool tries to record the permission code "teams:read" a second time
       Then the write is refused by permissions_code_key
