@@ -105,7 +105,7 @@ keeps the seeded values true is migration immutability. (Gate B5 — no `seed` /
 | value | meaning |
 |---|---|
 | `handler` | Transport: DTO validation, status mapping, headers. |
-| `composition-root` | Cross-context wiring / facade binding — the composition-root layer where modules are handed their collaborators (a `cmd/...` wiring function, a facade binding, an ACL adapter chosen at assembly). Distinguished from `handler`, which is transport framing: nothing here sees a request. (Gate B5.) |
+| `composition-root` | Cross-context wiring / facade binding — the composition-root layer where modules are handed their collaborators (a `cmd/...` wiring function, a facade binding, an ACL adapter chosen at assembly). It also names the startup/assembly seam, where a program is composed once at boot (the `main.go` that calls the wiring function, resolves configuration and starts the process) — so a fact about what happens exactly once before anything is served belongs here. Distinguished from `handler`, which is transport framing: nothing here sees a request. (Gate B5.) |
 | `validator` | A `ValidateX` function: request shape/bounds arithmetic, called from the handler before the use case. |
 | `service` | Use case: ordering, transaction boundary, idempotency claim. |
 | `domain` | Entity/operation or pure function. |
@@ -305,10 +305,14 @@ list is the frequency.
       in the shared `common` section. An undeclared token is an ERROR naming
       `file::scenario` and the section to extend. The seed describes the vocabulary
       the tree uses today; extending it is part of the change that needs the word.
-      A term that merely respells denylisted vocabulary over its `_`-split form
-      (`status_code`, `http_status`) or that is a status figure written with letters
-      (`2oo`) is an ERROR naming the section and the term, and never enters the
-      allowlist: the remedy may not launder the disguise.
+      A term that merely respells denylisted **transport** vocabulary over its `_`-split
+      form (`status_code`, `http_status`), that glues two such words together with no
+      separator at all (`httpstatus`, `statuscode`), or that is a status figure written with
+      letters in place of digits — exactly three characters, a leading 1–5 and then digits or
+      the letter `o` (`2oo`, `4O4`) — is an ERROR naming the section and the term, and never
+      enters the allowlist: the remedy may not launder the disguise. The SQL half of the
+      denylist is deliberately **not** applied to glossary terms, so the database object names
+      the sabotage steps declare (`rides_tokens_locked_check`) stay addable here.
     - **Tokenizer.** Lowercase; the English possessive suffix (`'s`) folds away;
       quoted literals (`"Spring 2026"`, `"2–1"`, `"ana@example.com"`) are data and are
       dropped; every remaining run of characters other than a letter, a digit or an
@@ -338,8 +342,12 @@ list is the frequency.
       line or in the contiguous comment block directly above the declaration. A blank
       line or a non-comment line breaks contiguity, so a comment block separated
       from the declaration documents something else. A site named by several rules
-      carries one `//rule:` line per id in that same block. `gofmt` reflows a doc
-      comment's `//rule:` to `// rule:`, which is the same annotation; the id after
+      carries one `//rule:` line per id in that same block. Inside a parenthesized
+      `var (...)`, `const (...)` or `type (...)` block, a spec placed directly on one of
+      the grouped declarations reads its own contiguous comment first — that annotation
+      wins over the block-level doc and never covers a sibling — and a spec with none of
+      its own falls back to the block-level doc. `gofmt` reflows a doc comment's
+      `//rule:` to `// rule:`, which is the same annotation; the id after
       the colon must still be exact, so `// rule: R-XXX-NNN` stays a typo.
     - **Catalog → tree.** For every implemented rule's Go enforcement site
       (`path::Symbol`), the rule's id must appear in that annotation window; an
