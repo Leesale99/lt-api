@@ -186,8 +186,43 @@ var (
 	// `3d` were refused by disguiseReason and could never be declared, in a
 	// glossary entry or in a step. Only a lookalike of the three-digit figure
 	// is the disguise §6 forbids.
+	//
+	// This pattern is the three-character CORE, pinned as such; callers use
+	// isDisguisedStatus, which adds the trailing-o forms (`200o`, `2o0o`) this
+	// shape cannot see because they are four characters long.
 	disguisedStatusPattern = regexp.MustCompile(`(?i)^[1-5][0-9o]{2}$`)
 )
+
+// isDisguisedStatus reports whether a token is §6's numeric status written with
+// letters in place of digits: a bare three-digit HTTP-range figure once the
+// letters are normalized. Two spellings count. The three-character core
+// (disguisedStatusPattern: `2oo`, `2OO`, `4O4`, `2o0`) is taken as it stands. A
+// trailing-o form (`200o`, `2o0o`) is normalized first: strip the trailing
+// `o`/`O` characters — the same figure with a letter standing for nothing — then
+// substitute the remaining `o`/`O` with `0`, and require the bare three-digit
+// figure (httpStatusLikePattern).
+//
+// The normalization must not widen the ban into "any digit-leading word":
+// `1st`, `30min`, `3d`, `60s` and `7th` are business vocabulary, and none of
+// them normalizes to an HTTP-range figure.
+func isDisguisedStatus(token string) bool {
+	if disguisedStatusPattern.MatchString(token) {
+		return true
+	}
+	stripped := strings.TrimRight(token, "oO")
+	if stripped == token {
+		// No trailing `o` to strip: the three-character core was the whole
+		// check, and it did not match.
+		return false
+	}
+	normalized := strings.Map(func(r rune) rune {
+		if r == 'o' || r == 'O' {
+			return '0'
+		}
+		return r
+	}, stripped)
+	return httpStatusLikePattern.MatchString(normalized)
+}
 
 // tokenizeStep is the pinned tokenizer, in order: lowercase; drop English
 // possessives; drop quoted literals; replace every remaining non-word run with
@@ -309,37 +344,71 @@ func disguiseReason(term string) string {
 			return fmt.Sprintf("it carries the transport word %q", token)
 		}
 	}
-	if first, second, ok := concatenatedTransport(term); ok {
-		return fmt.Sprintf("it concatenates the denylisted transport words %q + %q", first, second)
+	if parts, ok := concatenatedTransport(term); ok {
+		quoted := make([]string, len(parts))
+		for i, part := range parts {
+			quoted[i] = fmt.Sprintf("%q", part)
+		}
+		return fmt.Sprintf("it concatenates the denylisted transport words %s",
+			strings.Join(quoted, " + "))
 	}
-	if disguisedStatusPattern.MatchString(term) {
+	if isDisguisedStatus(term) {
 		return "it is a numeric status written with letters in place of digits"
 	}
 	return ""
 }
 
-// concatenatedTransport reports whether the term is two denylisted TRANSPORT
-// words written without the `_` that would let the split stream see them
-// (`httpstatus` = `http` + `status`, `statuscode` = `status` + `code`), and
-// returns the halves. Splitting on `_` closed the `status_code` hatch, but a
-// concatenation carries no separator at all, so it has to be cut by hand.
+// concatenatedTransport reports whether the term partitions, in two or more
+// parts, into denylisted TRANSPORT words written without the `_` that would let
+// the split stream see them (`httpstatus` = `http` + `status`,
+// `httpstatuscode` = `http` + `status` + `code`), and returns the parts.
+// Splitting on `_` closed the `status_code` hatch, but a concatenation carries
+// no separator at all, so it has to be cut by hand. The cut is tried to
+// exhaustion: a single-cut check let a three-part concatenation
+// (`httpstatuscode`, `statuscodehttp`) walk straight through and the glossary
+// remedy then laundered it permanently.
 //
-// The halves vocabulary is the transport half only: denylistedTransportTokens ∪
+// The parts vocabulary is the transport half only: denylistedTransportTokens ∪
 // statusNouns. The SQL half is deliberately absent for the same reason it is
 // absent from disguiseReason's other checks — the glossary legitimately declares
 // the §8 sabotage family's database object names (`rides_tokens_locked_check`,
 // `round_lifecycle_blocks_delete`), and a SQL word glued to another word is how
 // those names are spelled.
-func concatenatedTransport(term string) (first, second string, ok bool) {
+func concatenatedTransport(term string) ([]string, bool) {
 	transportWord := func(word string) bool {
 		return denylistedTransportTokens[word] || statusNouns[word]
 	}
-	for i := 1; i < len(term); i++ {
-		if transportWord(term[:i]) && transportWord(term[i:]) {
-			return term[:i], term[i:], true
+	// Terms are short (a glossary term is a single token), but the walk is
+	// memoized anyway so a term that never partitions cannot cost exponential
+	// time: every suffix start is visited at most once. At each position take
+	// the first transport word whose remainder still partitions.
+	failed := map[int]bool{}
+	var parts []string
+	var walk func(start int) bool
+	walk = func(start int) bool {
+		if start == len(term) {
+			return true
 		}
+		if failed[start] {
+			return false
+		}
+		for i := start + 1; i <= len(term); i++ {
+			if !transportWord(term[start:i]) {
+				continue
+			}
+			parts = append(parts, term[start:i])
+			if walk(i) {
+				return true
+			}
+			parts = parts[:len(parts)-1]
+		}
+		failed[start] = true
+		return false
 	}
-	return "", "", false
+	if !walk(0) || len(parts) < 2 {
+		return nil, false
+	}
+	return parts, true
 }
 
 // isSabotageStep reports whether the step is one of gherkin-style.md §8's
@@ -718,10 +787,10 @@ func (c *checker) scanVocabulary(report func(pointer, msg string), g *glossary, 
 			deny(token, fmt.Sprintf(
 				"step carries the bare number %q: numeric statuses are transport vocabulary; say what the business decided instead (gherkin-style.md §6)",
 				token))
-		case disguisedStatusPattern.MatchString(token):
-			// `2oo` is `200` wearing letters: the numeric-status rule must not
-			// be escapable by respelling the figure, and the remedy is not "add
-			// it to the glossary" — there is no word to add.
+		case isDisguisedStatus(token):
+			// `2oo` and `200o` are `200` wearing letters: the numeric-status
+			// rule must not be escapable by respelling the figure, and the
+			// remedy is not "add it to the glossary" — there is no word to add.
 			deny(token, fmt.Sprintf(
 				"step token %q is a numeric status written with letters in place of digits: numeric statuses are transport vocabulary; say what the business decided instead (gherkin-style.md §6)",
 				token))
