@@ -9,7 +9,7 @@ package main
 //	TestPinnedDocStringAndTableCellVocabulary    — fix D (docstrings and data-table cells are scanned)
 //	TestPinSQLHomographAdjacency                 — fix E (SQL homographs fire on adjacency, not alone)
 //	TestPinnedQuantityFollowerIsClosed           — fix F (the quantity follower set is closed)
-//	TestPinSabotageObjectNamesPass                — fix G (§8 object names keep their phrase fragments)
+//	TestPinSabotageObjectNameRealityGate          — fix J (§8 object names keep their phrase fragments only when the name is real)
 //	TestPinDisguisedStatusNarrowed               — fix H (only HTTP-shaped lettered figures are disguises)
 //	TestPinGlossaryRejectsConcatenatedTransport   — fix I (concatenated transport words are not addable)
 //
@@ -634,6 +634,8 @@ game:
   - present
   - refused
   - rides_http_gate
+  - rides_money_state_coupling
+  - rides_purse_lock
   - rides_status_code_present_check
   - status
   - write
@@ -644,27 +646,65 @@ kernel: []
 platform: []
 `
 
-// TestPinSabotageObjectNamesPass is fix G: gherkin-style.md §8 promises that a
-// sabotage assertion names a real database object (`rides_status_code_present_check`),
-// and rules.schema.md policy 13 says those names surface only in §8 steps, which
-// the sabotage exemption covers. The single-token half of the exemption already
-// holds; the PHRASE pass had no sabotage guard, so the `status code` inside such
-// a name errored. Within a sabotage step the phrase must not fire on fragments
-// glued by `_`; the plain words in a facade step, and the transport half of a
-// name, still error exactly as before.
-func TestPinSabotageObjectNamesPass(t *testing.T) {
-	repo := vocabularyPinnedRepo(t, pinSabotageGlossary, `@game
-Feature: A database object name keeps its fragments
+// pinSabotageMigrations is the migration file the reality gate reads for the
+// migrations half of the contract: a name is REAL when it appears literally in
+// any migrations/*.sql. `rides_purse_lock` appears here and nowhere else.
+const pinSabotageMigrations = `-- fixture only: a real database object name the vocabulary pin may spell.
+ALTER TABLE rides ADD CONSTRAINT rides_purse_lock UNIQUE (purse);
+`
+
+// sabotagePinnedRepo is vocabularyPinnedRepo plus the reality sources the new
+// rule reads: a catalog whose rule refuses with `rides_money_state_coupling`
+// (refusal.constraint) and a migration file carrying `rides_purse_lock`
+// literally. Both names are REAL; `rides_status_code_present_check` is not.
+func sabotagePinnedRepo(t *testing.T, glossary, feature string) *testRepo {
+	t.Helper()
+
+	repo := vocabularyPinnedRepo(t, glossary, feature)
+	rule := baseRule()
+	rule.Refusal = &Refusal{
+		Code:       "P0001",
+		Constraint: StringList{"rides_money_state_coupling"},
+		HTTP:       ptr(422),
+	}
+	repo.writeCatalog(t, Catalog{rule})
+	repo.addFile(t, "migrations/000999_fixture.up.sql", pinSabotageMigrations)
+	return repo
+}
+
+// TestPinSabotageObjectNameRealityGate is fix J: gherkin-style.md §8 promises
+// that a sabotage assertion names a REAL database object, and rules.schema.md
+// policy 13 exempts those names from the denylisted PHRASES. The exemption used
+// to be decided by the step's SHAPE alone, so a fabricated name carrying the
+// `status code` fragments (`rides_status_code_present_check`) passed even though
+// it exists in no rule and no migration. The reality gate makes the exemption
+// conditional: an underscore-joined name is exempt from the phrase only when it
+// is REAL — a value of some rule's `refusal.constraint`, a `refusal.sentinel`
+// value in docs/spec/rules.yaml, or a literal substring of a migrations/*.sql
+// file. A fabricated name falls back to the normal phrase pass (`step uses
+// "status code"`), while the SQL half of the §8 exemption (raw SQL words in
+// sabotage steps) and the absolute transport half are unchanged.
+func TestPinSabotageObjectNameRealityGate(t *testing.T) {
+	repo := sabotagePinnedRepo(t, pinSabotageGlossary, `@game
+Feature: A database object name keeps its fragments only when it is real
 
   @rule:R-KERNEL-001
-  Scenario: A check constraint name glues the wire words
+  Scenario: A fabricated check constraint name glues the wire words
     Then the write is refused by rides_status_code_present_check
 
   @rule:R-KERNEL-002
+  Scenario: A rule's constraint name is a real object
+    Then the write is refused by rides_money_state_coupling
+
+  @rule:R-KERNEL-003
+  Scenario: A migration's object name is a real object
+    Then the write is refused by rides_purse_lock
+
+  @rule:R-KERNEL-004
   Scenario: A facade step says the words plainly
     Then the answer carries the status code
 
-  @rule:R-KERNEL-003
+  @rule:R-KERNEL-005
   Scenario: The transport half still applies to a name
     Then the write is refused by rides_http_gate
 `)
@@ -679,17 +719,38 @@ Feature: A database object name keeps its fragments
 		return "docs/spec/features/game/pinned.feature::" + scenario
 	}
 
-	// (a) The §8 object name is a name, not a query and not a phrase: no
-	// finding at all, and in particular no "add it to the glossary" remedy for
-	// the name the glossary already declares.
-	t.Run("sabotage: an object name passes", func(t *testing.T) {
-		got := byScenario[pointer("A check constraint name glues the wire words")]
-		if got != "" {
-			t.Errorf("a sabotage step's database object name was flagged:\n%s", got)
+	// (a) The §8 exemption is conditional on the name being REAL. A fabricated
+	// name carries the `status code` fragments just like a real one, so the
+	// phrase pass applies to the step normally: it is a disguised phrase, not an
+	// object name.
+	t.Run("sabotage: a fabricated object name errors", func(t *testing.T) {
+		got := byScenario[pointer("A fabricated check constraint name glues the wire words")]
+		if !strings.Contains(got, `step uses "status code"`) {
+			t.Errorf("a fabricated name in a sabotage step escaped the phrase check:\n%s", got)
 		}
 	})
 
-	// (b) The exemption is scoped to the glued fragments of a sabotage step:
+	// (b) A REAL name still passes untouched. The catalog rule's
+	// `refusal.constraint` names `rides_money_state_coupling`, so the phrase
+	// exemption (and the glossary declaration) stands: no finding at all, in
+	// particular no "add it to the glossary" remedy.
+	t.Run("sabotage: a rule's constraint name passes", func(t *testing.T) {
+		got := byScenario[pointer("A rule's constraint name is a real object")]
+		if got != "" {
+			t.Errorf("a real refusal.constraint name was flagged:\n%s", got)
+		}
+	})
+
+	// (c) The second reality source: a name that appears literally in a
+	// migrations/*.sql file is REAL too.
+	t.Run("sabotage: a migration's object name passes", func(t *testing.T) {
+		got := byScenario[pointer("A migration's object name is a real object")]
+		if got != "" {
+			t.Errorf("a name living in migrations/*.sql was flagged:\n%s", got)
+		}
+	})
+
+	// (d) The exemption is scoped to the glued fragments of a sabotage step:
 	// the same words written as words in a facade step are the phrase §6 bans.
 	t.Run("facade: the plain words still error", func(t *testing.T) {
 		got := byScenario[pointer("A facade step says the words plainly")]
@@ -698,7 +759,7 @@ Feature: A database object name keeps its fragments
 		}
 	})
 
-	// (c) The transport half is absolute, sabotage or not: a name that carries
+	// (e) The transport half is absolute, sabotage or not: a name that carries
 	// `http` still speaks the wire.
 	t.Run("sabotage: the transport half still applies", func(t *testing.T) {
 		got := byScenario[pointer("The transport half still applies to a name")]
@@ -708,9 +769,17 @@ Feature: A database object name keeps its fragments
 	})
 
 	// The phrase exemption must not turn into an allowlist hole: the declared
-	// object name never falls through to the glossary remedy.
+	// object name never falls through to the glossary remedy, even now that the
+	// fabricated one is reported by the phrase pass.
 	if strings.Contains(joined, `step token "rides_status_code_present_check" is not declared`) {
 		t.Errorf("the declared object name fell through to the glossary remedy:\n%s", joined)
+	}
+	// The reality sources are not themselves vocabulary: no step here says a SQL
+	// word as a word, so no SQL-word finding may fire — in particular not on the
+	// `check` fragment of the fabricated name, which is the half of the §8
+	// exemption the gate must leave alone.
+	if strings.Contains(joined, `step uses the SQL word`) {
+		t.Errorf("the SQL half of the sabotage exemption was narrowed:\n%s", joined)
 	}
 }
 
