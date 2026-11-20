@@ -1007,6 +1007,21 @@ const pickupsInFlight = new Set<string>();
 const emittedCardKeys = new Set<string>();
 /** Set by the extension factory; card emission needs pi.appendEntry. */
 let delegateApi: ExtensionAPI | undefined;
+/**
+ * One-shot: the settle gate emitted its HARD STOP message with continue:true
+ * (the worker's terminal turn, for its verbatim failure report). The NEXT
+ * agent_before_settle consumes it: no receipt, no gate run, return undefined.
+ *
+ * Why the hard stop is NOT an entries-only return: pi's
+ * `_runBeforeSettleBoundary` commits the drafts and, with `continue` false,
+ * ends the run with that committed CUSTOM message as the last message. Print
+ * mode derives stdout from `state.messages[last].role === "assistant"`, so a
+ * custom/user-role draft last means exit 0 with EMPTY stdout and no failure
+ * report (observed live, deterministic). Ending on a real assistant turn keeps
+ * the buffered output and hands the parent the worker's report.
+ * Cleared on read; a PASSING gate run also clears it.
+ */
+let settleGateTerminal = false;
 
 /** Payload persisted on delegate-job entry cards (also used as message details). */
 interface JobCardData {
@@ -2757,10 +2772,19 @@ export default function (pi: ExtensionAPI) {
   // continue:true hands the worker up to three turns to fix the failures.
   // Loop safety: continue is conditional on NEW state — the attempt counter
   // (module state, reset by a PASSING run) strictly increases per failure, so
-  // attempt 3 emits the HARD STOP message WITHOUT continue and the run ends
-  // with the failure report reaching the parent.
+  // the attempt cap hands out the HARD STOP message as a TERMINAL turn
+  // (continue:true once, bounded by the one-shot settleGateTerminal flag)
+  // rather than an entries-only return. The flag is consumed by the very next
+  // settle, which runs no gate and returns undefined — the proven-safe ending
+  // (assistant message last ⇒ print mode flushes the worker's output).
   pi.on("agent_before_settle", async (event, ctx) => {
     if (!isWorkerChild()) return;
+    // Terminal turn already handed out: end unconditionally, exactly once.
+    if (settleGateTerminal) {
+      settleGateTerminal = false;
+      resetSettleGateAttempts();
+      return undefined;
+    }
     if (event.outcome !== "completed") return;
 
     let run: GateRun;
@@ -2804,6 +2828,7 @@ export default function (pi: ExtensionAPI) {
 
     if (run.ok) {
       resetSettleGateAttempts();
+      settleGateTerminal = false;
       return undefined;
     }
 
@@ -2812,8 +2837,10 @@ export default function (pi: ExtensionAPI) {
     const header =
       "\u2500\u2500 SETTLE GATE BLOCKED (attempt " + String(attempt) + "/" + String(SETTLE_GATE_MAX_ATTEMPTS) + ") \u2500\u2500";
     const footer = hardStop
-      ? "HARD STOP: " + String(SETTLE_GATE_MAX_ATTEMPTS) + " failed gate attempts. Report the failures verbatim " +
-        "(commands, exit codes, receipt path) and STOP \u2014 do not try further fixes."
+      ? "HARD STOP \u2014 TERMINAL TURN: " + String(SETTLE_GATE_MAX_ATTEMPTS) + " failed gate attempts. " +
+        "This is your LAST turn: make NO further changes (no edits, no fixes), run no more gate commands, " +
+        "and reply with your verbatim failure report \u2014 each failing command, its exit code, the failing " +
+        "output lines above, and the receipt path. That report is what your parent receives."
       : "Do not report done; fix the gate failures.";
     const content =
       formatGateReport(run, { header, footer, maxLines: 30 }) +
@@ -2822,7 +2849,10 @@ export default function (pi: ExtensionAPI) {
       ...event.entries,
       { type: "custom_message", customType: "delegate-gate", content, display: true },
     ];
-    if (hardStop) return { entries };
+    // Hard stop: still continue ONCE (the terminal turn) so the run ends on an
+    // assistant message instead of an entries-only return (see the
+    // settleGateTerminal comment above).
+    if (hardStop) settleGateTerminal = true;
     return { entries, continue: true };
   });
 }
