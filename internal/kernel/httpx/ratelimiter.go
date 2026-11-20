@@ -125,6 +125,8 @@ func NewRateLimiter(rps float64, burst int, enabled bool, opts ...Option) *RateL
 //   - unparseable entries are skipped, and a chain with no parseable address
 //     at all falls back to the peer — a mangled header never merges clients,
 //     it only withholds the more precise key.
+//
+// rule:R-KERNEL-009
 func (l *RateLimiter) ClientKey(peer string, forwardedFor []string) string {
 	if len(l.trustedProxies) == 0 || !l.trusted(peer) {
 		return peer
@@ -180,6 +182,7 @@ func parseIP(raw string) (string, bool) {
 // Allow records the client's activity and reports whether the request may
 // proceed. On denial it returns how long until the client's next token —
 // the HTTP layer renders that as Retry-After.
+// rule:R-KERNEL-009
 func (l *RateLimiter) Allow(ip string) (ok bool, retryAfter time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -215,6 +218,7 @@ func (l *RateLimiter) Allow(ip string) (ok bool, retryAfter time.Duration) {
 // RateLimitCleanupInterval. It blocks until ctx is canceled —
 // callers run it in a goroutine (in production: app.background, so the
 // waitgroup covers it during shutdown).
+// rule:R-KERNEL-009
 func (l *RateLimiter) Sweep(ctx context.Context) {
 	ticker := time.NewTicker(l.tick)
 	defer ticker.Stop()

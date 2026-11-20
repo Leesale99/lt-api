@@ -46,6 +46,8 @@ type Ride struct {
 	Version      int
 }
 
+// rule:R-GAME-004
+// rule:R-GAME-020
 func ValidateRide(v *validator.Validator, ride Ride) {
 	v.Check(ride.PlayerID > 0, "player_id", "must be provided")
 	v.Check(ride.TeamID > 0, "team_id", "must be provided")
@@ -59,6 +61,7 @@ func ValidateRideState(v *validator.Validator, state RideState) {
 	v.Check(validator.PermittedValue(state, rideStates...), "state", "must be one of: locked, won_pending, burned, unlocked, lost")
 }
 
+// rule:R-GAME-002
 var transitions = map[RideState]map[Phase][]RideState{
 	RideLocked: {
 		MatchPhase: {RideWonPending, RideLost},
@@ -68,6 +71,8 @@ var transitions = map[RideState]map[Phase][]RideState{
 	},
 }
 
+// rule:R-GAME-002
+// rule:R-GAME-003
 func canTransition(state RideState, phase Phase, next RideState) bool {
 	allowedStates := transitions[state][phase]
 
@@ -87,6 +92,8 @@ func canTransition(state RideState, phase Phase, next RideState) bool {
 // invalid initial state cannot be produced through normal domain
 // operations — whatever the caller supplied is discarded. Persistence is
 // the repository's job.
+// rule:R-GAME-001
+// rule:R-GAME-007
 func (r *Ride) Create(phase Phase) error {
 	if phase != ActionPhase {
 		return ErrInvalidRoundPhase
@@ -100,6 +107,7 @@ func (r *Ride) Create(phase Phase) error {
 }
 
 // WonPending records a won match. Phase: MatchPhase; call when: Match won; Ride transitions to won_pending
+// rule:R-GAME-007
 func (r *Ride) WonPending(phase Phase, odds decimal.Decimal) error {
 	if phase != MatchPhase {
 		return ErrInvalidRoundPhase
@@ -115,6 +123,8 @@ func (r *Ride) WonPending(phase Phase, odds decimal.Decimal) error {
 }
 
 // Lost records a lost match. Phase: MatchPhase; call when: Match lost; Ride transitions to lost
+// rule:R-GAME-005
+// rule:R-GAME-007
 func (r *Ride) Lost(phase Phase) error {
 	if phase != MatchPhase {
 		return ErrInvalidRoundPhase
@@ -130,6 +140,8 @@ func (r *Ride) Lost(phase Phase) error {
 }
 
 // Lock continues the ride after the win. Phase: DecisionPhase; call when: Player decides to continue the ride after the win
+// rule:R-GAME-007
+// rule:R-GAME-025
 func (r *Ride) Lock(phase Phase, nextMatchID int) error {
 	if phase != DecisionPhase {
 		return ErrInvalidRoundPhase
@@ -147,6 +159,7 @@ func (r *Ride) Lock(phase Phase, nextMatchID int) error {
 
 // Burn ends a won ride: state becomes RideBurned,
 // tokens and accumulated bonus are fulfiled as TB. Phase: DecisionPhase; call when: Player decides to burn after the win
+// rule:R-GAME-007
 func (r *Ride) Burn(phase Phase) error {
 	if phase != DecisionPhase {
 		return ErrInvalidRoundPhase
@@ -162,6 +175,8 @@ func (r *Ride) Burn(phase Phase) error {
 
 // Unlock ends a won ride: state becomes RideUnlocked and the accumulated
 // bonus is cleared. Phase: DecisionPhase; call when: Player decides to Unlock tokens after the win
+// rule:R-GAME-005
+// rule:R-GAME-007
 func (r *Ride) Unlock(phase Phase) error {
 	if phase != DecisionPhase {
 		return ErrInvalidRoundPhase
@@ -187,6 +202,7 @@ var streakRate = decimal.NewFromFloat(0.20)
 // ledger's AccrueBonus applies (the settlement handler's input). Kept
 // separate from CalculateBonus so the accrual total and its delta share one
 // formula.
+// rule:R-GAME-006
 func BonusDelta(matchOdds, tokensLocked decimal.Decimal, streak int) decimal.Decimal {
 	s := decimal.NewFromInt(int64(streak))
 	one := decimal.NewFromInt(1)
@@ -196,6 +212,7 @@ func BonusDelta(matchOdds, tokensLocked decimal.Decimal, streak int) decimal.Dec
 
 // CalculateBonus adds one match's bonus delta to the ride's accumulated
 // bonus: tokensLocked × (odds − 1) × (1 + 0.20×streak), on top of acc.
+// rule:R-GAME-006
 func CalculateBonus(matchOdds, tokensLocked, acc decimal.Decimal, streak int) decimal.Decimal {
 	return acc.Add(BonusDelta(matchOdds, tokensLocked, streak))
 }

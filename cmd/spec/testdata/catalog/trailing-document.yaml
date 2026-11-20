@@ -1,0 +1,50 @@
+# Strict-decoding fixture: a well-formed catalog followed by a SECOND YAML
+# document. `yaml.Decoder` yields one document per Decode call, so a loader that
+# decodes exactly once silently drops everything after the `---` separator — a
+# merge accident nobody notices. The catalog must be exactly one document.
+- id: R-KERNEL-001
+  title: A thing always is a thing
+  statement: A thing always is. It is never almost.
+  module: kernel
+  entity: thing
+  category: orchestration
+  status: implemented
+  authority: service
+  mechanism: null
+  scope: null
+  enforcement:
+    - site: internal/kernel/thing/thing.go::Do
+      layer: service
+      role: authoritative
+      pinned_by: null
+  refusal: null
+  fixture: null
+  verification:
+    unit:
+      - internal/kernel/thing/thing_test.go::TestDo
+    e2e: []
+    gherkin: []
+  expert-ref: null
+  knowledge-ref: null
+  notes: ""
+---
+- id: R-KERNEL-002
+  title: A second document that must not be ignored
+  statement: A trailing document is an error, not an extra rule.
+  module: kernel
+  entity: thing
+  category: orchestration
+  status: implemented
+  authority: service
+  mechanism: null
+  scope: null
+  enforcement: []
+  refusal: null
+  fixture: null
+  verification:
+    unit: []
+    e2e: []
+    gherkin: []
+  expert-ref: null
+  knowledge-ref: null
+  notes: ""

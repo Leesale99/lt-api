@@ -103,3 +103,19 @@ Feature: Who may act
 
     Scenario: The administrator may do everything
       Then the administrator role carries all eleven codes
+
+  @rule:R-IDENTITY-013
+  Rule: A permission code exists once and a grant is one role-permission pair
+
+    # A code exists once because it is the key: a code that already exists is
+    # refused by the key it exists under, so a writer that skips every migration
+    # still cannot widen the vocabulary.
+    Scenario: The database refuses a permission code the seed already carries
+      When the Owner pool tries to record the permission code "teams:read" a second time
+      Then the write is refused by permissions_code_key
+
+    # "Does this role carry this code" has exactly one answer because the pair
+    # is the key: the same grant written twice never becomes a second row.
+    Scenario: The database refuses the same grant written twice
+      When the Owner pool tries to give the standard user role a code it already carries
+      Then the write is refused by roles_permissions_pkey

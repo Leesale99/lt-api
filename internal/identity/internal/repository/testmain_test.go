@@ -4,10 +4,12 @@ package repository
 // and permissions run against a real PostgreSQL database (see
 // internal/testdb for the setup contract).
 //
-//   - LT_API_TEST_DSN unset → DB-backed tests skip, so `go test ./...`
-//     still passes on a DB-less machine.
+//   - no LT_API_TEST_DSN and no AUDIT_SKIP_DB=1 → the suite FAILS (exit 1) with
+//     instructions: a green run that tested nothing is worse than a red one.
+//   - no LT_API_TEST_DSN and AUDIT_SKIP_DB=1 → a loud skip banner, then the
+//     DB-free tests still run; the guards below skip the rest, saying why.
 //   - LT_API_TEST_DSN set but the database is unreachable → hard failure.
-//     A green run that silently tested nothing is worse than a red one.
+//     A DSN typo must never read as a skip.
 //
 // Suite name "identity_repository" gives this package its own database, so
 // `go test ./...` (parallel packages) never contends with the api, game,
@@ -71,9 +73,15 @@ func TestMain(m *testing.M) {
 	// the hash being slow, so the suite pays the cheapest cost.
 	model.PasswordCost = bcrypt.MinCost
 
-	dsn := os.Getenv("LT_API_TEST_DSN")
-	if dsn == "" {
-		fmt.Println("LT_API_TEST_DSN not set; identity repository integration tests will be skipped")
+	dsn := os.Getenv(testdb.DSNEnv)
+	switch decision := testdb.DecideSkip(dsn, os.Getenv(testdb.SkipOptOutEnv)); decision.Action {
+	case testdb.ActionFail:
+		// Not a skip: the DB-backed half did not run, so the exit status says
+		// so. The message carries the way out.
+		fmt.Fprintln(os.Stderr, decision.Message)
+		os.Exit(1)
+	case testdb.ActionSkip:
+		testdb.Announce(decision.Message)
 		os.Exit(m.Run())
 	}
 
@@ -90,11 +98,12 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// requireDB skips a test when the database harness is unavailable.
+// requireDB skips a test under the explicit AUDIT_SKIP_DB=1 opt-out (TestMain
+// leaves testPool nil there); otherwise TestMain has already failed or built it.
 func requireDB(t *testing.T) {
 	t.Helper()
 	if testPool == nil {
-		t.Skip("LT_API_TEST_DSN not set; requires a test database")
+		t.Skip("database skipped: AUDIT_SKIP_DB=1 opted out")
 	}
 }
 

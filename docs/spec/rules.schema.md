@@ -105,7 +105,7 @@ keeps the seeded values true is migration immutability. (Gate B5 — no `seed` /
 | value | meaning |
 |---|---|
 | `handler` | Transport: DTO validation, status mapping, headers. |
-| `composition-root` | Cross-context wiring / facade binding — the composition-root layer where modules are handed their collaborators (a `cmd/...` wiring function, a facade binding, an ACL adapter chosen at assembly). Distinguished from `handler`, which is transport framing: nothing here sees a request. (Gate B5.) |
+| `composition-root` | Cross-context wiring / facade binding — the composition-root layer where modules are handed their collaborators (a `cmd/...` wiring function, a facade binding, an ACL adapter chosen at assembly). It also names the startup/assembly seam, where a program is composed once at boot (the `main.go` that calls the wiring function, resolves configuration and starts the process) — so a fact about what happens exactly once before anything is served belongs here. Distinguished from `handler`, which is transport framing: nothing here sees a request. (Gate B5.) |
 | `validator` | A `ValidateX` function: request shape/bounds arithmetic, called from the handler before the use case. |
 | `service` | Use case: ordering, transaction boundary, idempotency claim. |
 | `domain` | Entity/operation or pure function. |
@@ -147,8 +147,10 @@ fixture in `notes`.
 comment pointing at a deleted test, enforcement that moved away from where the docs
 claim it lives — does NOT make a rule `drifted`: its content still holds. Keep `status:
 implemented` and record the rot in `notes` behind a `stale-pointer:` prefix. Both
-`drifted` rules and every `stale-pointer` note MUST be surfaced in the Phase B
-misalignment report.
+`drifted` rules and every `stale-pointer` note MUST be surfaced by `spec/check` and
+preserved in the catalog's own `notes`; the historical Phase B misalignment report that
+first catalogued them is recoverable at `a92249a^`
+(`git show a92249a^:docs/spec/history/misalignment-report.md`).
 
 Applied migrations are immutable history; when rot is caused by stale prose in an
 applied migration, the fix is the catalog (and a comment at the current site), not a
@@ -158,11 +160,14 @@ rewrite of the migration.
 
 `schedule` | `game` | `identity` | `ledger` | `kernel` | `platform`
 
-### Mapping to the plan's coarser enums (see §6)
+### Mapping to the plan sketch's coarser enums (historical provenance)
 
-The plan sketch used `authority: db|app|both` and `layer: validator|domain|service|db|middleware`.
-This schema uses the taxonomy's five-value authority and six-value layer because they
-name *which* app layer. When generating `business-rules.md`, map:
+The original plan sketch — no longer a file in the tree, recoverable in git history at
+`a92249a^` (e.g. `git show a92249a^:docs/spec/history/plan.md`) — used `authority:
+db|app|both` and `layer: validator|domain|service|db|middleware`. This schema uses the
+taxonomy's five-value authority and six-value layer because they name *which* app layer.
+The mapping below records how the coarse enums were resolved; when generating
+`business-rules.md`, map:
 
 | coarse | this schema |
 |---|---|
@@ -198,12 +203,13 @@ name *which* app layer. When generating `business-rules.md`, map:
 | `refusal.code` | string | in refusal | A 5-character SQLSTATE, or the reserved word `synthetic` (a Go-only refusal with no SQLSTATE). **Illustrative, not a closed list:** `P0001`, `23514`, `23503`, `23001` are the codes the house table below shows most often; any real SQLSTATE (`23505`, `23502`, `22003`, `42501`, …) is valid. `cmd/spec` warns — never errors — on a code outside the illustrative set (gate B5). |
 | `refusal.constraint` | string \| list \| null | in refusal | The named refusal (constraint name, or the name the trigger `RAISE`s). A list when a rule carries several constraints. |
 | `refusal.sentinel` | string \| null | in refusal | The domain sentinel the repository/ACL maps to (`ErrInvalidTransition`, …). `null` = unmapped. |
-| `refusal.http` | int \| null | in refusal | Status the handler writes. `null` = falls through to 500. |
+| `refusal.http` | int \| null | in refusal | Status the handler writes; must be a real status (100–599). `null` = falls through to 500. |
 | `fixture` | string \| null | no | The shared change-detector fixture id this rule's copies are pinned to. Every `pinned_by` in the catalog must name this id or another rule's `fixture`. |
 | `verification.unit` | list of strings | yes for `implemented` (one of three) | `path::TestSymbol` (add `::Subtest` text only if the subtest name is stable). One of `unit`/`e2e`/`gherkin`: **any one** satisfies policy 3. Must exist **today** — grep it. |
 | `verification.e2e` | list of strings | no | `path::TestSymbol` for existing E2E coverage. Counts toward policy 3 exactly like `unit`; a rule proved only by an e2e test is covered. Must exist **today**. |
 | `verification.gherkin` | list of strings | no | `<feature-file>::<scenario name>` under `docs/spec/features/**`; every scenario carries an `@rule:R-...` tag. Counts toward policy 3 like `unit`/`e2e`; policy 10 resolves every pointer against the feature tree. |
 | `expert-ref` | string (path) | required for `specified-only` | The phase document the rule comes from. Omitted where no doc covers the rule (an ADR referenced only in code is not a path that exists in this repo). |
+| `knowledge-ref` | string (path) | no | The knowledge-base note behind the rule, relative to the repository root. It must exist and sit under `docs/league-tokens-learning-phases/` (policy 16). It is **additional** to `expert-ref`, never a replacement: a `specified-only` rule keeps its `expert-ref` and may add this beside it. |
 | `notes` | string (block) | required for `drifted`; required when `authority` ≠ category default | What disagrees, what the catalog believes, what would fix it. Rotted pointers (dead files, deleted tests, moved enforcement) belong here behind a `stale-pointer:` prefix, with `status: implemented`. |
 
 ### Refusal mapping (house convention)
@@ -249,6 +255,137 @@ list is the frequency.
 11. `pinned_by` names a fixture declared by some rule's `fixture` field.
 12. The feature tree is cross-checked in both directions — every `@rule` tag names a
     catalog rule, and every scenario names exactly one (checker id `12-features`).
+13. Every step in `docs/spec/features/**` is bounded by the vocabulary, in both
+    directions (checker id `13-vocabulary`):
+    - **Denylist (absolute for transport).** A step may not use the transport
+      words of `gherkin-style.md` §6 — `http`, `https`, `json`, `request`,
+      `response`, `header`, `headers`, `endpoint`, `route`, `handler`, `dto`,
+      `payload`, `status code` — or a bare three-digit HTTP-range figure (`200`,
+      `401`, `409`, `422`, `500`). A three-digit figure is a QUANTITY rather than a
+      status only when the very next token of the step is one of the closed set of
+      units and business nouns `tokens`, `rounds`, `matches`, `minutes`, `hours`,
+      `days`, `seconds`, `players`, `teams`, `members`, `points`, `entries`, `rows`
+      (`100 tokens`, `200 entries`, `200 rows`). The set is curated and closed: the
+      figure either quantifies one of those nouns or it is the transport fact §6
+      forbids — a figure at the end of a step (`refused as 409`) and a figure
+      before any other token (`409 status`, `409 conflict`, `200 ok`) are numeric
+      statuses.
+    - **SQL vocabulary (adjacency).** The §6 SQL words are partitioned, because some
+      of them are ordinary English:
+      - **Homographs** — `check`, `unique`, `index`, `references`, `create`,
+        `table`, `column` — never error **alone**: `the check passes`, `each pair
+        of teams is unique` and `the table is set for match day 1` are business
+        prose. A homograph fires only on **adjacency**: it is an ERROR iff the
+        neighbouring token of the same step is itself SQL vocabulary — homograph
+        or hard keyword — or one of the database object nouns `key`, `database`,
+        `schema`, `row`. Adjacency is i±1 **after skipping the closed stopword
+        set** `a`, `an`, `the`, `new`, `temporary`, `each`, `every`, `per`: the
+        walk passes over consecutive stopwords, the first non-stopword
+        neighbour decides, and the boundary of the token stream is not
+        adjacency. So `create table`, `create a table`, `create a new table`,
+        `check constraint`, `unique index` and `unique key` are ERRORs.
+      - **Hard keywords** — `select`, `insert`, `update`, `delete`, `join`,
+        `drop`, `alter`, `constraint`, `trigger`, `grant`, `revoke`, `cascade`,
+        `upsert`, `truncate` — have no English reading in this domain and error
+        alone, exactly as before: `insert into game.rides` is an ERROR.
+      Matching is on **exact tokens** and does no stemming, which is what gives the
+      two halves the asymmetry above: a hard keyword errors **alone**, a homograph
+      only on adjacency. Their inflected forms (`deletes`, `updates`, `inserting`,
+      `created`) are therefore ordinary words that trigger nothing on their own —
+      they bind through the glossary below like every other undeclared word.
+      - The SQL half is **scoped to facade steps**: the sabotage family of
+        `gherkin-style.md` §8 (`the Owner pool …`, `the write is refused by …`,
+        `the refusal names …`, `the write is allowed`) exists to bypass the
+        application with raw writes and legitimately says `insert`; no SQL word,
+        homograph or hard, is reported there, and the exemption is decided once
+        per step and covers its step arguments. The transport half applies to it.
+      The denylist also reads each token **split on `_`**, so joining words is not a
+      way past it: `status_code` denies as the phrase `status code`, `http_status` as
+      the transport word `http`, and a figure respelled with letters (`2OO`) as the
+      numeric status it imitates. A database object name's fragments are scanned that
+      way too, and a homograph fragment is SQL by the **form** of the identifier it
+      belongs to — `check` in `matches_ended_at_check` is an ERROR without needing a
+      neighbour, since splitting names must not reopen the `_` bypass — and such
+      names surface only in §8 steps, where the sabotage exemption covers them **only
+      when the name is REAL**: a `refusal.constraint` or `refusal.sentinel` value in
+      `docs/spec/rules.yaml`, or a name that appears literally in a `migrations/*.sql`
+      file. A fabricated name gets the phrase denylist normally, in a sabotage step as
+      anywhere else.
+    - **Allowlist (the seeded glossary).** Every remaining token of every step must be
+      declared in `docs/spec/glossary.yaml` — in the section named after the feature
+      file's module directory (`game`, `identity`, `schedule`, `ledger`, `kernel`,
+      `platform`, one section each even where the module has no feature file yet) or
+      in the shared `common` section. An undeclared token is an ERROR naming
+      `file::scenario` and the section to extend. The seed describes the vocabulary
+      the tree uses today; extending it is part of the change that needs the word.
+      A term that merely respells denylisted **transport** vocabulary over its `_`-split
+      form (`status_code`, `http_status`), that glues any two or more such words
+      together with no separator at all (`httpstatus`, `httpstatuscode`,
+      `statuscodehttp`), or that is a status figure written with letters in place of
+      digits — the three-character figure, a leading 1–5 and then digits or the letter
+      `o` (`2oo`, `4O4`, `2o0`), or that same figure with its trailing `o`s standing in
+      for nothing (`200o`, `2o0o`) — is an ERROR naming the section and the term, and never
+      enters the allowlist: the remedy may not launder the disguise. The SQL half of the
+      denylist is deliberately **not** applied to glossary terms, so the database object names
+      the sabotage steps declare (`rides_tokens_locked_check`) stay addable here.
+    - **Tokenizer.** Lowercase; the English possessive suffix (`'s`) folds away;
+      quoted literals (`"Spring 2026"`, `"2–1"`, `"ana@example.com"`) are data and are
+      dropped; every remaining run of characters other than a letter, a digit or an
+      underscore becomes a separator. Underscore is *not* a separator, so a database
+      object name (`rides_state_gate`) is one token and is seeded like any other word.
+      A step's **docstring body and data-table cells** are part of the step: the same
+      rules scan them and the same `file::scenario` pointer reports them. A docstring
+      body keeps its quotation marks (there they are prose, not data); a table cell
+      keeps the quoted-literal exemption.
+14. `category` binds the verification and refusal surface of an **implemented** rule
+    (checker id `14-category`); `specified-only` rules are exempt:
+    - `interface` ⇒ a `refusal` is present and `refusal.http` is non-null (an
+      interface rule names the status the framed-away request is refused with),
+      and `verification.gherkin` is forbidden (its proof is a Go test).
+    - `refusal-mapping` ⇒ `verification.gherkin` is forbidden.
+    - `persistence-fact` ⇒ `verification.gherkin` is forbidden **and** at least one
+      `verification.unit` pointer is required.
+    - `invariant` / `policy` ⇒ a WARN when there is no `verification.gherkin`
+      pointer: a business-visible rule wants an executable scenario, but a warning
+      never fails `--strict`.
+    - `orchestration` / `boundary` ⇒ unconstrained.
+15. Every Go enforcement site carries its rule's annotation, and every annotation
+    names a catalog rule — in both directions (checker id `15-annotations`):
+    - **The annotation (convention).** A comment line that is exactly
+      `//rule:R-XXX-NNN` — the prefix, the id, and nothing else (no space after the
+      colon, no trailing prose; one id per line). It sits either on the declaration
+      line or in the contiguous comment block directly above the declaration. A blank
+      line or a non-comment line breaks contiguity, so a comment block separated
+      from the declaration documents something else. A site named by several rules
+      carries one `//rule:` line per id in that same block. Inside a parenthesized
+      `var (...)`, `const (...)` or `type (...)` block, a spec placed directly on one of
+      the grouped declarations reads its own contiguous comment first — that annotation
+      wins over the block-level doc and never covers a sibling — and a spec with none of
+      its own falls back to the block-level doc. `gofmt` reflows a doc comment's
+      `//rule:` to `// rule:`, which is the same annotation; the id after
+      the colon must still be exact, so `// rule: R-XXX-NNN` stays a typo.
+    - **Catalog → tree.** For every implemented rule's Go enforcement site
+      (`path::Symbol`), the rule's id must appear in that annotation window; an
+      annotation that is not at the declaration does not count. SQL sites (paths
+      starting `migrations/`) are exempt — the migration's own text is the record —
+      and test files are exempt too, because a test names its rule through
+      `verification`. A missing annotation is an ERROR.
+    - **Tree → catalog.** Every annotation in any non-vendor `*.go` file under the
+      repository must resolve to a catalog rule id (test files are included in this
+      direction; `testdata/` is excluded as fixture data). An annotation whose id
+      does not match `^R-[A-Z]+-\d{3}$` is an ERROR of its own, so a typo cannot pass
+      for "a rule that does not exist yet"; the report labels it `(malformed id)`
+      and labels a well-formed id that names no catalog rule `(unknown id
+      R-X-NNN)`, so neither reads as a real rule id. An annotation in **non-test**
+      Go code that resolves to a `specified-only` rule is an ERROR too: the rule has
+      no code yet, so no site may claim it. Test files keep the reverse-direction
+      check only — their annotation must resolve, but a specified-only target is
+      legal there because a test names its rule through `verification`.
+16. `knowledge-ref`, when present, must (a) exist as a file relative to the
+    repository root and (b) be a path under `docs/league-tokens-learning-phases/`
+    (checker id `16-knowledge-ref`). It records the knowledge-base note behind the
+    rule; `expert-ref` is unchanged by it, so `specified-only` rules keep their
+    `expert-ref` and may add `knowledge-ref` beside it.
 
 ---
 
@@ -272,5 +409,5 @@ model for every future fixture.
 
 ## 6. Open decisions (user gate A2)
 
-> Resolved at gate A2 (D1–D6) and closed at gate B5 — the minutes live in
-> [history/decisions.md](history/decisions.md).
+> Resolved at gate A2 (D1–D6) and closed at gate B5; the resolutions are recorded in
+> the catalog's own rule notes.

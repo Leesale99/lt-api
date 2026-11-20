@@ -43,6 +43,7 @@ func New() *Bus { return &Bus{} }
 
 // Subscribe appends a handler. Delivery order is registration order; a
 // subscriber must not rely on ordering relative to other subscribers.
+// rule:R-KERNEL-013
 func (b *Bus) Subscribe(h Handler) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -68,6 +69,7 @@ func Subscribe[T any](b *Bus, handle func(ctx context.Context, event T) error) {
 // is already durable-side-effect territory, so a handler failure must not
 // roll anything back — the publisher decides how to surface it (log the
 // gap; the sweep will settle it).
+// rule:R-KERNEL-013
 func (b *Bus) Publish(ctx context.Context, event any) error {
 	b.mu.RLock()
 	handlers := slices.Clone(b.handlers)

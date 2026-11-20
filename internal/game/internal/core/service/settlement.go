@@ -116,6 +116,7 @@ type RoundCompleted struct {
 // OnMatchResultRecorded settles the locked rides of one resolved match, from
 // the payload: winner == ride.team → won_pending (the bonus accrues, the rule
 // ride.WonPending encodes), otherwise lost (the accrued bonus is released).
+// rule:R-KERNEL-014
 func (s *Service) OnMatchResultRecorded(ctx context.Context, event MatchResultRecorded) error {
 	return s.runEvent(ctx, matchResultEndpoint, event.EventID, event, event.RoundID, func(tx pgxTx) error {
 		rides, err := s.rides.LockedForMatchTx(ctx, tx, event.MatchID)
@@ -145,6 +146,9 @@ func (s *Service) OnMatchResultRecorded(ctx context.Context, event MatchResultRe
 // Statement order inside the transaction: locked settlements first, then the
 // undecided sweep — a ride the backstop just settled to won_pending is swept
 // by the same transaction, the old close-transaction semantics.
+// rule:R-GAME-009
+// rule:R-GAME-015
+// rule:R-KERNEL-014
 func (s *Service) OnRoundCompleted(ctx context.Context, event RoundCompleted) error {
 	return s.runEvent(ctx, roundCompleteEndpoint, event.EventID, event, event.RoundID, func(tx pgxTx) error {
 		for _, result := range event.Results {
@@ -203,6 +207,8 @@ func (s *Service) OnRoundCompleted(ctx context.Context, event RoundCompleted) er
 // lost otherwise (a draw crowns no winner). Then the agreement check, the
 // transition and the money intents — the bonus paid at the COMMITTED odds,
 // never the payload's.
+// rule:R-GAME-010
+// rule:R-GAME-015
 func (s *Service) settleRideFromResult(ctx context.Context, tx pgxTx, ride domain.Ride, winner *int, claimedOdds Odds) error {
 	destination := domain.RideLost
 	if winner != nil && *winner == ride.TeamID {
@@ -268,6 +274,7 @@ func (s *Service) settleRideFromResult(ctx context.Context, tx pgxTx, ride domai
 // sibling (ride_result_odds_disagreement), and all three surface as
 // ErrInvalidTransition (ADR-018: the match is the single source of truth, no
 // writer may disagree with it).
+// rule:R-GAME-010
 func resultAgreement(ride domain.Ride, destination domain.RideState, committed port.MatchSnapshot, claimedOdds Odds) error {
 	if committed.Score.Home == nil || committed.Score.Away == nil {
 		return fmt.Errorf("ride %d arrival refused: match %d carries no scores (ride_result_scores_missing): %w",
@@ -313,6 +320,9 @@ func teamOdds(teamID, homeTeamID, awayTeamID int, odds port.Odds) (decimal.Decim
 // settlement handlers of one round run back to back, never beside each other
 // — a replay skips the lock with its no-op), then the settlement work, then
 // the stored response, one commit.
+// rule:R-GAME-009
+// rule:R-GAME-023
+// rule:R-KERNEL-014
 func (s *Service) runEvent(ctx context.Context, endpoint, eventID string, payload any, roundID int, exec func(pgxTx) error) error {
 	tx, err := s.transactor.Begin(ctx)
 	if err != nil {

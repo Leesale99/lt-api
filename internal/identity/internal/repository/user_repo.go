@@ -22,6 +22,11 @@ func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
 	return &UserRepository{pool: pool}
 }
 
+// rule:R-IDENTITY-003
+// rule:R-IDENTITY-011
+// rule:R-IDENTITY-012
+// rule:R-IDENTITY-019
+// rule:R-IDENTITY-020
 func (r *UserRepository) Insert(ctx context.Context, user model.User) (model.User, error) {
 	// Invariant, not validation: a user can never be persisted without a
 	// hash. The DB's NOT NULL is the last line of defense; this panic is the
@@ -50,6 +55,7 @@ func (r *UserRepository) Insert(ctx context.Context, user model.User) (model.Use
 	return user, nil
 }
 
+// rule:R-IDENTITY-011
 func (r *UserRepository) GetByEmail(ctx context.Context, email string) (model.User, error) {
 	query := `
 		SELECT id, created_at, name, email, password_hash, activated, role_id, version
@@ -101,10 +107,14 @@ type rowQuerier interface {
 // case runs it beside the token cleanup so the flip and the token deletion are
 // one commit, which is the only production write path; there is deliberately no
 // non-transactional variant for a caller to reach.
+// rule:R-IDENTITY-009
 func (r *UserRepository) UpdateTx(ctx context.Context, tx pgx.Tx, user model.User) (model.User, error) {
 	return r.update(ctx, tx, user)
 }
 
+// rule:R-IDENTITY-003
+// rule:R-IDENTITY-010
+// rule:R-IDENTITY-011
 func (r *UserRepository) update(ctx context.Context, q rowQuerier, user model.User) (model.User, error) {
 	if user.Password.Hash() == nil {
 		panic("missing password hash for the user")
@@ -145,6 +155,8 @@ func (r *UserRepository) GetForTokenTx(ctx context.Context, tx pgx.Tx, tokenScop
 	return r.getForToken(ctx, tx, tokenScope, tokenPlaintext)
 }
 
+// rule:R-IDENTITY-006
+// rule:R-IDENTITY-008
 func (r *UserRepository) getForToken(ctx context.Context, q rowQuerier, tokenScope, tokenPlaintext string) (model.User, error) {
 	tokenHash := sha256.Sum256([]byte(tokenPlaintext))
 

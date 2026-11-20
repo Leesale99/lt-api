@@ -27,6 +27,7 @@ const (
 //
 // A nil lastEndsAt (no match has ended yet) reports MatchPhase: matches are
 // scheduled or running, so the decision window cannot be opened.
+// rule:R-SCHEDULE-022
 func Phase(now time.Time, firstStartsAt, lastEndedAt *time.Time) RoundPhase {
 	switch {
 	case firstStartsAt == nil || now.Before(firstStartsAt.Add(-actionPhaseLead)):

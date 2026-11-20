@@ -31,6 +31,7 @@ type UserDirectory interface {
 // actorOf maps the request's authenticated principal and permission set onto
 // the use cases' Actor. A request without a principal yields the zero actor
 // (unauthenticated, no authority).
+// rule:R-GAME-011
 func actorOf(r *http.Request) service.Actor {
 	actor := service.Actor{
 		CanManageAny: httpx.GetPermissions(r).Include("players:write:any"),
@@ -42,6 +43,9 @@ func actorOf(r *http.Request) service.Actor {
 	return actor
 }
 
+// rule:R-GAME-012
+// rule:R-GAME-013
+// rule:R-GAME-021
 func (h *Handler) createPlayer(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Name           string `json:"name"`
@@ -141,6 +145,8 @@ func (h *Handler) showPlayer(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// rule:R-GAME-017
+// rule:R-GAME-021
 func (h *Handler) updatePlayer(w http.ResponseWriter, r *http.Request) {
 	seasonID, err := httpx.ReadIDParam(r)
 	if err != nil {

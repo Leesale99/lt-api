@@ -200,6 +200,8 @@ func (r *MatchRepository) Delete(ctx context.Context, id, seasonID int) error {
 	return nil
 }
 
+// rule:R-SCHEDULE-012
+// rule:R-SCHEDULE-028
 func (r *MatchRepository) Update(ctx context.Context, match model.Match) (model.Match, error) {
 	query := `
 		UPDATE matches
@@ -342,6 +344,7 @@ func (r *MatchRepository) NextForTeam(ctx context.Context, teamID int) (model.Ma
 // end time, but the row — not the request — is what the response reports, so
 // any future trigger drift shows up in the response instead of hiding behind
 // an in-memory copy).
+// rule:R-SCHEDULE-021
 func (r *MatchRepository) ResolveTx(ctx context.Context, tx pgx.Tx, matchID int, score model.Score, endedAt time.Time, version int) (model.Match, error) {
 	query := `
 		UPDATE matches
@@ -405,6 +408,7 @@ func (r *MatchRepository) ResolveTx(ctx context.Context, tx pgx.Tx, matchID int,
 // (409): another resolution won, or the match moved on. Re-resolution of
 // an already-closed match therefore surfaces as a clean conflict, the
 // Phase 04 contract for two concurrent resolutions.
+// rule:R-SCHEDULE-021
 func (r *MatchRepository) classifyResolveRefusal(ctx context.Context, matchID int) error {
 	var id int
 
@@ -426,6 +430,7 @@ func (r *MatchRepository) classifyResolveRefusal(ctx context.Context, matchID in
 // gate. The rows are mapped to model results; the winner derivation is
 // model.NewMatchResult's (one authoritative copy), so the event carries the
 // outcome, not just raw numbers.
+// rule:R-SCHEDULE-019
 func (r *MatchRepository) ResultsForRound(ctx context.Context, roundID int) ([]model.MatchResult, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, season_id, round_id, home_team_id, away_team_id,

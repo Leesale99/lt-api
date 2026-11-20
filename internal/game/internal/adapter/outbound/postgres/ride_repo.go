@@ -67,6 +67,7 @@ const insertSQL = `
 // insertRide runs the birth statement on any querier — the pool (Insert, the
 // test-planter path) or the caller's transaction (InsertTx, the idempotent
 // command path).
+// rule:R-GAME-004
 func insertRide(ctx context.Context, q persistence.Querier, ride domain.Ride) (domain.Ride, error) {
 	args := []any{ride.PlayerID, ride.TeamID, ride.MatchID, ride.State, ride.TokensLocked, ride.BaseAtLock, ride.Acc, ride.Streak}
 
@@ -134,6 +135,7 @@ func (r *RideRepository) InsertTx(ctx context.Context, tx pgx.Tx, ride domain.Ri
 // LockedForMatchTx reads the locked rides of one match, on the caller's
 // transaction — the settlement handler's scan. The match id comes from the
 // event payload; no join: rides owns the match_id column (ADR-018).
+// rule:R-GAME-016
 func (r *RideRepository) LockedForMatchTx(ctx context.Context, tx pgx.Tx, matchID int) ([]domain.Ride, error) {
 	return scanRides(tx.Query(ctx, `
 		SELECT `+rideColumns+`
@@ -146,6 +148,7 @@ func (r *RideRepository) LockedForMatchTx(ctx context.Context, tx pgx.Tx, matchI
 // UndecidedForMatchesTx reads the undecided (won_pending) rides of the given
 // matches, on the caller's transaction — the round settlement's sweep. The
 // match ids come from the RoundCompleted payload; no join.
+// rule:R-GAME-027
 func (r *RideRepository) UndecidedForMatchesTx(ctx context.Context, tx pgx.Tx, matchIDs []int) ([]domain.Ride, error) {
 	if len(matchIDs) == 0 {
 		return nil, nil
@@ -329,6 +332,7 @@ const arrivalUpdateSQL = `
 // (classifyArrivalRefusal): a ride gone mid-tx is domain.ErrNotFound, a moved
 // row is domain.ErrInvalidTransition — in the single-settlement world of the
 // claimed event, both are bug-shaped.
+// rule:R-GAME-016
 func (r *RideRepository) ArriveTx(ctx context.Context, tx pgx.Tx, rideID int, from, to domain.RideState, claimedVersion int) (domain.Ride, error) {
 	var ride domain.Ride
 
@@ -368,6 +372,8 @@ func (r *RideRepository) ArriveTx(ctx context.Context, tx pgx.Tx, rideID int, fr
 // domain.ErrInvalidTransition). Rides-only read: no cross-table facts are
 // left to name at this point — the round guard is the port's, checked before
 // the write; the arrival facts are state and version.
+// rule:R-GAME-016
+// rule:R-GAME-024
 func (r *RideRepository) classifyArrivalRefusal(ctx context.Context, rideID, claimedVersion int) error {
 	var (
 		state   domain.RideState
@@ -439,6 +445,8 @@ const decisionUpdateSQL = `
 //     rides_money_state_coupling 23514 -> ErrInvalidTransition; a
 //     destination deleted between the port gate and this write surfaces as
 //     the FK 23503 -> ErrNotFound
+//
+// rule:R-GAME-024
 func (r *RideRepository) DecisionGuardedTx(ctx context.Context, tx pgx.Tx, ride domain.Ride) (domain.Ride, error) {
 	err := tx.QueryRow(ctx, decisionUpdateSQL,
 		ride.MatchID, ride.State, ride.Streak, ride.ID, ride.Version,
@@ -488,6 +496,7 @@ func (r *RideRepository) DecisionGuardedTx(ctx context.Context, tx pgx.Tx, ride 
 // names the reason, and it may legally see a snapshot from before the
 // concurrent commit — the default branch catches that no-cause read instead
 // of passing it as a named one.
+// rule:R-GAME-024
 func (r *RideRepository) classifyDecisionRefusal(ctx context.Context, rideID, claimedVersion int) error {
 	var (
 		state   domain.RideState
@@ -522,6 +531,7 @@ func (r *RideRepository) classifyDecisionRefusal(ctx context.Context, rideID, cl
 // RESTRICT is gone with the cross-context FKs, so the "match still has
 // rides" check is a composition; ADR-018: a match with rides on it must not
 // be deleted, the tokens would vanish with it).
+// rule:R-SCHEDULE-026
 func (r *RideRepository) ExistsForMatch(ctx context.Context, matchID int) (bool, error) {
 	var exists bool
 	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM rides WHERE match_id = $1)`, matchID).Scan(&exists)
@@ -531,6 +541,7 @@ func (r *RideRepository) ExistsForMatch(ctx context.Context, matchID int) (bool,
 // ExistsForTeam reports whether any ride names the team — the game half of
 // the calendar's team-delete refusal (see ExistsForMatch; the
 // rides_team_id_fkey RESTRICT is gone with the cross-context FKs).
+// rule:R-SCHEDULE-026
 func (r *RideRepository) ExistsForTeam(ctx context.Context, teamID int) (bool, error) {
 	var exists bool
 	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM rides WHERE team_id = $1)`, teamID).Scan(&exists)

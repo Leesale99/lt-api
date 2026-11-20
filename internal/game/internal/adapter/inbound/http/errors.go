@@ -109,6 +109,7 @@ func (h *Handler) invalidStateTransitionResponse(w http.ResponseWriter, r *http.
 // idempotencyConflictResponse refuses a request whose Idempotency-Key was
 // already used with a different request (ADR-024) — key misuse, not a retry:
 // a retry re-sends the identical request and gets the stored response.
+// rule:R-KERNEL-003
 func (h *Handler) idempotencyConflictResponse(w http.ResponseWriter, r *http.Request) {
 	message := "this idempotency key was already used with a different request"
 	h.writeError(w, r, http.StatusConflict, message)

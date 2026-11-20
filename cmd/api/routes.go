@@ -29,6 +29,7 @@ import (
 // healthcheck plus the three module route tables. The nesting itself is
 // httpchain.Build's (one builder, shared with the end-to-end suite, so the two
 // chains cannot drift — R-PLATFORM-014).
+// rule:R-PLATFORM-014
 func routes(srv *server.Server, chain *httpx.Middleware, calendar *schedule.Module, gameplay *game.Module, users *identity.Module) http.Handler {
 	router := httprouter.New()
 

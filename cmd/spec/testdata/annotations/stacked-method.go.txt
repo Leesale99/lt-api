@@ -1,0 +1,12 @@
+package thing
+
+// Handler serves the thing.
+type Handler struct{}
+
+// Do does the thing under both rules; the annotations are stacked under the doc
+// comment, which is the pinned form.
+//rule:R-KERNEL-001
+//rule:R-KERNEL-002
+func (h *Handler) Do() {}
+
+func Other() {}

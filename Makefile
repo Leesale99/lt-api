@@ -26,25 +26,43 @@ confirm:
 run/api: 
 	go run ./cmd/api -db-dsn=${LT_API_DSN} -smtp-username=${SMTP_USERNAME} -smtp-password=${SMTP_PASSWORD}
 
-## test: run the full suite; DB-backed tests skip when LT_API_TEST_DSN is unset
+## test: run the full suite with -count=1 (never a cached ok); the spec suite FAILS without LT_API_TEST_DSN (bring it up with db/up)
 .PHONY: test
 test:
-	go test ./...
+	go test -count=1 ./...
 
-## test/unit: run the pure-logic tests (no database needed)
+## test/unit: run the pure-logic tests with -count=1 (no database needed)
 .PHONY: test/unit
 test/unit:
-	go test ./internal/schedule/... -run 'TestValidateNewMatch|TestValidateMatchUpdate|TestWinner|TestPhase' -v
+	go test -count=1 ./internal/schedule/... -run 'TestValidateNewMatch|TestValidateMatchUpdate|TestWinner|TestPhase' -v
 
 ## test/db: run the full suite against the test database (LT_API_TEST_DSN from .envrc; fails loudly if unreachable)
 .PHONY: test/db
 test/db:
-	go test ./... -v
+	go test -count=1 ./... -v
 
-## test/spec: run the godog suite against real Postgres (skips without LT_API_TEST_DSN)
+## test/spec: run the godog suite against real Postgres with -count=1 (never a cached ok; needs LT_API_TEST_DSN, `make db/up` provides it)
 .PHONY: test/spec
 test/spec:
-	go test ./internal/spec/...
+	go test -count=1 ./internal/spec/...
+
+## db/up: start the compose test database (CI's postgres 18 service container) and wait until it is healthy
+.PHONY: db/up
+db/up:
+	docker compose up -d
+	@echo 'waiting for the compose test database to report healthy ...'
+	@for i in $$(seq 1 60); do \
+		status=$$(docker inspect --format '{{.State.Health.Status}}' $$(docker compose ps -q postgres) 2>/dev/null || echo starting); \
+		if [ "$$status" = healthy ]; then echo 'test database is healthy'; exit 0; fi; \
+		sleep 2; \
+	done; \
+	echo 'test database did not become healthy; see: docker compose logs postgres' >&2; exit 1
+
+## db/down: stop the compose test database (the named volume survives; compose down -v drops it too)
+.PHONY: db/down
+db/down:
+	docker compose down
+	@echo 'named volume kept: `docker compose down -v` also drops the base database'
 
 ## db/seed: reset and seed the dev database with the canonical dummy data (run db/migrations/up first)
 .PHONY: db/seed
@@ -110,6 +128,7 @@ GOFMT := $(shell go env GOROOT)/bin/gofmt
 ## audit: run quality control checks (fails on any unformatted file, stale spec or
 ## spec-check error). The chain is the pipeline's single gate: gofmt → vet →
 ## staticcheck → spec freshness → spec check → the whole test tree (unit, spec, db).
+## The test step runs with -count=1, so the gate never trusts the go test cache.
 .PHONY: audit
 audit:
 	go mod tidy -diff
@@ -119,13 +138,13 @@ audit:
 	go tool staticcheck ./...
 	$(MAKE) spec/diff
 	$(MAKE) spec/check
-	go test -race -vet=off ./...
+	go test -race -vet=off -count=1 ./...
 
 # ============================================================================================================================ #
 # SPEC CATALOG
 # ============================================================================================================================ #
 
-## spec/gen: regenerate docs/spec/business-rules.md from the canonical catalog
+## spec/gen: regenerate the catalog Markdown — the dashboard plus one view per module
 .PHONY: spec/gen
 spec/gen:
 	go run ./cmd/spec gen
@@ -135,7 +154,12 @@ spec/gen:
 spec/check:
 	go run ./cmd/spec check --strict
 
-## spec/diff: fail if docs/spec/business-rules.md is stale (wired into `make audit`)
+## spec/brief args=R-XXX-NNN: print a Markdown work order for one rule (or args='--module game')
+.PHONY: spec/brief
+spec/brief:
+	go run ./cmd/spec brief $(args)
+
+## spec/diff: fail if the dashboard or any generated module view is stale (wired into `make audit`)
 .PHONY: spec/diff
 spec/diff:
 	go run ./cmd/spec gen --diff

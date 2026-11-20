@@ -11,6 +11,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/kernel/validator"
 )
 
+// rule:R-IDENTITY-022
 func (h *Handler) createActivationToken(w http.ResponseWriter, r *http.Request) {
 	var input createActivationTokenInput
 

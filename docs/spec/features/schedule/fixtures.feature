@@ -179,3 +179,20 @@ Feature: The fixture calendar
     Scenario: The database refuses a duplicate round number
       When the Owner pool tries to duplicate round 1 in the season
       Then the write is refused by rounds_season_id_number_key
+
+  # A club is the third kind of record the calendar carries, and its shape is
+  # the same kind of promise as a fixture's: a described club or no club, never
+  # a half-described one — for the organiser's screen and for a writer that
+  # skips it alike.
+  @rule:R-SCHEDULE-029
+  Rule: A team carries a name, a badge and a description
+
+    Scenario Outline: The database refuses a team with a part of its record missing
+      When the Owner pool tries to record a team with <the gap>
+      Then the write is refused by <database object>
+
+      Examples:
+        | the gap        | database object         |
+        | no name        | teams_name_check        |
+        | an empty badge | teams_logo_check        |
+        | no description | teams_description_check |

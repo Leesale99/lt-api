@@ -16,6 +16,7 @@ const usage = `usage: spec <command> [flags]
 Commands:
   gen    generate the Markdown view of docs/spec/rules.yaml
   check  validate the catalog against docs/spec/rules.schema.md §3
+  brief  print a Markdown work order for one rule (R-XXX-NNN) or one module
 
 Run "spec <command> -h" for the command's flags.
 `
@@ -31,6 +32,8 @@ func main() {
 		os.Exit(runGen(os.Args[2:], os.Stdout, os.Stderr))
 	case "check":
 		os.Exit(runCheck(os.Args[2:], os.Stdout, os.Stderr))
+	case "brief":
+		os.Exit(runBrief(os.Args[2:], os.Stdout, os.Stderr))
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
 	default:

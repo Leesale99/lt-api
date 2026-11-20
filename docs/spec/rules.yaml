@@ -5,7 +5,6 @@
 #
 # Retired at gate B5 (dupe policy): R-GAME-019 merged into R-KERNEL-003, R-GAME-022 merged into
 # R-KERNEL-014 — kernel owns the statement, game call-sites are enforcement sites on it. Ids are never reused.
-# Gate-decision minutes: docs/spec/history/decisions.md.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # schedule — calendar authority (teams, seasons, rounds, matches)
@@ -178,6 +177,7 @@
       - internal/e2e/matches_test.go::TestUpdateMatchHandler
     gherkin:
       - docs/spec/features/schedule/lifecycle.feature::A closed match cannot go back to running
+  knowledge-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
   notes: >
     One rule, three vocabularies: each entity owns a rank map and the shared
     statusRegresses verdict rejects a lower rank (disjoint cases, one statement;
@@ -839,7 +839,7 @@
     trips round_progress_season_not_live, and a close over unclosed matches trips
     rounds_close_gate, both with no started match anywhere, and both still get
     that message; those causes are indistinguishable to a client.
-    misalignment-report §6 item 5 (docs/spec/history/misalignment-report.md) is
+    misalignment-report §6 item 5 is
     therefore a false premise: it claims a created round in a created season
     cannot be renumbered, but the gate's renumber branch requires
     NEW.status IN ('open','closed'), so such a renumber is allowed and only the
@@ -1135,6 +1135,7 @@
       - internal/e2e/matches_test.go::TestResolveMatchSettlesRowOnce
     gherkin:
       - docs/spec/features/schedule/resolve.feature::A result written against an outdated reading is refused
+  knowledge-ref: docs/league-tokens-learning-phases/phase-04-concurrency-and-idempotency.md
   notes: >
     Authority deviates from the orchestration default (service) because the
     predicate needs the write instant: it is spelled as the UPDATE's own WHERE
@@ -1283,6 +1284,7 @@
       - internal/e2e/seasons_test.go::TestDeleteCreatedSeasonHandler
     gherkin:
       - docs/spec/features/schedule/deletion.feature::Deleting a season takes its rounds and fixtures with it
+      - docs/spec/features/schedule/deletion.feature::A direct delete of the season takes its fixtures with it
   notes: >
     The cascade is three FK behaviours doing the work (rounds_season_id_fkey and
     matches_season_id_fkey / matches_round_id_fkey, all ON DELETE CASCADE), so it
@@ -1336,6 +1338,7 @@
       - internal/e2e/teams_test.go::TestDeleteUnreferencedTeamHandler
     gherkin:
       - docs/spec/features/schedule/deletion.feature::A team a fixture names cannot be deleted
+      - docs/spec/features/schedule/deletion.feature::The database refuses to delete a team a fixture names
   notes: >
     ON DELETE RESTRICT (not NO ACTION) on both sides of matches, with the intent
     spelled out in 000001: "we don't want to delete matches history if we delete
@@ -1566,6 +1569,7 @@
       - internal/e2e/seasons_test.go::TestUpdateSeasonHandler
     gherkin:
       - docs/spec/features/schedule/deletion.feature::An edit written against an outdated reading is refused
+  knowledge-ref: docs/league-tokens-learning-phases/phase-04-concurrency-and-idempotency.md
   notes: >
     Authority deviates from the orchestration default (service) because the
     guarantee is the `AND version = $n` clause inside each UPDATE and the 0-row
@@ -1616,6 +1620,8 @@
       - internal/schedule/internal/repository/constraints_test.go::TestTeamConstraints
     e2e:
       - internal/e2e/teams_test.go::TestCreateTeamHandler
+    gherkin:
+      - docs/spec/features/schedule/fixtures.feature::The database refuses a team with a part of its record missing
   notes: >
     Three CHECKs of one kind (000001 also sets NOT NULL on all three columns, so
     the emptiness CHECKs are the belt to the NOT NULL braces). The byte bounds
@@ -1720,6 +1726,7 @@
     gherkin:
       - docs/spec/features/game/ride_lifecycle.feature::A new ride is born locked
   expert-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge-game-engine.md
   notes: >
     The insert half of the gate is a trigger, not a CHECK: the predicate is
     INSERT-only ("state = 'locked'"), and a CHECK would also refuse the UPDATEs that
@@ -1770,6 +1777,7 @@
     gherkin:
       - docs/spec/features/game/ride_lifecycle.feature::A won match leaves the ride waiting on a decision
   expert-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge-game-engine.md
   notes: >
     The graph is OLD-vs-NEW, so it must live in the trigger (check 3 of
     rides_block_illegal_transition, unchanged since 000006, re-created verbatim by
@@ -1819,6 +1827,7 @@
     gherkin:
       - docs/spec/features/game/ride_lifecycle.feature::A burned ride accepts no further command
   expert-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge-game-engine.md
   notes: >
     Trigger check 1. The domain copy is the absence of any entry for a terminal state
     in `transitions` (canTransition returns false), so the refusal surfaces as
@@ -1939,6 +1948,7 @@
       - internal/game/internal/adapter/outbound/postgres/ride_repo_test.go::TestRideRepository_DecisionGuardedTx
     gherkin:
       - docs/spec/features/game/settlement.feature::Unlocking a won ride forfeits the bonus it accrued
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge-game-engine.md
   notes: >
     stale-pointer: the rule holds — the CHECK is enforced, mapped by constraint name to
     ErrInvalidTransition (409), and probed by TestRideMoneyStateCoupling — but migration
@@ -1996,6 +2006,7 @@
       - internal/game/internal/core/service/service_test.go::TestService_OnMatchResultRecorded
     gherkin:
       - docs/spec/features/game/settlement.feature::A win accrues the stake times the odds minus one times the streak multiplier
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge-game-engine.md
   notes: >
     One formula, two entry points: BonusDelta is the one match's increment (what the
     ledger's AccrueBonus applies) and CalculateBonus is delta + acc (what the in-memory
@@ -2444,6 +2455,7 @@
       - internal/e2e/players_test.go::TestUpdatePlayerHandler
     gherkin:
       - docs/spec/features/game/players.feature::A registration naming a team the calendar does not carry is refused
+  knowledge-ref: docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md
   notes: >
     Category boundary (the cross-context FKs came out in 000016 so the
     composition moved into the use cases), but authority is the service, not the
@@ -2503,6 +2515,7 @@
       - internal/e2e/players_test.go::TestCreatePlayerDuplicateRegistration
     gherkin:
       - docs/spec/features/game/players.feature::A second registration in the same season is refused as a duplicate
+      - docs/spec/features/game/players.feature::The database refuses a second registration for the same member
   notes: >
     The uniqueness is (season_id, user_id); the mapping in the adapter keys on
     the constraint name, so a rename turns the 409 into a 500 — that is why the
@@ -2565,6 +2578,7 @@
       - internal/game/internal/core/service/service_test.go::TestService_OnMatchResultRecorded
       - internal/game/internal/core/service/service_test.go::TestService_OnRoundCompleted
       - internal/game/internal/core/service/constraints_test.go::TestRideMoneyStateCoupling
+  knowledge-ref: docs/league-tokens-learning-phases/phase-06-ledger-and-accounting.md
   notes: >
     Ordering is a use-case decision (which statement runs first, and that both
     share the command's transaction), so the authority is the service; the money
@@ -2622,6 +2636,7 @@
       - internal/e2e/matches_test.go::TestResolveMatchSettlesRowOnce
     gherkin:
       - docs/spec/features/game/settlement.feature::The same result arriving twice pays the bonus once
+  knowledge-ref: docs/league-tokens-learning-phases/phase-04-concurrency-and-idempotency.md
   notes: >
     Authority is the repository, which deviates from the orchestration default
     (service) on purpose: the use case decides *which* rides are candidates, but
@@ -2940,6 +2955,7 @@
   verification:
     unit:
       - internal/game/internal/core/service/rides_concurrency_test.go::TestSettlementHandlersSerializeOnTheRound
+  knowledge-ref: docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md
   notes: >
     Authority is the repository (the ordering/locking primitive is the
     transactor's, exactly the taxonomy's "ordering/locking/atomicity mechanics →
@@ -3062,6 +3078,7 @@
       - internal/game/internal/core/domain/ride_test.go::TestRide_Lock
     gherkin:
       - docs/spec/features/game/ride_lifecycle.feature::Continuing moves the won ride onto its next match
+  knowledge-ref: docs/league-tokens-learning-phases/phase-02-domain-model-and-state-machines.md
   notes: >
     Trigger check 2 of the same function that carries R-GAME-002 (the state
     graph) and R-GAME-003 (terminal freeze), but a separate rule: the predicate
@@ -3180,6 +3197,7 @@
   verification:
     unit:
       - internal/game/internal/core/service/service_test.go::TestService_OnRoundCompleted
+  knowledge-ref: docs/league-tokens-learning-phases/phase-01-postgresql-persistence.md
   notes: >
     A persistence fact, not a business rule: nothing is refused if the index
     disappears — the sweep just gets slower — which is why the refusal is null
@@ -3284,6 +3302,7 @@
   fixture: null
   verification: {}
   expert-ref: docs/league-tokens-learning-phases/phase-03-transactions-and-atomic-operations.md
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge-game-engine.md
   notes: >
     Specified only. Phase 03 names ResolveMatch's steps twice ("mark match resolved +
     update team base + resolve rides" in §"New concept", repeated in §"First transactional
@@ -3292,8 +3311,8 @@
     update path exists, and the ride's own base_at_lock is a hard-coded stub at the HTTP
     edge (internal/game/internal/adapter/inbound/http/rides.go: "TODO: ledgerToken :=
     app.Ledger.Tokens.GetByTeamID" above a literal Base: 1.95). Only the atomicity is
-    catalogued: the base-price formula is the game-engine spec's, which is not a path in
-    this repo, so no formula is invented here. Open design question left by the docs
+    catalogued: the base-price formula is the game-engine spec's (domain-knowledge-game-engine.md
+    §6.3, the knowledge-ref), so no formula is invented here. Open design question left by the docs
     themselves: phase-05's suggested ownership gives base price to game while, as built,
     teams live in schedule (see the docmap's contradiction candidates).
     Numbered from the phase-doc sweep (was provisional R-GAME-203).
@@ -3316,6 +3335,7 @@
   fixture: null
   verification: {}
   expert-ref: docs/league-tokens-learning-phases/phase-07-background-workers.md
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge-game-engine.md
   notes: >
     Specified only. Phase 07 §"Start with one worker" gives the shape —
     game.ProcessDueAutoBurns(ctx, now) called from a ticker loop — and §"Done when" the
@@ -3409,6 +3429,7 @@
   fixture: null
   verification: {}
   expert-ref: docs/league-tokens-learning-phases/phase-03-transactions-and-atomic-operations.md
+  knowledge-ref: docs/league-tokens-learning-phases/domain-knowledge.md
   notes: >
     Specified only. Phase 03 §"First transactional operations" defines Register as "player
     created + starting currency + season registration" — one business operation, one
@@ -3458,6 +3479,7 @@
       - internal/e2e/players_test.go::TestDeletePlayerHandler
     gherkin:
       - docs/spec/features/game/players.feature::A player still carrying rides is refused as a registration in use
+      - docs/spec/features/game/players.feature::The database refuses to withdraw a registration its rides name
   notes: >
     The reference is the game context's own (rides_player_id_fkey, ON DELETE RESTRICT),
     so the delete itself can never succeed while a ride names the player; the repository
@@ -3650,7 +3672,7 @@
     the internal version counter are never part of a response.
   module: identity
   entity: user
-  category: interface
+  category: boundary
   status: implemented
   authority: handler
   mechanism: null
@@ -3678,6 +3700,10 @@
     TestRegisterUserHandlerSuccessState's leak scan of the 201 body. Coverage gap: no
     test inspects a read path's body for the hash (the register response is the only
     account body the suite asserts) and there is no user-read endpoint to inspect.
+
+    Category note: `boundary`, not `interface` — the rule is about what crosses the transport
+    edge (the hash and the version never leave), and a rule about what is absent has nothing
+    to refuse, which the interface category now requires (policy 14).
 
 - id: R-IDENTITY-005
   title: A token is twenty-six random characters
@@ -3765,15 +3791,17 @@
       role: defense-in-depth
       pinned_by: null
   refusal:
-    code: synthetic
-    constraint: null
-    sentinel: ErrNotFound
-    http: 401
+    code: "23505"
+    constraint: user_tokens_pkey
+    sentinel: null
+    http: null
   fixture: null
   verification:
     unit:
       - internal/identity/internal/repository/user_token_repo_test.go::TestNewAndGetForToken
       - internal/identity/internal/model/user_token_test.go::TestGenerateUserToken
+    gherkin:
+      - docs/spec/features/identity/account.feature::The database refuses the same token a second time
   notes: >
     Database authority because the table's shape is the rule: user_tokens has hash,
     user_id, expiry and scope — there is no column a cleartext token could be stored in,
@@ -3786,8 +3814,11 @@
     they cannot drift silently, because a mismatch makes every token unresolvable and
     TestNewAndGetForToken's "New persists a resolvable token" subtest fails first. The
     e2e fixture mirrors the same discipline: only SHA-256 digests live in seed_test.go and
-    the preimages live in auth_test.go. Refusal: a token whose fingerprint is not in the
-    table is simply "not found" — the authentication edge renders it 401 (and the
+    the preimages live in auth_test.go. Refusal: the constraint's refusal is the 23505 on
+    user_tokens_pkey, and it is unmapped — insert returns the driver error untouched, so a
+    second row for one fingerprint falls through rather than becoming a translated status;
+    the read path is the other surface: a token whose fingerprint is not in the table is
+    simply "not found" — the authentication edge renders its sentinel as 401 (and the
     activation edge renders the same sentinel as a 422 field error).
 
 - id: R-IDENTITY-007
@@ -4154,6 +4185,9 @@
     unit: []
     e2e:
       - internal/e2e/auth_test.go::TestRequirePermissionMiddleware
+    gherkin:
+      - docs/spec/features/identity/access.feature::The database refuses a permission code the seed already carries
+      - docs/spec/features/identity/access.feature::The database refuses the same grant written twice
   notes: >
     Three declarative facts in one rule because they are one shape — the key of a
     permission and the key of a grant: permissions.code UNIQUE, roles_permissions' primary
@@ -4165,11 +4199,14 @@
     the same rule: "there is one row per fact". Refusal is unmapped: nothing in Go translates
     these codes, and the app has no write path to these tables at all (they are seeded by an
     applied migration), so an http status would describe a surface clients cannot reach.
-    Verification gap, recorded knowingly: no test probes these constraints directly. Only
-    the e2e permission gate exercises the reference data, and it would keep passing if
-    roles_permissions' primary key were dropped. A direct-SQL constraints test (attempt a
-    duplicate code and a duplicate grant through the owner pool, assert 23505) closes it —
-    the same deferred gap the catalog records for game's ride CHECKs. Case sensitivity is
+    Verification: both uniqueness halves are proved by sabotage scenarios that attempt the
+    forbidden write through the owner pool and assert the named refusal — a duplicate code is
+    refused by permissions_code_key, a repeated grant by roles_permissions_pkey — so dropping
+    either key fails a scenario instead of only a prose claim. Gap, recorded knowingly: the
+    cross-table half is unproved — no test attempts a grant naming a role or a permission that
+    does not exist, so dropping either foreign key would leave every test green. A third
+    sabotage scenario asserting the 23503 closes it, the same deferred gap the catalog records
+    for game's ride CHECKs. Case sensitivity is
     worth stating: codes are compared exactly, so 'Teams:read' and 'teams:read' would be two
     permissions, and only convention keeps the vocabulary lowercase.
 
@@ -4208,6 +4245,7 @@
       - internal/e2e/rides_test.go::TestRideRoutesPermissionGate
     gherkin:
       - docs/spec/features/identity/access.feature::The standard user may read the calendar and manage her own player
+      - docs/spec/features/identity/access.feature::The administrator may do everything
   notes: >
     Authority deviates from the policy default (domain) because the matrix is data, not a
     computation: the eleven codes, the two roles and the twenty-two grants are rows an
@@ -4216,16 +4254,22 @@
     one method, GetAllForRole). The mechanism is `constraint` in the schema's closest sense:
     what pins the seed is the keys (a duplicated code is a 23505, a duplicated role name is
     a 23505) and the immutability of applied migrations, so the fix for a wrong matrix is a
-    new migration, never an edit. The concrete matrix: admin = seasons, rounds, matches,
-    players, teams (read and write) plus players:write:any; user = seasons:read,
-    rounds:read, matches:read, players:read, players:write, teams:read. The split between
-    the two roles is the actual product policy — a standard user may register and manage
-    their own player but may not touch anyone else's, which is why players:write is granted
-    and players:write:any is not. Verification is indirect and thin: only
-    TestRequirePermissionMiddleware exercises the matrix (it pins that the user role carries
-    teams:read and lacks teams:write), and a new migration re-seeding the roles would keep
-    it green. Coverage gap: no test asserts the code count, the exact grant sets, or that the
-    running service cannot mutate them. The ride surface names no ride-specific code —
+    new migration, never an edit. The duplicate-key refusals are R-IDENTITY-013's rule, not
+    this one's: its sabotage scenario proves permissions_code_key and its grant scenario
+    proves roles_permissions_pkey, while roles_name_key stays unproved. The concrete matrix:
+    admin = seasons, rounds, matches, players, teams (read and write) plus
+    players:write:any; user = seasons:read, rounds:read, matches:read, players:read,
+    players:write, teams:read. The split between the two roles is the actual product policy —
+    a standard user may register and manage their own player but may not touch anyone
+    else's, which is why players:write is granted and players:write:any is not. The matrix
+    itself is proved by two scenarios: "The standard user may read the calendar and manage
+    her own player" pins the exact six-code set and that the role carries no other code, and
+    "The administrator may do everything" pins all eleven, so the split above is executable
+    rather than prose. The e2e permission gate (TestRequirePermissionMiddleware) stays the
+    other half: it pins that the user role carries teams:read and lacks teams:write from the
+    middleware's side. Coverage gap: nothing asserts that the running service cannot mutate
+    the matrix — that rests on there being no repository method that writes it. The ride
+    surface names no ride-specific code —
     the vocabulary stays closed at eleven — and since Phase G (§6 item #10) the six
     /v1/rides routes are gated with players:read (the two reads) and players:write
     (the four commands): the ride surface is the player domain's action surface (a
@@ -4242,7 +4286,7 @@
     resolves to an empty set rather than to an error.
   module: identity
   entity: permission
-  category: persistence-fact
+  category: policy
   status: implemented
   authority: repository
   mechanism: null
@@ -4259,8 +4303,8 @@
     e2e:
       - internal/e2e/auth_test.go::TestRequirePermissionMiddleware
   notes: >
-    Persistence-fact with the default authority (repository), because the rule is a
-    statement about the store's shape: the permission set is the three-table join through
+    Repository authority (deviating from the policy category's domain default), because the
+    rule is a statement about the store's shape: the permission set is the three-table join through
     roles_permissions keyed on the account's role_id, and there is no table in which an
     account could be granted something on its own. The read happens per gated request with
     no caching, which is a deliberate consequence — it is one extra query per gated request
@@ -4270,6 +4314,11 @@
     unit test for GetAllForRole at all — the only coverage is the e2e gate, which needs a
     live database and a seeded matrix. A repository test (a role with no grants → empty
     set and no error; two roles → no cross-contamination) closes it.
+
+    Category note: `policy`, not `persistence-fact` — the decision is authorization resolved
+    correctly on every request (freshness is part of the rule), and it is proved by the e2e
+    gate rather than a unit test, which the persistence-fact category now requires (policy
+    14).
 
 - id: R-IDENTITY-016
   title: An unactivated account is refused at every gated route
@@ -4533,7 +4582,7 @@
     store hands them back with the write, so the service never has to invent one.
   module: identity
   entity: user
-  category: persistence-fact
+  category: invariant
   status: implemented
   authority: database
   mechanism: constraint
@@ -4562,12 +4611,15 @@
       - internal/identity/internal/repository/user_repo_test.go::TestInsert
     e2e:
       - internal/e2e/users_test.go::TestRegisterUserHandler
+    gherkin:
+      - docs/spec/features/identity/account.feature::The database refuses an account that names its own id
+  knowledge-ref: docs/league-tokens-learning-phases/phase-01-postgresql-persistence.md
   notes: >
-    Authority deviates from the persistence-fact default (repository) because the values are
-    the database's, not Go's: id is GENERATED ALWAYS AS IDENTITY (a client-supplied id is not
-    merely ignored, it is refused by the database), created_at is DEFAULT now() at
-    timestamp(0), and version is DEFAULT 1. The repository's part is the read-back — the
-    INSERT ... RETURNING clause is how the stamped values reach the entity — and the DTO's
+    The database owns these values, not Go — the invariant is that no caller can choose them:
+    id is GENERATED ALWAYS AS IDENTITY (a client-supplied id is not merely ignored, it is
+    refused by the database), created_at is DEFAULT now() at timestamp(0), and version is
+    DEFAULT 1. The repository's part is the read-back — the INSERT ... RETURNING clause is how
+    the stamped values reach the entity — and the DTO's
     part is that none of the three has a field, so a body carrying `id` is an unknown key
     (400). Tie: the copies fail loudly in the obvious way: binding a client value to id would
     make 000002 refuse the INSERT, and TestInsert's "returns the persisted user with
@@ -4576,6 +4628,11 @@
     R-IDENTITY-010's compare-and-set: the counter starts at one and every write bumps it.
     Note the timestamp precision is seconds (timestamp(0)) — a fact the catalog should keep
     because it is why two writes in one second are not distinguishable by created_at.
+
+    Category note: recategorized from `persistence-fact` for twin-consistency with
+    R-IDENTITY-006 — the same DB-key shape (a store-stamped fact the key itself refuses to
+    take from a caller) — because the sabotage proof is recorded as the scenario above, which
+    the persistence-fact category forbids.
 
 - id: R-IDENTITY-021
   title: Identity's tables are reachable only through identity's own database role
@@ -4974,6 +5031,7 @@
       - internal/kernel/idempotency/idempotency_test.go::TestValidateIdempotencyToken
     e2e:
       - internal/e2e/rides_test.go::TestCreateRideHandler
+  knowledge-ref: docs/league-tokens-learning-phases/phase-04-concurrency-and-idempotency.md
   notes: >
     The validator is the authority (it produces the field error and the 422); the
     table's CHECK is the path-independent backstop, carrying the same 255-byte bound.
@@ -4996,7 +5054,7 @@
     it a different request, and an oversized body claims no key at all.
   module: kernel
   entity: idempotency_key
-  category: interface
+  category: orchestration
   status: implemented
   authority: handler
   mechanism: null
@@ -5060,6 +5118,13 @@
     with hand-built tokens, so nothing ties the URI half to a test — a change that
     dropped the URI from the hash would replay silently instead of conflicting.
 
+    Category and authority note: `orchestration` with authority `handler`, deviating from the
+    category default (service) — the dedup identity is framed from the raw request bytes
+    (method, URI, body) at the transport edge, and the use case only ever receives the
+    finished token. It refuses nothing itself, so it cannot name the refusal status the
+    `interface` category requires (policy 14); the 409 and 413 it makes possible belong to
+    R-KERNEL-003 and R-KERNEL-013.
+
 - id: R-KERNEL-003
   title: An idempotency key names exactly one logical request
   statement: |
@@ -5112,6 +5177,7 @@
       - docs/spec/features/game/idempotency.feature::The same key on a different command is refused, never replayed
       - docs/spec/features/game/idempotency.feature::Two callers that pick the same key do not collide
       - docs/spec/features/game/idempotency.feature::A claim older than the day it is kept is forgotten
+  knowledge-ref: docs/league-tokens-learning-phases/phase-04-concurrency-and-idempotency.md
   notes: >
     Authority deviates from the category default (policy → domain): the decision is not
     a business policy but a stored-fact comparison — "does this key already name a
@@ -5211,6 +5277,7 @@
     e2e:
       - internal/e2e/rides_test.go::TestCreateRideIdempotentHandler
       - internal/e2e/rides_test.go::TestRideLockIdempotentHandler
+  knowledge-ref: docs/league-tokens-learning-phases/phase-04-concurrency-and-idempotency.md
   notes: >
     Four authoritative sites are the four ride commands (disjoint cases, one per command
     — D4's granularity rule); the settlement handlers use the same shape through
@@ -5886,18 +5953,18 @@
     allowlist, the build version — are not overridable at all.
   module: platform
   entity: configuration
-  category: interface
+  category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/config/config.go::Parse
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
     - site: internal/platform/config/config.go::readEnv
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal: null
@@ -5909,12 +5976,18 @@
     One entry point (ADR-014): the binary reduces to Parse(os.Args[1:]) plus wiring, and
     no other code reads os.Getenv or a flag. The flag set is private to the binary (no
     global CommandLine, ContinueOnError so a bad flag is an error, not an exit) — an
-    unknown flag fails with the flag named. Authority note: `handler` here means the
-    process's intake edge, not a request; the frozen layer enum has no config/startup
-    value.
+    unknown flag fails with the flag named. Authority note: composition-root, not the
+    orchestration default (service) — resolving the configuration is process-level wiring
+    done once at assembly (Parse is called from cmd/api/main.go), before any request exists
+    and with no use case to own it.
     No refusal of its own: reading a setting cannot fail — a bad or missing value is
     R-PLATFORM-002/003's startup refusal, and this rule only fixes where a value comes
     from.
+
+    Category note: `orchestration`, not `interface` — the rule orders the process's own intake
+    (environment parsed before flags, defaults last), so it has no refusal status to name
+    (policy 14); nothing on its sites sees a request, which is also why the layer is
+    composition-root and not handler.
 
 - id: R-PLATFORM-002
   title: Startup refuses a configuration it cannot honour, and names the setting
@@ -5926,18 +5999,18 @@
     instead of one at a time, and nothing degrades into a silent default.
   module: platform
   entity: configuration
-  category: interface
+  category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/config/config.go::Parse
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
     - site: internal/platform/config/config.go::readEnv
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal:
@@ -5965,6 +6038,12 @@
     validated here at all: R-PLATFORM-006 owns them, at construction and (since item 16)
     in config's own validate.
 
+    Category note: `orchestration`, not `interface` — a startup refusal stops the process
+    before it serves anything, so it has no HTTP status to name (policy 14); the refusal
+    recorded here is the process's exit. Authority note: composition-root, not the
+    orchestration default (service) — the refusal is decided where the process is assembled
+    (Parse, called from cmd/api/main.go), before any use case exists.
+
 - id: R-PLATFORM-003
   title: Every setting has a bound, and the bound holds when the feature is off
   statement: |
@@ -5977,18 +6056,18 @@
     only correct while something else is off fails unpredictably when it is switched on.
   module: platform
   entity: configuration
-  category: interface
+  category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/config/config.go::validate
-      layer: validator
+      layer: composition-root
       role: authoritative
       pinned_by: null
     - site: internal/platform/config/config.go::parseLogLevel
-      layer: validator
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal:
@@ -6019,6 +6098,12 @@
     that names a *database* the context's role cannot see is not detectable here; that
     failure is deferred to the pool ping at boot.
 
+    Category note: `orchestration`, not `interface` — the bounds are judged at startup, before
+    a request exists, and a violation is a boot failure rather than an HTTP refusal (policy
+    14). Authority note: composition-root, not the orchestration default (service) — validate
+    and parseLogLevel are called by Parse while the process is assembled, so the decision
+    belongs to the wiring, not to any request's use case.
+
 - id: R-PLATFORM-004
   title: A log level is an enumerated name, never a silent fallback
   statement: |
@@ -6028,18 +6113,18 @@
     flood or silence a deployment whose level was mistyped.
   module: platform
   entity: configuration
-  category: interface
+  category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/config/config.go::parseLogLevel
-      layer: validator
+      layer: composition-root
       role: authoritative
       pinned_by: null
     - site: internal/platform/config/config.go::readEnv
-      layer: validator
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal:
@@ -6058,6 +6143,11 @@
     only be the flag's. The parser itself is the standard library's — numeric offsets
     such as INFO+2 are therefore accepted even though the message advertises four names.
 
+    Category note: `orchestration`, not `interface` — an unknown level is a startup refusal,
+    not a framed request (policy 14); no HTTP status is written. Authority note:
+    composition-root, not the orchestration default (service) — the level is parsed once,
+    while Parse assembles the configuration, so no use case is in the loop.
+
 - id: R-PLATFORM-005
   title: The cross-origin allowlist holds bare origins, never a wildcard
   statement: |
@@ -6068,14 +6158,14 @@
     and an empty list means cross-origin access is simply off.
   module: platform
   entity: cors_origin
-  category: interface
+  category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/config/config.go::parseCORSOrigins
-      layer: validator
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal:
@@ -6099,6 +6189,11 @@
     e2e CORS suite pins exact matching from the other end. Empty (or whitespace/comma
     only) yields nil, which the middleware reads as "no origin is allowed".
 
+    Category note: `orchestration`, not `interface` — the allowlist is normalized and refused
+    at startup, so there is no request to frame and no HTTP refusal to name (policy 14).
+    Authority note: composition-root, not the orchestration default (service) — config.Parse
+    is its only caller and runs while the process is assembled, before any use case exists.
+
 # ─────────────────────────────────────────────────────────────────────────────
 # platform — mailer, logging, server lifecycle
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6112,14 +6207,14 @@
     retried as if it were a network problem.
   module: platform
   entity: email_delivery
-  category: interface
+  category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/mailer/mailer.go::New
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal:
@@ -6144,6 +6239,12 @@
     item 16 of the misalignment report, gap closed: SMTP_PORT is bounded and SMTP_SENDER
     must parse as an RFC 5322 mailbox), and an empty one is refused twice (here and
     there) with this rule's sentinel being the mailer's own.
+
+    Category note: `orchestration`, not `interface` — incompleteness is refused at
+    construction, before the process serves, so the rule has no HTTP refusal to name (policy
+    14). Authority note: composition-root, not the orchestration default (service) — the
+    mailer is built by the composition root before it dials a database, so the decision
+    belongs to assembly and no use case participates.
 
 - id: R-PLATFORM-007
   title: A failed delivery is retried a bounded number of times, then reported
@@ -6195,22 +6296,22 @@
     development only, so production records carry no path bulk.
   module: platform
   entity: log_stream
-  category: interface
+  category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/logging/logging.go::New
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
     - site: internal/platform/logging/logging.go::newLogger
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
     - site: internal/platform/logging/logging.go::Pgx
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal: null
@@ -6232,6 +6333,11 @@
     No refusal: a log stream has nothing to refuse — the failures it records are other
     rules' refusals.
 
+    Category note: `orchestration`, not `interface` — one stream for the whole process is
+    startup wiring, not request framing, and it refuses nothing (policy 14). Authority note:
+    composition-root, not the orchestration default (service) — New and Pgx are called where
+    the process is wired, and no use case chooses the stream or its format.
+
 - id: R-PLATFORM-009
   title: Every connection is bounded in time
   statement: |
@@ -6241,14 +6347,14 @@
     indefinitely.
   module: platform
   entity: http_server
-  category: interface
+  category: orchestration
   status: implemented
-  authority: handler
+  authority: composition-root
   mechanism: null
   scope: null
   enforcement:
     - site: internal/platform/server/server.go::Server.Serve
-      layer: handler
+      layer: composition-root
       role: authoritative
       pinned_by: null
   refusal: null
@@ -6265,6 +6371,13 @@
     at their bound, so a removed or lengthened timeout fails a test. Refusal surface
     is null on purpose: exceeding a write deadline truncates the response and closes the
     connection; there is no named refusal.
+
+    Category note: `orchestration`, not `interface` — the bounds are set once where the server
+    is built and enforced by closing a connection instead of writing a named refusal, so the
+    interface category's status requirement cannot hold (policy 14). Authority note:
+    composition-root, not the orchestration default (service) — Serve is the assembly point
+    that builds the http.Server with the consts.go bounds (tests reach the same mechanism
+    through serveWithOptions), so no request and no use case decides them.
 
 - id: R-PLATFORM-010
   title: Shutdown is bounded and never hangs
@@ -6305,6 +6418,7 @@
       - internal/platform/server/shutdown_test.go::TestDrainTimeoutForceCloses
       - internal/platform/server/shutdown_test.go::TestSecondSignalForceClosesDuringDrain
       - internal/platform/server/shutdown_test.go::TestBackgroundTaskBudgetBoundsWait
+  knowledge-ref: docs/league-tokens-learning-phases/phase-07-background-workers.md
   notes: >
     Budgets: ten seconds to drain, five for background work — deliberately nested so the
     worst case stays inside a typical orchestrator kill window. The budgets are options
@@ -6346,6 +6460,7 @@
   verification:
     unit:
       - internal/platform/server/server_test.go::TestBackgroundPanicIsContainedAndRecorded
+  knowledge-ref: docs/league-tokens-learning-phases/phase-07-background-workers.md
   notes: >
     Authority deviates from the category default (policy → domain): the decision is a
     lifecycle mechanic owned by the process host, with no domain participant. The
@@ -6397,6 +6512,7 @@
       - internal/testdb/boundary_test.go::TestGameAppBoundary
       - internal/testdb/boundary_test.go::TestScheduleAppBoundary
       - internal/testdb/boundary_test.go::TestIdentityAppBoundary
+  knowledge-ref: docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md
   notes: >
     Authority is the composition root (ADR-028): only it decides which pool a context
     receives, and the pools are the boundary's runtime half — the migrations are the
@@ -6584,6 +6700,7 @@
   verification:
     unit:
       - internal/testdb/context_roles_test.go::TestContextPoolsRunAsContextRole
+  knowledge-ref: docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md
   notes: >
     Authority deviates from the category default (boundary → composition-root): the
     database half of the boundary is R-PLATFORM-012's, while this is a connection

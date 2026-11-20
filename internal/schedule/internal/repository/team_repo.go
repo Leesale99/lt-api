@@ -128,6 +128,7 @@ func (r *TeamRepository) Insert(ctx context.Context, team model.Team) (model.Tea
 	return team, err
 }
 
+// rule:R-SCHEDULE-028
 func (r *TeamRepository) Update(ctx context.Context, team model.Team) (model.Team, error) {
 	query := `
 		UPDATE teams
@@ -156,6 +157,7 @@ func (r *TeamRepository) Update(ctx context.Context, team model.Team) (model.Tea
 	return team, err
 }
 
+// rule:R-SCHEDULE-025
 func (r *TeamRepository) Delete(ctx context.Context, id int) error {
 	if id < 1 {
 		return model.ErrRecordNotFound

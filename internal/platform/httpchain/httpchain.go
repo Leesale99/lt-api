@@ -27,6 +27,7 @@ import (
 // a panic answered, a preflight never spends a throttle token and never needs
 // a credential, and a caller is throttled before any work is done on its
 // behalf (R-PLATFORM-014).
+// rule:R-PLATFORM-014
 func Build(chain *httpx.Middleware, router http.Handler) http.Handler {
 	return chain.RecoverPanic(chain.EnableCORS(chain.RateLimit(chain.Authenticate(router))))
 }

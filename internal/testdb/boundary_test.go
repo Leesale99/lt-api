@@ -11,13 +11,18 @@ package testdb
 //   - identity_app can read identity.* but is denied the other two.
 //
 // The suite owns its own throwaway database (the same harness contract as
-// every consumer): LT_API_TEST_DSN unset → skip; set but unusable → hard
-// failure. The DSN role needs LOGIN + CREATEDB + CREATEROLE (migration
-// 000018 creates the context roles and needs to ALTER them).
+// every consumer): no LT_API_TEST_DSN fails the suite unless AUDIT_SKIP_DB=1
+// opts out explicitly, and a set-but-unusable DSN is a hard failure. The DSN
+// role needs LOGIN + CREATEDB + CREATEROLE (migration 000018 creates the
+// context roles and needs to ALTER them).
+//
+// This TestMain serves the whole package, so the policy tests in skip_test.go
+// run in every mode — the skip mode is where they matter.
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 
@@ -27,8 +32,18 @@ import (
 var boundaryDB *DB
 
 func TestMain(m *testing.M) {
-	dsn := os.Getenv("LT_API_TEST_DSN")
-	if dsn == "" {
+	dsn := os.Getenv(DSNEnv)
+	switch decision := DecideSkip(dsn, os.Getenv(SkipOptOutEnv)); decision.Action {
+	case ActionFail:
+		// Not a skip: the boundary probes did not run, so the exit status says
+		// so. The message carries the way out.
+		fmt.Fprintln(os.Stderr, decision.Message)
+		os.Exit(1)
+	case ActionSkip:
+		// Announced, not merely printed: `go test ./...` discards a green
+		// package's output, and an unseen skip is the silent skip this policy
+		// exists to prevent.
+		Announce(decision.Message)
 		os.Exit(m.Run())
 	}
 
@@ -103,10 +118,19 @@ func allowed(t *testing.T, pool interface {
 	}
 }
 
-func TestGameAppBoundary(t *testing.T) {
+// requireDB skips a test under the explicit AUDIT_SKIP_DB=1 opt-out (TestMain
+// leaves boundaryDB nil there); otherwise TestMain has already failed or built
+// it.
+func requireDB(t *testing.T) {
+	t.Helper()
 	if boundaryDB == nil {
-		t.Skip("LT_API_TEST_DSN not set; boundary test skipped")
+		t.Skip("database skipped: AUDIT_SKIP_DB=1 opted out")
 	}
+}
+
+func TestGameAppBoundary(t *testing.T) {
+	requireDB(t)
+
 	game := boundaryDB.Game
 
 	// Own context: read and write both work (the 32-byte request_hash is
@@ -136,9 +160,7 @@ func TestGameAppBoundary(t *testing.T) {
 }
 
 func TestScheduleAppBoundary(t *testing.T) {
-	if boundaryDB == nil {
-		t.Skip("LT_API_TEST_DSN not set; boundary test skipped")
-	}
+	requireDB(t)
 	sched := boundaryDB.Schedule
 
 	allowed(t, sched, `SELECT * FROM seasons`)
@@ -155,9 +177,7 @@ func TestScheduleAppBoundary(t *testing.T) {
 }
 
 func TestIdentityAppBoundary(t *testing.T) {
-	if boundaryDB == nil {
-		t.Skip("LT_API_TEST_DSN not set; boundary test skipped")
-	}
+	requireDB(t)
 	idp := boundaryDB.Identity
 
 	allowed(t, idp, `SELECT * FROM users`)
@@ -174,9 +194,7 @@ func TestIdentityAppBoundary(t *testing.T) {
 // its own tables (the INSERT probe above shares the statement for
 // readability; the real assertion lives here).
 func TestIdentityAppInsertAllowed(t *testing.T) {
-	if boundaryDB == nil {
-		t.Skip("LT_API_TEST_DSN not set; boundary test skipped")
-	}
+	requireDB(t)
 
 	// role_id has no default: pick the seeded 'user' role, then clean up.
 	allowed(t, boundaryDB.Identity, `

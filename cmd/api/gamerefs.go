@@ -18,6 +18,7 @@ import (
 )
 
 // gameRefs satisfies schedule's service.GameUsage over the game module facade.
+// rule:R-SCHEDULE-026
 type gameRefs struct{ game *game.Module }
 
 func (g gameRefs) PlayersExistForTeam(ctx context.Context, teamID int) (bool, error) {
@@ -38,6 +39,7 @@ func (g gameRefs) RidesExistForMatch(ctx context.Context, matchID int) (bool, er
 // together. A ride still referencing one of the players is game's
 // record-in-use refusal; the calendar's policy and handler only know their
 // own sentinel, so the translation happens here.
+// rule:R-PLATFORM-013
 func (g gameRefs) DeletePlayersForSeasonTx(ctx context.Context, tx pgx.Tx, seasonID int) error {
 	err := g.game.DeletePlayersForSeasonTx(ctx, tx, seasonID)
 	if errors.Is(err, game.ErrRecordInUse) {

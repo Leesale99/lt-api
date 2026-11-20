@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -17,6 +18,16 @@ const (
 	statusDrifted       = "drifted"
 
 	stalePointerPrefix = "stale-pointer:"
+
+	// policyCategory binds a rule's category to the verification and refusal
+	// surface it must carry; policyKnowledgeRef keeps the knowledge-base
+	// pointer honest.
+	policyCategory     = "14-category"
+	policyKnowledgeRef = "16-knowledge-ref"
+
+	// knowledgeRefRoot is the only tree a knowledge-ref may point into: the
+	// expert documents that are the source of truth for what to build.
+	knowledgeRefRoot = "docs/league-tokens-learning-phases"
 )
 
 // policy is one numbered invariant from docs/spec/rules.schema.md §3. The
@@ -39,6 +50,10 @@ var policies = []policy{
 	{"10-gherkin", "verification.gherkin resolves to a real scenario"},
 	{"11-fixture", "pinned_by names a declared fixture"},
 	{"12-features", "feature files parse; every scenario names exactly one known rule"},
+	{policyVocabulary, "step text: denylisted transport tokens, SQL adjacency, and the seeded glossary"},
+	{policyCategory, "category ⇒ verification and refusal binding"},
+	{policyAnnotations, "Go enforcement sites carry //rule: annotations, and every annotation resolves"},
+	{policyKnowledgeRef, "knowledge-ref is a real path under the learning phases"},
 	{"refusal", "refusal code sanity"},
 }
 
@@ -126,7 +141,10 @@ type Finding struct {
 type checker struct {
 	root     string
 	fixtures map[string]bool
-	findings []Finding
+	// realObjects is policy 13's §8 reality set (see vocabulary.go). It is built
+	// once by collectVocabulary and left nil for every other policy.
+	realObjects *realObjectNames
+	findings    []Finding
 }
 
 func (c *checker) add(policyID, ruleID string, sev severity, format string, args ...any) {
@@ -173,6 +191,8 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	findings := collectFindings(catalog, root)
 	gherkinFindings, index := collectGherkin(catalog, root)
 	findings = append(findings, gherkinFindings...)
+	findings = append(findings, collectVocabulary(root)...)
+	findings = append(findings, collectAnnotationsAgainst(catalog, root, *rulesPath)...)
 	sortFindings(findings)
 	printFindings(stdout, *rulesPath, catalog, findings, index)
 
@@ -204,6 +224,8 @@ func collectFindings(catalog Catalog, root string) []Finding {
 		c.checkCopyPolicy(rule)
 		c.checkAuthorityDefault(rule)
 		c.checkSiteReferences(rule)
+		c.checkCategory(rule)
+		c.checkKnowledgeRef(rule)
 		c.checkFixtureRefs(rule)
 		c.checkRefusal(rule)
 	}
@@ -436,6 +458,77 @@ func (c *checker) checkSiteReferences(rule Rule) {
 	}
 }
 
+// policy 14: the category fixes what a rule's proof and refusal surface must
+// look like. A rule classified `interface` frames a request, so it names the
+// status its refusal writes; `refusal-mapping` and `persistence-fact` rules are
+// proved by Go tests, never by a business-facing scenario; `invariant` and
+// `policy` rules are business-visible, so a missing scenario is a WARN (report
+// it, never fail --strict on it). `orchestration` and `boundary` are
+// unconstrained. specified-only rules are exempt: nothing exists to bind yet.
+func (c *checker) checkCategory(rule Rule) {
+	if rule.Status != statusImplemented {
+		return
+	}
+	hasGherkin := len(rule.Verification.Gherkin) > 0
+	forbidGherkin := func() {
+		if hasGherkin {
+			c.errorf(policyCategory, rule.ID,
+				"%s rule carries a gherkin pointer; its proof is a Go test, not a business-facing scenario",
+				rule.Category)
+		}
+	}
+
+	switch rule.Category {
+	case "interface":
+		if rule.Refusal == nil {
+			c.errorf(policyCategory, rule.ID,
+				"interface rule has no refusal; an interface rule names the status the framed-away request is refused with")
+		} else if rule.Refusal.HTTP == nil {
+			c.errorf(policyCategory, rule.ID,
+				"interface rule's refusal has no http status; an interface rule names the status the framed-away request is refused with")
+		}
+		forbidGherkin()
+	case "refusal-mapping":
+		forbidGherkin()
+	case "persistence-fact":
+		forbidGherkin()
+		if len(rule.Verification.Unit) == 0 {
+			c.errorf(policyCategory, rule.ID,
+				"persistence-fact rule has no unit verification pointer; a store-stamped fact is proved by a Go test")
+		}
+	case "invariant", "policy":
+		if !hasGherkin {
+			c.warnf(policyCategory, rule.ID,
+				"%s rule has no gherkin pointer; a business-visible rule wants an executable scenario",
+				rule.Category)
+		}
+	}
+}
+
+// policy 16: a knowledge-ref is additional to expert-ref, and must resolve to a
+// real note under the learning-phases tree. 17 rules carry one; the backfill
+// lands through the catalog, not through prose.
+func (c *checker) checkKnowledgeRef(rule Rule) {
+	if rule.KnowledgeRef == nil || strings.TrimSpace(*rule.KnowledgeRef) == "" {
+		return
+	}
+	raw := strings.TrimSpace(*rule.KnowledgeRef)
+	if path.IsAbs(raw) {
+		c.errorf(policyKnowledgeRef, rule.ID,
+			"knowledge-ref %q is absolute; it is a path relative to the repository root", raw)
+		return
+	}
+	ref := path.Clean(filepath.ToSlash(raw))
+	if ref != knowledgeRefRoot && !strings.HasPrefix(ref, knowledgeRefRoot+"/") {
+		c.errorf(policyKnowledgeRef, rule.ID,
+			"knowledge-ref %q is not under %s/ (the learning-phase documents are the only knowledge base)", raw, knowledgeRefRoot)
+		return
+	}
+	if !c.fileExists(ref) {
+		c.errorf(policyKnowledgeRef, rule.ID, "knowledge-ref %q does not exist", raw)
+	}
+}
+
 // policy 11: every pinned_by names a fixture some rule declares.
 func (c *checker) checkFixtureRefs(rule Rule) {
 	for _, site := range rule.Enforcement {
@@ -454,6 +547,13 @@ func (c *checker) checkFixtureRefs(rule Rule) {
 func (c *checker) checkRefusal(rule Rule) {
 	if rule.Refusal == nil {
 		return
+	}
+	// A handler writes a real HTTP status: 100–599. The range is checked
+	// independently of the code, because `synthetic` refusals (Go-only, no
+	// SQLSTATE) still name the status the caller sees.
+	if http := rule.Refusal.HTTP; http != nil && (*http < 100 || *http > 599) {
+		c.errorf("refusal", rule.ID,
+			"refusal http %d is outside the HTTP status range 100–599", *http)
 	}
 	code := rule.Refusal.Code
 	if code == "" {
@@ -521,10 +621,15 @@ func testSymbolExists(src, symbol string) bool {
 // top-level func (`func Name(`), a method (`func (r *T) Name(` — the catalog
 // writes these as `T.Name`), a type, and const/var declarations. Symbols are
 // identifiers, never line numbers.
+//
+// A `Type.Name` symbol is receiver-aware: the declaration it matches must name
+// that receiver type, so `Widget.Run` does not match `func (g *Gadget) Run(`.
+// A bare name stays receiver-agnostic (a method this file declares, on whatever
+// receiver).
 func symbolExists(src, symbol string) bool {
-	name := symbol
+	name, receiver := symbol, ""
 	if i := strings.LastIndex(symbol, "."); i >= 0 {
-		name = symbol[i+1:]
+		name, receiver = symbol[i+1:], symbol[:i]
 	}
 	if name == "" {
 		return false
@@ -532,9 +637,15 @@ func symbolExists(src, symbol string) bool {
 	if strings.Contains(src, "func "+symbol+"(") || strings.Contains(src, "func "+symbol+"[") {
 		return true
 	}
+	if receiver == "" {
+		if methodNamePattern(name).MatchString(src) {
+			return true
+		}
+	} else if methodOnReceiverDeclared(src, receiver, name) {
+		return true
+	}
 	quoted := regexp.QuoteMeta(name)
 	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`func\s*\([^)]*\)\s*` + quoted + `\s*[\[(]`),
 		regexp.MustCompile(`(?m)^\s*type\s+` + quoted + `\b`),
 		regexp.MustCompile(`(?m)^\s*(?:const|var)\s+` + quoted + `\b`),
 		regexp.MustCompile(`(?m)^\s*` + quoted + `\s*=`),
@@ -545,6 +656,51 @@ func symbolExists(src, symbol string) bool {
 		}
 	}
 	return false
+}
+
+// methodNamePattern matches any method declaration with this name, whatever its
+// receiver (`func (r *T) Name(`, `func (T) Name[`). Submatch 1 is the receiver
+// list.
+func methodNamePattern(name string) *regexp.Regexp {
+	return regexp.MustCompile(`func\s*\(\s*([^)]*)\)\s*` + regexp.QuoteMeta(name) + `\s*[\[(]`)
+}
+
+// methodOnReceiverDeclared reports whether src declares a method `name` whose
+// receiver type is `receiver`. Every method declaration with that name is
+// inspected, so a same-named method on another type never satisfies the site.
+func methodOnReceiverDeclared(src, receiver, name string) bool {
+	want := bareTypeName(receiver)
+	if want == "" {
+		return false
+	}
+	for _, match := range methodNamePattern(name).FindAllStringSubmatch(src, -1) {
+		if receiverTypeName(match[1]) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// receiverTypeName returns the type name a receiver list declares: `g *Gadget`
+// → Gadget, `Widget` → Widget, `r *pkg.Repo[T]` → Repo.
+func receiverTypeName(recv string) string {
+	fields := strings.Fields(strings.TrimSpace(recv))
+	if len(fields) == 0 {
+		return ""
+	}
+	return bareTypeName(fields[len(fields)-1])
+}
+
+// bareTypeName reduces a type reference to its name: `*pkg.Repo[T]` → Repo.
+func bareTypeName(ref string) string {
+	ref = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ref), "*"))
+	if i := strings.IndexAny(ref, "[ ("); i >= 0 {
+		ref = ref[:i]
+	}
+	if i := strings.LastIndex(ref, "."); i >= 0 {
+		ref = ref[i+1:]
+	}
+	return ref
 }
 
 func sortFindings(findings []Finding) {

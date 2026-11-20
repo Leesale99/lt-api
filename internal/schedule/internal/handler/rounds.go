@@ -13,6 +13,7 @@ import (
 	"lt-api.aleksrdvn.com/internal/schedule/internal/model"
 )
 
+// rule:R-SCHEDULE-001
 func (h *Handler) createRound(w http.ResponseWriter, r *http.Request) {
 	var input createRoundRequest
 
@@ -136,6 +137,7 @@ func (h *Handler) listRounds(w http.ResponseWriter, r *http.Request) {
 // the decoded patch, the validators) and hands the lifecycle transition to
 // the service: created → open and open → closed carry transactions and an
 // event, plain edits are writes (service.RoundService.UpdateRound).
+// rule:R-SCHEDULE-028
 func (h *Handler) updateRound(w http.ResponseWriter, r *http.Request) {
 	seasonID, err := httpx.ReadIDParam(r)
 	if err != nil {

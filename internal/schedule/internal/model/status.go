@@ -27,6 +27,7 @@ import (
 // cannot be compared against matchStatusRank. Unknown statuses are skipped
 // here: the vocabulary check on the new record already rejects them, and the
 // stored status is trusted.
+// rule:R-SCHEDULE-003
 func checkStatusRegression[S ~string](v *validator.Validator, entity string, oldStatus, newStatus S, rank map[S]int) {
 	if statusRegresses(oldStatus, newStatus, rank) {
 		v.AddError("status", fmt.Sprintf("cannot move to an earlier stage of the %s lifecycle", entity))

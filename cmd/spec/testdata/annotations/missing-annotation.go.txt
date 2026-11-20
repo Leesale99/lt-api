@@ -1,0 +1,4 @@
+package thing
+
+// Do does the thing. It enforces a rule the tree forgot to name.
+func Do() {}

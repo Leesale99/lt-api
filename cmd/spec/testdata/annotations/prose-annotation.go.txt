@@ -1,0 +1,9 @@
+package thing
+
+// Do does the thing. This doc comment mentions //rule:R-KERNEL-001 in prose,
+// which is not an annotation: an annotation line starts with the prefix.
+func Do() {}
+
+// The refusals are catalogued under //rule:R-KERNEL-001 elsewhere; this string
+// must not register as an annotation either.
+var message = "enforcement site carries no //rule:R-KERNEL-001 annotation"

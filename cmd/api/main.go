@@ -37,6 +37,8 @@ const (
 	roleIdentity = "identity_app"
 )
 
+// rule:R-PLATFORM-011
+// rule:R-PLATFORM-013
 func main() {
 	// Bootstrap logger: plain JSON at info. It exists only to report failures
 	// that happen before configuration is readable — its level and env-based
@@ -196,6 +198,7 @@ type contextPools struct {
 // ALTER ROLE settings apply only at session start, not on SET ROLE, so
 // the hook carries both), and that pairing is what lets every store keep
 // unqualified SQL.
+// rule:R-PLATFORM-015
 func openPools(cfg config.Config, logger *slog.Logger) (contextPools, error) {
 	var pools contextPools
 
@@ -266,6 +269,7 @@ func openPools(cfg config.Config, logger *slog.Logger) (contextPools, error) {
 // it (see openPools). The tracer and pool limits are set on the parsed
 // config BEFORE NewWithConfig, and the pool connects lazily, so a
 // post-New mutation would be a race against the first acquire.
+// rule:R-PLATFORM-015
 func openContextPool(dsn, role, searchPath string, cfg config.Config, logger *slog.Logger) (*pgxpool.Pool, error) {
 	poolCfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {

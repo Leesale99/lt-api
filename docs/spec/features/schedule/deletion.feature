@@ -57,8 +57,9 @@ Feature: Removing calendar records
       Then the write is refused by seasons_delete_gate
       And the refusal names season_lifecycle_blocks_delete
 
-  # A cascade cannot fail, so a direct writer is refused by nothing; the rule's
-  # face is the children that are gone.
+  # A cascade cannot fail, so a writer that skips the use case is refused by
+  # nothing: the rule's face is the children that are gone once the parent's
+  # delete lands, whether the organiser or a raw delete asked for it.
   @rule:R-SCHEDULE-024
   Rule: Deleting a season or a round takes its fixtures with it
 
@@ -76,6 +77,12 @@ Feature: Removing calendar records
       And round 1 is no longer on the calendar
       And match day 2 is no longer on the calendar
 
+    Scenario: A direct delete of the season takes its fixtures with it
+      Given round 1 holds match day 1: "Team A" against "Team B"
+      When the Owner pool tries to delete the season
+      Then the write is allowed
+      And match day 1 is no longer on the calendar
+
   # A team's references sit on both sides of the context boundary: the fixtures
   # that name it are the calendar's own, while the players who favour it and the
   # rides on it are the game's, asked through the delete policy. The rule is one
@@ -92,6 +99,14 @@ Feature: Removing calendar records
     Scenario: A team nothing refers to can be deleted
       When the organiser deletes the team "Team C"
       Then the team "Team C" is no longer on the calendar
+
+    # The fixtures' own reference is the one that survives every writer: the
+    # foreign key's RESTRICT refuses the delete whoever issues it, while the
+    # use case above only shapes the answer the organiser reads.
+    Scenario: The database refuses to delete a team a fixture names
+      Given round 1 holds match day 1: "Team A" against "Team B"
+      When the Owner pool tries to delete the team "Team A"
+      Then the write is refused by matches_home_team_id_fkey
 
   # The references this rule asks about belong to the game context and are
   # answered through a port the calendar declares; the cross-context foreign

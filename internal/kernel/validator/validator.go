@@ -22,12 +22,14 @@ func (v *Validator) Valid() bool {
 	return len(v.Errors) == 0
 }
 
+// rule:R-KERNEL-006
 func (v *Validator) AddError(key, message string) {
 	if _, exists := v.Errors[key]; !exists {
 		v.Errors[key] = message
 	}
 }
 
+// rule:R-KERNEL-006
 func (v *Validator) Check(ok bool, key, message string) {
 	if !ok {
 		v.AddError(key, message)

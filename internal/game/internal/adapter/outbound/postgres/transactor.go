@@ -47,6 +47,7 @@ const (
 )
 
 // LockSettlementRound takes the per-round advisory lock inside tx.
+// rule:R-GAME-023
 func (t Transactor) LockSettlementRound(ctx context.Context, tx pgx.Tx, roundID int) error {
 	_, err := tx.Exec(ctx, settlementLockSQL, settlementLockClass, roundID)
 	return err

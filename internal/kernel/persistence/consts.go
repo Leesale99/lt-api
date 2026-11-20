@@ -13,4 +13,5 @@ import "time"
 // machine and turn a healthy INSERT into a spurious "context deadline
 // exceeded". Callers therefore time only the DB section, never the crypto in
 // between.
+// rule:R-KERNEL-005
 const DBTimeout = 3 * time.Second

@@ -17,6 +17,7 @@ func NewPermissionRepository(pool *pgxpool.Pool) *PermissionRepository {
 	return &PermissionRepository{pool: pool}
 }
 
+// rule:R-IDENTITY-015
 func (r *PermissionRepository) GetAllForRole(ctx context.Context, roleID int) (model.Permissions, error) {
 	query := `
 		SELECT permissions.code

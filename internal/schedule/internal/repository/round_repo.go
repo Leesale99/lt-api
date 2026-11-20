@@ -52,6 +52,7 @@ func (r *RoundRepository) Get(ctx context.Context, id int) (model.Round, error) 
 	return round, nil
 }
 
+// rule:R-SCHEDULE-014
 func (r *RoundRepository) Insert(ctx context.Context, round model.Round) (model.Round, error) {
 	query := `
 		INSERT INTO rounds (season_id, number, status)
@@ -84,6 +85,8 @@ const roundUpdateSQL = `
 
 // updateRound executes the shared round-update statement on q and maps
 // store-level errors to sentinels.
+// rule:R-SCHEDULE-014
+// rule:R-SCHEDULE-028
 func (r *RoundRepository) updateRound(ctx context.Context, q persistence.Querier, round model.Round) (model.Round, error) {
 	err := q.QueryRow(ctx, roundUpdateSQL, round.Number, round.Status, round.ID, round.Version).Scan(&round.Version)
 	if err != nil {
@@ -103,6 +106,7 @@ func (r *RoundRepository) updateRound(ctx context.Context, q persistence.Querier
 	return round, nil
 }
 
+// rule:R-SCHEDULE-012
 func (r *RoundRepository) Update(ctx context.Context, round model.Round) (model.Round, error) {
 	// season_id is deliberately absent from the SET clause: it is immutable
 	// after creation. matches carries a composite FK (season_id, round_id) →
@@ -126,6 +130,7 @@ const seasonOpenToInProgressSQL = `
 // (no worker, no stale state). Callers must have verified the transition is
 // created → open; the version check inside updateRound still guards against
 // a concurrent change between that check and this write.
+// rule:R-SCHEDULE-017
 func (r *RoundRepository) Open(ctx context.Context, round model.Round) (model.Round, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -185,6 +190,7 @@ const seasonInProgressToClosedSQL = `
 // season. Callers must have verified the transition is open → closed; the
 // version check inside updateRound still guards against a concurrent
 // change.
+// rule:R-SCHEDULE-018
 func (r *RoundRepository) Close(ctx context.Context, round model.Round) (model.Round, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {

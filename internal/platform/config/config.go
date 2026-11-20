@@ -74,6 +74,8 @@ type Config struct {
 // Parse assembles the configuration from env and args and validates it.
 // It is the only entry point: callers never touch flag or env for server
 // config, and a returned error is always safe to log verbatim.
+// rule:R-PLATFORM-001
+// rule:R-PLATFORM-002
 func Parse(args []string) (Config, error) {
 	version := buildVersion()
 	env, err := readEnv()
@@ -182,6 +184,9 @@ type envDefaults struct {
 	corsRaw           string
 }
 
+// rule:R-PLATFORM-001
+// rule:R-PLATFORM-002
+// rule:R-PLATFORM-004
 func readEnv() (envDefaults, error) {
 	var e envDefaults
 
@@ -240,6 +245,8 @@ func readEnv() (envDefaults, error) {
 // "-log-level" from args): env values are validated in readEnv before flags
 // ever parse, so a failure here can only originate from the flag, and the
 // name is still reported — the contract is a message naming the variable.
+// rule:R-PLATFORM-003
+// rule:R-PLATFORM-004
 func parseLogLevel(raw, source string) (slog.Level, error) {
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(raw)); err != nil {
@@ -340,6 +347,7 @@ func parseTrustedProxies(raw string) ([]netip.Prefix, error) {
 // string comparison in the CORS middleware cannot miss on formatting.
 // A wildcard is rejected here, not "allow all" later: an allowlist that
 // silently degrades into allow-all is worse than a boot failure.
+// rule:R-PLATFORM-005
 func parseCORSOrigins(raw string) ([]string, error) {
 	seen := make(map[string]struct{})
 	var origins []string
@@ -388,6 +396,7 @@ func knob(env, flag string) string {
 // validate enforces semantic rules that type parsing cannot express. Every
 // message names the offending setting by both spellings — the contract that
 // makes boot failures actionable in a deployment log.
+// rule:R-PLATFORM-003
 func validate(cfg Config) error {
 	if cfg.Port < 1 || cfg.Port > 65535 {
 		return fmt.Errorf("invalid PORT %d: must be in range 1-65535 (%s)", cfg.Port, knob("PORT", "-port"))

@@ -61,6 +61,10 @@ func (s *Service) beginCommand(ctx context.Context) (pgxTx, error) {
 // write instant by the port's RoundOpenTx gate, whose FOR SHARE on the round
 // row serializes the command against a concurrent close (ErrRoundNotOpen, the
 // round-refusal 409, is the race lost).
+// rule:R-GAME-008
+// rule:R-GAME-013
+// rule:R-GAME-018
+// rule:R-KERNEL-004
 func (s *Service) RideCreate(ctx context.Context, ride domain.Ride, token port.Token, marshal RideMarshal) (port.SavedResponse, error) {
 	tx, err := s.beginCommand(ctx)
 	if err != nil {
@@ -135,6 +139,10 @@ func (s *Service) RideCreate(ctx context.Context, ride domain.Ride, token port.T
 //     UPDATE is the whole write, its WHERE re-checks every contended fact
 //     at the write instant, and 0 rows is the race lost (the round closed
 //     under us) -> ErrRoundNotOpen
+//
+// rule:R-GAME-008
+// rule:R-GAME-018
+// rule:R-KERNEL-004
 func (s *Service) RideLock(ctx context.Context, rideID int, token port.Token, marshal RideMarshal) (port.SavedResponse, error) {
 	tx, err := s.beginCommand(ctx)
 	if err != nil {
@@ -210,6 +218,9 @@ func (s *Service) RideLock(ctx context.Context, rideID int, token port.Token, ma
 // bonus fulfilled as TB. DecisionPhase only; the RideLock execution shape
 // (ADR-024) minus the continuation pick — the ride ends on its match, so the
 // guarded write takes destination 0.
+// rule:R-GAME-008
+// rule:R-GAME-018
+// rule:R-KERNEL-004
 func (s *Service) RideBurn(ctx context.Context, rideID int, token port.Token, marshal RideMarshal) (port.SavedResponse, error) {
 	tx, err := s.beginCommand(ctx)
 	if err != nil {
@@ -276,6 +287,10 @@ func (s *Service) RideBurn(ctx context.Context, rideID int, token port.Token, ma
 // forfeited. DecisionPhase only; the RideLock execution shape (ADR-024) minus
 // the continuation pick — the ride ends on its match, so the guarded write
 // takes destination 0.
+// rule:R-GAME-008
+// rule:R-GAME-015
+// rule:R-GAME-018
+// rule:R-KERNEL-004
 func (s *Service) RideUnlock(ctx context.Context, rideID int, token port.Token, marshal RideMarshal) (port.SavedResponse, error) {
 	tx, err := s.beginCommand(ctx)
 	if err != nil {

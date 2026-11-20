@@ -61,6 +61,7 @@ const ProductionPasswordCost = 12
 // matters; a suite that lowers the cost lowers the burn with it.
 var PasswordCost = ProductionPasswordCost
 
+// rule:R-IDENTITY-003
 func (p *password) Set(plaintextPassword string) error {
 	hash, err := bcrypt.GenerateFromPassword([]byte(plaintextPassword), PasswordCost)
 	if err != nil {
@@ -120,11 +121,13 @@ func (p *password) Hash() []byte { return p.hash }
 // path: the row carries the hash, the entity carries it opaquely.
 func (p *password) SetHash(hash []byte) { p.hash = hash }
 
+// rule:R-IDENTITY-001
 func ValidateEmail(v *validator.Validator, email string) {
 	v.Check(email != "", "email", "must be provided")
 	v.Check(validator.Matches(email, validator.EmailRX), "email", "must be a valid email address")
 }
 
+// rule:R-IDENTITY-002
 func ValidatePasswordPlaintext(v *validator.Validator, password string) {
 	v.Check(password != "", "password", "must be provided")
 	v.Check(len(password) >= 8, "password", "must be at least 8 bytes long")
@@ -139,6 +142,7 @@ func ValidatePasswordPlaintext(v *validator.Validator, password string) {
 // only user validator: the hash-nil invariant lives in the repository
 // (Insert/Update), not here — validators collect field errors, they never
 // panic.
+// rule:R-IDENTITY-001
 func ValidateRegistration(v *validator.Validator, name, email, plaintextPassword string) {
 	v.Check(name != "", "name", "must be provided")
 	v.Check(len(name) <= 500, "name", "must not be more then 500 bytes long")

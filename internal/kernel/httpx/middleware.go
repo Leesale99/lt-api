@@ -22,12 +22,14 @@ var ErrInvalidToken = errors.New("invalid authentication token")
 // UserLookup resolves a bearer token to the principal it authenticates. It is
 // declared here, at the consumer, so the transport layer stays free of any
 // identity import: the composition root adapts its user store to this shape.
+// rule:R-PLATFORM-013
 type UserLookup interface {
 	UserForToken(ctx context.Context, token string) (AuthUser, error)
 }
 
 // PermissionLookup resolves a role's permission codes — the second half of
 // the same consumer-side seam.
+// rule:R-PLATFORM-013
 type PermissionLookup interface {
 	PermissionsForRole(ctx context.Context, roleID int) (Permissions, error)
 }
@@ -49,6 +51,7 @@ type Middleware struct {
 	Permissions PermissionLookup
 }
 
+// rule:R-KERNEL-011
 func (m *Middleware) RecoverPanic(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -66,6 +69,8 @@ func (m *Middleware) RecoverPanic(next http.Handler) http.Handler {
 // Authenticate resolves the bearer token (when present) into the request
 // context; a request without one proceeds unauthenticated, and the
 // permission gate is what refuses it later.
+// rule:R-KERNEL-005
+// rule:R-KERNEL-008
 func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Vary", "Authorization")
@@ -109,6 +114,9 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 // RequirePermission is the gate: an authenticated, activated principal whose
 // role carries code may proceed; anything else is refused before the handler
 // runs.
+// rule:R-IDENTITY-016
+// rule:R-IDENTITY-017
+// rule:R-KERNEL-005
 func (m *Middleware) RequirePermission(code string, next http.HandlerFunc) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authenticatedUser, found := GetAuthenticatedUser(r)
@@ -150,6 +158,7 @@ func (m *Middleware) RequirePermission(code string, next http.HandlerFunc) http.
 // header can never pick someone else's bucket. All state and decisions live in
 // RateLimiter (ratelimiter.go); this function only translates between HTTP and
 // Allow's verdict.
+// rule:R-KERNEL-009
 func (m *Middleware) RateLimit(next http.Handler) http.Handler {
 	l := m.RateLimiter
 	if l == nil || !l.Enabled {
@@ -194,6 +203,7 @@ func (m *Middleware) RateLimit(next http.Handler) http.Handler {
 // cross-origin (PUT/PATCH/DELETE) and the non-safelisted headers its
 // clients send (Authorization; Content-Type beyond the safelisted form
 // values, e.g. application/json).
+// rule:R-KERNEL-010
 func (m *Middleware) EnableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Vary", "Origin")

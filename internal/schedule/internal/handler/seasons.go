@@ -36,6 +36,7 @@ func (h *Handler) listSeasons(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteListResponse(w, r, h.log, "seasons", seasonsFromModel(seasons), metadata, err)
 }
 
+// rule:R-SCHEDULE-001
 func (h *Handler) createSeason(w http.ResponseWriter, r *http.Request) {
 	var input createSeasonRequest
 

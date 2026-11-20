@@ -38,6 +38,7 @@ type Mailer struct {
 	sender string
 }
 
+// rule:R-PLATFORM-006
 func New(host string, port int, username, password, sender string) (*Mailer, error) {
 	// Fail fast: an unauthenticated or senderless SMTP client is unusable, so
 	// refuse to construct rather than deferring the failure to the first send.
@@ -69,6 +70,7 @@ func New(host string, port int, username, password, sender string) (*Mailer, err
 // and full jitter. ctx cancels the whole send: checked before every redial
 // and during every backoff sleep, so a shutdown cuts the retry ladder short
 // instead of letting it run to completion after the server has stopped.
+// rule:R-PLATFORM-007
 func (m *Mailer) Send(ctx context.Context, recipient string, templateFile string, data any) error {
 	textTempl, err := tt.New("").ParseFS(templateFS, "templates/"+templateFile)
 	if err != nil {

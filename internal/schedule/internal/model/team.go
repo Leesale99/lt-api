@@ -18,6 +18,8 @@ type Team struct {
 	Version     int
 }
 
+// rule:R-SCHEDULE-029
+// rule:R-SCHEDULE-030
 func ValidateTeam(v *validator.Validator, team Team) {
 	v.Check(team.Name != "", "name", "must be provided")
 	v.Check(len(team.Name) <= 500, "name", "must not be more than 500 bytes long")
@@ -29,6 +31,7 @@ func ValidateTeam(v *validator.Validator, team Team) {
 	v.Check(len(team.Description) <= 5000, "description", "must not be more than 5000 bytes long")
 }
 
+// rule:R-SCHEDULE-030
 func validImageURL(s string) bool {
 	u, err := url.ParseRequestURI(s)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {

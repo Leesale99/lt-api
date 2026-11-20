@@ -59,6 +59,7 @@ type Match struct {
 // trigger, the cross-context read the split removed). Winner and the
 // handler are derived copies tied by the shared fixture in
 // internal/game/score_state_rule_test.go — change one, change all three.
+// rule:R-GAME-010
 func (m Match) Winner() *int {
 	switch {
 	case m.Status != MatchClosed:
@@ -76,6 +77,7 @@ func (m Match) Winner() *int {
 // every value (the drift detector in the repository tests pins it).
 var MatchStatuses = []MatchStatus{MatchCreated, MatchInProgress, MatchPostponed, MatchClosed}
 
+// rule:R-SCHEDULE-004
 func ValidateMatchStatus(v *validator.Validator, status MatchStatus) {
 	v.Check(validator.PermittedValue(status, MatchStatuses...), "status", "must be one of: created, in_progress, postponed, closed")
 }
@@ -84,6 +86,10 @@ func ValidateMatchStatus(v *validator.Validator, status MatchStatus) {
 // required fields, allowed statuses, the status/score matrix and the odds
 // bounds. It is the shared core of ValidateNewMatch and ValidateMatchUpdate;
 // each of those adds the rules that differ between creating and editing.
+// rule:R-SCHEDULE-006
+// rule:R-SCHEDULE-007
+// rule:R-SCHEDULE-009
+// rule:R-SCHEDULE-010
 func validateMatchShape(v *validator.Validator, match Match) {
 	v.Check(match.RoundID > 0, "round_id", "must be provided")
 	v.Check(match.SeasonID > 0, "season_id", "must be provided")
@@ -110,6 +116,8 @@ func validateMatchShape(v *validator.Validator, match Match) {
 
 // ValidateNewMatch validates a match about to be created. The `now` argument
 // is injected so tests control the clock instead of racing time.Now().
+// rule:R-SCHEDULE-001
+// rule:R-SCHEDULE-002
 func ValidateNewMatch(v *validator.Validator, match Match, now time.Time) {
 	validateMatchShape(v, match)
 	if !match.StartsAt.IsZero() {
@@ -155,6 +163,7 @@ var matchStatusRank = map[MatchStatus]int{
 // status must never move backwards along the lifecycle, and a closed match is
 // terminal. The time-sensitive half of the freeze rule (no postponed after
 // start) lives in the DB gate, keyed on the stored starts_at.
+// rule:R-SCHEDULE-003
 func ValidateMatchUpdate(v *validator.Validator, old, new Match) {
 	validateMatchShape(v, new)
 

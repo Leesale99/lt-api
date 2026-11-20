@@ -1,8 +1,12 @@
 # League Tokens — Progressive Backend Learning Path
 
-This directory contains the learning-oriented implementation plan for League Tokens.
+This directory contains the learning-oriented implementation plan for League Tokens. Its
+two tracked domain documents are:
 
-The phase guides are deliberately simpler than the production-oriented `backend_system_design.md`. They are designed to build gently on the knowledge from *Let's Go Further* and introduce one major backend concept at a time.
+- `domain-knowledge.md` — the design reference: the player-facing Game Design document, the source of truth for gameplay behavior.
+- `domain-knowledge-game-engine.md` — the game engine specification: season and match lifecycles, Ride behavior, and the engine state definitions the system must protect.
+
+The phase guides are deliberately simpler than the production-oriented system-design document — the `system-design.md` of `domain-knowledge.md`'s source-of-truth table, which is to be developed using the Domain-Driven Design book as a guide and is not yet written. They are designed to build gently on the knowledge from *Let's Go Further* and introduce one major backend concept at a time.
 
 ## Learning sequence
 

@@ -24,6 +24,10 @@
 //     reset) and one per context role (schedule_app / game_app /
 //     identity_app, via SET ROLE on every connection — see ContextPool), so
 //     the store tests exercise the real privilege regime.
+//   - Whether a missing DSN is a skip or a failure is not each suite's private
+//     judgement: it is DecideSkip's (skip.go), which the spec suite applies to
+//     fail loudly — or to skip loudly, when AUDIT_SKIP_DB=1 says so out loud.
+//     A DSN that is set but unreachable stays a hard failure here.
 package testdb
 
 import (

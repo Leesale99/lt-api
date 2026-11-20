@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,7 +35,11 @@ type Rule struct {
 	Fixture      *string       `yaml:"fixture"`
 	Verification Verification  `yaml:"verification"`
 	ExpertRef    *string       `yaml:"expert-ref"`
-	Notes        string        `yaml:"notes"`
+	// KnowledgeRef points at the knowledge-base note behind the rule. It is
+	// additional to expert-ref (never a replacement): policy 16 requires the
+	// path to exist and to sit under docs/league-tokens-learning-phases/.
+	KnowledgeRef *string `yaml:"knowledge-ref"`
+	Notes        string  `yaml:"notes"`
 }
 
 // Enforcement is one place a rule is enforced. Site is `path::Symbol` for Go or
@@ -86,15 +93,36 @@ type Verification struct {
 	Gherkin []string `yaml:"gherkin"`
 }
 
-// loadCatalog reads and decodes the canonical catalog.
+// loadCatalog reads and decodes the canonical catalog. Decoding is strict in two
+// ways. First, an unknown field is an error, because a misspelled key
+// (`knowledge_ref:` for `knowledge-ref:`) would otherwise be dropped silently, and
+// the policies that treat an absent key as legal (policy 16) could never notice
+// the typo. Second, the catalog is exactly one YAML document: a Decoder yields
+// one document per Decode call, so decoding once would drop everything after a
+// `---` separator (a merge accident) and still return a parsable catalog.
 func loadCatalog(path string) (Catalog, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read catalog: %w", err)
 	}
 	var catalog Catalog
-	if err := yaml.Unmarshal(data, &catalog); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&catalog); err != nil {
 		return nil, fmt.Errorf("parse catalog %s: %w", path, err)
+	}
+	// Keep decoding until EOF: a second document, or malformed content after the
+	// first one, means the file is not the one-document catalog we expect.
+	trailing := fmt.Errorf("parse catalog %s: trailing YAML document after the first — "+
+		"the catalog must be exactly one document", path)
+	var extra yaml.Node
+	switch err := decoder.Decode(&extra); {
+	case errors.Is(err, io.EOF):
+		// Exactly one document: the catalog.
+	case err != nil:
+		return nil, fmt.Errorf("%w: %w", trailing, err)
+	default:
+		return nil, trailing
 	}
 	return catalog, nil
 }

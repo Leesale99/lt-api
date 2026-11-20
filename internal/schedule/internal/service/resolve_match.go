@@ -24,6 +24,9 @@ var ErrEndedAtInFuture = model.ErrEndedAtInFuture
 // the game handler has settled the locked rides of the match (or the
 // settlement error has been logged as the accepted gap — the commit
 // above is already durable, so a failed handler must not fail the request).
+// rule:R-SCHEDULE-020
+// rule:R-SCHEDULE-021
+// rule:R-KERNEL-013
 func (s *Service) ResolveMatch(ctx context.Context, matchID int, score model.Score, endedAt time.Time, version int) (model.Match, error) {
 	if !endedAt.Before(s.now()) {
 		return model.Match{}, ErrEndedAtInFuture
