@@ -119,6 +119,7 @@ What step 1 of the gate actually means, for a brand-new rule:
 | `make spec/check` | validate schema policies + catalog/feature traceability; runs `--strict`, so any check error fails the target (and therefore `make audit`) |
 | `make spec/diff` | fail if the dashboard or any module view is stale, or if `views/` holds a file the run does not render (an orphan; `gen` reports it but never deletes it) |
 | `make spec/brief args='R-GAME-001'` | print a Markdown work order for one rule — statement, sites, refusal map, fixture, resolved verification pointers, linked scenarios, gate — or `args='--module game'` for every rule of one module |
+| `make spec/queue` | print the read-only work queue in priority order — drifted, specified-only, then implemented rules with an enforcement site or verification pointer that does not resolve today — as Markdown, or `args='--json'` for task packets; `args='--module game'` scopes it |
 | `make db/up` | start the compose test database (CI's postgres:18 service container) and wait until its healthcheck passes |
 | `make db/down` | stop it; the named volume survives; `docker compose down -v` drops the base database too |
 | `make test/spec` | run the godog scenarios against real Postgres; fails without LT_API_TEST_DSN (bring it up with make db/up); AUDIT_SKIP_DB=1 turns that into a loud skip |
@@ -139,10 +140,20 @@ creates and drops itself) → `make db/down` when done.
 
 ## 4. Agent quickstart
 
+**Turn-start ritual.** Before picking anything up, run `make spec/queue` and take the
+top row — drifted rules first, then specified-only ones, then implemented rules whose
+enforcement site or verification pointer does not resolve today. Run that row's
+`brief_cmd` (`make spec/brief args='<id>'`) and use the brief as the task packet; add
+the matching `SPEC-SCOPE:` line from §5 so the worker's gates stay scoped. The queue
+is a cheap triage view, not a verdict: policies 13, 15 and 18 still only run in
+`make spec/check`.
+
 **Picking up a task.** Find the rule in `docs/spec/rules.yaml`; read its `statement`,
 `enforcement`, `verification` and `notes`, then open the feature file it points at.
 Implement against the behavior those two describe. Run `make audit`; done when green.
-If the behavior must change, change the catalog and scenario first (§2).
+If the behavior must change, change the catalog and scenario first (§2). The
+write boundaries that bind this loop — the file-tools deny, the bash write-channel
+scanner and the receipt/reconciliation net — are in §5.
 
 **Adding a rule.** Follow §2 — the recipe is canonical there. Pick the authority and id,
 verify every site and test against the code today, add the catalog entry and its `@rule`
@@ -151,3 +162,60 @@ scenario, run `make spec/gen`, then `make audit`.
 **Adding a scenario to an existing rule.** One scenario, one rule; name it so
 `<feature-file>::<scenario name>` is the pointer in `verification.gherkin`. Reuse
 `gherkin-style.md` vocabulary; no transport or SQL words in facade steps.
+
+## 5. Agent quickstart: delegated work and the gates
+
+A delegated task is shaped by `.pi/prompts/implement.md`, executed under
+`.pi/agents/go-worker.md` (the loop and report format) and driven by the child
+orchestrator in `.pi/delegate/orchestrator.md` (worktree, commits, approval).
+Those files are authoritative; this section is the map between them.
+
+**The loop.** RED: catalog entry + `@rule` scenario only, until the check is red for
+the right reason. GREEN: code, `//rule:` annotations, verification pointers. PROVE:
+`make prove` for the touched rules. REFACTOR: `make spec/gen`, then `make audit`.
+3 attempts per phase, then stop and report — never a silent retry.
+
+**Gates, cheapest first.** `make audit/static` and a scoped
+`go run ./cmd/spec check --strict --module <m>` / `--rule <id>` are the fast,
+DB-free worker gates; `make prove` is the slow DB-backed verdict gate for touched
+rules; `make audit` is the merge gate. The delegate extension runs the two fast ones
+itself after each relevant write and again at settle — it blocks `done` for 3
+attempts, then hard-stops for a failure report; a worker reads that feedback block
+instead of arguing with it.
+
+**What each write boundary covers**, cheapest and most specific first:
+
+- *File tools.* The edit/write deny covers the file-tools channel: every path is
+  classified against `protected_paths` and `pi_editable_paths` in `WORKFLOW.md`
+  front matter, then the allowlist escape hatch, then the never-grantable
+  self-deny of `WORKFLOW.md` and the allowlist itself.
+- *Bash.* The write-channel scanner covers the shell channel — best-effort,
+  deterministic, fail-closed on ambiguity. It matches the pattern classes
+  declared there as `bash_write_patterns` (redirect, tee, sed-in-place,
+  file-transfer, heredoc, git-mutating) over command words and write operators
+  only, so `grep -n "sed -i" notes.md` passes; every extracted target routes
+  through the same classification, and a target that does not resolve to one
+  literal path (command substitution, variables, globs, unbalanced quotes,
+  eval / `sh -c` past the recursion cap) is denied before the command runs. A
+  shell is Turing-complete: this raises the cost of bypass, it does not close
+  the channel.
+- *The net around both.* The receipt trail, reconciliation against the newest
+  passing checkpoint, then the merge-boundary `make audit` (and `make prove`
+  for rule work): a write that slips the deterministic net still has to survive
+  a receipt trail it did not write and an audit at merge.
+
+**Receipts.** Every gate run appends a JSON receipt to `.pi/receipts/`
+(extension-written, gitignored). Workers report receipt paths and exit codes;
+prose claims are not evidence.
+
+**SPEC-SCOPE.** Each go-worker task text carries one machine-readable line —
+`SPEC-SCOPE: module=<m>` or `SPEC-SCOPE: rules=R-...,R-...`. The extension parses
+it and scopes that worker's gates; without the line the worker gates on the full
+spec check.
+
+**Red-commit approval.** A batch that adds or changes rules stops mid-job: the
+spec-only RED commit is reviewed through an AWAITING_APPROVAL block carrying its
+`HEAD SHA:`. `job_approve` binds that exact SHA, and GREEN/PROVE/REFACTOR continue
+only while HEAD still matches it; a moved worktree needs a fresh approval. Gate
+files stay denied to workers except through `.pi/delegate/gate-allowlist.json`,
+which only the main session edits.

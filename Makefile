@@ -125,12 +125,11 @@ tidy:
 # features and misreports them as errors (e.g. generic methods in go1.27).
 GOFMT := $(shell go env GOROOT)/bin/gofmt
 
-## audit: run quality control checks (fails on any unformatted file, stale spec or
-## spec-check error). The chain is the pipeline's single gate: gofmt → vet →
-## staticcheck → spec freshness → spec check → the whole test tree (unit, spec, db).
-## The test step runs with -count=1, so the gate never trusts the go test cache.
-.PHONY: audit
-audit:
+## audit/static: run the static half of the merge gate (fails on any unformatted
+## file, stale spec or spec-check error): go mod tidy -diff → go mod verify →
+## gofmt → vet → staticcheck → spec freshness → spec check. It needs no database.
+.PHONY: audit/static
+audit/static:
 	go mod tidy -diff
 	go mod verify
 	@test -z "$$( $(GOFMT) -l $$(git ls-files '*.go' | grep -v '^vendor/') )" || ( $(GOFMT) -l $$(git ls-files '*.go' | grep -v '^vendor/'); exit 1)
@@ -138,6 +137,13 @@ audit:
 	go tool staticcheck ./...
 	$(MAKE) spec/diff
 	$(MAKE) spec/check
+
+## audit: run quality control checks — the pipeline's single merge gate. It is
+## the static half above plus the whole test tree (unit, spec, db), so gofmt →
+## vet → staticcheck → spec freshness → spec check → go test. The test step runs
+## with -count=1 and never trusts the go test cache.
+.PHONY: audit
+audit: audit/static
 	go test -race -vet=off -count=1 ./...
 
 # ============================================================================================================================ #
@@ -159,10 +165,23 @@ spec/check:
 spec/brief:
 	go run ./cmd/spec brief $(args)
 
+## spec/queue: print the read-only work queue (drifted → specified-only → broken pointer); args='--json' or args='--module game'
+.PHONY: spec/queue
+spec/queue:
+	go run ./cmd/spec queue $(args)
+
 ## spec/diff: fail if the dashboard or any generated module view is stale (wired into `make audit`)
 .PHONY: spec/diff
 spec/diff:
 	go run ./cmd/spec gen --diff
+
+## prove: run the DB-backed mutant registry — the slow verification gate. With no
+## args it proves the seeded registry (--all); args override it, e.g. `make prove
+## args='--base origin/main'` or `args='--rule R-SCHEDULE-003'`. NOT part of
+## `make audit`; needs LT_API_TEST_DSN (see `make db/up`).
+.PHONY: prove
+prove:
+	go run ./cmd/spec prove $(if $(args),$(args),--all)
 
 # ============================================================================================================================ #
 # BUILD
