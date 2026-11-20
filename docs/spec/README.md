@@ -151,3 +151,39 @@ scenario, run `make spec/gen`, then `make audit`.
 **Adding a scenario to an existing rule.** One scenario, one rule; name it so
 `<feature-file>::<scenario name>` is the pointer in `verification.gherkin`. Reuse
 `gherkin-style.md` vocabulary; no transport or SQL words in facade steps.
+
+## 5. Agent quickstart: delegated work and the gates
+
+A delegated task is shaped by `.pi/prompts/implement.md`, executed under
+`.pi/agents/go-worker.md` (the loop and report format) and driven by the child
+orchestrator in `.pi/delegate/orchestrator.md` (worktree, commits, approval).
+Those files are authoritative; this section is the map between them.
+
+**The loop.** RED: catalog entry + `@rule` scenario only, until the check is red for
+the right reason. GREEN: code, `//rule:` annotations, verification pointers. PROVE:
+`make prove` for the touched rules. REFACTOR: `make spec/gen`, then `make audit`.
+3 attempts per phase, then stop and report — never a silent retry.
+
+**Gates, cheapest first.** `make audit/static` and a scoped
+`go run ./cmd/spec check --strict --module <m>` / `--rule <id>` are the fast,
+DB-free worker gates; `make prove` is the slow DB-backed verdict gate for touched
+rules; `make audit` is the merge gate. The delegate extension runs the two fast ones
+itself after each relevant write and again at settle — it blocks `done` for 3
+attempts, then hard-stops for a failure report; a worker reads that feedback block
+instead of arguing with it.
+
+**Receipts.** Every gate run appends a JSON receipt to `.pi/receipts/`
+(extension-written, gitignored). Workers report receipt paths and exit codes;
+prose claims are not evidence.
+
+**SPEC-SCOPE.** Each go-worker task text carries one machine-readable line —
+`SPEC-SCOPE: module=<m>` or `SPEC-SCOPE: rules=R-...,R-...`. The extension parses
+it and scopes that worker's gates; without the line the worker gates on the full
+spec check.
+
+**Red-commit approval.** A batch that adds or changes rules stops mid-job: the
+spec-only RED commit is reviewed through an AWAITING_APPROVAL block carrying its
+`HEAD SHA:`. `job_approve` binds that exact SHA, and GREEN/PROVE/REFACTOR continue
+only while HEAD still matches it; a moved worktree needs a fresh approval. Gate
+files stay denied to workers except through `.pi/delegate/gate-allowlist.json`,
+which only the main session edits.
