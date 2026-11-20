@@ -50,6 +50,57 @@ func TestGenDiffReportsOrphanView(t *testing.T) {
 	}
 }
 
+// Dotfiles are editor/OS droppings (.DS_Store, swap files), not views: the
+// orphan scan must ignore them so a finder window does not fail spec/diff. A
+// real, non-dotfile orphan is still reported.
+func TestGenDiffIgnoresDotfileOrphans(t *testing.T) {
+	repo, out, views := genRepo(t)
+
+	var stdout, stderr bytes.Buffer
+	if code := runGen([]string{"--rules", repo.rulesPath, "--out", out}, &stdout, &stderr); code != 0 {
+		t.Fatalf("initial gen = %d, stderr=%s", code, stderr.String())
+	}
+
+	dotfile := filepath.Join(views, ".DS_Store")
+	if err := os.WriteFile(dotfile, []byte("\x00\x00\x00\x01\x00\x00\x00\x00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runGen([]string{"--rules", repo.rulesPath, "--out", out, "--diff"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("diff over a dotfile = %d, want 0 (stdout=%s stderr=%s)",
+			code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "orphan") {
+		t.Errorf("diff output %q reports a dotfile as an orphan", stdout.String())
+	}
+	if _, err := os.Stat(dotfile); err != nil {
+		t.Fatalf("--diff removed the dotfile: %v", err)
+	}
+
+	// Guard: the filter is dotfile-specific, not a blanket ignore.
+	stray := filepath.Join(views, "stray.md")
+	if err := os.WriteFile(stray, []byte("# a hand-written view\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runGen([]string{"--rules", repo.rulesPath, "--out", out, "--diff"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("diff over a dotfile plus a stray view = %d, want 1 (stdout=%s stderr=%s)",
+			code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"views/stray.md", "orphan"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("diff output %q does not mention %q", stdout.String(), want)
+		}
+	}
+	if strings.Contains(stdout.String(), ".DS_Store") {
+		t.Errorf("diff output %q mentions the ignored dotfile", stdout.String())
+	}
+}
+
 func TestGenWriteModeReportsOrphanWithoutDeleting(t *testing.T) {
 	repo, out, views := genRepo(t)
 	repo.addFile(t, "docs/spec/views/stray.md", "# a hand-written view\n")
