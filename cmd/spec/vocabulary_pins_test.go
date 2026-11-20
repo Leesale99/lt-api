@@ -8,6 +8,7 @@ package main
 //	TestPinnedBareThreeDigitQuantityOrStatus     — fix C (a three-digit figure, quantity vs status)
 //	TestPinnedDocStringAndTableCellVocabulary    — fix D (docstrings and data-table cells are scanned)
 //	TestPinSQLHomographAdjacency                 — fix E (SQL homographs fire on adjacency, not alone)
+//	TestPinnedQuantityFollowerIsClosed           — fix F (the quantity follower set is closed)
 //
 // Fixtures are synthetic checkouts (t.TempDir via newTestRepo): an inline
 // glossary plus one feature file, so a test fails for exactly the rule it pins.
@@ -205,10 +206,12 @@ Feature: A glossed disguise
 }
 
 // TestPinnedBareThreeDigitQuantityOrStatus is fix C: a three-digit figure in
-// the HTTP range is a QUANTITY when the next token is a plain alphabetic word
-// that is not a transport noun ("200 entries"), and a numeric STATUS at the end
-// of a step or before a transport noun ("refused as 409", "409 status"). The
-// quantityUnits guard ("100 tokens") keeps working.
+// the HTTP range is a QUANTITY when the next token is one of the curated
+// quantity followers — units (`tokens`) and the closed business-noun set
+// (`entries`) — and a numeric STATUS at the end of a step or before a transport
+// noun ("refused as 409", "409 status"). The follower set's closure (fix F) is
+// pinned by TestPinnedQuantityFollowerIsClosed; this pin keeps the two curated
+// cases and the step-end/transport-noun cases working.
 func TestPinnedBareThreeDigitQuantityOrStatus(t *testing.T) {
 	repo := vocabularyPinnedRepo(t, pinGlossary, `@game
 Feature: Quantities and statuses are different figures
@@ -491,4 +494,113 @@ Feature: SQL vocabulary is a shape, not a spelling
 			}
 		}
 	})
+}
+
+// TestPinnedQuantityFollowerIsClosed is fix F: the quantity exemption is a
+// CLOSED set, not "any business word". A three-digit HTTP-range figure followed
+// by a token outside quantityUnits ∪ {entries, rows} is a numeric status again
+// (`409 conflict`, `200 ok`, `404 not`), while the curated followers keep
+// quantifying (`100 tokens`, `200 entries`, `200 rows`). An earlier fix
+// generalised the follower to any a–z word and reopened the §6 status ban it
+// sits inside; this pin holds the closure shut from both sides.
+func TestPinnedQuantityFollowerIsClosed(t *testing.T) {
+	repo := vocabularyPinnedRepo(t, `common:
+  - the
+game:
+  - answer
+  - conflict
+  - entries
+  - holds
+  - ledger
+  - locks
+  - not
+  - ok
+  - on
+  - player
+  - posts
+  - rows
+  - says
+  - tokens
+identity: []
+schedule: []
+ledger: []
+kernel: []
+platform: []
+`, `@game
+Feature: Only the curated followers quantify a figure
+
+  @rule:R-KERNEL-001
+  Scenario: A figure before a dispute
+    Then the answer says 409 conflict
+
+  @rule:R-KERNEL-002
+  Scenario: A figure before an acknowledgement
+    Then the answer says 200 ok
+
+  @rule:R-KERNEL-003
+  Scenario: A figure before a negation
+    Then the answer says 404 not
+
+  @rule:R-KERNEL-004
+  Scenario: The curated followers quantify
+    Given the player locks 100 tokens on "Team A"
+    And the ledger posts 200 entries
+    And the ledger holds 200 rows
+
+  @rule:R-KERNEL-005
+  Scenario: A bare figure
+    Then the answer says 409
+`)
+
+	findings, messages := vocabularyFindings(t, repo)
+	joined := strings.Join(messages, "\n")
+	byScenario := map[string]string{}
+	for _, f := range findings {
+		byScenario[f.RuleID] += f.Message + "\n"
+	}
+	pointer := func(scenario string) string {
+		return "docs/spec/features/game/pinned.feature::" + scenario
+	}
+
+	// (a)-(c) A follower outside the closed set is not a quantity: the figure is
+	// the numeric status §6 forbids. The finding must be the denylist's, not the
+	// allowlist's — every step word here is declared.
+	for _, pin := range []struct {
+		scenario string
+		figure   string
+		follower string
+	}{
+		{"A figure before a dispute", "409", "conflict"},
+		{"A figure before an acknowledgement", "200", "ok"},
+		{"A figure before a negation", "404", "not"},
+	} {
+		t.Run("status: "+pin.scenario, func(t *testing.T) {
+			got := byScenario[pointer(pin.scenario)]
+			if !strings.Contains(got, `bare number "`+pin.figure+`"`) {
+				t.Errorf("%s %s was not flagged as a numeric status:\n%s", pin.figure, pin.follower, got)
+			}
+			if strings.Contains(got, `"`+pin.follower+`" is not declared`) {
+				t.Errorf("the follower was caught by the allowlist, not the status rule:\n%s", got)
+			}
+		})
+	}
+
+	// (d) The curated followers still quantify, and a bare figure is still the
+	// status it always was.
+	t.Run("quantity: the curated followers", func(t *testing.T) {
+		if got := byScenario[pointer("The curated followers quantify")]; got != "" {
+			t.Errorf("a curated quantity follower was flagged:\n%s", got)
+		}
+	})
+	t.Run("status: a bare figure", func(t *testing.T) {
+		got := byScenario[pointer("A bare figure")]
+		if !strings.Contains(got, `bare number "409"`) {
+			t.Errorf("a figure with nothing after it was not flagged:\n%s", got)
+		}
+	})
+
+	// The unit case never leaks: `100 tokens` is the only 100 in the fixture.
+	if strings.Contains(joined, `bare number "100"`) {
+		t.Errorf("a curated quantity unit was flagged as a status:\n%s", joined)
+	}
 }
