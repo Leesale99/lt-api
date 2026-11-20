@@ -9,6 +9,9 @@ package main
 //	TestPinnedDocStringAndTableCellVocabulary    — fix D (docstrings and data-table cells are scanned)
 //	TestPinSQLHomographAdjacency                 — fix E (SQL homographs fire on adjacency, not alone)
 //	TestPinnedQuantityFollowerIsClosed           — fix F (the quantity follower set is closed)
+//	TestPinSabotageObjectNamesPass                — fix G (§8 object names keep their phrase fragments)
+//	TestPinDisguisedStatusNarrowed               — fix H (only HTTP-shaped lettered figures are disguises)
+//	TestPinGlossaryRejectsConcatenatedTransport   — fix I (concatenated transport words are not addable)
 //
 // Fixtures are synthetic checkouts (t.TempDir via newTestRepo): an inline
 // glossary plus one feature file, so a test fails for exactly the rule it pins.
@@ -603,4 +606,278 @@ Feature: Only the curated followers quantify a figure
 	if strings.Contains(joined, `bare number "100"`) {
 		t.Errorf("a curated quantity unit was flagged as a status:\n%s", joined)
 	}
+}
+
+// pinSabotageGlossary declares the words the §8 object-name pin says on
+// purpose, including the two database object names it names — the glossary is
+// where gherkin-style.md §8 puts them, so a finding here is the denylist's.
+const pinSabotageGlossary = `common:
+  - a
+  - an
+  - and
+  - by
+  - for
+  - from
+  - in
+  - into
+  - is
+  - of
+  - on
+  - one
+  - the
+  - to
+  - with
+game:
+  - answer
+  - carries
+  - code
+  - present
+  - refused
+  - rides_http_gate
+  - rides_status_code_present_check
+  - status
+  - write
+identity: []
+schedule: []
+ledger: []
+kernel: []
+platform: []
+`
+
+// TestPinSabotageObjectNamesPass is fix G: gherkin-style.md §8 promises that a
+// sabotage assertion names a real database object (`rides_status_code_present_check`),
+// and rules.schema.md policy 13 says those names surface only in §8 steps, which
+// the sabotage exemption covers. The single-token half of the exemption already
+// holds; the PHRASE pass had no sabotage guard, so the `status code` inside such
+// a name errored. Within a sabotage step the phrase must not fire on fragments
+// glued by `_`; the plain words in a facade step, and the transport half of a
+// name, still error exactly as before.
+func TestPinSabotageObjectNamesPass(t *testing.T) {
+	repo := vocabularyPinnedRepo(t, pinSabotageGlossary, `@game
+Feature: A database object name keeps its fragments
+
+  @rule:R-KERNEL-001
+  Scenario: A check constraint name glues the wire words
+    Then the write is refused by rides_status_code_present_check
+
+  @rule:R-KERNEL-002
+  Scenario: A facade step says the words plainly
+    Then the answer carries the status code
+
+  @rule:R-KERNEL-003
+  Scenario: The transport half still applies to a name
+    Then the write is refused by rides_http_gate
+`)
+
+	findings, messages := vocabularyFindings(t, repo)
+	joined := strings.Join(messages, "\n")
+	byScenario := map[string]string{}
+	for _, f := range findings {
+		byScenario[f.RuleID] += f.Message + "\n"
+	}
+	pointer := func(scenario string) string {
+		return "docs/spec/features/game/pinned.feature::" + scenario
+	}
+
+	// (a) The §8 object name is a name, not a query and not a phrase: no
+	// finding at all, and in particular no "add it to the glossary" remedy for
+	// the name the glossary already declares.
+	t.Run("sabotage: an object name passes", func(t *testing.T) {
+		got := byScenario[pointer("A check constraint name glues the wire words")]
+		if got != "" {
+			t.Errorf("a sabotage step's database object name was flagged:\n%s", got)
+		}
+	})
+
+	// (b) The exemption is scoped to the glued fragments of a sabotage step:
+	// the same words written as words in a facade step are the phrase §6 bans.
+	t.Run("facade: the plain words still error", func(t *testing.T) {
+		got := byScenario[pointer("A facade step says the words plainly")]
+		if !strings.Contains(got, `step uses "status code"`) {
+			t.Errorf("a facade step's plain phrase was not flagged:\n%s", got)
+		}
+	})
+
+	// (c) The transport half is absolute, sabotage or not: a name that carries
+	// `http` still speaks the wire.
+	t.Run("sabotage: the transport half still applies", func(t *testing.T) {
+		got := byScenario[pointer("The transport half still applies to a name")]
+		if !strings.Contains(got, `step uses "http", which describes the wire`) {
+			t.Errorf("a transport word inside a sabotage object name was not flagged:\n%s", got)
+		}
+	})
+
+	// The phrase exemption must not turn into an allowlist hole: the declared
+	// object name never falls through to the glossary remedy.
+	if strings.Contains(joined, `step token "rides_status_code_present_check" is not declared`) {
+		t.Errorf("the declared object name fell through to the glossary remedy:\n%s", joined)
+	}
+}
+
+// pinDisguiseGlossary declares the words the disguised-status pin says on
+// purpose, including the digit-leading tokens an earlier pattern flagged as
+// disguised HTTP figures (`1st`, `30min`, `3d`) and the one that really is
+// disguised (`2oo`).
+const pinDisguiseGlossary = `common:
+  - a
+  - after
+  - an
+  - and
+  - by
+  - for
+  - from
+  - in
+  - is
+  - of
+  - on
+  - one
+  - the
+  - to
+  - with
+game:
+  - "1st"
+  - "30min"
+  - "2oo"
+  - "3d"
+  - answer
+  - finishes
+  - player
+  - says
+identity: []
+schedule: []
+ledger: []
+kernel: []
+platform: []
+`
+
+// TestPinDisguisedStatusNarrowed is fix H: `disguisedStatusPattern` used to be
+// "any token that begins with a digit and mixes letters in", so `1st`, `30min`
+// and `3d` were numeric statuses and could never be declared — in the glossary
+// or in a step. §6's ban is about the three-digit HTTP figure respelled with
+// letters (`2oo` for `200`, `4O4` for `404`), so the pattern is narrowed to
+// exactly three characters, a leading 1–5, then digits or the letter `o`. The
+// status-like figures stay refused on BOTH paths (glossary term and step
+// token); the ordinary digit-leading words are unflagged and addable.
+func TestPinDisguisedStatusNarrowed(t *testing.T) {
+	repo := vocabularyPinnedRepo(t, pinDisguiseGlossary, `@game
+Feature: A digit-leading word is not a status
+
+  @rule:R-KERNEL-001
+  Scenario: An ordinal and a duration are business facts
+    Given the player finishes 1st after 30min
+
+  @rule:R-KERNEL-002
+  Scenario: A lettered status is still transport
+    Then the answer says 4O4
+`)
+
+	c := &checker{root: repo.root}
+	g := c.loadGlossary()
+	glossaryFindings := describeFindings(c.findings)
+	findings, messages := vocabularyFindings(t, repo)
+	joined := strings.Join(messages, "\n")
+	byScenario := map[string]string{}
+	for _, f := range findings {
+		byScenario[f.RuleID] += f.Message + "\n"
+	}
+	pointer := func(scenario string) string {
+		return "docs/spec/features/game/pinned.feature::" + scenario
+	}
+
+	// (a) The digit-leading words are not disguises: the glossary accepts them
+	// and a step may say them.
+	for _, term := range []string{"1st", "30min", "3d"} {
+		if strings.Contains(glossaryFindings, `glossary term "`+term+`"`) {
+			t.Errorf("glossary term %q was refused as a disguised status:\n%s", term, glossaryFindings)
+		}
+		if !g.sections["game"][term] {
+			t.Errorf("glossary term %q did not enter the allowlist:\n%s", term, glossaryFindings)
+		}
+	}
+	t.Run("step: an ordinal and a duration pass", func(t *testing.T) {
+		got := byScenario[pointer("An ordinal and a duration are business facts")]
+		if got != "" {
+			t.Errorf("`1st` / `30min` were flagged in a step:\n%s", got)
+		}
+	})
+
+	// (b) The guard: the real HTTP lookalikes are still refused, on both paths
+	// and in any case.
+	if !strings.Contains(glossaryFindings, `glossary term "2oo" in section "game" is not a legitimate step word: it is a numeric status`) {
+		t.Errorf("the glossary accepted the letterspelled status `2oo`:\n%s", glossaryFindings)
+	}
+	if g.sections["game"]["2oo"] {
+		t.Error("glossary term \"2oo\" entered the allowlist despite being a disguise")
+	}
+	for _, token := range []string{"4o4"} {
+		if !strings.Contains(byScenario[pointer("A lettered status is still transport")], `step token "`+token+`" is a numeric status`) {
+			t.Errorf("step token %q was not a numeric status:\n%s", token, joined)
+		}
+	}
+	if !disguisedStatusPattern.MatchString("4O4") || !disguisedStatusPattern.MatchString("2OO") {
+		t.Error("the pattern is no longer case-insensitive: 4O4 and 2OO must be disguised statuses")
+	}
+}
+
+// TestPinGlossaryRejectsConcatenatedTransport is fix I: splitting the denylist
+// stream on `_` closed the `status_code` hatch, but a bare concatenation carries
+// no `_` at all, so `httpstatus` and `statuscode` stayed whole and the glossary
+// remedy ("add it to the glossary") laundered them permanently. disguiseReason
+// now tries every two-part cut and refuses a term whose BOTH halves are
+// denylisted transport vocabulary. The halves are transport only — SQL words are
+// deliberately excluded — so a database object name such as
+// `rides_tokens_locked_check` stays addable.
+func TestPinGlossaryRejectsConcatenatedTransport(t *testing.T) {
+	repo := vocabularyPinnedRepo(t, `common:
+  - the
+game:
+  - httpstatus
+  - rides_tokens_locked_check
+  - ride
+  - statuscode
+identity: []
+schedule: []
+ledger: []
+kernel: []
+platform: []
+`, `@game
+Feature: A glossed concatenation
+
+  @rule:R-KERNEL-001
+  Scenario: The ride is locked
+    Then the ride is locked
+`)
+
+	c := &checker{root: repo.root}
+	g := c.loadGlossary()
+	joined := describeFindings(c.findings)
+
+	for _, pin := range []struct {
+		term   string
+		reason string
+	}{
+		{"httpstatus", `concatenates the denylisted transport words "http" + "status"`},
+		{"statuscode", `concatenates the denylisted transport words "status" + "code"`},
+	} {
+		t.Run("rejected: "+pin.term, func(t *testing.T) {
+			if !strings.Contains(joined, `glossary term "`+pin.term+`" in section "game"`) {
+				t.Errorf("glossary term %q was accepted:\n%s", pin.term, joined)
+			}
+			if !strings.Contains(joined, pin.reason) {
+				t.Errorf("the reason for %q does not name the halves (%q missing):\n%s",
+					pin.term, pin.reason, joined)
+			}
+			if g.sections["game"][pin.term] {
+				t.Errorf("glossary term %q entered the allowlist despite being a concatenated disguise", pin.term)
+			}
+		})
+	}
+
+	// The guard: the object names §8 asserts and the glossary declares are not
+	// concatenations of transport words, and the check must not reach them.
+	t.Run("addable: a database object name", func(t *testing.T) {
+		if !g.sections["game"]["rides_tokens_locked_check"] {
+			t.Errorf("glossary term \"rides_tokens_locked_check\" was rejected:\n%s", joined)
+		}
+	})
 }
