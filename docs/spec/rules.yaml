@@ -4626,6 +4626,11 @@
     Note the timestamp precision is seconds (timestamp(0)) — a fact the catalog should keep
     because it is why two writes in one second are not distinguishable by created_at.
 
+    Category note: recategorized from `persistence-fact` for twin-consistency with
+    R-IDENTITY-006 — the same DB-key shape (a store-stamped fact the key itself refuses to
+    take from a caller) — because the sabotage proof is recorded as the scenario above, which
+    the persistence-fact category forbids.
+
 - id: R-IDENTITY-021
   title: Identity's tables are reachable only through identity's own database role
   statement: |
