@@ -52,10 +52,32 @@ func TestLoadCatalogRejectsUnknownFieldInRefusal(t *testing.T) {
 	}
 }
 
+// TestLoadCatalogRejectsTrailingDocument pins the document count: the catalog is
+// exactly ONE YAML document. yaml.Decoder returns one document per Decode call,
+// so a single Decode silently drops anything after a `---` separator (the
+// classic merge accident) while still returning a perfectly parsable catalog.
+// loadCatalog must keep decoding until io.EOF and reject a second document.
+func TestLoadCatalogRejectsTrailingDocument(t *testing.T) {
+	catalog, err := loadCatalog(filepath.Join("testdata", "catalog", "trailing-document.yaml"))
+	if err == nil {
+		t.Fatalf("loadCatalog accepted a catalog with a trailing YAML document (decoded %d rules); "+
+			"everything after the first document is silently dropped", len(catalog))
+	}
+	for _, want := range []string{
+		"trailing-document.yaml",
+		"trailing YAML document",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err.Error(), want)
+		}
+	}
+}
+
 // TestLoadCatalogDecodesRealCatalog is the completeness guard: every key the
 // canonical catalog uses must exist on the structs, so strict decoding stays
 // green against the tree it is meant to validate. It also pins that StringList
-// still accepts both documented shapes (scalar and list `constraint`).
+// still accepts both documented shapes (scalar and list `constraint`), and that
+// the single-document rule does not reject the real (single-document) catalog.
 func TestLoadCatalogDecodesRealCatalog(t *testing.T) {
 	catalog, err := loadCatalog(filepath.Join("..", "..", "docs", "spec", "rules.yaml"))
 	if err != nil {
