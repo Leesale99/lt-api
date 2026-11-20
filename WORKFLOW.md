@@ -108,6 +108,24 @@ extension reads it fresh on every gate decision and **refuses to run any gate wh
 unparseable, has an unknown field, or declares an approval token that disagrees with the code**. If a gate
 blocks you, fix the tree or ask the orchestrator to change this file — never work around it.
 
+This file also binds the two channels a writer can reach a protected path through. The edit/write
+tool deny covers file tools: every path is classified against `protected_paths` and the
+`pi_editable_paths` carve-out, the allowlist is the only escape hatch, and WORKFLOW.md and the
+allowlist are self-denied so a worker can never widen the policy that constrains it. Bash is the
+second channel, and it runs through a pre-execution scanner: the `bash_write_patterns` classes above
+are matched deterministically over the command word and write operators — no scoring, no model —
+every extracted write target goes through the same protected-path classification, and a target that
+cannot be resolved to one literal path is denied fail-closed rather than guessed. That scanner is
+best-effort by design, and the honest statement of it is this: a shell is Turing-complete, so the
+scanner raises the cost of bypass, it does not close the channel. These are documented limitations,
+not hidden ones: base64-piped shells, variable indirection and env-expanded targets, xargs-fed
+targets, interpreter `-c` writes, formatter `-w` flags, and editor-in-shell writes. What stands
+behind the scan is not a second scanner but the record — extension-written receipts in
+`receipts_dir`, reconciliation against the recorded checkpoints, and the full audit at the merge
+boundary — so a write that slips the deterministic net still has to survive a trail it did not
+write. Treat a deny as the boundary it is: fix the tree or ask for a policy change, and treat the
+uncovered list as the reason to keep the merge audit honest, not as a licence to route around it.
+
 Everything below is judgment, not policy. Delegate when the work is separable and the context you would
 burn is larger than the context you would spend explaining it; do the task yourself when it is one edit, one
 lookup, or a decision only you can make. Prefer one foreground worker over a fan-out you cannot verify, and

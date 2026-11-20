@@ -151,7 +151,9 @@ is a cheap triage view, not a verdict: policies 13, 15 and 18 still only run in
 **Picking up a task.** Find the rule in `docs/spec/rules.yaml`; read its `statement`,
 `enforcement`, `verification` and `notes`, then open the feature file it points at.
 Implement against the behavior those two describe. Run `make audit`; done when green.
-If the behavior must change, change the catalog and scenario first (§2).
+If the behavior must change, change the catalog and scenario first (§2). The
+write boundaries that bind this loop — the file-tools deny, the bash write-channel
+scanner and the receipt/reconciliation net — are in §5.
 
 **Adding a rule.** Follow §2 — the recipe is canonical there. Pick the authority and id,
 verify every site and test against the code today, add the catalog entry and its `@rule`
@@ -180,6 +182,27 @@ rules; `make audit` is the merge gate. The delegate extension runs the two fast 
 itself after each relevant write and again at settle — it blocks `done` for 3
 attempts, then hard-stops for a failure report; a worker reads that feedback block
 instead of arguing with it.
+
+**What each write boundary covers**, cheapest and most specific first:
+
+- *File tools.* The edit/write deny covers the file-tools channel: every path is
+  classified against `protected_paths` and `pi_editable_paths` in `WORKFLOW.md`
+  front matter, then the allowlist escape hatch, then the never-grantable
+  self-deny of `WORKFLOW.md` and the allowlist itself.
+- *Bash.* The write-channel scanner covers the shell channel — best-effort,
+  deterministic, fail-closed on ambiguity. It matches the pattern classes
+  declared there as `bash_write_patterns` (redirect, tee, sed-in-place,
+  file-transfer, heredoc, git-mutating) over command words and write operators
+  only, so `grep -n "sed -i" notes.md` passes; every extracted target routes
+  through the same classification, and a target that does not resolve to one
+  literal path (command substitution, variables, globs, unbalanced quotes,
+  eval / `sh -c` past the recursion cap) is denied before the command runs. A
+  shell is Turing-complete: this raises the cost of bypass, it does not close
+  the channel.
+- *The net around both.* The receipt trail, reconciliation against the newest
+  passing checkpoint, then the merge-boundary `make audit` (and `make prove`
+  for rule work): a write that slips the deterministic net still has to survive
+  a receipt trail it did not write and an audit at merge.
 
 **Receipts.** Every gate run appends a JSON receipt to `.pi/receipts/`
 (extension-written, gitignored). Workers report receipt paths and exit codes;
