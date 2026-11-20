@@ -39,7 +39,7 @@ test/unit:
 ## test/db: run the full suite against the test database (LT_API_TEST_DSN from .envrc; fails loudly if unreachable)
 .PHONY: test/db
 test/db:
-	go test ./... -v
+	go test -count=1 ./... -v
 
 ## test/spec: run the godog suite against real Postgres (needs LT_API_TEST_DSN; `make db/up` provides it)
 .PHONY: test/spec
@@ -128,6 +128,7 @@ GOFMT := $(shell go env GOROOT)/bin/gofmt
 ## audit: run quality control checks (fails on any unformatted file, stale spec or
 ## spec-check error). The chain is the pipeline's single gate: gofmt → vet →
 ## staticcheck → spec freshness → spec check → the whole test tree (unit, spec, db).
+## The test step runs with -count=1, so the gate never trusts the go test cache.
 .PHONY: audit
 audit:
 	go mod tidy -diff
@@ -137,7 +138,7 @@ audit:
 	go tool staticcheck ./...
 	$(MAKE) spec/diff
 	$(MAKE) spec/check
-	go test -race -vet=off ./...
+	go test -race -vet=off -count=1 ./...
 
 # ============================================================================================================================ #
 # SPEC CATALOG
