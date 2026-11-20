@@ -86,6 +86,14 @@ export interface JobEntry {
   status: JobStatus;
   /** Set on every transition out of "running" or out of "awaiting_approval"; older entries lack it. */
   finishedAt?: string;
+  /**
+   * Batch 1 (content-bound approvals): the HEAD SHA the orchestrator printed in
+   * its AWAITING_APPROVAL block ("HEAD SHA: <40-hex>"). job_approve binds the
+   * relayed decision to this SHA and refuses when the job worktree has moved.
+   * Legacy entries (and blocks without the line) lack it: approval relays
+   * unbound, exactly as before.
+   */
+  awaitingApprovalHeadSha?: string;
 }
 
 export function jobsDirFor(cwd: string): string {
@@ -251,6 +259,12 @@ export interface SessionRoundState {
   complete: boolean;
   /** complete AND the last assistant text carries APPROVAL_MARKER (confirm-handoff approval request). */
   awaitingApproval: boolean;
+  /**
+   * Batch 1: the `HEAD SHA: <40-hex>` value captured from the same last
+   * assistant message as APPROVAL_MARKER. Undefined when the block omits the
+   * line (legacy blocks) — such approvals relay unbound.
+   */
+  awaitingApprovalHeadSha?: string;
 }
 
 /**
@@ -290,7 +304,16 @@ export function sessionRoundState(dir: string, id: string): SessionRoundState {
   if (HANDOFF_TERMINAL_TOKENS.some((token) => lastLine.includes(token))) {
     return { complete: true, awaitingApproval: false };
   }
-  return { complete: true, awaitingApproval: assistantText.includes(APPROVAL_MARKER) };
+  const awaitingApproval = assistantText.includes(APPROVAL_MARKER);
+  // Batch 1: content binding. The orchestrator protocol puts a
+  // "HEAD SHA: <40-hex>" line in the AWAITING_APPROVAL block; capture it from
+  // the SAME message (never from the task text, which can name other SHAs).
+  let awaitingApprovalHeadSha: string | undefined;
+  if (awaitingApproval) {
+    const shaMatch = /^\s*HEAD SHA:\s*([0-9a-fA-F]{40})\b/m.exec(assistantText);
+    if (shaMatch) awaitingApprovalHeadSha = shaMatch[1].toLowerCase();
+  }
+  return { complete: true, awaitingApproval, awaitingApprovalHeadSha };
 }
 
 /** Read `<id>.exit` if present; null when missing/unparsable. */
@@ -454,6 +477,11 @@ async function refreshStatus(dir: string, entry: JobEntry): Promise<JobEntry> {
       entry.status = "done";
       entry.finishedAt = new Date().toISOString();
       await persistEntry(dir, entry);
+    } else if (state.awaitingApproval && state.awaitingApprovalHeadSha && state.awaitingApprovalHeadSha !== entry.awaitingApprovalHeadSha) {
+      // A rejection round ends with a FRESH AWAITING_APPROVAL block; keep the
+      // bound SHA in step with the block the user is now looking at.
+      entry.awaitingApprovalHeadSha = state.awaitingApprovalHeadSha;
+      await persistEntry(dir, entry);
     }
     return entry;
   }
@@ -477,6 +505,8 @@ async function refreshStatus(dir: string, entry: JobEntry): Promise<JobEntry> {
     // AWAITING_APPROVAL block — a first-class waiting status, not plain done.
     entry.status = round.awaitingApproval ? "awaiting_approval" : "done";
     entry.finishedAt = new Date().toISOString();
+    // Batch 1: bind the approval to the HEAD SHA printed in the block.
+    if (round.awaitingApproval) entry.awaitingApprovalHeadSha = round.awaitingApprovalHeadSha;
     await persistEntry(dir, entry);
     return entry;
   }
@@ -639,6 +669,10 @@ export interface ApprovalRelayOutcome {
   reason?: string;
   /** tmux session the message was delivered to when ok is true. */
   session?: string;
+  /** Batch 1: HEAD SHA appended to the relayed message (undefined = unbound legacy block). */
+  boundSha?: string;
+  /** The message actually typed into the pane (includes the binding suffix). */
+  deliveredMessage?: string;
 }
 
 /**
@@ -675,9 +709,44 @@ export async function relayApprovalDecision(cwd: string, id: string, message: st
   if (/\r|\n/.test(message)) {
     return { ok: false, reason: "Approval message must be a single line — a newline would submit the pane's editor early and split the decision from its note." };
   }
-  await execFileP("tmux", ["send-keys", "-t", entry.tmuxSession, "-l", message]);
+
+  // Batch 1: content-bound approval. When the block carried `HEAD SHA: <sha>`,
+  // the worktree HEAD must still be that commit — otherwise the reviewed plan
+  // is not what would be merged, and the relay refuses (the orchestrator will
+  // emit a fresh AWAITING_APPROVAL block to review). Any git/dir failure is
+  // fail-closed for the binding: no verification, no relay. A block WITHOUT a
+  // recorded SHA (legacy) relays unbound — fail-open for old jobs only.
+  let deliveredMessage = message;
+  let boundSha: string | undefined;
+  if (entry.awaitingApprovalHeadSha) {
+    // The registry does not persist the job's cwd; the caller's cwd is the
+    // parent checkout that owns .pi/jobs and the sibling worktree.
+    const worktreePath = path.resolve(cwd, "../lt-api-wt-" + entry.id);
+    let found = "";
+    let probeError = "";
+    try {
+      const probe = await execFileP("git", ["-C", worktreePath, "rev-parse", "HEAD"]);
+      found = probe.stdout.trim().toLowerCase();
+    } catch (error) {
+      probeError = error instanceof Error ? error.message : String(error);
+    }
+    if (/^[0-9a-f]{40}$/.test(found) && found === entry.awaitingApprovalHeadSha) {
+      boundSha = found;
+      deliveredMessage = message + " (bound to " + found + ")";
+    } else {
+      const foundLabel = found ? found : "(unavailable" + (probeError ? ": " + probeError.split("\n")[0] : "") + ")";
+      return {
+        ok: false,
+        reason:
+          "worktree HEAD moved since the approval request (expected " + entry.awaitingApprovalHeadSha +
+          ", found " + foundLabel + "). The approval is stale — the child orchestrator will emit a fresh " +
+          APPROVAL_MARKER + " block; approve again after reviewing it.",
+      };
+    }
+  }
+  await execFileP("tmux", ["send-keys", "-t", entry.tmuxSession, "-l", deliveredMessage]);
   await execFileP("tmux", ["send-keys", "-t", entry.tmuxSession, "Enter"]);
-  return { ok: true, session: entry.tmuxSession };
+  return { ok: true, session: entry.tmuxSession, boundSha, deliveredMessage };
 }
 
 /**
@@ -718,6 +787,11 @@ export async function formatJobDetail(entry: JobEntry, dir: string): Promise<str
     lines.push("--- awaiting approval ---");
     const block = parsed ? truncateParallelOutput(getFinalOutput(parsed.messages) || "(no approval block captured)") : "(no approval block captured)";
     lines.push(block);
+    if (entry.awaitingApprovalHeadSha) {
+      lines.push("approval bound to HEAD " + entry.awaitingApprovalHeadSha + " — job_approve refuses if the worktree HEAD has moved since.");
+    } else {
+      lines.push("The approval block carries no HEAD SHA line — job_approve relays unbound (legacy block; ask the orchestrator to include `HEAD SHA: <sha>`).");
+    }
     lines.push(
       "Approve or reject via the job_approve tool (id: \"" + entry.id + "\", message: \"approved [note]\" or \"rejected: <reason>\")" +
       (entry.tmuxSession ? ", or type the same message in the pane (tmux attach -t " + entry.tmuxSession + ")" : "") + ".",
