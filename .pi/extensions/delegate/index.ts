@@ -28,6 +28,22 @@
  * registry status (refreshStatus in jobs.ts detects the AWAITING_APPROVAL
  * marker; the UI surfaces and the settle injection phrase it as
  * waiting-for-approval).
+ *
+ * Batch 1 (worker gates + content-bound approvals, all logic in ./gates.ts):
+ *   - POST-WRITE gate: a worker child that successfully edits/writes a .go,
+ *     .feature, .yaml or docs/spec/ file gets `make audit/static` + the scoped
+ *     spec check appended to its tool result on failure (debounced ~10s).
+ *   - WORKER-SETTLE gate: the same two commands at settle, up to 3 attempts
+ *     (continue:true is bounded by the attempt counter), then a hard stop.
+ *   - GATE-FILE protection: child edit/write on cmd/spec/**, docs/spec/**,
+ *     Makefile or .pi/** is denied, except .pi prose and paths matched by
+ *     .pi/delegate/gate-allowlist.json (the only escape hatch).
+ *   - Receipts: the EXTENSION appends one JSON line per gate run to
+ *     .pi/receipts/<iso-date>.jsonl (commands, exit codes, rules hash, HEAD).
+ *   - SPEC-SCOPE: a `SPEC-SCOPE: module=… rules=…` line in the task text is
+ *     exported as PI_DELEGATE_SPEC_SCOPE into the worker's spawn env.
+ *   - job_approve now binds the relayed decision to the `HEAD SHA:` recorded in
+ *     the job's approval block and refuses when the worktree HEAD moved.
  */
 
 import { spawn } from "node:child_process";
@@ -35,7 +51,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Message } from "@earendil-works/pi-ai";
+import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
 import {
   CONFIG_DIR_NAME,
   DEFAULT_MAX_BYTES,
@@ -63,6 +79,24 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import {
+  type GateRun,
+  SETTLE_GATE_MAX_ATTEMPTS,
+  bumpSettleGateAttempts,
+  evaluateGateFileWrite,
+  formatGateReport,
+  formatSpecScope,
+  isGateRelevantWrite,
+  logGateDebug,
+  markPostWriteGateEnd,
+  markPostWriteGateStart,
+  parseSpecScope,
+  receiptCommandsOf,
+  resetSettleGateAttempts,
+  runScopedGate,
+  shouldRunPostWriteGate,
+  writeReceipt,
+} from "./gates.ts";
 import {
   createChildStreamParser,
   emptyUsage,
@@ -115,6 +149,32 @@ function pollCooldownMs(): number {
   const raw = Number(process.env.PI_DELEGATE_POLL_COOLDOWN_MS);
   if (!Number.isFinite(raw) || raw < 0) return POLL_COOLDOWN_MS_DEFAULT;
   return raw;
+}
+
+/** True in a spawned worker child (foreground spawns only — background children are orchestrators). */
+function isWorkerChild(): boolean {
+  return process.env.PI_DELEGATE_CHILD === "1" && process.env.PI_DELEGATE_ROLE === "worker";
+}
+
+/**
+ * Append a note to a tool result's content without dropping the original text:
+ * the LAST text part is extended in place (a new text part when there is none).
+ * Used by the scoped gates to report failures/skips on top of the tool output.
+ */
+function appendToolResultNote(
+  content: (TextContent | ImageContent)[],
+  note: string,
+): (TextContent | ImageContent)[] {
+  const copy: (TextContent | ImageContent)[] = [...content];
+  for (let index = copy.length - 1; index >= 0; index--) {
+    const part = copy[index];
+    if (part.type === "text") {
+      copy[index] = { type: "text", text: part.text + note };
+      return copy;
+    }
+  }
+  copy.push({ type: "text", text: note.replace(/^\n+/, "") });
+  return copy;
 }
 
 /** Last job_status poll of one job id: when, what the registry read, consecutive refusals. */
@@ -583,6 +643,14 @@ async function runSingleAgent(
       delete childEnv.PI_PROVIDER;
       delete childEnv.PI_MODEL;
       delete childEnv.PI_REASONING_LEVEL;
+      // Batch 1: the worker's spec scope travels as env, never re-parsed from
+      // the child's context (the child cannot see its own tool_result input
+      // reliably enough to scope a gate). Only a task text carrying a
+      // `SPEC-SCOPE: module=… rules=…` line sets it; otherwise the variable is
+      // removed, so no inherited value can ever narrow a worker's gate.
+      const specScope = parseSpecScope(task);
+      if (specScope) childEnv.PI_DELEGATE_SPEC_SCOPE = formatSpecScope(specScope);
+      else delete childEnv.PI_DELEGATE_SPEC_SCOPE;
       try {
         proc = spawn(invocation.command, invocation.args, {
           cwd: effectiveCwd,
@@ -1450,8 +1518,9 @@ export default function (pi: ExtensionAPI) {
   // reminder, confirming allows harness/plan work. Non-UI main sessions (-p)
   // get a HARD block instead — nobody can approve a dialog there, and without
   // this the orchestrator could silently implement. bash is not gated (prompt
-  // layer discourages it). Children (PI_DELEGATE_CHILD set) skip the gate
-  // entirely so delegated work runs unattended.
+  // layer discourages it). Children (PI_DELEGATE_CHILD set) skip THIS gate so
+  // delegated work runs unattended — they get the batch-1 gate-file DENY path
+  // in the handler right below instead.
   pi.on("tool_call", async (event, ctx) => {
     if (process.env.PI_DELEGATE_CHILD) return;
     if (event.toolName !== "edit" && event.toolName !== "write") return;
@@ -1470,6 +1539,23 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  // Batch 1: child sessions no longer skip the gate entirely — they get a DENY
+  // path for the GATE FILES. Delegated implementation work still runs
+  // unattended everywhere else; what is protected is the specification
+  // machinery itself (docs/spec/** except nothing, cmd/spec/**, Makefile,
+  // .pi/** minus the prose dirs). The single escape hatch is
+  // .pi/delegate/gate-allowlist.json (see the gates.ts header) — no env-var
+  // bypasses, and a missing/invalid allowlist denies.
+  pi.on("tool_call", async (event, ctx) => {
+    if (process.env.PI_DELEGATE_CHILD !== "1") return;
+    if (event.toolName !== "edit" && event.toolName !== "write") return;
+    const input = event.input as { path?: unknown };
+    if (typeof input.path !== "string" || input.path.length === 0) return;
+    const decision = evaluateGateFileWrite(ctx.cwd, input.path);
+    if (!decision.blocked) return;
+    return { block: true, reason: decision.reason ?? "Gate file is protected from delegated edits." };
+  });
+
   // Tool execute results cannot set runtime error state directly, so patch it
   // through the result hook. AnyToolDetails: the background start-failure
   // result also sets isError (BackgroundJobDetails.isError).
@@ -1477,6 +1563,86 @@ export default function (pi: ExtensionAPI) {
     if (event.toolName !== "subagent") return;
     const details = event.details as AnyToolDetails | undefined;
     if (details?.isError) return { isError: true };
+  });
+
+  // Batch 1: POST-WRITE scoped gate (worker children only). After a successful
+  // edit/write of a gate-relevant file (.go / .feature / .yaml / docs/spec/**)
+  // the extension itself runs `make audit/static` + the scoped spec check and
+  // appends a failure block to the tool result. Successes stay silent (context
+  // stays small); a debounced skip still leaves a one-line note so the worker
+  // knows a gate is due. The extension writes the receipt, never the worker.
+  pi.on("tool_result", async (event, ctx) => {
+    if (!isWorkerChild()) return;
+    if (event.toolName !== "edit" && event.toolName !== "write") return;
+    if (event.isError) return;
+    const input = event.input as { path?: unknown };
+    if (typeof input.path !== "string" || input.path.length === 0) return;
+    if (!isGateRelevantWrite(ctx.cwd, input.path)) return;
+
+    const sessionKey = process.env.PI_SESSION_ID ?? "proc:" + String(process.pid);
+    if (shouldRunPostWriteGate(sessionKey) !== "run") {
+      void logGateDebug(ctx.cwd, "post-write gate skipped (debounce) after " + event.toolName + " " + input.path);
+      return {
+        content: appendToolResultNote(
+          event.content,
+          "\n[scoped gate] run skipped (debounced ~10s) — a gate run is due/running; results land after the next write or at settle.",
+        ),
+      };
+    }
+
+    markPostWriteGateStart(sessionKey);
+    let run: Awaited<ReturnType<typeof runScopedGate>>;
+    try {
+      run = await runScopedGate({ cwd: ctx.cwd, scopeEnv: process.env.PI_DELEGATE_SPEC_SCOPE });
+    } catch (error) {
+      // Internal error ⇒ failure, never a silent pass (fail closed).
+      console.error("[delegate] post-write gate crashed:", error);
+      run = {
+        ok: false,
+        steps: [
+          {
+            command: "(scoped gate)",
+            argv: [],
+            ok: false,
+            exitCode: null,
+            timedOut: false,
+            durationMs: 0,
+            stdout: "",
+            stderr: error instanceof Error ? error.message : String(error),
+            spawnError: null,
+            reason: "gate runner threw",
+          },
+        ],
+      };
+    } finally {
+      markPostWriteGateEnd(sessionKey);
+    }
+    try {
+      await writeReceipt({
+        cwd: ctx.cwd,
+        agent: process.env.PI_DELEGATE_ROLE ?? "worker",
+        session: process.env.PI_SESSION_ID,
+        commands: receiptCommandsOf(run),
+        ok: run.ok,
+        note: "post-write gate after " + event.toolName + " " + input.path,
+      });
+    } catch (error) {
+      console.error("[delegate] post-write receipt failed:", error);
+    }
+    if (run.ok) return;
+    return {
+      content: appendToolResultNote(
+        event.content,
+        "\n" +
+          formatGateReport(run, {
+            header: "\u2500\u2500 SCOPED GATE FAILED \u2500\u2500",
+            footer:
+              "Fix these before reporting done. The gate reruns after your next write; " +
+              "make audit/static and spec check must pass before settle.",
+            maxLines: 30,
+          }),
+      ),
+    };
   });
 
   // Phase 5 two-tier: workers cannot recurse — skip the subagent tool
@@ -2246,7 +2412,7 @@ export default function (pi: ExtensionAPI) {
     description:
       "Inspect background subagent jobs (artifacts in .pi/jobs/). " +
       "Omit id to list all jobs (id, status, agent, task preview, elapsed). " +
-      "With id: for done jobs returns the final assistant output; for failed jobs exit code + stderr + last events; for running jobs current activity; for awaiting_approval jobs (confirm handoff) returns the orchestrator's approval request — decide via job_approve. " +
+      "With id: for done jobs returns the final assistant output; for failed jobs exit code + stderr + last events; for running jobs current activity; for awaiting_approval jobs (confirm handoff) returns the orchestrator's approval request — check its `HEAD SHA: <sha>` line, then decide via job_approve (which refuses if the worktree HEAD moved). " +
       "On-demand only: for when the user asks or you need one data point — never loop-wait on a job. A repeat poll of the same unchanged running job is refused by a cooldown (doubling on consecutive refusals), and completion arrives automatically as an injected message at the next turn boundary.",
     parameters: JobStatusParams,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -2385,9 +2551,11 @@ export default function (pi: ExtensionAPI) {
     label: "Job approve",
     description:
       "Relay an approval decision to a background orchestrator job that is waiting in confirm handoff mode (status awaiting_approval). " +
+      "SHA-BOUND: when the approval block carries a `HEAD SHA: <sha>` line (the job registry records it), the decision is only relayed while the job's worktree HEAD still matches — a moved HEAD makes the approval stale and the relay is refused (the orchestrator emits a fresh AWAITING_APPROVAL block to review). " +
+      'On a match the relayed message gets " (bound to <sha>)" appended, so the child pane also sees the binding. Blocks without a HEAD SHA line (legacy) relay unbound. ' +
       "The message is typed verbatim into the job's idle tmux pane (tmux send-keys -l + Enter), exactly as if the user typed it there. " +
       'message "approved [note]" → the orchestrator performs its merge-back and reports HANDOFF_COMPLETE (the job then advances to done); "rejected: <reason>" → it iterates and emits a fresh approval request. ' +
-      "Refuses: unknown id, non-tmux job, dead tmux session, mid-round job, or a job whose last message carries no approval request. " +
+      "Refuses: unknown id, non-tmux job, dead tmux session, mid-round job, a job whose last message carries no approval request, or a worktree HEAD that moved since the request. " +
       "After delivery, follow up with job_status on the same id to watch the continuation.",
     parameters: JobApproveParams,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -2397,9 +2565,10 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: "Refused: " + (outcome.reason ?? "unknown reason") }], details: { delivered: false, id: params.id } };
       }
       const text =
-        "Delivered to tmux session " + outcome.session + " (job " + params.id + "): \"" + params.message + "\"." +
+        "Delivered to tmux session " + outcome.session + " (job " + params.id + "): \"" + (outcome.deliveredMessage ?? params.message) + "\"." +
+        (outcome.boundSha ? "\nBound to HEAD " + outcome.boundSha + " (the worktree HEAD still matched the approved block)." : "\nNo HEAD SHA recorded in the approval block — relayed unbound (legacy block).") +
         "\nThe orchestrator pane received your decision; follow up with job_status id \"" + params.id + "\" to watch it advance (approval → HANDOFF_COMPLETE, job done; rejection → a fresh approval request).";
-      return { content: [{ type: "text", text }], details: { delivered: true, id: params.id, session: outcome.session } };
+      return { content: [{ type: "text", text }], details: { delivered: true, id: params.id, session: outcome.session, boundSha: outcome.boundSha } };
     },
     renderCall(args, theme, _context) {
       const preview = args.message ? String(args.message).slice(0, 40) : "...";
@@ -2580,5 +2749,80 @@ export default function (pi: ExtensionAPI) {
     // jobs all failed to build returns undefined and the run ends.
     if (delivered.length === 0) return undefined;
     return { entries: drafts, continue: true };
+  });
+
+  // Batch 1: WORKER-SETTLE gate. A worker child may not settle as "done" while
+  // the scoped gate fails: the same two commands as the post-write gate run
+  // again (no debounce), the extension writes a receipt, and a bounded
+  // continue:true hands the worker up to three turns to fix the failures.
+  // Loop safety: continue is conditional on NEW state — the attempt counter
+  // (module state, reset by a PASSING run) strictly increases per failure, so
+  // attempt 3 emits the HARD STOP message WITHOUT continue and the run ends
+  // with the failure report reaching the parent.
+  pi.on("agent_before_settle", async (event, ctx) => {
+    if (!isWorkerChild()) return;
+    if (event.outcome !== "completed") return;
+
+    let run: GateRun;
+    try {
+      run = await runScopedGate({ cwd: ctx.cwd, scopeEnv: process.env.PI_DELEGATE_SPEC_SCOPE });
+    } catch (error) {
+      // Internal error ⇒ failure, never a silent settle (fail closed).
+      console.error("[delegate] settle gate crashed:", error);
+      run = {
+        ok: false,
+        steps: [
+          {
+            command: "(settle gate)",
+            argv: [],
+            ok: false,
+            exitCode: null,
+            timedOut: false,
+            durationMs: 0,
+            stdout: "",
+            stderr: error instanceof Error ? error.message : String(error),
+            spawnError: null,
+            reason: "gate runner threw",
+          },
+        ],
+      };
+    }
+
+    let receiptPath: string | null = null;
+    try {
+      receiptPath = await writeReceipt({
+        cwd: ctx.cwd,
+        agent: process.env.PI_DELEGATE_ROLE ?? "worker",
+        session: process.env.PI_SESSION_ID,
+        commands: receiptCommandsOf(run),
+        ok: run.ok,
+        note: "settle gate",
+      });
+    } catch (error) {
+      console.error("[delegate] settle receipt failed:", error);
+    }
+
+    if (run.ok) {
+      resetSettleGateAttempts();
+      return undefined;
+    }
+
+    const attempt = bumpSettleGateAttempts();
+    const hardStop = attempt >= SETTLE_GATE_MAX_ATTEMPTS;
+    const header =
+      "\u2500\u2500 SETTLE GATE BLOCKED (attempt " + String(attempt) + "/" + String(SETTLE_GATE_MAX_ATTEMPTS) + ") \u2500\u2500";
+    const footer = hardStop
+      ? "HARD STOP: " + String(SETTLE_GATE_MAX_ATTEMPTS) + " failed gate attempts. Report the failures verbatim " +
+        "(commands, exit codes, receipt path) and STOP \u2014 do not try further fixes."
+      : "Do not report done; fix the gate failures.";
+    const content =
+      formatGateReport(run, { header, footer, maxLines: 30 }) +
+      "\nreceipt: " + (receiptPath ?? "(not written)");
+    const entries: SessionBoundaryDraft[] = [
+      ...event.entries,
+      { type: "custom_message", customType: "delegate-gate", content, display: true },
+    ];
+    if (hardStop) return { entries };
+    return { entries, continue: true };
   });
 }

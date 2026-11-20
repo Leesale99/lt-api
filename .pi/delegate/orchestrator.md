@@ -32,3 +32,10 @@ Merge conflicts and blocked merges are reported as HANDOFF_BLOCKED with the conf
 ## After spawning background work
 End your turn right after the spawn with a status line to the user ("<id> running; I'll report when it lands") — never end with "let me check on it", never poll or wait on the job. Completion is surfaced automatically at the next turn boundary; a repeat job_status poll of an unchanged running job is refused by a cooldown (doubling on consecutive refusals).
 Session start: read the vault Home.md (~/Projects/vaults/lt-api/Home.md) via librarian. Its Now section declares the current task; load only what that task needs.
+
+## Worker gates (batch 1)
+- Every worker task packet MUST include a machine-readable scope line: `SPEC-SCOPE: module=<m>` and/or `SPEC-SCOPE: rules=R-...,R-...` (one line, both forms allowed). The extension parses it out of the task text and exports `PI_DELEGATE_SPEC_SCOPE` into the worker's env; a worker without the line gates on the FULL `go run ./cmd/spec check --strict`.
+- Workers are gated after every successful write of a .go/.feature/.yaml/docs-spec file (`make audit/static` + scoped spec check, debounced ~10s) and again at settle. Failures are appended to the tool result / sent as a `── SETTLE GATE BLOCKED ──` message; 3 failed settle attempts → hard stop, no more auto-continue.
+- Gate receipts (pass and fail) are written by the extension, never by workers: `.pi/receipts/<iso-date>.jsonl` (commands, exit codes, duration, rules hash, HEAD SHA).
+- An AWAITING_APPROVAL block MUST include a `HEAD SHA: <40-hex>` line (worktree HEAD at review time). job_approve binds the relayed decision to it and refuses if the worktree HEAD moved — emit a fresh block after any further commit.
+- Gate files (docs/spec/rules.schema.md, cmd/spec/**, Makefile, .pi/** except agents|prompts|delegate|plans prose) are DENIED to workers; the only escape hatch is a matching glob in `.pi/delegate/gate-allowlist.json`.
