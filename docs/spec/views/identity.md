@@ -417,7 +417,7 @@ The service keeps only a fingerprint of each token it issues; the token text its
 | `internal/identity/internal/repository/user_repo.go::UserRepository.getForToken` | `repository` | `defense-in-depth` | — |
 | `internal/identity/internal/repository/user_token_repo.go::UserTokenRepository.insert` | `repository` | `defense-in-depth` | — |
 
-**Refusal** `synthetic` → _(unnamed)_ → `ErrNotFound` → `401`
+**Refusal** `23505` → `user_tokens_pkey` → _(unmapped)_ → _(falls through to 500)_
 
 **Verification**
 

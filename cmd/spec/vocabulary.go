@@ -28,10 +28,15 @@ package main
 // SQL-keyword half of the denylist. Everything else still applies to them: the
 // transport words, the numeric status codes, and the glossary binding (whose
 // seed declares the harness's own words like `insert` or `rides_state_gate`).
-// The one phrase-level exception is a denylisted phrase glued inside a declared
-// database object name (`rides_status_code_present_check`): that is a name §8
-// asserts, so the phrase pass reads it as the name's spelling there — written as
-// words, the phrase still errors.
+//
+// The one phrase-level exception is a denylisted phrase glued inside a database
+// object name (`rides_status_code_present_check`), and it is CONDITIONAL on the
+// name being REAL (realObjectNames): a name is real when it is a value of some
+// rule's `refusal.constraint` or `refusal.sentinel` in docs/spec/rules.yaml, or
+// when it appears literally in a migrations/*.sql file. A fabricated name names
+// no object the database has, so its fragments are the words the step said and
+// the phrase fires, in a sabotage step as anywhere else. Written as words, the
+// phrase always errors.
 
 import (
 	"fmt"
@@ -56,6 +61,14 @@ const (
 
 	// glossaryCommonSection is the shared section every module may use.
 	glossaryCommonSection = "common"
+
+	// catalogFile is the canonical catalog, relative to the repository root: the
+	// §8 reality gate reads every rule's refusal names from it.
+	catalogFile = "docs/spec/rules.yaml"
+
+	// migrationsGlob matches the SQL migrations, relative to the repository
+	// root: the second half of the §8 reality gate.
+	migrationsGlob = "migrations/*.sql"
 )
 
 // denylistedTransportTokens are gherkin-style.md §6's transport words: they
@@ -220,8 +233,8 @@ func tokenize(text string, dropQuoted bool) []string {
 // a bypass hatch: `status_code` would escape the `status code` phrase, and
 // `http_status` would escape the transport-word list. Splitting the names the
 // sabotage family spells surfaces their fragments (`matches_ended_at_check` →
-// `check`), which the §8 exemption covers because those names appear only in
-// sabotage steps (see the file comment).
+// `check`), which the §8 exemption covers only for REAL object names (see
+// realObjectNames and the file comment).
 func splitTokenStream(tokens []string) []string {
 	split := make([]string, 0, len(tokens))
 	for _, token := range tokens {
@@ -284,7 +297,8 @@ func disguiseReason(term string) string {
 		// name (`rides_status_code_present_check`), which gherkin-style.md §8
 		// makes the glossary's legitimate cargo: the phrase is part of the name
 		// the identifier spells, and where that name may appear is decided per
-		// step by the sabotage exemption, not here.
+		// step by the sabotage exemption and its reality gate (realObjectNames),
+		// not here.
 		if len(split) > len(phrase) {
 			continue
 		}
@@ -429,9 +443,161 @@ func (c *checker) loadGlossary() *glossary {
 	return g
 }
 
+// # The §8 reality set
+//
+// gherkin-style.md §8 promises that a sabotage assertion names a REAL database
+// object, and rules.schema.md policy 13 exempts those names from the denylisted
+// PHRASES. The set is built once per run (realObjectNames): a name is REAL when
+// it is a value of some rule's `refusal.constraint` or `refusal.sentinel` in
+// docs/spec/rules.yaml, or when it appears literally in a migrations/*.sql
+// file. The loader is deliberately cheap (one catalog read, one glob) and
+// silent on catalog-shape problems: those are other policies' findings, and
+// reporting them here would double-report them.
+
+// realObjectNames is the §8 reality gate's set of database object names.
+type realObjectNames struct {
+	// named holds the catalog half: every refusal.constraint and
+	// refusal.sentinel value of every rule.
+	named map[string]bool
+	// migrations holds the migrations half: the text of every migrations/*.sql
+	// file, in sorted path order. A name is real when it is a literal substring
+	// of one of them.
+	migrations []string
+}
+
+// loadRealObjectNames builds the §8 reality set for one checker run. A missing
+// or unparseable catalog, and a missing migrations directory, yield the empty
+// half: the policies that own the catalog's shape report those problems, and
+// their absence here must not turn into a second finding.
+func loadRealObjectNames(root string) *realObjectNames {
+	real := &realObjectNames{named: map[string]bool{}}
+
+	if data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(catalogFile))); err == nil {
+		var catalog Catalog
+		if err := yaml.Unmarshal(data, &catalog); err == nil {
+			for _, rule := range catalog {
+				if rule.Refusal == nil {
+					continue
+				}
+				for _, name := range rule.Refusal.Constraint {
+					if name != "" {
+						real.named[name] = true
+					}
+				}
+				if sentinel := rule.Refusal.Sentinel; sentinel != nil && *sentinel != "" {
+					real.named[*sentinel] = true
+				}
+			}
+		}
+	}
+
+	paths, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(migrationsGlob)))
+	if err != nil {
+		return real
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		real.migrations = append(real.migrations, string(data))
+	}
+	return real
+}
+
+// has reports whether the name is a REAL database object: a catalog refusal
+// name, or a literal substring of a migration.
+func (r *realObjectNames) has(name string) bool {
+	if r == nil || name == "" {
+		return false
+	}
+	if r.named[name] {
+		return true
+	}
+	for _, migrations := range r.migrations {
+		if strings.Contains(migrations, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// realNameCarriesPhrase reports whether every underscore-joined token whose
+// fragments spell the phrase in the denylist's split stream is a REAL database
+// object name. It is the reality condition on the §8 phrase exemption: a
+// fabricated name falls back to the normal phrase pass.
+func (c *checker) realNameCarriesPhrase(tokens, phrase []string) bool {
+	carriers := phraseCarriers(tokens, phrase)
+	if len(carriers) == 0 {
+		return false
+	}
+	for _, carrier := range carriers {
+		if !c.realObjects.has(carrier) {
+			return false
+		}
+	}
+	return true
+}
+
+// phraseCarriers returns the underscore-preserving tokens whose `_`-split
+// fragments spell the phrase, one entry per fragment of a matching window. A
+// window written as words has no glued carrier and contributes nothing (the
+// caller's windowHasUnglued already reports it); a window cut out of one name
+// contributes that name, so the reality gate judges the whole identifier, not
+// one of its fragments.
+func phraseCarriers(tokens, phrase []string) []string {
+	if len(phrase) == 0 {
+		return nil
+	}
+	scrutiny := splitTokenStream(tokens)
+	owners := fragmentOwners(tokens)
+	var carriers []string
+	for i := 0; i+len(phrase) <= len(scrutiny); i++ {
+		match := true
+		for j, want := range phrase {
+			if scrutiny[i+j] != want {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		glued := true
+		for j := range phrase {
+			if len(splitTokenStream([]string{tokens[owners[i+j]]})) < 2 {
+				glued = false
+				break
+			}
+		}
+		if !glued {
+			continue
+		}
+		for j := range phrase {
+			carriers = append(carriers, tokens[owners[i+j]])
+		}
+	}
+	return carriers
+}
+
+// fragmentOwners maps each index of the `_`-split stream back to the index of
+// the underscore-preserving token it was cut out of — the carrier of the
+// fragment. gluedFragments says WHETHER a fragment is glued; this says which
+// name it belongs to, which is what the reality gate has to look up.
+func fragmentOwners(tokens []string) []int {
+	owners := make([]int, 0, len(tokens))
+	for i, token := range tokens {
+		for range splitTokenStream([]string{token}) {
+			owners = append(owners, i)
+		}
+	}
+	return owners
+}
+
 // collectVocabulary runs policy 13 over the feature tree.
 func collectVocabulary(root string) []Finding {
-	c := &checker{root: root}
+	c := &checker{root: root, realObjects: loadRealObjectNames(root)}
 	g := c.loadGlossary()
 	c.checkStepVocabulary(g)
 	sortFindings(c.findings)
@@ -582,13 +748,15 @@ func (c *checker) scanVocabulary(report func(pointer, msg string), g *glossary, 
 		if !windowContains(scrutiny, phrase) {
 			continue
 		}
-		// gherkin-style.md §8: a database object name (`rides_status_code_present_check`)
-		// appears only in a sabotage assertion, and the sabotage exemption covers
-		// the names it spells. A phrase made only of fragments glued by `_` is
-		// therefore that name's own spelling, not the words the step said; the
-		// phrase still fires when it was written as words (`the status code`),
-		// even in a sabotage step.
-		if sabotage && !windowHasUnglued(scrutiny, glued, phrase) {
+		// gherkin-style.md §8: a REAL database object name
+		// (`rides_status_code_present_check` style) may spell a denylisted
+		// phrase with its `_`-glued fragments. The exemption is conditional on
+		// the name being REAL (realObjectNames): a fabricated name names no
+		// object the database has, so its fragments are the words the step
+		// said and the phrase fires, in a sabotage step as anywhere else. A
+		// phrase written as words always fires, sabotage step or not.
+		if sabotage && !windowHasUnglued(scrutiny, glued, phrase) &&
+			c.realNameCarriesPhrase(tokens, phrase) {
 			continue
 		}
 		for _, token := range phrase {
@@ -659,7 +827,9 @@ func isSQLAdjacency(tokens []string, i int) bool {
 // position that was written as a word rather than cut out of an
 // underscore-joined name. It is what keeps the §8 object-name exemption narrow:
 // `rides_status_code_present_check` is a name, while `the status code` is the
-// phrase gherkin-style.md §6 forbids in every other step.
+// phrase gherkin-style.md §6 forbids in every other step. The exemption is also
+// conditional on the name being REAL — a fully glued window still reports the
+// phrase when its carrier is fabricated (see scanVocabulary).
 func windowHasUnglued(tokens []string, glued []bool, phrase []string) bool {
 	if len(phrase) == 0 || len(tokens) < len(phrase) {
 		return false

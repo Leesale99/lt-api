@@ -3791,10 +3791,10 @@
       role: defense-in-depth
       pinned_by: null
   refusal:
-    code: synthetic
-    constraint: null
-    sentinel: ErrNotFound
-    http: 401
+    code: "23505"
+    constraint: user_tokens_pkey
+    sentinel: null
+    http: null
   fixture: null
   verification:
     unit:
@@ -3814,8 +3814,11 @@
     they cannot drift silently, because a mismatch makes every token unresolvable and
     TestNewAndGetForToken's "New persists a resolvable token" subtest fails first. The
     e2e fixture mirrors the same discipline: only SHA-256 digests live in seed_test.go and
-    the preimages live in auth_test.go. Refusal: a token whose fingerprint is not in the
-    table is simply "not found" — the authentication edge renders it 401 (and the
+    the preimages live in auth_test.go. Refusal: the constraint's refusal is the 23505 on
+    user_tokens_pkey, and it is unmapped — insert returns the driver error untouched, so a
+    second row for one fingerprint falls through rather than becoming a translated status;
+    the read path is the other surface: a token whose fingerprint is not in the table is
+    simply "not found" — the authentication edge renders its sentinel as 401 (and the
     activation edge renders the same sentinel as a 422 field error).
 
 - id: R-IDENTITY-007

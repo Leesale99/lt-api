@@ -141,7 +141,10 @@ type Finding struct {
 type checker struct {
 	root     string
 	fixtures map[string]bool
-	findings []Finding
+	// realObjects is policy 13's §8 reality set (see vocabulary.go). It is built
+	// once by collectVocabulary and left nil for every other policy.
+	realObjects *realObjectNames
+	findings    []Finding
 }
 
 func (c *checker) add(policyID, ruleID string, sev severity, format string, args ...any) {

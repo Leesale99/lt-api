@@ -297,7 +297,11 @@ list is the frequency.
       way too, and a homograph fragment is SQL by the **form** of the identifier it
       belongs to — `check` in `matches_ended_at_check` is an ERROR without needing a
       neighbour, since splitting names must not reopen the `_` bypass — and such
-      names surface only in §8 steps, which the sabotage exemption covers.
+      names surface only in §8 steps, where the sabotage exemption covers them **only
+      when the name is REAL**: a `refusal.constraint` or `refusal.sentinel` value in
+      `docs/spec/rules.yaml`, or a name that appears literally in a `migrations/*.sql`
+      file. A fabricated name gets the phrase denylist normally, in a sabotage step as
+      anywhere else.
     - **Allowlist (the seeded glossary).** Every remaining token of every step must be
       declared in `docs/spec/glossary.yaml` — in the section named after the feature
       file's module directory (`game`, `identity`, `schedule`, `ledger`, `kernel`,

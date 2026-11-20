@@ -98,9 +98,14 @@ the subject of the sentence. Concrete nouns, not abstractions: `"Spring 2026"`, 
 `1.80`), scores as `2–1`.
 
 This section is enforced mechanically by checker policy 13 (`13-vocabulary`,
-`rules.schema.md` §3): the transport half of the denylist above is an absolute ERROR in
-every step, and every remaining step token must be declared in the module's section of
-`docs/spec/glossary.yaml` (or in `common`). The SQL words are partitioned: the homographs
+`rules.schema.md` §3): the transport half of the denylist above is an ERROR in every
+step, and every remaining step token must be declared in the module's section of
+`docs/spec/glossary.yaml` (or in `common`). The one exception is a §8-shaped step: an
+underscore-joined database object name there is exempt from the phrase denylist only
+when the name is REAL — a `refusal.constraint` or `refusal.sentinel` value in
+`docs/spec/rules.yaml`, or a name literally present in a `migrations/*.sql` file. A
+fabricated name gets the denylist normally: the exemption covers a name the database
+has, not the disguise of one. The SQL words are partitioned: the homographs
 that are ordinary English too (`check`, `unique`, `index`, `references`, `create`,
 `table`, `column`) fire only beside another SQL word or a database object noun (`create
 table`, `unique index`); `the check passes` is fine. The rest error alone (`insert into
