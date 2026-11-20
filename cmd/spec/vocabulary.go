@@ -28,6 +28,10 @@ package main
 // SQL-keyword half of the denylist. Everything else still applies to them: the
 // transport words, the numeric status codes, and the glossary binding (whose
 // seed declares the harness's own words like `insert` or `rides_state_gate`).
+// The one phrase-level exception is a denylisted phrase glued inside a declared
+// database object name (`rides_status_code_present_check`): that is a name §8
+// asserts, so the phrase pass reads it as the name's spelling there — written as
+// words, the phrase still errors.
 
 import (
 	"fmt"
@@ -161,10 +165,15 @@ var (
 	// already lowercase.
 	glossaryTermPattern = regexp.MustCompile(`^[a-z0-9_]+$`)
 	// disguisedStatusPattern is §6's numeric status written with letters in
-	// place of digits (`2oo` for `200`, `4O4` for `404`): a token that is not
-	// all digits but begins with a digit and mixes letters in. It is a
-	// transport figure, never a word a feature may declare.
-	disguisedStatusPattern = regexp.MustCompile(`^[0-9]+[0-9a-z]*[a-z][0-9a-z]*$`)
+	// place of digits (`2oo` for `200`, `4O4` for `404`): EXACTLY three
+	// characters, an HTTP-range leading digit (1–5) and then digits or the
+	// letter `o` standing in for a zero. The shape is narrow on purpose. An
+	// earlier version was "begins with a digit and mixes letters in", which
+	// made every digit-leading word a transport figure: `1st`, `30min` and
+	// `3d` were refused by disguiseReason and could never be declared, in a
+	// glossary entry or in a step. Only a lookalike of the three-digit figure
+	// is the disguise §6 forbids.
+	disguisedStatusPattern = regexp.MustCompile(`(?i)^[1-5][0-9o]{2}$`)
 )
 
 // tokenizeStep is the pinned tokenizer, in order: lowercase; drop English
@@ -266,19 +275,57 @@ func isQuantityFollower(token string) bool {
 func disguiseReason(term string) string {
 	split := splitTokenStream([]string{term})
 	for _, phrase := range denylistedPhrases {
-		if windowContains(split, phrase) {
-			return fmt.Sprintf("it spells the denylisted phrase %q", strings.Join(phrase, " "))
+		if !windowContains(split, phrase) {
+			continue
 		}
+		// A term that IS the phrase re-spelled (`status_code`) is the disguise
+		// this check exists to refuse. A term that merely CARRIES the fragments
+		// among fragments of its own is an underscore-joined database object
+		// name (`rides_status_code_present_check`), which gherkin-style.md §8
+		// makes the glossary's legitimate cargo: the phrase is part of the name
+		// the identifier spells, and where that name may appear is decided per
+		// step by the sabotage exemption, not here.
+		if len(split) > len(phrase) {
+			continue
+		}
+		return fmt.Sprintf("it spells the denylisted phrase %q", strings.Join(phrase, " "))
 	}
 	for _, token := range split {
 		if denylistedTransportTokens[token] {
 			return fmt.Sprintf("it carries the transport word %q", token)
 		}
 	}
+	if first, second, ok := concatenatedTransport(term); ok {
+		return fmt.Sprintf("it concatenates the denylisted transport words %q + %q", first, second)
+	}
 	if disguisedStatusPattern.MatchString(term) {
 		return "it is a numeric status written with letters in place of digits"
 	}
 	return ""
+}
+
+// concatenatedTransport reports whether the term is two denylisted TRANSPORT
+// words written without the `_` that would let the split stream see them
+// (`httpstatus` = `http` + `status`, `statuscode` = `status` + `code`), and
+// returns the halves. Splitting on `_` closed the `status_code` hatch, but a
+// concatenation carries no separator at all, so it has to be cut by hand.
+//
+// The halves vocabulary is the transport half only: denylistedTransportTokens ∪
+// statusNouns. The SQL half is deliberately absent for the same reason it is
+// absent from disguiseReason's other checks — the glossary legitimately declares
+// the §8 sabotage family's database object names (`rides_tokens_locked_check`,
+// `round_lifecycle_blocks_delete`), and a SQL word glued to another word is how
+// those names are spelled.
+func concatenatedTransport(term string) (first, second string, ok bool) {
+	transportWord := func(word string) bool {
+		return denylistedTransportTokens[word] || statusNouns[word]
+	}
+	for i := 1; i < len(term); i++ {
+		if transportWord(term[:i]) && transportWord(term[i:]) {
+			return term[:i], term[i:], true
+		}
+	}
+	return "", "", false
 }
 
 // isSabotageStep reports whether the step is one of gherkin-style.md §8's
@@ -535,6 +582,15 @@ func (c *checker) scanVocabulary(report func(pointer, msg string), g *glossary, 
 		if !windowContains(scrutiny, phrase) {
 			continue
 		}
+		// gherkin-style.md §8: a database object name (`rides_status_code_present_check`)
+		// appears only in a sabotage assertion, and the sabotage exemption covers
+		// the names it spells. A phrase made only of fragments glued by `_` is
+		// therefore that name's own spelling, not the words the step said; the
+		// phrase still fires when it was written as words (`the status code`),
+		// even in a sabotage step.
+		if sabotage && !windowHasUnglued(scrutiny, glued, phrase) {
+			continue
+		}
 		for _, token := range phrase {
 			denied[token] = true
 		}
@@ -593,6 +649,34 @@ func isSQLAdjacency(tokens []string, i int) bool {
 			continue
 		}
 		if denylistedSQLTokens[tokens[j]] || sqlAdjacencyNouns[tokens[j]] {
+			return true
+		}
+	}
+	return false
+}
+
+// windowHasUnglued reports whether the phrase occurs in the split stream at a
+// position that was written as a word rather than cut out of an
+// underscore-joined name. It is what keeps the §8 object-name exemption narrow:
+// `rides_status_code_present_check` is a name, while `the status code` is the
+// phrase gherkin-style.md §6 forbids in every other step.
+func windowHasUnglued(tokens []string, glued []bool, phrase []string) bool {
+	if len(phrase) == 0 || len(tokens) < len(phrase) {
+		return false
+	}
+	for i := 0; i+len(phrase) <= len(tokens); i++ {
+		match := true
+		unglued := false
+		for j, want := range phrase {
+			if tokens[i+j] != want {
+				match = false
+				break
+			}
+			if i+j >= len(glued) || !glued[i+j] {
+				unglued = true
+			}
+		}
+		if match && unglued {
 			return true
 		}
 	}
