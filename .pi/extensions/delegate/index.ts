@@ -38,6 +38,8 @@
  *   - GATE-FILE protection: child edit/write on cmd/spec/**, docs/spec/**,
  *     Makefile or .pi/** is denied, except .pi prose and paths matched by
  *     .pi/delegate/gate-allowlist.json (the only escape hatch).
+ *   - BASH write-channel scanner (batch 3, stage 1): a child bash command whose
+ *     write side touches a protected path is denied before it runs (./bashscan.ts).
  *   - Receipts: the EXTENSION appends one JSON line per gate run to
  *     .pi/receipts/<iso-date>.jsonl (commands, exit codes, rules hash, HEAD).
  *   - SPEC-SCOPE: a `SPEC-SCOPE: module=… rules=…` line in the task text is
@@ -116,6 +118,7 @@ import {
   shouldRunPostWriteGate,
   writeReceipt,
 } from "./gates.ts";
+import { evaluateBashWrite } from "./bashscan.ts";
 import { formatStallReason, startStallWatchdog, workerStallTimeoutMs } from "./runtime.ts";
 import {
   createChildStreamParser,
@@ -1711,6 +1714,44 @@ export default function (pi: ExtensionAPI) {
     const decision = evaluateGateFileWrite(ctx.cwd, input.path);
     if (!decision.blocked) return;
     return { block: true, reason: decision.reason ?? "Gate file is protected from delegated edits." };
+  });
+
+  // Batch 3, stage 1: the SECOND write channel. bash is not a tool the deny hook
+  // above can see, so `echo x > WORKFLOW.md` used to sail straight through the
+  // protected set. Every child bash command is now scanned BEFORE execution by
+  // the deterministic write-channel scanner (see ./bashscan.ts): pattern-class
+  // detection over top-level segments, every extracted write target classified by
+  // the SAME evaluateGateFileWrite path as edit/write, and any ambiguity in a
+  // write target is a denial ("fail closed"). Which classes run is declared in
+  // WORKFLOW.md `bash_write_patterns`; an unknown class refuses the policy.
+  // Allowed commands (`make audit`, `go test ./...`, `git diff`, …) are covered
+  // by regression checks in smoke-bashscan.mjs — over-matching would get the gate
+  // switched off, which protects nothing.
+  pi.on("tool_call", async (event, ctx) => {
+    if (process.env.PI_DELEGATE_CHILD !== "1") return;
+    if (event.toolName !== "bash") return;
+    const input = event.input as { command?: unknown };
+    if (typeof input.command !== "string" || input.command.length === 0) return;
+    const decision = evaluateBashWrite(ctx.cwd, input.command);
+    if (!decision.blocked) return;
+    // Best-effort deny receipt — the extension writes it, never the worker; a
+    // receipt failure never changes the verdict.
+    try {
+      await writeReceipt({
+        cwd: ctx.cwd,
+        agent: process.env.PI_DELEGATE_ROLE ?? "worker",
+        session: process.env.PI_SESSION_ID,
+        commands: [{ command: input.command, exitCode: null, timedOut: false, durationMs: 0 }],
+        ok: false,
+        note: "bash write-channel deny: " + (decision.pattern ?? "ambiguous"),
+      });
+    } catch {
+      /* receipt failure never changes the verdict */
+    }
+    return {
+      block: true,
+      reason: decision.reason ?? "bash command would write a protected path (write-channel scanner)",
+    };
   });
 
   // Tool execute results cannot set runtime error state directly, so patch it

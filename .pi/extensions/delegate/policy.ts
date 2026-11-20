@@ -40,6 +40,7 @@ import {
   APPROVAL_BINDING,
   APPROVAL_HEAD_SHA_PREFIX,
   APPROVAL_MARKER,
+  BASH_WRITE_PATTERN_CLASSES,
   HANDOFF_TERMINAL_TOKENS,
 } from "./contracts.ts";
 
@@ -90,6 +91,14 @@ export const DEFAULT_SETTLE_BACKOFF_MAX_DOUBLINGS = 5;
 export const DEFAULT_WORKER_STALL_TIMEOUT_MS = 600_000;
 /** Cap on tasks[] in one subagent call (MAX_PARALLEL_TASKS). */
 export const DEFAULT_MAX_CONCURRENT_WORKERS = 8;
+/**
+ * Bash write-channel scanner classes enforced when `bash_write_patterns` is
+ * omitted, empty or invalid: the FULL canonical set (never a smaller deny set
+ * by accident). A human narrowing this list is an explicit policy choice.
+ */
+export const DEFAULT_BASH_WRITE_PATTERNS: readonly string[] = BASH_WRITE_PATTERN_CLASSES;
+/** The same vocabulary as a plain `string[]` (membership tests without a cast at each call). */
+export const KNOWN_BASH_WRITE_PATTERNS: readonly string[] = BASH_WRITE_PATTERN_CLASSES;
 
 // ── Resolved policy ─────────────────────────────────────────────────────────
 
@@ -114,6 +123,8 @@ export interface WorkflowPolicy {
   redApprovalMarker: string;
   redApprovalHeadShaLine: string;
   handoffTerminalTokens: string[];
+  /** Enabled bash write-channel scanner pattern classes (stage 1 of batch 3). */
+  bashWritePatterns: string[];
 }
 
 export interface PolicyResultOk {
@@ -283,6 +294,7 @@ const FIELD_KINDS: Record<string, FieldKind> = {
   red_approval_marker: "string",
   red_approval_head_sha_line: "string",
   handoff_terminal_tokens: "string-list",
+  bash_write_patterns: "string-list",
 };
 
 function warn(message: string): void {
@@ -466,7 +478,25 @@ export function loadWorkflowPolicy(cwd: string = process.cwd()): PolicyResult {
     redApprovalMarker: takeString(values, "red_approval_marker", APPROVAL_MARKER, declared),
     redApprovalHeadShaLine: takeString(values, "red_approval_head_sha_line", APPROVAL_HEAD_SHA_PREFIX, declared),
     handoffTerminalTokens: takeList(values, "handoff_terminal_tokens", HANDOFF_TERMINAL_TOKENS, declared),
+    bashWritePatterns: takeList(values, "bash_write_patterns", DEFAULT_BASH_WRITE_PATTERNS, declared),
   };
+
+  // Scanner vocabulary: `bash_write_patterns` selects which pattern classes the
+  // bash write-channel scanner enforces. The set of classes is CODE (see
+  // contracts.ts), so an unknown item is a REFUSAL — same spirit as an unknown
+  // field: a typo must not silently switch a whole class of write channel off.
+  const unknownPatterns = policy.bashWritePatterns.filter(
+    (item) => !KNOWN_BASH_WRITE_PATTERNS.includes(item),
+  );
+  if (unknownPatterns.length > 0) {
+    return {
+      ok: false,
+      path: filePath,
+      reason:
+        "unknown bash_write_patterns item(s): " + unknownPatterns.join(", ") + " (known: " +
+        KNOWN_BASH_WRITE_PATTERNS.join(", ") + ") \u2014 refusing rather than silently not scanning a write channel",
+    };
+  }
 
   // Approval machinery: the code stays the parser; the file declares what the
   // parser expects. Any disagreement is a REFUSAL, never a silent override —
