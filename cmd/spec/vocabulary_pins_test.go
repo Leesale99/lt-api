@@ -7,6 +7,7 @@ package main
 //	TestPinnedGlossaryRejectsDisguisedTerms      — fix B (the glossary may not launder a disguise)
 //	TestPinnedBareThreeDigitQuantityOrStatus     — fix C (a three-digit figure, quantity vs status)
 //	TestPinnedDocStringAndTableCellVocabulary    — fix D (docstrings and data-table cells are scanned)
+//	TestPinSQLHomographAdjacency                 — fix E (SQL homographs fire on adjacency, not alone)
 //
 // Fixtures are synthetic checkouts (t.TempDir via newTestRepo): an inline
 // glossary plus one feature file, so a test fails for exactly the rule it pins.
@@ -308,4 +309,186 @@ Feature: Prose and cells are vocabulary too
 			t.Errorf("finding %q names %q, want a file::scenario pointer", f.Message, f.RuleID)
 		}
 	}
+}
+
+// pinHomographGlossary declares every word the adjacency pins say on purpose,
+// including the homographs themselves (`check`, `table`, `unique`, `index`,
+// `create`, `constraint`): a homograph is ordinary English, so the glossary may
+// carry it. What policy 13 must decide is whether the STEP used it as SQL.
+const pinHomographGlossary = `common:
+  - a
+  - an
+  - and
+  - by
+  - each
+  - for
+  - from
+  - in
+  - into
+  - is
+  - of
+  - on
+  - one
+  - the
+  - to
+  - with
+game:
+  - answer
+  - check
+  - column
+  - constraint
+  - create
+  - day
+  - game
+  - index
+  - insert
+  - key
+  - match
+  - matches_ended_at_check
+  - names
+  - owner
+  - pair
+  - passes
+  - pool
+  - refused
+  - ride
+  - rides
+  - set
+  - table
+  - teams
+  - tries
+  - unique
+  - write
+identity: []
+schedule: []
+ledger: []
+kernel: []
+platform: []
+`
+
+// TestPinSQLHomographAdjacency is fix E: the SQL half of the denylist is
+// partitioned. A HOMOGRAPH — a word that is both SQL vocabulary and ordinary
+// English (`check`, `unique`, `index`, `references`, `create`, `table`,
+// `column`) — errors only on adjacency: a neighbour in the same step's token
+// stream is itself SQL vocabulary or one of the database object nouns (`key`,
+// `database`, `schema`, `row`). A HARD keyword (`select`, `insert`, `update`,
+// `delete`, `join`, `drop`, `alter`, `constraint`, `trigger`, `grant`,
+// `revoke`, `cascade`, `upsert`, `truncate`) errors alone, as it always did.
+// The §8 sabotage exemption is unchanged and still covers every SQL word.
+func TestPinSQLHomographAdjacency(t *testing.T) {
+	repo := vocabularyPinnedRepo(t, pinHomographGlossary, `@game
+Feature: SQL vocabulary is a shape, not a spelling
+
+  @rule:R-KERNEL-001
+  Scenario: A check in plain English
+    Then the check passes
+
+  @rule:R-KERNEL-002
+  Scenario: A business fact about uniqueness
+    Then each pair of teams is unique
+
+  @rule:R-KERNEL-003
+  Scenario: A table set for match day
+    Then the table is set for match day 1
+
+  @rule:R-KERNEL-004
+  Scenario: A hard keyword alone
+    Then insert into game.rides
+
+  @rule:R-KERNEL-005
+  Scenario: Two SQL words create a table
+    Then create table
+
+  @rule:R-KERNEL-006
+  Scenario: A check beside its constraint
+    Then check constraint
+
+  @rule:R-KERNEL-007
+  Scenario: A unique index
+    Then unique index
+
+  @rule:R-KERNEL-008
+  Scenario: A unique key
+    Then the unique key is set
+
+  @rule:R-KERNEL-009
+  Scenario: A database name hides a keyword
+    Then the answer names matches_ended_at_check
+
+  @rule:R-KERNEL-010
+  Scenario: The sabotage family keeps its SQL words
+    When the Owner pool tries to insert a ride
+    Then the write is refused by the table check
+`)
+
+	findings, _ := vocabularyFindings(t, repo)
+	byScenario := map[string]string{}
+	for _, f := range findings {
+		byScenario[f.RuleID] += f.Message + "\n"
+	}
+	pointer := func(scenario string) string {
+		return "docs/spec/features/game/pinned.feature::" + scenario
+	}
+
+	// (a)-(c) A homograph alone is English, not SQL: no finding at all.
+	for _, scenario := range []string{
+		"A check in plain English",
+		"A business fact about uniqueness",
+		"A table set for match day",
+	} {
+		t.Run("not SQL: "+scenario, func(t *testing.T) {
+			if got := byScenario[pointer(scenario)]; got != "" {
+				t.Errorf("a homograph used as English was flagged:\n%s", got)
+			}
+		})
+	}
+
+	// (d) A hard keyword still errors alone — the guard that keeps the
+	// partition from becoming a general amnesty.
+	t.Run("SQL: a hard keyword alone", func(t *testing.T) {
+		if got := byScenario[pointer("A hard keyword alone")]; !strings.Contains(got, `step uses the SQL word "insert"`) {
+			t.Errorf("a hard keyword was not flagged:\n%s", got)
+		}
+	})
+
+	// (e) Adjacency fires: SQL word beside SQL word, and a homograph beside a
+	// database object noun.
+	for _, pin := range []struct {
+		scenario string
+		want     []string
+	}{
+		{"Two SQL words create a table", []string{`SQL word "create"`, `SQL word "table"`}},
+		{"A check beside its constraint", []string{`SQL word "check"`, `SQL word "constraint"`}},
+		{"A unique index", []string{`SQL word "unique"`, `SQL word "index"`}},
+		{"A unique key", []string{`SQL word "unique"`}},
+	} {
+		t.Run("SQL: "+pin.scenario, func(t *testing.T) {
+			got := byScenario[pointer(pin.scenario)]
+			for _, want := range pin.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("findings do not mention %q:\n%s", want, got)
+				}
+			}
+		})
+	}
+
+	// The fragment fix A pinned: an underscore-joined database name stays
+	// SQL-shaped, so the keyword it hides still fires.
+	t.Run("SQL: a homograph inside a database name", func(t *testing.T) {
+		got := byScenario[pointer("A database name hides a keyword")]
+		if !strings.Contains(got, `SQL word "check"`) {
+			t.Errorf("the keyword inside a database name was not flagged:\n%s", got)
+		}
+	})
+
+	// (f) The §8 exemption is unchanged: no SQL word in a sabotage step, even
+	// the adjacent pair.
+	t.Run("exempt: the sabotage family", func(t *testing.T) {
+		got := byScenario[pointer("The sabotage family keeps its SQL words")]
+		for _, unwanted := range []string{"insert", "table", "check"} {
+			if strings.Contains(got, unwanted) {
+				t.Errorf("a sabotage step was flagged for SQL vocabulary (%q):\n%s", unwanted, got)
+			}
+		}
+	})
 }
