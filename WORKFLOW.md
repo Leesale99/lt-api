@@ -31,6 +31,34 @@ pi_editable_paths:
   - .pi/delegate/**
   - .pi/plans/**
 
+# ── Bash write-channel scanner ─────────────────────────────────────────────
+# Which pattern classes the pre-execution bash scanner enforces for delegated
+# children. Every class is a deterministic detector over the command word and
+# write operators; a command that would write a protected path (or whose write
+# target cannot be resolved to ONE literal path) is denied before it runs.
+# Only the classes listed here are scanned — a class omitted from this list is
+# not scanned, which is the documented escape (a human policy choice).
+# An UNKNOWN item refuses the policy (`unknown bash_write_patterns item ...`),
+# so a typo can never silently switch a class of write channel off.
+bash_write_patterns:
+  # `>`, `>>`, `<>`, `2>`/`1>`, `&>`, `>>&`, `2>>`, `&>>`, `>|` whose target is a
+  # real file; fd duplicates (`2>&1`) and /dev/null|stdout|stderr|tty are skipped.
+  - redirect
+  # `tee` / `tee -a`: every non-option argument is written.
+  - tee
+  # `sed -i`, `-i.suffix`, `--in-place`, `--in-place=suffix`: the trailing operand
+  # files (after the script expression) are written in place.
+  - sed-in-place
+  # `cp`, `mv`, `install` destinations (incl. -t/--target-directory and install -d)
+  # and `dd of=`: the destination path is written, even if it is a directory.
+  - file-transfer
+  # heredoc payloads: the body is DATA (never scanned as commands), but a heredoc
+  # fed into a shell (`| sh`, `bash <<EOF`) or eval-like consumer is ambiguous.
+  - heredoc
+  # `git checkout|restore|rm|mv` pathspecs, `git stash push|save --` pathspecs,
+  # and `git apply|am|clean|reset --hard` (their targets are not knowable ⇒ deny).
+  - git-mutating
+
 # ── Machine paths ──────────────────────────────────────────────────────────
 # Single file-based escape hatch from protected_paths. ALWAYS self-denied, so
 # a worker can never authorize itself. WORKFLOW.md is self-denied too (a code
