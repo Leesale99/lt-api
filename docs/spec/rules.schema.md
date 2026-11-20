@@ -261,10 +261,15 @@ list is the frequency.
       words of `gherkin-style.md` §6 — `http`, `https`, `json`, `request`,
       `response`, `header`, `headers`, `endpoint`, `route`, `handler`, `dto`,
       `payload`, `status code` — or a bare three-digit HTTP-range figure (`200`,
-      `401`, `409`, `422`, `500`). A three-digit figure that quantifies a business
-      noun (`100 tokens`, `200 entries`) is a quantity, not a status; it is a status
-      at the end of a step or before a transport noun (`409 status`, `409 code`,
-      `409 error`, `409 response`, `409 request`).
+      `401`, `409`, `422`, `500`). A three-digit figure is a QUANTITY rather than a
+      status only when the very next token of the step is one of the closed set of
+      units and business nouns `tokens`, `rounds`, `matches`, `minutes`, `hours`,
+      `days`, `seconds`, `players`, `teams`, `members`, `points`, `entries`, `rows`
+      (`100 tokens`, `200 entries`, `200 rows`). The set is curated and closed: the
+      figure either quantifies one of those nouns or it is the transport fact §6
+      forbids — a figure at the end of a step (`refused as 409`) and a figure
+      before any other token (`409 status`, `409 conflict`, `200 ok`) are numeric
+      statuses.
     - **SQL vocabulary (adjacency).** The §6 SQL words are partitioned, because some
       of them are ordinary English:
       - **Homographs** — `check`, `unique`, `index`, `references`, `create`,

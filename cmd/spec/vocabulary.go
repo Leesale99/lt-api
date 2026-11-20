@@ -118,19 +118,26 @@ var sabotageStepPrefixes = []string{
 // `500`)": a bare three-digit number in the HTTP range.
 var httpStatusLikePattern = regexp.MustCompile(`^[1-5][0-9]{2}$`)
 
-// quantityUnits are the business nouns a three-digit figure legitimately
-// quantifies in this domain. `100 tokens` is a stake, not a status; a figure
-// with no unit ("refused as 409") is the transport fact §6 forbids. The seed is
-// the examples the schema states; `isQuantityFollower` generalises it to any
-// plain business word ("200 entries").
+// quantityUnits are the units a three-digit figure legitimately quantifies in
+// this domain, and the seed of the closed quantity-follower set (see
+// isQuantityFollower). `100 tokens` is a stake, not a status; a figure with no
+// unit ("refused as 409") is the transport fact §6 forbids.
 var quantityUnits = enum(
 	"tokens", "rounds", "matches", "minutes", "hours", "days", "seconds",
 	"players", "teams", "members", "points",
 )
 
+// quantityNouns are the curated business nouns that complete the closed
+// quantity-follower set. They are not units (`a token`, not `a token of`), but
+// they are the countable things this domain's features quantify (`200 entries`,
+// `200 rows`) — the real tree's follower audit, not a licence for any word.
+var quantityNouns = enum("entries", "rows")
+
 // statusNouns are the transport nouns a three-digit figure names when it is a
 // status rather than a quantity: `409 status`, `409 code`, `409 error`,
-// `409 response`, `409 request` all speak the wire, not the business.
+// `409 response`, `409 request` all speak the wire, not the business. They are
+// denied explicitly (and are outside the closed follower set anyway), so adding
+// a noun to the set can never re-license them.
 var statusNouns = enum("status", "code", "error", "response", "request")
 
 var (
@@ -219,10 +226,16 @@ func splitTokenStream(tokens []string) []string {
 }
 
 // isQuantityFollower reports whether a token makes the preceding three-digit
-// figure a QUANTITY rather than a status. The rule is deliberately narrow: a
-// plain alphabetic word that is not a transport noun. `100 tokens` and `200
-// entries` quantify; the seeded business nouns are the fast path, and the rule
-// generalises the seed to any business word.
+// figure a QUANTITY rather than a status. The set is CLOSED: quantityUnits (the
+// schema's units) plus quantityNouns (the curated business nouns, `entries`,
+// `rows`). Any other follower leaves the figure a numeric status, which is what
+// keeps §6's status ban shut: `100 tokens` and `200 entries` quantify, while
+// `409 conflict`, `200 ok` and `404 not` are statuses again.
+//
+// The closure is the point. An earlier fix widened the follower to "any plain
+// alphabetic word", so a curated-looking quantity check became a bypass hatch
+// for any figure followed by prose, and bare three-digit figures passed again.
+// A follower is either on the list or it is not.
 //
 // The edges stay conservative so the denied cases never loosen: a figure at the
 // END of a stream is a status ("refused as 409"), and so is a figure followed
@@ -232,18 +245,7 @@ func isQuantityFollower(token string) bool {
 	if statusNouns[token] {
 		return false
 	}
-	if quantityUnits[token] {
-		return true
-	}
-	if token == "" {
-		return false
-	}
-	for _, r := range token {
-		if r < 'a' || r > 'z' {
-			return false
-		}
-	}
-	return true
+	return quantityUnits[token] || quantityNouns[token]
 }
 
 // disguiseReason explains why a glossary term is disguised denylisted
@@ -495,7 +497,10 @@ func (c *checker) scanVocabulary(report func(pointer, msg string), g *glossary, 
 				continue
 			}
 			if i+1 < len(scrutiny) && isQuantityFollower(scrutiny[i+1]) {
-				continue // `100 tokens` / `200 entries` quantify; not a status
+				// The follower set is closed (quantityUnits ∪ quantityNouns):
+				// `100 tokens` / `200 entries` quantify, and any other follower
+				// leaves the figure the numeric status §6 forbids.
+				continue
 			}
 			deny(token, fmt.Sprintf(
 				"step carries the bare number %q: numeric statuses are transport vocabulary; say what the business decided instead (gherkin-style.md §6)",
