@@ -23,7 +23,7 @@ worktree mount, egress rules, the model key — is attached when a sandbox is
 |---|---|
 | base image | `docker/sandbox-templates:shell-docker` (agent UID 1000, Node/npm, sandbox proxy plumbing) |
 | Go | `1.27.1` at `/usr/local/go`, symlinked to `/usr/local/bin/go` and `gofmt` |
-| pi | `@earendil-works/pi-coding-agent@1.5.2`, global npm install |
+| pi | `@earendil-works/pi-coding-agent@1.6.0`, global npm install |
 | pi config | `/home/agent/.pi/agent/models.json` (opencode-go provider catalog) + `settings.json` (default `opencode-go` / `glm-5.3` / thinking `high`) |
 | Go module cache | `/home/agent/go/pkg/mod`, ~132 MB / 45 module zips (this repo's `go.mod` graph) |
 | template tag | `pi-worker:v1` |
@@ -92,7 +92,7 @@ Pins live in exactly two places, and the build asserts both:
   install hook hardcodes the same version (`GO_VERSION` in
   `kit/spec.yaml`); bump both together. The host `go version` is irrelevant: the
   toolchain always comes from `go.dev/dl`, arch-detected (`arm64`/`amd64`).
-- **pi `1.5.2`** — pinned in the kit's npm install. The build prints the host's
+- **pi `1.6.0`** — pinned in the kit's npm install. The build prints the host's
   `pi --version` as a cross-check, so host/VM drift is visible in the log.
 
 The base image is pinned by local tag (`--pull never`), and the resulting

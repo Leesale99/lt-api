@@ -77,8 +77,8 @@ setup:
         /usr/local/go/bin/go version
     - command: |
         set -eu
-        echo "pi-worker kit: installing @earendil-works/pi-coding-agent@1.5.2 globally"
-        npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.5.2
+        echo "pi-worker kit: installing @earendil-works/pi-coding-agent@1.6.0 globally"
+        npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.6.0
         npm cache clean --force >/dev/null 2>&1 || true
         pi --version
   files:
