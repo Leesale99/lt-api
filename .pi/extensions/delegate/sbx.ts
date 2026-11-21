@@ -31,6 +31,7 @@
 
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 // ── Version pin + binary ────────────────────────────────────────────────────
@@ -62,8 +63,15 @@ export const SANDBOX_TEMPLATE_NAME = "docker.io/library/pi-worker:v1";
  * (resolved by `createWorkerSandbox`). Used only when the saved template is
  * unavailable. An absent kit path is a loud infra-failure, never a silent
  * agent-image fallback.
+ *
+ * The KIT DIRECTORY, not the packed `.zip`. `dist/` is gitignored and written by
+ * the same `.pi/sandboxes/build.sh` run that saves the `pi-worker:v1` template,
+ * so on the fresh host this fallback exists for (no template yet) the zip does
+ * not exist either — it would turn a recoverable create into a loud failure.
+ * The checked-in directory is the source of truth (`sbx kit validate` accepts it
+ * as-is) and cannot drift from a stale packed artifact.
  */
-export const SANDBOX_KIT_FALLBACK_PATH = ".pi/sandbox/pi-worker-kit";
+export const SANDBOX_KIT_FALLBACK_PATH = ".pi/sandboxes/kit";
 /** CPU allocation per VM. `sbx create` defaults to ALL host CPUs — never default. */
 export const SANDBOX_DEFAULT_CPUS = 4;
 /** Memory per VM (binary units). `sbx create` defaults to 50% of host RAM. */
@@ -370,8 +378,20 @@ export function classifySbxExit(
 
 // ── Per-role profiles ───────────────────────────────────────────────────────
 
-/** A mount source: the task worktree, or the (non-git) vault. */
-export type SandboxMountKind = "worktree" | "vault";
+/**
+ * A mount source: the task worktree, the (non-git) vault, or a disposable
+ * scratch directory the adapter creates on the host (see
+ * `createScratchWorkspace`).
+ */
+export type SandboxMountKind = "worktree" | "vault" | "scratch";
+
+/**
+ * Host temp-dir prefix for a profile's disposable primary workspace. `sbx`
+ * rejects a read-only primary workspace ("primary workspace must be
+ * read/write"), so a role that must not write the repo (scout) is created with
+ * a throwaway rw dir first and the worktree mounted read-only second.
+ */
+export const SANDBOX_SCRATCH_PREFIX = "pi-scratch-";
 
 export interface SandboxMount {
   kind: SandboxMountKind;
@@ -385,7 +405,10 @@ export interface SandboxProfile {
   hostPassthrough: boolean;
   /**
    * Mounts in `sbx create` positional order. The FIRST entry is the primary
-   * workspace; the rest are additional workspaces (`:ro` for read-only).
+   * workspace and sbx requires it to be read/write ("primary workspace must be
+   * read/write" — it rejects a `:ro` primary outright); the rest are additional
+   * workspaces (`:ro` for read-only). A role that must not write the repo
+   * therefore declares `scratch` (rw) first and `worktree` (`:ro`) second.
    */
   mounts: SandboxMount[];
   /** Hosts allowed through the default-deny egress proxy (empty ⇒ no rules added). */
@@ -423,7 +446,15 @@ export const SANDBOX_PROFILES: Record<string, SandboxProfile> = {
   scout: {
     role: "scout",
     hostPassthrough: false,
-    mounts: [{ kind: "worktree", mode: "ro" }],
+    // sbx needs a writable primary workspace, and scout must have zero write
+    // access to the repo. The primary is therefore a disposable host temp dir
+    // (`createScratchWorkspace`) and the task worktree is the read-only SECOND
+    // workspace: reads work, every write lands in a directory that dies with
+    // the VM.
+    mounts: [
+      { kind: "scratch", mode: "rw" },
+      { kind: "worktree", mode: "ro" },
+    ],
     // Model provider only: the agent has to be able to think. No task egress.
     networkHosts: [...SANDBOX_MODEL_EGRESS_HOSTS],
     secretSentinelEnvs: [],
@@ -543,6 +574,11 @@ export interface SandboxHandle {
   role: string;
   profile: SandboxProfile;
   worktreePath: string;
+  /**
+   * Disposable rw primary workspace (only for a `scratch`-mount profile: scout).
+   * Host-managed and removed by `teardownSandbox`. `undefined` otherwise.
+   */
+  scratchPath?: string;
   /** Which reference produced the VM. */
   createdFrom: "template" | "kit";
   /** Egress rules actually added (empty ⇒ none were added). */
@@ -554,15 +590,44 @@ export function workspaceArg(hostPath: string, mode: "rw" | "ro"): string {
   return mode === "ro" ? hostPath + ":ro" : hostPath;
 }
 
-/** The workspace positionals for a profile, in declaration order. */
+/**
+ * Create the disposable read-write primary workspace a `scratch`-mount profile
+ * needs. sbx mounts a workspace by host path and refuses a read-only primary, so
+ * the adapter has to hand it an existing, empty, host-owned directory: a
+ * `mkdtemp` dir under the host temp root, labelled with the sandbox name so an
+ * operator can correlate it. Never inside the repo — that would be the write
+ * access the role is denied.
+ */
+export function createScratchWorkspace(label: string): string {
+  const safeLabel = label.toLowerCase().replace(/[^a-z0-9.-]+/g, "-").slice(0, 48) || "sandbox";
+  return fs.mkdtempSync(path.join(os.tmpdir(), SANDBOX_SCRATCH_PREFIX + safeLabel + "-"));
+}
+
+/**
+ * The workspace positionals for a profile, in declaration order.
+ *
+ * `scratchPath` is required for (and only used by) a `scratch` mount; a profile
+ * that declares one and gets no path is a programming error, not something to
+ * paper over with a fallback that could point at the repo.
+ */
 export function workspaceArgsFor(
   profile: SandboxProfile,
   worktreePath: string,
   vaultPath: string = SANDBOX_VAULT_PATH,
+  scratchPath?: string,
 ): string[] {
-  return profile.mounts.map((mount) =>
-    workspaceArg(mount.kind === "vault" ? vaultPath : worktreePath, mount.mode),
-  );
+  return profile.mounts.map((mount) => {
+    if (mount.kind === "vault") return workspaceArg(vaultPath, mount.mode);
+    if (mount.kind === "scratch") {
+      if (!scratchPath) {
+        throw new Error(
+          "profile '" + profile.role + "' declares a scratch workspace but no scratch path was provided",
+        );
+      }
+      return workspaceArg(scratchPath, mount.mode);
+    }
+    return workspaceArg(worktreePath, mount.mode);
+  });
 }
 
 /** `sbx create` argv for one profile (exported so tests can pin the shape). */
@@ -574,6 +639,7 @@ export function createSandboxArgs(opts: {
   template?: string;
   kitPath?: string;
   vaultPath?: string;
+  scratchPath?: string;
 }): string[] {
   const args = ["create", "--name", opts.name, "--no-progress"];
   args.push("--cpus", String(opts.profile.cpus), "--memory", opts.profile.memory);
@@ -584,7 +650,7 @@ export function createSandboxArgs(opts: {
   }
   args.push(
     SANDBOX_CREATE_AGENT,
-    ...workspaceArgsFor(opts.profile, opts.worktreePath, opts.vaultPath),
+    ...workspaceArgsFor(opts.profile, opts.worktreePath, opts.vaultPath, opts.scratchPath),
   );
   return args;
 }
@@ -610,10 +676,37 @@ export async function createWorkerSandbox(opts: CreateSandboxOptions): Promise<S
   const name = opts.name ?? generatedSandboxName(opts.role);
   const template = opts.template ?? SANDBOX_TEMPLATE_NAME;
   const kitPath = path.resolve(opts.cwd ?? process.cwd(), opts.kitPath ?? SANDBOX_KIT_FALLBACK_PATH);
+  // sbx requires a read/write PRIMARY workspace. A production role mounts the
+  // worktree rw and needs nothing else; a scratch-mount role (scout) must not
+  // write the repo, so it gets a throwaway host dir as the primary and the
+  // worktree as `:ro` second. Created before `sbx create` because sbx mounts an
+  // existing host directory.
+  const scratchPath = profile.mounts.some((mount) => mount.kind === "scratch")
+    ? createScratchWorkspace(name)
+    : undefined;
+  // Disposable by definition: a failed create must not leave a temp dir behind,
+  // and a failed cleanup must not mask the real create/policy error.
+  const discardScratch = (): void => {
+    if (!scratchPath) return;
+    try {
+      fs.rmSync(scratchPath, { recursive: true, force: true });
+    } catch {
+      /* host temp dir; the OS cleans it eventually */
+    }
+  };
 
   const create = async (reference: "template" | "kit"): Promise<SbxProcessResult> =>
     await runSbx(
-      createSandboxArgs({ name, profile, worktreePath: opts.worktreePath, reference, template, kitPath, vaultPath: opts.vaultPath }),
+      createSandboxArgs({
+        name,
+        profile,
+        worktreePath: opts.worktreePath,
+        reference,
+        template,
+        kitPath,
+        vaultPath: opts.vaultPath,
+        scratchPath,
+      }),
       { timeoutMs: SBX_CREATE_TIMEOUT_MS },
     );
 
@@ -624,6 +717,7 @@ export async function createWorkerSandbox(opts: CreateSandboxOptions): Promise<S
     // is a loud failure — there is no "just use the base agent image" path,
     // because that image would not know how to run pi at all.
     if (!getSbxProcessOps().exists(kitPath)) {
+      discardScratch();
       throw new Error(
         "sbx create from template '" + template + "' failed (" + describeFailure(created) +
         ") and the fallback kit is missing at " + kitPath,
@@ -632,6 +726,7 @@ export async function createWorkerSandbox(opts: CreateSandboxOptions): Promise<S
     created = await create("kit");
     used = "kit";
     if (!created.ok) {
+      discardScratch();
       throw new Error(
         "sbx create failed from both the '" + template + "' template and the kit at " + kitPath +
         ": " + describeFailure(created),
@@ -647,6 +742,7 @@ export async function createWorkerSandbox(opts: CreateSandboxOptions): Promise<S
       // A VM without its declared egress is useless but not dangerous; a VM
       // with un-declared egress would be. Tear it down and fail loudly.
       await rmSandbox(name);
+      discardScratch();
       throw new Error(
         "sbx policy allow network failed for sandbox " + name + ": " + describeFailure(allowed),
       );
@@ -658,6 +754,7 @@ export async function createWorkerSandbox(opts: CreateSandboxOptions): Promise<S
     role: opts.role,
     profile,
     worktreePath: opts.worktreePath,
+    scratchPath,
     createdFrom: used,
     networkHosts: [...profile.networkHosts],
   };
@@ -755,9 +852,10 @@ export interface TeardownResult {
  * THE teardown path: `sbx stop` then `sbx rm --force`, both best-effort, never
  * throwing. The stall watchdog / abort / normal-exit paths all end here, so no
  * sandbox can outlive its worker (there is no local TTL — the host owns
- * wall-clock).
+ * wall-clock). A scratch-mount profile's primary workspace is a host temp dir
+ * this adapter created, so it dies here too.
  */
-export async function teardownSandbox(name: string): Promise<TeardownResult> {
+export async function teardownSandbox(name: string, scratchPath?: string): Promise<TeardownResult> {
   const errors: string[] = [];
   let stopped = false;
   let removed = false;
@@ -774,6 +872,13 @@ export async function teardownSandbox(name: string): Promise<TeardownResult> {
     if (!rm.ok) errors.push("sbx rm: " + describeFailure(rm));
   } catch (error) {
     errors.push("sbx rm threw: " + (error instanceof Error ? error.message : String(error)));
+  }
+  if (scratchPath) {
+    try {
+      fs.rmSync(scratchPath, { recursive: true, force: true });
+    } catch (error) {
+      errors.push("scratch cleanup: " + (error instanceof Error ? error.message : String(error)));
+    }
   }
   return { name, stopped, removed, errors };
 }

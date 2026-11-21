@@ -22,6 +22,7 @@ import {
   SANDBOX_DEFAULT_MEMORY,
   SANDBOX_ENV_FLAG,
   SANDBOX_KIT_FALLBACK_PATH,
+  SANDBOX_SCRATCH_PREFIX,
   SANDBOX_TEMPLATE_NAME,
   SANDBOX_VAULT_PATH,
   SANDBOX_WORKER_EGRESS_HOSTS,
@@ -191,10 +192,16 @@ await check("profileForRole: worker/general are RW worktree + the 4 egress hosts
   }
 });
 
-await check("profileForRole: scout is :ro with NO task egress, librarian is vault RW + worktree :ro", async () => {
+await check("profileForRole: scout is scratch RW + worktree :ro with NO task egress, librarian is vault RW + worktree :ro", async () => {
   const scout = profileForRole("scout");
   assert.equal(scout.hostPassthrough, false);
-  assert.deepEqual(scout.mounts, [{ kind: "worktree", mode: "ro" }]);
+  // sbx rejects a read-only PRIMARY workspace, so the rw scratch dir is first
+  // and the repo is the read-only second workspace: reads work, writes cannot
+  // reach the repo.
+  assert.deepEqual(scout.mounts, [
+    { kind: "scratch", mode: "rw" },
+    { kind: "worktree", mode: "ro" },
+  ]);
   // Model provider only: a "no network" role still has to reach the model it
   // thinks with (an empty allowlist makes the VM die on its first turn).
   assert.deepEqual(scout.networkHosts, [...SANDBOX_MODEL_EGRESS_HOSTS]);
@@ -226,11 +233,22 @@ await check("profileForRole: researcher is host passthrough; unknown roles inher
   assert.equal(profileForRole("worker").role, "worker");
 });
 
-await check("workspaceArgsFor: same absolute path, :ro suffix where the profile says so", async () => {
+await check("workspaceArgsFor: same absolute path, :ro suffix, scratch primary where the profile says so", async () => {
   const worktree = "/tmp/host/lt-api-wt-job-1";
   const vault = "/tmp/host/vault";
+  const scratch = "/tmp/host/" + SANDBOX_SCRATCH_PREFIX + "pi-scout-abc123-dead-XXXXXX";
   assert.deepEqual(workspaceArgsFor(profileForRole("worker"), worktree, vault), [worktree]);
-  assert.deepEqual(workspaceArgsFor(profileForRole("scout"), worktree, vault), [worktree + ":ro"]);
+  // scout: disposable scratch dir RW FIRST (sbx needs a writable primary), the
+  // worktree read-only second — never a rw repo workspace.
+  assert.deepEqual(workspaceArgsFor(profileForRole("scout"), worktree, vault, scratch), [
+    scratch,
+    worktree + ":ro",
+  ]);
+  assert.throws(
+    () => workspaceArgsFor(profileForRole("scout"), worktree, vault),
+    /declares a scratch workspace but no scratch path/,
+    "a scratch mount with no path must fail closed, not fall back to the worktree",
+  );
   assert.deepEqual(workspaceArgsFor(profileForRole("librarian"), worktree, vault), [vault, worktree + ":ro"]);
   assert.deepEqual(workspaceArgsFor(profileForRole("researcher"), worktree, vault), []);
   // The default vault path is the librarian's real mount.
@@ -282,17 +300,43 @@ await check("createSandboxArgs: template create --cpus --memory, positional work
       worktree + ":ro",
     ],
   );
+  // scout: the disposable scratch dir is the RW primary, the worktree :ro second
+  const scratch = "/tmp/host/" + SANDBOX_SCRATCH_PREFIX + "pi-scout-abc123-dead-XXXXXX";
+  assert.deepEqual(
+    createSandboxArgs({
+      name: "pi-scout-abc123-dead",
+      profile: profileForRole("scout"),
+      worktreePath: worktree,
+      reference: "template",
+      scratchPath: scratch,
+    }),
+    [
+      "create",
+      "--name", "pi-scout-abc123-dead",
+      "--no-progress",
+      "--cpus", "4",
+      "--memory", "8g",
+      "-t", SANDBOX_TEMPLATE_NAME,
+      "shell",
+      scratch,
+      worktree + ":ro",
+    ],
+  );
   // kit reference swaps -t <template> for --kit <path>, nothing else moves
   const kit = createSandboxArgs({
     name: "n",
     profile: profileForRole("worker"),
     worktreePath: worktree,
     reference: "kit",
-    kitPath: "/host/repo/.pi/sandbox/pi-worker-kit",
+    kitPath: "/host/repo/.pi/sandboxes/kit",
   });
-  assert.deepEqual(kit.slice(8, 10), ["--kit", "/host/repo/.pi/sandbox/pi-worker-kit"]);
+  assert.deepEqual(kit.slice(8, 10), ["--kit", "/host/repo/.pi/sandboxes/kit"]);
   assert.equal(kit.includes("-t"), false, "the kit reference is not a template reference");
   assert.equal(kit[kit.length - 1], worktree);
+  // The fallback is the checked-in kit DIRECTORY: dist/ is gitignored and only
+  // exists on a host that already ran build.sh (i.e. that has the template), so
+  // the packed zip would be absent exactly when the fallback is needed.
+  assert.equal(SANDBOX_KIT_FALLBACK_PATH, ".pi/sandboxes/kit");
 });
 
 await check("execSandboxArgs: --no-input -w, one -e per env var, sandbox then the child argv", async () => {
@@ -380,7 +424,24 @@ await check("createWorkerSandbox: scout adds only the model-provider egress rule
   assert.deepEqual(handle.networkHosts, [...SANDBOX_MODEL_EGRESS_HOSTS]);
   assert.equal(stub.calls.length, 2, "create + the one model-provider egress rule");
   assert.deepEqual(stub.calls[1], policyAllowArgs("pi-scout-fixed-1", SANDBOX_MODEL_EGRESS_HOSTS));
-  assert.equal(stub.calls[0][stub.calls[0].length - 1], repo + ":ro", "scout mounts the worktree read-only");
+  // The primary workspace must be rw, so it is a host temp dir the adapter made;
+  // the worktree stays the read-only second workspace.
+  const create = stub.calls[0];
+  assert.equal(create[create.length - 1], repo + ":ro", "scout mounts the worktree read-only");
+  const scratch = create[create.length - 2];
+  assert.equal(scratch, handle.scratchPath, "the handle records the scratch dir it created");
+  assert.equal(path.dirname(scratch), path.resolve(os.tmpdir()));
+  assert.equal(path.basename(scratch).startsWith(SANDBOX_SCRATCH_PREFIX), true);
+  assert.equal(fs.statSync(scratch).isDirectory(), true, "the scratch dir exists before sbx mounts it");
+  assert.equal(create.includes(repo), false, "the repo is never a read-write workspace");
+  // Scout teardown removes the scratch dir with the VM (same stub: no real CLI).
+  assert.deepEqual(await teardownSandbox("pi-scout-fixed-1", handle.scratchPath), {
+    name: "pi-scout-fixed-1",
+    stopped: true,
+    removed: true,
+    errors: [],
+  });
+  assert.equal(fs.existsSync(scratch), false, "teardown disposes of the scratch workspace");
   setSbxProcessOps(null);
 });
 

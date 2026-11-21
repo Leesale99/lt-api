@@ -1196,7 +1196,7 @@ async function runSingleAgent(
       watchdog.stop();
       if (signal) signal.removeEventListener("abort", requestAbort);
       if (sandbox) {
-        sandboxTeardown = await teardownSandbox(sandbox.name);
+        sandboxTeardown = await teardownSandbox(sandbox.name, sandbox.scratchPath);
       }
     }
 
