@@ -30,29 +30,49 @@
  * waiting-for-approval).
  *
  * Batch 1 (worker gates + content-bound approvals, all logic in ./gates.ts):
- *   - POST-WRITE gate: a worker child that successfully edits/writes a .go,
- *     .feature, .yaml or docs/spec/ file gets `make audit/static` + the scoped
- *     spec check appended to its tool result on failure (debounced ~10s).
+ *   - POST-WRITE gate: a HOST-PASSTHROUGH worker child that successfully
+ *     edits/writes a .go, .feature, .yaml or docs/spec/ file gets
+ *     `make audit/static` + the scoped spec check appended to its tool result on
+ *     failure (debounced ~10s). Sandboxed workers never run this: their
+ *     instance is inert and the HOST runs the authoritative ladder after the
+ *     sandbox exits.
  *   - WORKER-SETTLE gate: the same two commands at settle, up to 3 attempts
  *     (continue:true is bounded by the attempt counter), then a hard stop.
- *   - GATE-FILE protection: child edit/write on cmd/spec/**, docs/spec/**,
- *     Makefile or .pi/** is denied, except .pi prose and paths matched by
- *     .pi/delegate/gate-allowlist.json (the only escape hatch).
- *   - BASH write-channel scanner (batch 3, stage 1): a child bash command whose
- *     write side touches a protected path is denied before it runs (./bashscan.ts).
  *   - Receipts: the EXTENSION appends one JSON line per gate run to
- *     .pi/receipts/<iso-date>.jsonl (commands, exit codes, rules hash, HEAD).
- *   - PROVE receipts: a child bash run of the DECLARED prove command
- *     (WORKFLOW.md `prove_cmd`) carrying `--rule <id>` gets its own receipt
- *     (note "prove rules=…") in the directory it ran in — a leading
- *     `cd <worktree>` redirects it, which is how the orchestrator's scoped
- *     `make prove` inside its worktree leaves merge-back evidence.
+ *     `<host-root>/<receipts_dir>/<iso-date>.jsonl` (commands, exit codes,
+ *     rules hash, HEAD). Host-only: an in-sandbox instance writes none.
+ *   - PROVE receipts: a bash run of the DECLARED prove command (WORKFLOW.md
+ *     `prove_cmd`) carrying `--rule <id>` gets its own receipt, recorded in the
+ *     HOST SESSION'S OWN receipts dir (a leading `cd <worktree>` no longer
+ *     redirects it — a worker could pre-forge a VERIFIED receipt there).
  *   - SPEC-SCOPE: a `SPEC-SCOPE: module=… rules=…` line in the task text is
- *     exported as PI_DELEGATE_SPEC_SCOPE into the worker's spawn env.
- *   - job_approve now binds the relayed decision to the `HEAD SHA:` recorded in
- *     the job's approval block and refuses when the worktree HEAD moved; for a
- *     task whose SPEC-SCOPE names rules it also refuses while any scoped rule
- *     lacks a VERIFIED prove receipt (checkProveCoverage in ./gates.ts).
+ *     recorded in the claims log at spawn and exported as
+ *     PI_DELEGATE_SPEC_SCOPE into the sandbox's `-e` env.
+ *   - job_approve binds the relayed decision to the `HEAD SHA:` recorded in the
+ *     job's approval block and refuses when the worktree HEAD moved; for a task
+ *     whose SPEC-SCOPE names rules it also refuses while any scoped rule lacks a
+ *     VERIFIED prove receipt (checkProveCoverage in ./gates.ts).
+ *
+ * Sandbox era (this file):
+ *   - Every foreground worker except `researcher` runs inside a per-task Docker
+ *     Sandbox micro-VM (./sbx.ts owns the whole CLI): the worktree is mounted
+ *     per the role's profile, the pi invocation is exec'd foreground, and the
+ *     stall watchdog owns teardown (`sbx stop`, then `rm --force`).
+ *   - The HOST session is the verifier plane: after a sandboxed exec exits it
+ *     runs the integrity check FIRST (`checkWorktreeIntegrity`), refuses the
+ *     gates on a dirty result, and otherwise runs the authoritative ladder and
+ *     writes the receipts.
+ *   - The extension ALSO loads inside the VM and is INERT there
+ *     (`isSandboxedChild`): it registers no deny hook, no scanner, no receipts,
+ *     no claims, no subagent tool and no job surfaces. It only appends
+ *     clearly-marked ADVISORY notes from `runInVmAdvisoryGate`.
+ *   - The child file-write deny hook, the bash write-channel scanner
+ *     (bashscan.ts, deleted) and the gate allowlist are GONE: the mount is the
+ *     boundary, and the integrity check is the net at the merge boundary.
+ *   - MERGE-PATH PROVE: in an orchestrator host session a bash hook blocks a
+ *     merge command when the job's recorded SPEC-SCOPE names rules without
+ *     VERIFIED host-side prove receipts — independent of how the approval
+ *     arrived.
  */
 
 import { spawn } from "node:child_process";
@@ -96,17 +116,22 @@ import {
   formatClaimConflict,
   jobIdForEnv,
   prepareSpawnClaims,
+  readClaims,
   siblingContextFor,
 } from "./claims.ts";
 import {
   type GateRun,
+  type IntegrityCheckResult,
   type ReconciliationResult,
   bumpSettleGateAttempts,
-  evaluateGateFileWrite,
+  checkProveCoverage,
+  checkWorktreeIntegrity,
+  detectMergeBackCommands,
   formatGateReport,
   formatSettleEscalation,
   formatSettleTrail,
   formatSpecScope,
+  integrityRefusalReason,
   isGateRelevantWrite,
   logGateDebug,
   markPostWriteGateEnd,
@@ -118,6 +143,7 @@ import {
   reconciliationGateRun,
   recordSettleGateAttempt,
   resetSettleGateAttempts,
+  runInVmAdvisoryGate,
   runReconciliation,
   runScopedGate,
   settleBackoffBaseMs,
@@ -125,9 +151,20 @@ import {
   settleGateStateFor,
   shouldRunPostWriteGate,
   splitCommandLine,
+  splitTopLevelSegments,
   writeReceipt,
 } from "./gates.ts";
-import { evaluateBashWrite, splitTopLevelSegments } from "./bashscan.ts";
+import {
+  type SandboxExecResult,
+  type SandboxHandle,
+  SANDBOX_ENV_FLAG,
+  createWorkerSandbox,
+  execInSandbox,
+  isHostPassthroughRole,
+  isSandboxedChild,
+  profileForRole,
+  teardownSandbox,
+} from "./sbx.ts";
 import { formatStallReason, startStallWatchdog, workerStallTimeoutMs } from "./runtime.ts";
 import {
   createChildStreamParser,
@@ -386,6 +423,29 @@ function formatToolCall(
 type ChildStatus = "pending" | "running" | "completed" | "failed" | "aborted";
 type UsageStats = ReturnType<typeof emptyUsage>;
 
+/**
+ * HOST-side verification of a sandboxed worker, run AFTER the sandbox exited
+ * and BEFORE anything in the result is read as green:
+ *
+ *   1. integrity check (gate files == HEAD) — a dirty result REFUSES the gates;
+ *   2. the authoritative gate ladder (only when the child exited normally);
+ *   3. receipts, written to the HOST session's receipts dir, never the worktree.
+ *
+ * `refused` is the loud path: no gate command ran, and the batch routes to
+ * human review.
+ */
+interface HostVerification {
+  integrity: IntegrityCheckResult;
+  /** The authoritative ladder (undefined when the integrity check refused). */
+  gates?: GateRun;
+  /** Receipt files written by this verification (host-side). */
+  receipts: string[];
+  /** true ⇒ the integrity check refused to run any gate. */
+  refused: boolean;
+  /** Whether the ladder actually ran. */
+  gatesRan: boolean;
+}
+
 interface SingleResult {
   agent: string;
   agentSource: "user" | "project" | "unknown";
@@ -402,6 +462,18 @@ interface SingleResult {
   step?: number;
   /** Batch 2: the run was killed by the stall watchdog (see runtime.ts). */
   stallTimeout?: boolean;
+  /** The sandbox VM this run occupied (absent for host-passthrough roles). */
+  sandboxName?: string;
+  /** One line per teardown failure (empty/undefined ⇒ clean teardown). */
+  sandboxTeardownErrors?: string[];
+  /**
+   * The `sbx` CLI itself could not run the command (exit 125/127, spawn error,
+   * timeout, abort). Distinct from the child's own status and from a gate
+   * failure: the remediation is a host/VM fix, not a code fix.
+   */
+  infraFailure?: boolean;
+  /** Host-side post-exit verification (sandboxed runs only). */
+  hostVerification?: HostVerification;
 }
 
 interface SubagentDetails {
@@ -436,6 +508,7 @@ function getFailureEvidence(result: SingleResult): string {
   add("Error", result.errorMessage);
   add("Signal", result.terminationSignal);
   add("stderr", result.stderr);
+  add("Host verification", formatHostVerification(result));
   add("Assistant output", getFinalOutput(result.messages));
   return evidence.join("\n\n") || "(no output)";
 }
@@ -549,6 +622,12 @@ interface ResolvedAgent {
   agent?: AgentConfig;
   available: AgentConfig[];
   cwd: string;
+  /**
+   * The INVOKING session's cwd — the host root. Receipts and claims resolve
+   * against it, never against a per-call cwd (a worktree spawn must not redirect
+   * the host's own evidence into the tree a worker can write).
+   */
+  hostRoot: string;
 }
 
 function resolveAgent(defaultCwd: string, scope: AgentScope, name: string, cwd?: string): ResolvedAgent {
@@ -563,6 +642,7 @@ function resolveAgent(defaultCwd: string, scope: AgentScope, name: string, cwd?:
     agent: discovery.agents.find((candidate) => candidate.name === name),
     available: discovery.agents,
     cwd: path.resolve(defaultCwd, cwd ?? "."),
+    hostRoot: path.resolve(defaultCwd),
   };
 }
 
@@ -619,6 +699,187 @@ function buildTaskPrompt(agent: AgentConfig, task: string, siblingContext?: stri
   }
   if (siblingContext && siblingContext.trim()) prompt += "\n\n" + siblingContext.trim();
   return prompt;
+}
+
+/**
+ * The env a sandboxed pi gets via `sbx exec -e`. A strict allowlist on purpose:
+ * the host process env never crosses into the VM, so pi's own session identity
+ * (`PI_SESSION_ID`, `PI_PROVIDER`, …) and any host secret stay host-side. The
+ * model API key is NOT here — it reaches the VM through the `sbx` secret
+ * sentinel/proxy (see SANDBOX_SECRET_SENTINEL_ENVS in ./sbx.ts).
+ */
+function sandboxChildEnv(task: string): Record<string, string> {
+  const env: Record<string, string> = {
+    PI_DELEGATE_CHILD: "1",
+    PI_DELEGATE_ROLE: "worker",
+    [SANDBOX_ENV_FLAG]: "1",
+  };
+  // Batch 1: the worker's spec scope travels as env, never re-parsed from the
+  // child's context. Only a task text carrying a `SPEC-SCOPE: module=… rules=…`
+  // line sets it; the allowlist above means no inherited value can narrow it.
+  const scope = parseSpecScope(task);
+  if (scope) env.PI_DELEGATE_SPEC_SCOPE = formatSpecScope(scope);
+  return env;
+}
+
+/** Receipt append that never throws and never changes a verdict. */
+async function safeHostReceipt(input: {
+  cwd: string;
+  agent: string;
+  commands: ReturnType<typeof receiptCommandsOf>;
+  ok: boolean;
+  note: string;
+}): Promise<string | null> {
+  try {
+    return await writeReceipt({
+      cwd: input.cwd,
+      agent: input.agent,
+      session: process.env.PI_SESSION_ID,
+      commands: input.commands,
+      ok: input.ok,
+      note: input.note,
+    });
+  } catch (error) {
+    console.error("[delegate] host receipt failed:", error);
+    return null;
+  }
+}
+
+/**
+ * HOST-SIDE post-exit verification of one sandboxed worker. Runs in the HOST
+ * session (this process), never in the VM:
+ *
+ *   1. integrity check FIRST (`git diff --exit-code HEAD` over the gate files,
+ *      worktree + index). Dirty/unverifiable ⇒ REFUSE to run any gate, write a
+ *      receipt saying so, and fail the result loudly (human review).
+ *   2. otherwise, when the child exited normally, the authoritative ladder
+ *      (`make audit/static` + the scoped spec check) IN THE WORKTREE, and its
+ *      receipt — in the HOST's receipts dir, not the worktree's.
+ */
+async function verifySandboxedWorker(input: {
+  hostRoot: string;
+  worktreePath: string;
+  agent: string;
+  scopeEnv?: string;
+  runGates: boolean;
+}): Promise<HostVerification> {
+  const receipts: string[] = [];
+  let integrity: IntegrityCheckResult;
+  try {
+    integrity = await checkWorktreeIntegrity(input.worktreePath);
+  } catch (error) {
+    // Fail closed: an internal error means the gate files were not verified.
+    integrity = {
+      clean: false,
+      refused: true,
+      report:
+        "\u2500\u2500 INTEGRITY CHECK (host, pre-gate) \u2500\u2500\nintegrity check crashed: " +
+        (error instanceof Error ? error.message : String(error)),
+      steps: [],
+      paths: [],
+    };
+  }
+
+  const integrityReceipt = await safeHostReceipt({
+    cwd: input.hostRoot,
+    agent: input.agent,
+    commands: integrity.steps.map((step) => ({
+      command: step.command,
+      exitCode: step.exitCode,
+      timedOut: step.timedOut,
+      durationMs: step.durationMs,
+    })),
+    ok: integrity.clean,
+    note: integrity.clean
+      ? "integrity check (host, pre-gate): gate files match HEAD"
+      : "integrity check (host, pre-gate): REFUSED \u2014 no gate command ran",
+  });
+  if (integrityReceipt) receipts.push(integrityReceipt);
+
+  if (integrity.refused) {
+    return { integrity, receipts, refused: true, gatesRan: false };
+  }
+  if (!input.runGates) {
+    return { integrity, receipts, refused: false, gatesRan: false };
+  }
+
+  let gates: GateRun;
+  try {
+    gates = await runScopedGate({ cwd: input.worktreePath, scopeEnv: input.scopeEnv });
+  } catch (error) {
+    gates = {
+      ok: false,
+      steps: [
+        {
+          command: "(host gate)",
+          argv: [],
+          ok: false,
+          exitCode: null,
+          timedOut: false,
+          durationMs: 0,
+          stdout: "",
+          stderr: error instanceof Error ? error.message : String(error),
+          spawnError: null,
+          reason: "host gate runner threw",
+        },
+      ],
+    };
+  }
+  const gateReceipt = await safeHostReceipt({
+    cwd: input.hostRoot,
+    agent: input.agent,
+    commands: receiptCommandsOf(gates),
+    ok: gates.ok,
+    note: "host gate (authoritative, post-exit)",
+  });
+  if (gateReceipt) receipts.push(gateReceipt);
+  return { integrity, receipts, refused: false, gatesRan: true, gates };
+}
+
+/** Append the HOST VERIFICATION block(s) of the given results to model-facing text. */
+function withHostVerification(text: string, ...results: SingleResult[]): string {
+  const blocks = results
+    .map((result) => formatHostVerification(result))
+    .filter((block) => block.length > 0);
+  if (blocks.length === 0) return text;
+  return text + "\n\n" + blocks.join("\n\n");
+}
+
+/**
+ * The model-facing HOST VERIFICATION block: "" when the run was not sandboxed
+ * (host passthrough keeps its old result text) or when everything was clean.
+ */
+function formatHostVerification(result: SingleResult): string {
+  const verification = result.hostVerification;
+  if (!verification) return "";
+  const lines: string[] = ["\u2500\u2500 HOST VERIFICATION (authoritative, post-exit) \u2500\u2500"];
+  lines.push(verification.integrity.report);
+  if (verification.refused) {
+    lines.push("gates: NOT RUN \u2014 the integrity check refused them (human review required).");
+  } else if (!verification.gatesRan) {
+    lines.push("gates: not run (the worker did not exit normally \u2014 no verdict was produced).");
+  } else if (verification.gates) {
+    const run = verification.gates;
+    if (run.ok) {
+      lines.push("gates: PASSED \u2014 " + run.steps.map((step) => step.command).join(" \u00b7 "));
+    } else {
+      lines.push(
+        formatGateReport(run, {
+          header: "\u2500\u2500 HOST GATE FAILED \u2500\u2500",
+          footer: "The host, not the worker, decides green: this batch is NOT green.",
+          maxLines: 20,
+        }),
+      );
+    }
+  }
+  if (verification.receipts.length > 0) {
+    lines.push("receipts: " + verification.receipts.join(", "));
+  }
+  if (result.sandboxName) lines.push("sandbox: " + result.sandboxName + " (torn down)");
+  if (result.sandboxTeardownErrors && result.sandboxTeardownErrors.length > 0) {
+    lines.push("teardown: " + result.sandboxTeardownErrors.join("; "));
+  }
+  return lines.join("\n");
 }
 
 async function runSingleAgent(
@@ -687,11 +948,35 @@ async function runSingleAgent(
   };
 
   try {
+    // Sandbox routing. Every role except `researcher` (host passthrough — the
+    // documented residual whose profile is deferred) runs inside its own
+    // micro-VM. The pi invocation is otherwise the same one the local path
+    // uses; three deltas are forced by the mount boundary:
+    //   - the system prompt goes INLINE: `--append-system-prompt` resolves its
+    //     argument as a file only when that path exists, and a host temp path
+    //     does not exist inside the VM;
+    //   - `--approve` is appended: project-local `.pi/extensions` load only
+    //     after project trust, and the VM's HOME (/home/agent) has no
+    //     `trust.json` and print mode cannot show the trust prompt — without
+    //     the override pi silently skips the delegate extension in the VM, so
+    //     the IN-VM ADVISORY gate never runs at all (found by the S1 e2e
+    //     dogfood: a misformatted write produced no ADVISORY note until the
+    //     same write was run with `-a`). The override loads the INERT instance,
+    //     which by design only appends advisory notes;
+    //   - `--no-skills` is appended (no shared skills store in the VM; pi has
+    //     no `--skills=off` flag — unknown `--key=value` flags are silently
+    //     collected, so that spelling left skills ON).
+    const sandboxProfile = profileForRole(agent.name);
+    const useSandbox = !sandboxProfile.hostPassthrough;
     if (agent.systemPrompt.trim()) {
-      const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
-      tmpPromptDir = tmp.dir;
-      tmpPromptPath = tmp.filePath;
-      args.push("--append-system-prompt", tmpPromptPath);
+      if (useSandbox) {
+        args.push("--append-system-prompt", agent.systemPrompt);
+      } else {
+        const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
+        tmpPromptDir = tmp.dir;
+        tmpPromptPath = tmp.filePath;
+        args.push("--append-system-prompt", tmpPromptPath);
+      }
     }
 
     if (signal?.aborted) {
@@ -700,133 +985,220 @@ async function runSingleAgent(
       return currentResult;
     }
 
-    args.push(buildTaskPrompt(agent, task, await siblingContextFor(effectiveCwd, jobIdForEnv())));
+    args.push(buildTaskPrompt(agent, task, await siblingContextFor(resolvedAgent.hostRoot, jobIdForEnv())));
     emitUpdate();
     let wasAborted = false;
-    // Batch 2 stall guard: every parsed child event (and every raw stdout
-    // chunk — a superset, deliberately forgiving) refreshes lastActivityMs; a
-    // referenced 1s watchdog aborts through the normal SIGTERM→SIGKILL path
-    // once the silence exceeds the (env-tunable, 0-disabled) timeout.
+    // Batch 2 stall guard — and, in the sandbox era, the OWNER of teardown:
+    // every parsed child event (and every raw stdout chunk — a superset,
+    // deliberately forgiving) refreshes lastActivityMs; a referenced 1s
+    // watchdog aborts the exec once the silence exceeds the (policy/env tunable,
+    // 0-disabled) timeout, and the finally below removes the VM on EVERY exit
+    // path (stall, abort, spawn error, normal finish). There is no local TTL:
+    // the host owns wall-clock.
     const stallTimeoutMs = workerStallTimeoutMs(process.env, effectiveCwd);
     const activity = { lastMs: Date.now() };
     let stalled = false;
     let stallReason = "";
-    const outcome = await new Promise<ProcessOutcome>((resolve) => {
-      const invocation = getPiInvocation(args);
-      let settled = false;
-      let exited = false;
-      let closed = false;
-      let killTimer: ReturnType<typeof setTimeout> | undefined;
-      let watchdog: { stop(): void } | undefined;
-      let buffer = "";
+    let sandbox: SandboxHandle | null = null;
+    let sandboxExec: SandboxExecResult | null = null;
+    let sandboxTeardown: Awaited<ReturnType<typeof teardownSandbox>> | null = null;
+    let outcome: ProcessOutcome;
 
-      const processLine = (line: string) => {
-        activity.lastMs = Date.now();
-        if (stream.processLine(line)) emitUpdate();
-      };
+    const processLine = (line: string) => {
+      activity.lastMs = Date.now();
+      if (stream.processLine(line)) emitUpdate();
+    };
+    let buffer = "";
+    const onStdoutChunk = (text: string) => {
+      activity.lastMs = Date.now();
+      buffer += text;
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) processLine(line);
+    };
+    const onStderrChunk = (text: string) => {
+      currentResult.stderr += text;
+    };
 
-      let proc: ReturnType<typeof spawn>;
-      const finish = (result: ProcessOutcome) => {
-        if (settled) return;
-        settled = true;
-        closed = true;
-        if (killTimer) clearTimeout(killTimer);
-        watchdog?.stop();
-        if (signal) signal.removeEventListener("abort", abortProcess);
-        resolve(result);
-      };
-      const abortProcess = () => {
-        if (closed || exited || proc.exitCode !== null || proc.signalCode !== null) return;
-        if (!proc.kill("SIGTERM")) return;
-        wasAborted = true;
-        killTimer = setTimeout(() => {
-          if (!closed && !exited) proc.kill("SIGKILL");
-        }, 5000);
-      };
+    /**
+     * The HOST-PASSTHROUGH spawn path (researcher today), unchanged in shape:
+     * `getPiInvocation` + a local child, its env scrubbed of pi's own session
+     * identity, and the caller's abort signal mapped to SIGTERM→SIGKILL.
+     */
+    const runLocalSpawn = async (): Promise<ProcessOutcome> => {
+      return await new Promise<ProcessOutcome>((resolve) => {
+        const invocation = getPiInvocation(args);
+        let settled = false;
+        let exited = false;
+        let closed = false;
+        let killTimer: ReturnType<typeof setTimeout> | undefined;
 
-      // pi's bash tool exports PI_SESSION_ID / PI_SESSION_FILE / PI_PROVIDER /
-      // PI_MODEL / PI_REASONING_LEVEL into tool subprocesses; scrub them so the
-      // parent's session identity never leaks into a subagent's env.
-      // Phase 5: every foreground spawn is a worker — including the child
-      // orchestrator's own spawns, whose inherited PI_DELEGATE_ROLE is
-      // overridden here so worker children of a child orchestrator get the
-      // role uniformly. (Background children are role=orchestrator via the
-      // runner script in jobs.ts.)
-      const childEnv: NodeJS.ProcessEnv = {
-        ...process.env,
-        PI_DELEGATE_CHILD: "1",
-        PI_DELEGATE_ROLE: "worker",
-      };
-      delete childEnv.PI_SESSION_ID;
-      delete childEnv.PI_SESSION_FILE;
-      delete childEnv.PI_PROVIDER;
-      delete childEnv.PI_MODEL;
-      delete childEnv.PI_REASONING_LEVEL;
-      // Batch 1: the worker's spec scope travels as env, never re-parsed from
-      // the child's context (the child cannot see its own tool_result input
-      // reliably enough to scope a gate). Only a task text carrying a
-      // `SPEC-SCOPE: module=… rules=…` line sets it; otherwise the variable is
-      // removed, so no inherited value can ever narrow a worker's gate.
-      const specScope = parseSpecScope(task);
-      if (specScope) childEnv.PI_DELEGATE_SPEC_SCOPE = formatSpecScope(specScope);
-      else delete childEnv.PI_DELEGATE_SPEC_SCOPE;
-      try {
-        proc = spawn(invocation.command, invocation.args, {
-          cwd: effectiveCwd,
-          shell: false,
-          stdio: ["ignore", "pipe", "pipe"],
-          // Delta vs example: mark children so env-gated hooks (orchestrator
-          // injection, edit/write gate) know they are running in a child.
-          env: childEnv,
+        let proc: ReturnType<typeof spawn>;
+        const finish = (result: ProcessOutcome) => {
+          if (settled) return;
+          settled = true;
+          closed = true;
+          if (killTimer) clearTimeout(killTimer);
+          execAbort.signal.removeEventListener("abort", abortProcess);
+          resolve(result);
+        };
+        const abortProcess = () => {
+          if (closed || exited || proc.exitCode !== null || proc.signalCode !== null) return;
+          if (!proc.kill("SIGTERM")) return;
+          wasAborted = true;
+          killTimer = setTimeout(() => {
+            if (!closed && !exited) proc.kill("SIGKILL");
+          }, 5000);
+        };
+
+        // pi's bash tool exports PI_SESSION_ID / PI_SESSION_FILE / PI_PROVIDER /
+        // PI_MODEL / PI_REASONING_LEVEL into tool subprocesses; scrub them so
+        // the parent's session identity never leaks into a subagent's env.
+        // Phase 5: every foreground spawn is a worker — including the child
+        // orchestrator's own spawns, whose inherited PI_DELEGATE_ROLE is
+        // overridden here so worker children of a child orchestrator get the
+        // role uniformly. (Background children are role=orchestrator via the
+        // runner script in jobs.ts.)
+        const childEnv: NodeJS.ProcessEnv = {
+          ...process.env,
+          PI_DELEGATE_CHILD: "1",
+          PI_DELEGATE_ROLE: "worker",
+        };
+        delete childEnv.PI_SESSION_ID;
+        delete childEnv.PI_SESSION_FILE;
+        delete childEnv.PI_PROVIDER;
+        delete childEnv.PI_MODEL;
+        delete childEnv.PI_REASONING_LEVEL;
+        delete childEnv[SANDBOX_ENV_FLAG];
+        // Batch 1: the worker's spec scope travels as env, never re-parsed from
+        // the child's context (the child cannot see its own tool_result input
+        // reliably enough to scope a gate). Only a task text carrying a
+        // `SPEC-SCOPE: module=… rules=…` line sets it; otherwise the variable is
+        // removed, so no inherited value can ever narrow a worker's gate.
+        const specScope = parseSpecScope(task);
+        if (specScope) childEnv.PI_DELEGATE_SPEC_SCOPE = formatSpecScope(specScope);
+        else delete childEnv.PI_DELEGATE_SPEC_SCOPE;
+        try {
+          proc = spawn(invocation.command, invocation.args, {
+            cwd: effectiveCwd,
+            shell: false,
+            stdio: ["ignore", "pipe", "pipe"],
+            // Delta vs example: mark children so env-gated hooks (orchestrator
+            // injection, edit/write gate) know they are running in a child.
+            env: childEnv,
+          });
+        } catch (error) {
+          finish({
+            code: null,
+            signal: null,
+            spawnError: error instanceof Error ? error : new Error(String(error)),
+          });
+          return;
+        }
+
+        proc.stdout?.on("data", (data) => {
+          onStdoutChunk(data.toString());
         });
-      } catch (error) {
-        finish({
-          code: null,
-          signal: null,
-          spawnError: error instanceof Error ? error : new Error(String(error)),
+        proc.stderr?.on("data", (data) => {
+          onStderrChunk(data.toString());
         });
-        return;
-      }
+        proc.on("exit", () => {
+          exited = true;
+        });
+        proc.on("close", (code, terminationSignal) => {
+          if (buffer.trim()) processLine(buffer);
+          finish({ code, signal: terminationSignal });
+        });
+        proc.on("error", (error) => {
+          finish({ code: null, signal: null, spawnError: error });
+        });
 
-      proc.stdout?.on("data", (data) => {
-        activity.lastMs = Date.now();
-        buffer += data.toString();
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) processLine(line);
+        if (execAbort.signal.aborted) abortProcess();
+        else execAbort.signal.addEventListener("abort", abortProcess, { once: true });
       });
-      proc.stderr?.on("data", (data) => {
-        currentResult.stderr += data.toString();
-      });
-      proc.on("exit", () => {
-        exited = true;
-      });
-      proc.on("close", (code, terminationSignal) => {
-        if (buffer.trim()) processLine(buffer);
-        finish({ code, signal: terminationSignal });
-      });
-      proc.on("error", (error) => {
-        finish({ code: null, signal: null, spawnError: error });
-      });
+    };
 
-      if (signal) {
-        if (signal.aborted) abortProcess();
-        else signal.addEventListener("abort", abortProcess, { once: true });
-      }
-
-      // Batch 2: start the stall watchdog once the child is live. It aborts
-      // through the SAME path as a user abort (SIGTERM, then SIGKILL after
-      // 5s), so a wedged child cannot leak a process; finish() stops it.
-      watchdog = startStallWatchdog({
-        timeoutMs: stallTimeoutMs,
-        getLastActivityMs: () => activity.lastMs,
-        onStall: (decision) => {
-          stalled = true;
-          stallReason = formatStallReason(decision.idleMs, stallTimeoutMs);
-          abortProcess();
-        },
-      });
+    // One abort channel for BOTH paths: the watchdog and the caller's signal
+    // only ever request a stop; the transport decides how to enforce it.
+    const execAbort = new AbortController();
+    const requestAbort = () => {
+      if (execAbort.signal.aborted) return;
+      wasAborted = true;
+      execAbort.abort();
+    };
+    if (signal) {
+      if (signal.aborted) requestAbort();
+      else signal.addEventListener("abort", requestAbort, { once: true });
+    }
+    const watchdog = startStallWatchdog({
+      timeoutMs: stallTimeoutMs,
+      getLastActivityMs: () => activity.lastMs,
+      onStall: (decision) => {
+        stalled = true;
+        stallReason = formatStallReason(decision.idleMs, stallTimeoutMs);
+        if (!execAbort.signal.aborted) execAbort.abort();
+      },
     });
+
+    try {
+      if (useSandbox) {
+        let createError: string | null = null;
+        try {
+          sandbox = await createWorkerSandbox({
+            role: agent.name,
+            worktreePath: effectiveCwd,
+            cwd: resolvedAgent.hostRoot,
+          });
+          currentResult.sandboxName = sandbox.name;
+        } catch (error) {
+          createError = error instanceof Error ? error.message : String(error);
+        }
+        if (sandbox) {
+          try {
+            sandboxExec = await execInSandbox(
+              sandbox.name,
+              ["pi", ...args, "--no-skills", "--approve"],
+              {
+                worktreePath: effectiveCwd,
+                env: sandboxChildEnv(task),
+                signal: execAbort.signal,
+                onStdout: onStdoutChunk,
+                onStderr: onStderrChunk,
+              },
+            );
+            outcome = {
+              code: sandboxExec.exitCode,
+              signal: null,
+              spawnError: sandboxExec.spawnError ? new Error(sandboxExec.spawnError) : undefined,
+            };
+          } catch (error) {
+            outcome = {
+              code: null,
+              signal: null,
+              spawnError: error instanceof Error ? error : new Error(String(error)),
+            };
+          }
+        } else {
+          // The sandbox could not be created: NO local fallback. A host-side
+          // spawn would hand the worker host reach behind the profile's back.
+          outcome = {
+            code: null,
+            signal: null,
+            spawnError: new Error("sandbox create failed: " + createError),
+          };
+        }
+      } else {
+        outcome = await runLocalSpawn();
+      }
+    } finally {
+      // The stall watchdog / abort path lands here too: the VM never outlives
+      // its worker on ANY exit path. Teardown is best-effort and never throws.
+      watchdog.stop();
+      if (signal) signal.removeEventListener("abort", requestAbort);
+      if (sandbox) {
+        sandboxTeardown = await teardownSandbox(sandbox.name);
+      }
+    }
 
     currentResult.exitCode = outcome.code;
     currentResult.terminationSignal = outcome.signal ?? undefined;
@@ -840,21 +1212,26 @@ async function runSingleAgent(
       currentResult.status = "failed";
       currentResult.stallTimeout = true;
       currentResult.errorMessage = stallReason;
-      try {
-        await writeReceipt({
-          cwd: effectiveCwd,
-          agent: agentName,
-          session: process.env.PI_SESSION_ID,
-          commands: [],
-          ok: false,
-          note: "stall-timeout: " + stallReason,
-        });
-      } catch (error) {
-        console.error("[delegate] stall-timeout receipt failed:", error);
-      }
+      await safeHostReceipt({
+        cwd: resolvedAgent.hostRoot,
+        agent: agentName,
+        commands: [],
+        ok: false,
+        note: "stall-timeout: " + stallReason + (sandbox ? " (sandbox " + sandbox.name + " torn down)" : ""),
+      });
     } else if (wasAborted) {
       currentResult.status = "aborted";
       currentResult.errorMessage ||= "Subagent was aborted";
+    } else if (sandboxExec && sandboxExec.classification.infraFailure) {
+      // Distinct from the child's own status AND from a gate failure: the CLI
+      // could not run the command (125/127/spawn/timeout). No verdict was
+      // produced; the remediation is a host/VM fix.
+      currentResult.status = "failed";
+      currentResult.infraFailure = true;
+      currentResult.errorMessage =
+        "sandbox infrastructure failure (no verdict produced): " +
+        sandboxExec.classification.reason +
+        (sandboxExec.sandbox ? " [sandbox " + sandboxExec.sandbox + "]" : "");
     } else if (outcome.spawnError) {
       currentResult.status = "failed";
       currentResult.errorMessage = `Failed to spawn subagent: ${outcome.spawnError.message}`;
@@ -870,6 +1247,39 @@ async function runSingleAgent(
       currentResult.status = "failed";
     } else {
       currentResult.status = "completed";
+    }
+
+    if (sandbox) {
+      currentResult.sandboxName = sandbox.name;
+      if (sandboxTeardown && sandboxTeardown.errors.length > 0) {
+        currentResult.sandboxTeardownErrors = sandboxTeardown.errors;
+      }
+      // HOST-SIDE authoritative verification, in this order: integrity check →
+      // (only if clean) the gate ladder. Never in the VM, never after the fact.
+      const verification = await verifySandboxedWorker({
+        hostRoot: resolvedAgent.hostRoot,
+        worktreePath: effectiveCwd,
+        agent: agentName,
+        scopeEnv: sandboxChildEnv(task).PI_DELEGATE_SPEC_SCOPE,
+        runGates: currentResult.status === "completed",
+      });
+      currentResult.hostVerification = verification;
+      if (verification.refused) {
+        currentResult.status = "failed";
+        currentResult.errorMessage =
+          (currentResult.errorMessage ? currentResult.errorMessage + "\n" : "") +
+          integrityRefusalReason(verification.integrity);
+      } else if (verification.gates && !verification.gates.ok) {
+        currentResult.status = "failed";
+        const failed = verification.gates.steps.filter((entry) => !entry.ok);
+        const summary = failed
+          .map((entry) => entry.command + " (" + (entry.exitCode === null ? "no exit code" : "exit " + String(entry.exitCode)) + ")")
+          .join(", ");
+        currentResult.errorMessage =
+          (currentResult.errorMessage ? currentResult.errorMessage + "\n" : "") +
+          "host gate failed after the sandbox exited: " + (summary || "unknown step") +
+          " — the host, not the worker, decides green.";
+      }
     }
     return currentResult;
   } finally {
@@ -1645,7 +2055,11 @@ function proveRuleIdsIn(command: string): string[] {
  * The directory of a leading `cd <dir>` segment, or null. Only the FIRST
  * segment counts: the orchestrator's handoff form is
  * `cd ../lt-api-wt-<id> && make prove args='--rule <id>'`, and a cd later in
- * the chain says nothing about where the prove run happened.
+ * the chain says nothing about the command that followed.
+ *
+ * IDENTIFICATION ONLY. In the sandbox era a `cd` never redirects the receipt
+ * (receipts resolve against the host session's own root): routing evidence into
+ * the worktree would let a worker pre-forge a VERIFIED receipt inside its mount.
  */
 function leadingCdTarget(segment: string): string | null {
   const words = splitCommandLine(segment);
@@ -1695,7 +2109,144 @@ function bashExitCodeOf(event: ToolResultEvent): number | null {
   return null;
 }
 
+/**
+ * The rule ids the JOB recorded at spawn. The claims log is the spawn-time
+ * record (`prepareSpawnClaims` writes `ruleIds` from each worker's SPEC-SCOPE
+ * line); the job registry's task text is the fallback for an entry whose claims
+ * log is gone. An empty result means "this job has no recorded spec scope" —
+ * exactly what a non-rule-change batch looks like, and such a job merges freely.
+ *
+ * Read from the HOST root only: claims are host-written artifacts, and a
+ * worktree's claims path belongs to the sandbox, not the verifier.
+ */
+async function recordedScopedRules(hostRoot: string, jobId: string): Promise<string[]> {
+  const rules: string[] = [];
+  const add = (value: unknown) => {
+    if (typeof value !== "string") return;
+    const rule = value.trim();
+    if (rule.length === 0 || rules.includes(rule)) return;
+    rules.push(rule);
+  };
+  try {
+    const records = await readClaims(hostRoot, jobId);
+    for (const record of records) {
+      if (record.type !== "claim") continue;
+      for (const rule of record.ruleIds) add(rule);
+    }
+  } catch (error) {
+    console.error("[delegate] claims read failed for merge-path PROVE check:", error);
+  }
+  if (rules.length === 0) {
+    try {
+      const entry = await peekJobEntry(hostRoot, jobId);
+      for (const rule of parseSpecScope(entry?.task ?? "")?.rules ?? []) add(rule);
+    } catch {
+      /* registry read is best-effort; an empty result merges freely by design */
+    }
+  }
+  return rules;
+}
+
+/**
+ * IN-VM (sandboxed) registration: ADVISORY ONLY.
+ *
+ * The extension also loads inside the worker's micro-VM. There it must register
+ * nothing that enforces or records — no file-write deny hook, no bash scanner,
+ * no receipts, no claims, no subagent tool, no job surfaces, no merge hook. The
+ * only thing it does is append clearly-marked ADVISORY notes after a
+ * gate-relevant write and at settle, so the worker's own loop is shorter and it
+ * knows a gate is due. Every note says the host re-runs the authoritative gates
+ * after exit — an in-VM green is not a verdict.
+ *
+ * The ladder is `runInVmAdvisoryGate`: the declared scoped spec check plus a
+ * direct `gofmt -l` over the changed Go files. `make audit/static` is never run
+ * here (its gofmt step enumerates `git ls-files`, and the mount carries no
+ * usable `.git`).
+ */
+function registerInVmAdvisory(pi: ExtensionAPI): void {
+  const ADVISORY_FOOTER =
+    "This is ADVISORY only: the host re-runs the authoritative gates after your sandbox exits, " +
+    "and its verdict — not this note — decides. Never quote this note as evidence of green.";
+
+  pi.on("tool_result", async (event, ctx) => {
+    if (event.toolName !== "edit" && event.toolName !== "write") return;
+    if (event.isError) return;
+    const input = event.input as { path?: unknown };
+    if (typeof input.path !== "string" || input.path.length === 0) return;
+    if (!isGateRelevantWrite(ctx.cwd, input.path)) return;
+
+    let run: GateRun;
+    try {
+      run = await runInVmAdvisoryGate({
+        cwd: ctx.cwd,
+        scopeEnv: process.env.PI_DELEGATE_SPEC_SCOPE,
+        changedPaths: [input.path],
+      });
+    } catch (error) {
+      return {
+        content: appendToolResultNote(
+          event.content,
+          "\n[ADVISORY] in-VM gate check crashed (" +
+            (error instanceof Error ? error.message : String(error)) +
+            "). \n" + ADVISORY_FOOTER,
+        ),
+      };
+    }
+    if (run.ok) return;
+    const report = formatGateReport(run, {
+      header: "\u2500\u2500 ADVISORY GATE (in-VM \u2014 not a verdict) \u2500\u2500",
+      footer: ADVISORY_FOOTER,
+      maxLines: 20,
+    });
+    return { content: appendToolResultNote(event.content, "\n" + report) };
+  });
+
+  // Settle advisory: same ladder, no forced continuation (nothing here may
+  // consume a turn or block the run) and no receipt.
+  pi.on("agent_before_settle", async (event, ctx) => {
+    if (event.outcome !== "completed") return;
+    let run: GateRun;
+    try {
+      run = await runInVmAdvisoryGate({ cwd: ctx.cwd, scopeEnv: process.env.PI_DELEGATE_SPEC_SCOPE });
+    } catch (error) {
+      return {
+        entries: [
+          ...event.entries,
+          {
+            type: "custom_message",
+            customType: "delegate-gate",
+            content:
+              "[ADVISORY] in-VM settle check crashed: " +
+              (error instanceof Error ? error.message : String(error)) + "\n" + ADVISORY_FOOTER,
+            display: true,
+          },
+        ],
+      };
+    }
+    if (run.ok) return;
+    const report = formatGateReport(run, {
+      header: "\u2500\u2500 ADVISORY SETTLE GATE (in-VM \u2014 not a verdict) \u2500\u2500",
+      footer: ADVISORY_FOOTER,
+      maxLines: 20,
+    });
+    return {
+      entries: [
+        ...event.entries,
+        { type: "custom_message", customType: "delegate-gate", content: report, display: true },
+      ],
+    };
+  });
+}
+
 export default function (pi: ExtensionAPI) {
+  // Sandboxed (in-VM) instance: inert. Register the advisory notes and stop —
+  // nothing below may run inside a worker VM (no enforcement, no records, no
+  // teardown, no tool surfaces).
+  if (isSandboxedChild()) {
+    registerInVmAdvisory(pi);
+    return;
+  }
+
   delegateApi = pi;
 
   // Phase 2: env-gated orchestrator injection. Main sessions get persona/rules/routing
@@ -1756,8 +2307,9 @@ export default function (pi: ExtensionAPI) {
   // get a HARD block instead — nobody can approve a dialog there, and without
   // this the orchestrator could silently implement. bash is not gated (prompt
   // layer discourages it). Children (PI_DELEGATE_CHILD set) skip THIS gate so
-  // delegated work runs unattended — they get the batch-1 gate-file DENY path
-  // in the handler right below instead.
+  // delegated work runs unattended; a sandboxed worker has no write barrier in
+  // the VM by design (the mount is the boundary), and the host integrity check
+  // at the merge boundary is the net.
   pi.on("tool_call", async (event, ctx) => {
     if (process.env.PI_DELEGATE_CHILD) return;
     if (event.toolName !== "edit" && event.toolName !== "write") return;
@@ -1776,73 +2328,69 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // Batch 1: child sessions no longer skip the gate entirely — they get a DENY
-  // path for the GATE FILES. Delegated implementation work still runs
-  // unattended everywhere else; what is protected is the specification
-  // machinery itself (docs/spec/** except nothing, cmd/spec/**, Makefile,
-  // .pi/** minus the prose dirs). The single escape hatch is
-  // .pi/delegate/gate-allowlist.json (see the gates.ts header) — no env-var
-  // bypasses, and a missing/invalid allowlist denies.
+  // MERGE-PATH PROVE enforcement (sandbox era). This hook closes the
+  // typed-in-pane bypass: a confirm-handoff user can type "approved" straight
+  // into the orchestrator's tmux pane, which never passes through job_approve.
+  // The precondition therefore lives on the MERGE EXECUTION PATH, not on the
+  // approval path: in an orchestrator host session, any `git merge …` (including
+  // the `git -C <worktree> merge` form) is blocked when the job's RECORDED spec
+  // scope names rules that lack VERIFIED prove receipts host-side. A job with no
+  // recorded SPEC-SCOPE merges freely. Host-side only — an in-VM instance never
+  // registers this (the inert-mode early return above).
   pi.on("tool_call", async (event, ctx) => {
-    if (process.env.PI_DELEGATE_CHILD !== "1") return;
-    if (event.toolName !== "edit" && event.toolName !== "write") return;
-    const input = event.input as { path?: unknown };
-    if (typeof input.path !== "string" || input.path.length === 0) return;
-    const decision = evaluateGateFileWrite(ctx.cwd, input.path);
-    if (!decision.blocked) return;
-    return { block: true, reason: decision.reason ?? "Gate file is protected from delegated edits." };
-  });
-
-  // Batch 3, stage 1: the SECOND write channel. bash is not a tool the deny hook
-  // above can see, so `echo x > WORKFLOW.md` used to sail straight through the
-  // protected set. Every child bash command is now scanned BEFORE execution by
-  // the deterministic write-channel scanner (see ./bashscan.ts): pattern-class
-  // detection over top-level segments, every extracted write target classified by
-  // the SAME evaluateGateFileWrite path as edit/write, and any ambiguity in a
-  // write target is a denial ("fail closed"). Which classes run is declared in
-  // WORKFLOW.md `bash_write_patterns`; an unknown class refuses the policy.
-  // Allowed commands (`make audit`, `go test ./...`, `git diff`, …) are covered
-  // by regression checks in smoke-bashscan.mjs — over-matching would get the gate
-  // switched off, which protects nothing.
-  pi.on("tool_call", async (event, ctx) => {
-    if (process.env.PI_DELEGATE_CHILD !== "1") return;
+    if (process.env.PI_DELEGATE_ROLE !== "orchestrator") return;
+    if (isSandboxedChild()) return;
     if (event.toolName !== "bash") return;
     const input = event.input as { command?: unknown };
-    if (typeof input.command !== "string" || input.command.length === 0) return;
-    const decision = evaluateBashWrite(ctx.cwd, input.command);
-    if (!decision.blocked) return;
-    // Best-effort deny receipt — the extension writes it, never the worker; a
-    // receipt failure never changes the verdict.
+    if (typeof input.command !== "string" || input.command.trim().length === 0) return;
+    const merges = detectMergeBackCommands(input.command).filter((entry) => !entry.controlOnly);
+    if (merges.length === 0) return;
+
+    const jobId = jobIdForEnv();
+    const rules = await recordedScopedRules(ctx.cwd, jobId);
+    if (rules.length === 0) return;
+
+    let coverage: Awaited<ReturnType<typeof checkProveCoverage>>;
     try {
-      await writeReceipt({
-        cwd: ctx.cwd,
-        agent: process.env.PI_DELEGATE_ROLE ?? "worker",
-        session: process.env.PI_SESSION_ID,
-        commands: [{ command: input.command, exitCode: null, timedOut: false, durationMs: 0 }],
+      coverage = await checkProveCoverage(ctx.cwd, rules, { worktreePath: merges[0].worktree ?? undefined });
+    } catch (error) {
+      // Fail closed: an internal error is a refusal, never a pass.
+      coverage = {
         ok: false,
-        note: "bash write-channel deny: " + (decision.pattern ?? "ambiguous"),
-      });
-    } catch {
-      /* receipt failure never changes the verdict */
+        covered: [],
+        missing: rules,
+        report:
+          "PROVE coverage check crashed: " + (error instanceof Error ? error.message : String(error)) +
+          " (scoped rules: " + rules.join(", ") + ")",
+      };
     }
+    if (coverage.ok) return;
+
     return {
       block: true,
-      reason: decision.reason ?? "bash command would write a protected path (write-channel scanner)",
+      reason:
+        "MERGE BLOCKED \u2014 PROVE receipts missing for this merge-back (HANDOFF_BLOCKED). " +
+        "The job's recorded SPEC-SCOPE names " + rules.join(", ") + ", so the merge execution path " +
+        "requires a VERIFIED host-side prove receipt for EVERY scoped rule \u2014 no matter how the " +
+        "approval arrived (typed in the pane or relayed via job_approve). Missing: " +
+        coverage.missing.join(", ") + ". " +
+        "Run `make prove args='--rule <id>'` on the host once per scoped rule (the extension records " +
+        "the receipt in the host receipts dir), then retry the merge.\n" + coverage.report,
     };
   });
 
   // PROVE receipt writer (merge-back evidence). The extension records every
-  // scoped prove run, because the merge-back gate (jobs.ts →
-  // checkProveCoverage) trusts receipts and nothing else — and no worker ever
-  // writes one. Active in CHILD sessions only: prove is the orchestrator's
-  // merge-back step, and a main session has no job to prove for. The
-  // orchestrator runs it inside its worktree, so an effective cwd is derived
-  // from a leading `cd <dir>` (only when that dir carries a WORKFLOW.md — a cd
-  // into some unrelated directory must not redirect the receipt). A receipt
-  // failure is logged and never changes the tool result, same as the deny
-  // receipt above.
+  // scoped prove run, because the merge-back gates (jobs.ts \u2192
+  // checkProveCoverage, and the merge-path hook above) trust host receipts and
+  // nothing else \u2014 and no worker ever writes one. Active in CHILD sessions
+  // only (orchestrators): prove is the orchestrator's merge-back step, and a
+  // main session has no job to prove for. HOST-ONLY resolution: the receipt
+  // always lands in THIS session's own receipts dir. There is deliberately NO
+  // leading-`cd` redirect \u2014 routing evidence into the worktree would let a
+  // worker pre-forge a VERIFIED receipt inside its own mount.
   pi.on("tool_result", async (event, ctx) => {
     if (process.env.PI_DELEGATE_CHILD !== "1") return;
+    if (isSandboxedChild()) return;
     if (event.toolName !== "bash") return;
     const input = event.input as { command?: unknown };
     if (typeof input.command !== "string" || input.command.trim().length === 0) return;
@@ -1850,27 +2398,21 @@ export default function (pi: ExtensionAPI) {
     const ruleIds = proveRuleIdsIn(command);
     if (ruleIds.length === 0) return;
 
-    // Top-level segments: `&&` / `;` (and the rest of the separator set) split
-    // the same way the write-channel scanner splits them.
     const segments = splitTopLevelSegments(command)
       .map((segment) => segment.trim())
       .filter((segment) => segment.length > 0);
     if (segments.length === 0) return;
 
+    // A leading `cd <worktree>` is still tolerated for COMMAND IDENTIFICATION
+    // (the orchestrator's handoff form), but it never moves the receipt: proofs
+    // are host artifacts.
     const cdTarget = leadingCdTarget(segments[0]);
-    let receiptCwd = ctx.cwd;
-    let rest = segments;
-    if (cdTarget !== null) {
-      const candidate = path.resolve(ctx.cwd, cdTarget);
-      if (fs.existsSync(path.join(candidate, "WORKFLOW.md"))) {
-        receiptCwd = candidate;
-        rest = segments.slice(1);
-      }
-    }
+    const rest = cdTarget !== null ? segments.slice(1) : segments;
+    const receiptCwd = ctx.cwd;
 
     // The prove command is DECLARED (WORKFLOW.md `prove_cmd`), never
     // hardcoded: an unavailable policy means the gate set is undeclared, so no
-    // run can be identified as prove — log it and write nothing (the
+    // run can be identified as prove \u2014 log it and write nothing (the
     // merge-back gate then refuses for the missing policy anyway).
     const loaded = loadWorkflowPolicy(receiptCwd);
     if (!loaded.ok) {
@@ -1906,12 +2448,15 @@ export default function (pi: ExtensionAPI) {
     if (details?.isError) return { isError: true };
   });
 
-  // Batch 1: POST-WRITE scoped gate (worker children only). After a successful
-  // edit/write of a gate-relevant file (.go / .feature / .yaml / docs/spec/**)
-  // the extension itself runs `make audit/static` + the scoped spec check and
-  // appends a failure block to the tool result. Successes stay silent (context
-  // stays small); a debounced skip still leaves a one-line note so the worker
-  // knows a gate is due. The extension writes the receipt, never the worker.
+  // Batch 1: POST-WRITE scoped gate. Now that sandboxed workers are inert in-VM
+  // and verified by the HOST after exit, this hook serves only the
+  // HOST-PASSTHROUGH role (researcher today, whose sandbox profile is deferred):
+  // after a successful edit/write of a gate-relevant file (.go / .feature /
+  // .yaml / docs/spec/**) the extension runs `make audit/static` + the scoped
+  // spec check and appends a failure block to the tool result. Successes stay
+  // silent (context stays small); a debounced skip still leaves a one-line note
+  // so the worker knows a gate is due. The extension writes the receipt, never
+  // the worker.
   pi.on("tool_result", async (event, ctx) => {
     if (!isWorkerChild()) return;
     if (event.toolName !== "edit" && event.toolName !== "write") return;
@@ -2222,7 +2767,9 @@ export default function (pi: ExtensionAPI) {
               content: [
                 {
                   type: "text",
-                  text: truncateModelOutput(`Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}`),
+                  text: truncateModelOutput(
+                    `Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}`,
+                  ) + (formatHostVerification(result) ? "\n\n" + formatHostVerification(result) : ""),
                 },
               ],
               details: makeDetails("chain")(results),
@@ -2234,7 +2781,12 @@ export default function (pi: ExtensionAPI) {
           content: [
             {
               type: "text",
-              text: truncateModelOutput(getFinalOutput(results[results.length - 1].messages) || "(no output)"),
+              text: truncateModelOutput(
+                withHostVerification(
+                  getFinalOutput(results[results.length - 1].messages) || "(no output)",
+                  ...results,
+                ),
+              ),
             },
           ],
           details: makeDetails("chain")(results),
@@ -2326,7 +2878,7 @@ export default function (pi: ExtensionAPI) {
             isFailedResult(r) && r.stopReason && r.stopReason !== "end"
               ? `${r.status} (${r.stopReason})`
               : r.status;
-          return `### [${r.agent}] ${status}\n\n${output}`;
+          return withHostVerification(`### [${r.agent}] ${status}\n\n${output}`, r);
         });
         return {
           content: [
@@ -2420,7 +2972,10 @@ export default function (pi: ExtensionAPI) {
             content: [
               {
                 type: "text",
-                text: truncateModelOutput(`Agent ${result.stopReason || result.status}: ${errorMsg}`),
+                text: truncateModelOutput(
+                  `Agent ${result.stopReason || result.status}: ${errorMsg}` +
+                    (formatHostVerification(result) ? "\n\n" + formatHostVerification(result) : ""),
+                ),
               },
             ],
             details: makeDetails("single")([result]),
@@ -2430,7 +2985,9 @@ export default function (pi: ExtensionAPI) {
           content: [
             {
               type: "text",
-              text: truncateModelOutput(getFinalOutput(result.messages) || "(no output)"),
+              text: truncateModelOutput(
+                withHostVerification(getFinalOutput(result.messages) || "(no output)", result),
+              ),
             },
           ],
           details: makeDetails("single")([result]),

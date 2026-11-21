@@ -26,8 +26,17 @@
  * that is PRESENT and well-typed overrides both the default and the env knob.
  * Only `version` (and the file itself) is hard-required.
  *
- * Fresh reads, no cache: `readFileSync` per call, the same precedent as
- * `readGateAllowlist` — a policy edit applies without restarting a session.
+ * Deletions (sandbox era): `protected_paths`, `pi_editable_paths`,
+ * `allowlist_path` and `bash_write_patterns` are GONE from this schema, together
+ * with the child-side deny paths, the bash write-channel scanner and the gate
+ * allowlist they configured. The write boundary is now the hypervisor plus the
+ * single mount (see ./sbx.ts), and the net that replaced those mechanisms is the
+ * host-side integrity check in gates.ts. Because unknown fields are REFUSED, an
+ * old WORKFLOW.md that still declares them fails to load loudly instead of being
+ * silently re-interpreted under rules the code no longer implements.
+ *
+ * Fresh reads, no cache: `readFileSync` per call — a policy edit applies without
+ * restarting a session.
  *
  * Loader gotcha (pi 1.5.2 extension parser): no `?:` ternaries with
  * double-quoted strings inside a template literal's `${}`; this module sticks
@@ -40,7 +49,6 @@ import {
   APPROVAL_BINDING,
   APPROVAL_HEAD_SHA_PREFIX,
   APPROVAL_MARKER,
-  BASH_WRITE_PATTERN_CLASSES,
   HANDOFF_TERMINAL_TOKENS,
 } from "./contracts.ts";
 
@@ -53,28 +61,11 @@ export const SUPPORTED_POLICY_VERSIONS: readonly number[] = [1];
 
 // ── Code-side defaults (the batch-1/2 behavior, migrated verbatim) ──────────
 
-/** Denied to delegated workers unless a pi_editable_path/allowlist glob grants it. */
-export const DEFAULT_PROTECTED_PATHS: readonly string[] = [
-  "Makefile",
-  "cmd/spec",
-  "cmd/spec/**",
-  "docs/spec/**",
-  ".pi/**",
-];
-/** The .pi/** prose a worker may still edit. */
-export const DEFAULT_PI_EDITABLE_PATHS: readonly string[] = [
-  ".pi/agents/**",
-  ".pi/prompts/**",
-  ".pi/delegate/**",
-  ".pi/plans/**",
-];
 /** Default gate commands (what the extension actually runs today). */
 export const DEFAULT_AUDIT_STATIC_CMD = "make audit/static";
 export const DEFAULT_AUDIT_CMD = "make audit";
 export const DEFAULT_PROVE_CMD = "make prove";
 export const DEFAULT_SCOPED_CHECK_CMD = "go run ./cmd/spec check --strict";
-/** Single file-based escape hatch from the protected set; always self-denied. */
-export const DEFAULT_ALLOWLIST_PATH = ".pi/delegate/gate-allowlist.json";
 /** Gate receipts (extension-written, gitignored). */
 export const DEFAULT_RECEIPTS_DIR = ".pi/receipts";
 /** Claims logs: <claims_dir>/<job-id>/claims.jsonl. */
@@ -91,14 +82,6 @@ export const DEFAULT_SETTLE_BACKOFF_MAX_DOUBLINGS = 5;
 export const DEFAULT_WORKER_STALL_TIMEOUT_MS = 600_000;
 /** Cap on tasks[] in one subagent call (MAX_PARALLEL_TASKS). */
 export const DEFAULT_MAX_CONCURRENT_WORKERS = 8;
-/**
- * Bash write-channel scanner classes enforced when `bash_write_patterns` is
- * omitted, empty or invalid: the FULL canonical set (never a smaller deny set
- * by accident). A human narrowing this list is an explicit policy choice.
- */
-export const DEFAULT_BASH_WRITE_PATTERNS: readonly string[] = BASH_WRITE_PATTERN_CLASSES;
-/** The same vocabulary as a plain `string[]` (membership tests without a cast at each call). */
-export const KNOWN_BASH_WRITE_PATTERNS: readonly string[] = BASH_WRITE_PATTERN_CLASSES;
 
 // ── Resolved policy ─────────────────────────────────────────────────────────
 
@@ -108,9 +91,6 @@ export interface WorkflowPolicy {
   auditCmd: string;
   proveCmd: string;
   scopedCheckCmd: string;
-  protectedPaths: string[];
-  piEditablePaths: string[];
-  allowlistPath: string;
   receiptsDir: string;
   claimsDir: string;
   settleMaxAttempts: number;
@@ -123,8 +103,6 @@ export interface WorkflowPolicy {
   redApprovalMarker: string;
   redApprovalHeadShaLine: string;
   handoffTerminalTokens: string[];
-  /** Enabled bash write-channel scanner pattern classes (stage 1 of batch 3). */
-  bashWritePatterns: string[];
 }
 
 export interface PolicyResultOk {
@@ -279,9 +257,6 @@ const FIELD_KINDS: Record<string, FieldKind> = {
   audit_cmd: "string",
   prove_cmd: "string",
   scoped_check_cmd: "string",
-  protected_paths: "string-list",
-  pi_editable_paths: "string-list",
-  allowlist_path: "repo-relative-path",
   receipts_dir: "repo-relative-path",
   claims_dir: "repo-relative-path",
   settle_max_attempts: "integer",
@@ -294,7 +269,6 @@ const FIELD_KINDS: Record<string, FieldKind> = {
   red_approval_marker: "string",
   red_approval_head_sha_line: "string",
   handoff_terminal_tokens: "string-list",
-  bash_write_patterns: "string-list",
 };
 
 function warn(message: string): void {
@@ -448,9 +422,6 @@ export function loadWorkflowPolicy(cwd: string = process.cwd()): PolicyResult {
     auditCmd: takeString(values, "audit_cmd", DEFAULT_AUDIT_CMD, declared),
     proveCmd: takeString(values, "prove_cmd", DEFAULT_PROVE_CMD, declared),
     scopedCheckCmd: takeString(values, "scoped_check_cmd", DEFAULT_SCOPED_CHECK_CMD, declared),
-    protectedPaths: takeList(values, "protected_paths", DEFAULT_PROTECTED_PATHS, declared),
-    piEditablePaths: takeList(values, "pi_editable_paths", DEFAULT_PI_EDITABLE_PATHS, declared),
-    allowlistPath: takePath(values, "allowlist_path", DEFAULT_ALLOWLIST_PATH, declared),
     receiptsDir: takePath(values, "receipts_dir", DEFAULT_RECEIPTS_DIR, declared),
     claimsDir: takePath(values, "claims_dir", DEFAULT_CLAIMS_DIR, declared),
     settleMaxAttempts: takeInteger(values, "settle_max_attempts", DEFAULT_SETTLE_MAX_ATTEMPTS, declared),
@@ -478,25 +449,7 @@ export function loadWorkflowPolicy(cwd: string = process.cwd()): PolicyResult {
     redApprovalMarker: takeString(values, "red_approval_marker", APPROVAL_MARKER, declared),
     redApprovalHeadShaLine: takeString(values, "red_approval_head_sha_line", APPROVAL_HEAD_SHA_PREFIX, declared),
     handoffTerminalTokens: takeList(values, "handoff_terminal_tokens", HANDOFF_TERMINAL_TOKENS, declared),
-    bashWritePatterns: takeList(values, "bash_write_patterns", DEFAULT_BASH_WRITE_PATTERNS, declared),
   };
-
-  // Scanner vocabulary: `bash_write_patterns` selects which pattern classes the
-  // bash write-channel scanner enforces. The set of classes is CODE (see
-  // contracts.ts), so an unknown item is a REFUSAL — same spirit as an unknown
-  // field: a typo must not silently switch a whole class of write channel off.
-  const unknownPatterns = policy.bashWritePatterns.filter(
-    (item) => !KNOWN_BASH_WRITE_PATTERNS.includes(item),
-  );
-  if (unknownPatterns.length > 0) {
-    return {
-      ok: false,
-      path: filePath,
-      reason:
-        "unknown bash_write_patterns item(s): " + unknownPatterns.join(", ") + " (known: " +
-        KNOWN_BASH_WRITE_PATTERNS.join(", ") + ") \u2014 refusing rather than silently not scanning a write channel",
-    };
-  }
 
   // Approval machinery: the code stays the parser; the file declares what the
   // parser expects. Any disagreement is a REFUSAL, never a silent override —
