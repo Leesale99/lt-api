@@ -24,6 +24,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/cucumber/godog"
@@ -121,6 +122,13 @@ func runMain(m *testing.M) int {
 		godogOpts.Tags = ""
 	} else {
 		godogOpts.Tags = excludeTags(defectTags)
+	}
+
+	// `spec prove` narrows the suite to its registry scenarios by handing the
+	// test harness a newline-separated list of `feature:line` paths. It is an
+	// explicit opt-in; a normal `go test` run keeps the whole feature tree.
+	if paths := os.Getenv("SPEC_FEATURE_PATHS"); paths != "" {
+		godogOpts.Paths = strings.Split(paths, "\n")
 	}
 
 	status := godog.TestSuite{

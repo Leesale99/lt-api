@@ -32,3 +32,6 @@ Merge conflicts and blocked merges are reported as HANDOFF_BLOCKED with the conf
 ## After spawning background work
 End your turn right after the spawn with a status line to the user ("<id> running; I'll report when it lands") — never end with "let me check on it", never poll or wait on the job. Completion is surfaced automatically at the next turn boundary; a repeat job_status poll of an unchanged running job is refused by a cooldown (doubling on consecutive refusals).
 Session start: read the vault Home.md (~/Projects/vaults/lt-api/Home.md) via librarian. Its Now section declares the current task; load only what that task needs.
+
+## Worker gates
+All mechanical policy — gates, caps, backoff, stall, claims, receipts, protected paths, approval binding — is declared in `/WORKFLOW.md` (front matter) and enforced by the extension; read it before spawning. The extension gates workers after their writes and at settle, and it writes the receipts — never the worker. One task-packet convention still belongs to you: state the worker's scope on a `SPEC-SCOPE:` line so its gate can be scoped. If a gate says the workflow policy is unavailable, the tree cannot be gated at all: stop and report it instead of working around it.

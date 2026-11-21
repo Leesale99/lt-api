@@ -54,6 +54,7 @@ var policies = []policy{
 	{policyCategory, "category ⇒ verification and refusal binding"},
 	{policyAnnotations, "Go enforcement sites carry //rule: annotations, and every annotation resolves"},
 	{policyKnowledgeRef, "knowledge-ref is a real path under the learning phases"},
+	{policyOracle, "scenarios assert an observable outcome, bound to their category"},
 	{"refusal", "refusal code sanity"},
 }
 
@@ -169,6 +170,8 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	rulesPath := fs.String("rules", "docs/spec/rules.yaml", "path to the canonical YAML catalog")
 	strict := fs.Bool("strict", false, "exit 1 when any ERROR finding exists (warnings never fail)")
+	module := fs.String("module", "", "report only findings for one module; catalog-level findings (empty rule id) are hidden while scoped")
+	ruleID := fs.String("rule", "", "report only findings for one rule id; catalog-level findings (empty rule id) are hidden while scoped")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -176,11 +179,34 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "spec check: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
+	if *module != "" && *ruleID != "" {
+		fmt.Fprintln(stderr, "spec check: --module and --rule are mutually exclusive")
+		return 2
+	}
+	if *module != "" && !moduleEnum[*module] {
+		fmt.Fprintf(stderr, "spec check: unknown module %q; one of %s\n",
+			*module, strings.Join(catalogModules(), ", "))
+		return 2
+	}
 
 	catalog, err := loadCatalog(*rulesPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "spec check: %v\n", err)
 		return 1
+	}
+	if *ruleID != "" {
+		known := false
+		for _, rule := range catalog {
+			if rule.ID == *ruleID {
+				known = true
+				break
+			}
+		}
+		if !known {
+			fmt.Fprintf(stderr, "spec check: unknown rule id %q; %s is the catalog (try `go run ./cmd/spec check`)\n",
+				*ruleID, displayPath(*rulesPath))
+			return 1
+		}
 	}
 	root, err := repoRoot(*rulesPath)
 	if err != nil {
@@ -193,8 +219,36 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	findings = append(findings, gherkinFindings...)
 	findings = append(findings, collectVocabulary(root)...)
 	findings = append(findings, collectAnnotationsAgainst(catalog, root, *rulesPath)...)
+	findings = append(findings, collectOracle(catalog, root)...)
 	sortFindings(findings)
-	printFindings(stdout, *rulesPath, catalog, findings, index)
+
+	scopeLabel := ""
+	if *module != "" || *ruleID != "" {
+		scopeIDs := map[string]bool{}
+		switch {
+		case *module != "":
+			for _, rule := range catalog {
+				if rule.Module == *module {
+					scopeIDs[rule.ID] = true
+				}
+			}
+			scopeLabel = "module " + *module
+		default:
+			scopeIDs[*ruleID] = true
+			scopeLabel = "rule " + *ruleID
+		}
+		inScope := findings[:0]
+		for _, f := range findings {
+			// Catalog-level findings carry no rule id, so no --rule or --module
+			// can implicate them: they are reported only unscoped.
+			if f.RuleID != "" && scopeIDs[f.RuleID] {
+				inScope = append(inScope, f)
+			}
+		}
+		findings = inScope
+	}
+
+	printFindings(stdout, *rulesPath, catalog, findings, index, scopeLabel)
 
 	errorsFound, _ := countFindings(findings)
 	if *strict && errorsFound > 0 {
@@ -730,7 +784,7 @@ func countFindings(findings []Finding) (errorsFound, warnings int) {
 	return errorsFound, warnings
 }
 
-func printFindings(w io.Writer, rulesPath string, catalog Catalog, findings []Finding, index *featureIndex) {
+func printFindings(w io.Writer, rulesPath string, catalog Catalog, findings []Finding, index *featureIndex, scope ...string) {
 	statusCounts := map[string]int{}
 	for _, rule := range catalog {
 		statusCounts[rule.Status]++
@@ -739,7 +793,11 @@ func printFindings(w io.Writer, rulesPath string, catalog Catalog, findings []Fi
 	for _, status := range sortedKeys(statusCounts) {
 		statusParts = append(statusParts, fmt.Sprintf("%d %s", statusCounts[status], status))
 	}
-	fmt.Fprintf(w, "%s — %d rules (%s)\n\n", displayPath(rulesPath), len(catalog), strings.Join(statusParts, ", "))
+	header := fmt.Sprintf("%s — %d rules (%s)", displayPath(rulesPath), len(catalog), strings.Join(statusParts, ", "))
+	if len(scope) > 0 && scope[0] != "" {
+		header += "; scope: " + scope[0]
+	}
+	fmt.Fprintf(w, "%s\n\n", header)
 
 	grouped := map[string][]Finding{}
 	for _, f := range findings {

@@ -28,6 +28,24 @@
  * registry status (refreshStatus in jobs.ts detects the AWAITING_APPROVAL
  * marker; the UI surfaces and the settle injection phrase it as
  * waiting-for-approval).
+ *
+ * Batch 1 (worker gates + content-bound approvals, all logic in ./gates.ts):
+ *   - POST-WRITE gate: a worker child that successfully edits/writes a .go,
+ *     .feature, .yaml or docs/spec/ file gets `make audit/static` + the scoped
+ *     spec check appended to its tool result on failure (debounced ~10s).
+ *   - WORKER-SETTLE gate: the same two commands at settle, up to 3 attempts
+ *     (continue:true is bounded by the attempt counter), then a hard stop.
+ *   - GATE-FILE protection: child edit/write on cmd/spec/**, docs/spec/**,
+ *     Makefile or .pi/** is denied, except .pi prose and paths matched by
+ *     .pi/delegate/gate-allowlist.json (the only escape hatch).
+ *   - BASH write-channel scanner (batch 3, stage 1): a child bash command whose
+ *     write side touches a protected path is denied before it runs (./bashscan.ts).
+ *   - Receipts: the EXTENSION appends one JSON line per gate run to
+ *     .pi/receipts/<iso-date>.jsonl (commands, exit codes, rules hash, HEAD).
+ *   - SPEC-SCOPE: a `SPEC-SCOPE: module=… rules=…` line in the task text is
+ *     exported as PI_DELEGATE_SPEC_SCOPE into the worker's spawn env.
+ *   - job_approve now binds the relayed decision to the `HEAD SHA:` recorded in
+ *     the job's approval block and refuses when the worktree HEAD moved.
  */
 
 import { spawn } from "node:child_process";
@@ -35,7 +53,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Message } from "@earendil-works/pi-ai";
+import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
 import {
   CONFIG_DIR_NAME,
   DEFAULT_MAX_BYTES,
@@ -64,6 +82,45 @@ import {
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import {
+  type ClaimRecord,
+  type SpawnRequest,
+  completeSpawnClaim,
+  formatClaimConflict,
+  jobIdForEnv,
+  prepareSpawnClaims,
+  siblingContextFor,
+} from "./claims.ts";
+import {
+  type GateRun,
+  type ReconciliationResult,
+  bumpSettleGateAttempts,
+  evaluateGateFileWrite,
+  formatGateReport,
+  formatSettleEscalation,
+  formatSettleTrail,
+  formatSpecScope,
+  isGateRelevantWrite,
+  logGateDebug,
+  markPostWriteGateEnd,
+  markPostWriteGateStart,
+  parseSpecScope,
+  planSettleGateAttempt,
+  receiptCommandsOf,
+  recentSettleFailures,
+  reconciliationGateRun,
+  recordSettleGateAttempt,
+  resetSettleGateAttempts,
+  runReconciliation,
+  runScopedGate,
+  settleBackoffBaseMs,
+  settleGateMaxAttempts,
+  settleGateStateFor,
+  shouldRunPostWriteGate,
+  writeReceipt,
+} from "./gates.ts";
+import { evaluateBashWrite } from "./bashscan.ts";
+import { formatStallReason, startStallWatchdog, workerStallTimeoutMs } from "./runtime.ts";
+import {
   createChildStreamParser,
   emptyUsage,
   getFinalOutput,
@@ -87,8 +144,21 @@ import {
   startBackgroundJob,
   taskPreview,
 } from "./jobs.ts";
+import { loadWorkflowPolicy } from "./policy.ts";
 
 const MAX_PARALLEL_TASKS = 8;
+/**
+ * Batch 3: cap on tasks[] in one subagent call. The WORKFLOW.md field
+ * `max_concurrent_workers` wins when present; otherwise today's constant.
+ */
+function maxParallelTasksFor(cwd: string): number {
+  const loaded = loadWorkflowPolicy(cwd);
+  if (loaded.ok && loaded.declared.has("max_concurrent_workers")) {
+    return Math.max(1, loaded.policy.maxConcurrentWorkers);
+  }
+  return MAX_PARALLEL_TASKS;
+}
+
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const TRUNCATION_NOTICE_RESERVE = 256;
@@ -115,6 +185,84 @@ function pollCooldownMs(): number {
   const raw = Number(process.env.PI_DELEGATE_POLL_COOLDOWN_MS);
   if (!Number.isFinite(raw) || raw < 0) return POLL_COOLDOWN_MS_DEFAULT;
   return raw;
+}
+
+/** True in a spawned worker child (foreground spawns only — background children are orchestrators). */
+function isWorkerChild(): boolean {
+  return process.env.PI_DELEGATE_CHILD === "1" && process.env.PI_DELEGATE_ROLE === "worker";
+}
+
+/**
+ * The worker gate ladder with the batch-1 fail-closed crash fallback: a throw
+ * in the runner becomes a failed GateRun, never a silent pass.
+ */
+async function runWorkerGate(cwd: string, scopeEnv: string | undefined): Promise<GateRun> {
+  try {
+    return await runScopedGate({ cwd, scopeEnv });
+  } catch (error) {
+    console.error("[delegate] worker gate crashed:", error);
+    return {
+      ok: false,
+      steps: [
+        {
+          command: "(worker gate)",
+          argv: [],
+          ok: false,
+          exitCode: null,
+          timedOut: false,
+          durationMs: 0,
+          stdout: "",
+          stderr: error instanceof Error ? error.message : String(error),
+          spawnError: null,
+          reason: "gate runner threw",
+        },
+      ],
+    };
+  }
+}
+
+/** Receipt append for a settle/worker attempt; a failure never changes a verdict. */
+async function writeSettleReceipt(input: {
+  cwd: string;
+  agent: string;
+  commands: ReturnType<typeof receiptCommandsOf>;
+  ok: boolean;
+  note: string;
+}): Promise<string | null> {
+  try {
+    return await writeReceipt({
+      cwd: input.cwd,
+      agent: input.agent,
+      session: process.env.PI_SESSION_ID,
+      commands: input.commands,
+      ok: input.ok,
+      note: input.note,
+    });
+  } catch (error) {
+    console.error("[delegate] settle receipt failed:", error);
+    return null;
+  }
+}
+
+/**
+ * Append a note to a tool result's content without dropping the original text:
+ * the LAST text part is extended in place (a new text part when there is none).
+ * Used by the scoped gates to report failures/skips on top of the tool output.
+ */
+function appendToolResultNote(
+  content: (TextContent | ImageContent)[],
+  note: string,
+): (TextContent | ImageContent)[] {
+  const copy: (TextContent | ImageContent)[] = [...content];
+  for (let index = copy.length - 1; index >= 0; index--) {
+    const part = copy[index];
+    if (part.type === "text") {
+      copy[index] = { type: "text", text: part.text + note };
+      return copy;
+    }
+  }
+  copy.push({ type: "text", text: note.replace(/^\n+/, "") });
+  return copy;
 }
 
 /** Last job_status poll of one job id: when, what the registry read, consecutive refusals. */
@@ -243,6 +391,8 @@ interface SingleResult {
   errorMessage?: string;
   terminationSignal?: NodeJS.Signals;
   step?: number;
+  /** Batch 2: the run was killed by the stall watchdog (see runtime.ts). */
+  stallTimeout?: boolean;
 }
 
 interface SubagentDetails {
@@ -439,17 +589,26 @@ function createUnstartedResult(
  * multiple skills only the first is inlined; the rest are named explicitly — pi
  * advertises every skill (name + SKILL.md path) in the child's system prompt, so
  * the child reads those SKILL.md files itself.
+ *
+ * Batch 2: `siblingContext` is the claims-log broadcast of recent completions
+ * (built by claims.ts), appended as a separate trailing block so it never
+ * runs into the task text or the skill instructions.
  */
-function buildTaskPrompt(agent: AgentConfig, task: string): string {
+function buildTaskPrompt(agent: AgentConfig, task: string, siblingContext?: string): string {
   const skills = agent.skills ?? [];
-  if (skills.length === 0) return `Task: ${task}`;
-  const [first, ...rest] = skills;
-  let prompt = `/skill:${first} Task: ${task}`;
-  if (rest.length > 0) {
-    prompt +=
-      `\n\nAlso required: load and follow the skills ${rest.map((s) => `"${s}"`).join(", ")}` +
-      ` (each skill's SKILL.md path is advertised in your context) before doing the task.`;
+  let prompt: string;
+  if (skills.length === 0) {
+    prompt = `Task: ${task}`;
+  } else {
+    const [first, ...rest] = skills;
+    prompt = `/skill:${first} Task: ${task}`;
+    if (rest.length > 0) {
+      prompt +=
+        `\n\nAlso required: load and follow the skills ${rest.map((s) => `"${s}"`).join(", ")}` +
+        ` (each skill's SKILL.md path is advertised in your context) before doing the task.`;
+    }
   }
+  if (siblingContext && siblingContext.trim()) prompt += "\n\n" + siblingContext.trim();
   return prompt;
 }
 
@@ -532,18 +691,28 @@ async function runSingleAgent(
       return currentResult;
     }
 
-    args.push(buildTaskPrompt(agent, task));
+    args.push(buildTaskPrompt(agent, task, await siblingContextFor(effectiveCwd, jobIdForEnv())));
     emitUpdate();
     let wasAborted = false;
+    // Batch 2 stall guard: every parsed child event (and every raw stdout
+    // chunk — a superset, deliberately forgiving) refreshes lastActivityMs; a
+    // referenced 1s watchdog aborts through the normal SIGTERM→SIGKILL path
+    // once the silence exceeds the (env-tunable, 0-disabled) timeout.
+    const stallTimeoutMs = workerStallTimeoutMs(process.env, effectiveCwd);
+    const activity = { lastMs: Date.now() };
+    let stalled = false;
+    let stallReason = "";
     const outcome = await new Promise<ProcessOutcome>((resolve) => {
       const invocation = getPiInvocation(args);
       let settled = false;
       let exited = false;
       let closed = false;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
+      let watchdog: { stop(): void } | undefined;
       let buffer = "";
 
       const processLine = (line: string) => {
+        activity.lastMs = Date.now();
         if (stream.processLine(line)) emitUpdate();
       };
 
@@ -553,6 +722,7 @@ async function runSingleAgent(
         settled = true;
         closed = true;
         if (killTimer) clearTimeout(killTimer);
+        watchdog?.stop();
         if (signal) signal.removeEventListener("abort", abortProcess);
         resolve(result);
       };
@@ -583,6 +753,14 @@ async function runSingleAgent(
       delete childEnv.PI_PROVIDER;
       delete childEnv.PI_MODEL;
       delete childEnv.PI_REASONING_LEVEL;
+      // Batch 1: the worker's spec scope travels as env, never re-parsed from
+      // the child's context (the child cannot see its own tool_result input
+      // reliably enough to scope a gate). Only a task text carrying a
+      // `SPEC-SCOPE: module=… rules=…` line sets it; otherwise the variable is
+      // removed, so no inherited value can ever narrow a worker's gate.
+      const specScope = parseSpecScope(task);
+      if (specScope) childEnv.PI_DELEGATE_SPEC_SCOPE = formatSpecScope(specScope);
+      else delete childEnv.PI_DELEGATE_SPEC_SCOPE;
       try {
         proc = spawn(invocation.command, invocation.args, {
           cwd: effectiveCwd,
@@ -602,6 +780,7 @@ async function runSingleAgent(
       }
 
       proc.stdout?.on("data", (data) => {
+        activity.lastMs = Date.now();
         buffer += data.toString();
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
@@ -625,6 +804,19 @@ async function runSingleAgent(
         if (signal.aborted) abortProcess();
         else signal.addEventListener("abort", abortProcess, { once: true });
       }
+
+      // Batch 2: start the stall watchdog once the child is live. It aborts
+      // through the SAME path as a user abort (SIGTERM, then SIGKILL after
+      // 5s), so a wedged child cannot leak a process; finish() stops it.
+      watchdog = startStallWatchdog({
+        timeoutMs: stallTimeoutMs,
+        getLastActivityMs: () => activity.lastMs,
+        onStall: (decision) => {
+          stalled = true;
+          stallReason = formatStallReason(decision.idleMs, stallTimeoutMs);
+          abortProcess();
+        },
+      });
     });
 
     currentResult.exitCode = outcome.code;
@@ -633,7 +825,25 @@ async function runSingleAgent(
     currentResult.stopReason = stream.stopReason;
     currentResult.errorMessage ||= stream.errorMessage;
 
-    if (wasAborted) {
+    if (stalled) {
+      // Fail closed: the run produced no verdict, so the worker result is an
+      // error, and the extension (not the worker) records what happened.
+      currentResult.status = "failed";
+      currentResult.stallTimeout = true;
+      currentResult.errorMessage = stallReason;
+      try {
+        await writeReceipt({
+          cwd: effectiveCwd,
+          agent: agentName,
+          session: process.env.PI_SESSION_ID,
+          commands: [],
+          ok: false,
+          note: "stall-timeout: " + stallReason,
+        });
+      } catch (error) {
+        console.error("[delegate] stall-timeout receipt failed:", error);
+      }
+    } else if (wasAborted) {
       currentResult.status = "aborted";
       currentResult.errorMessage ||= "Subagent was aborted";
     } else if (outcome.spawnError) {
@@ -772,6 +982,9 @@ Merge conflicts and blocked merges are reported as HANDOFF_BLOCKED with the conf
 ## After spawning background work
 End your turn right after the spawn with a status line to the user ("<id> running; I'll report when it lands") — never end with "let me check on it", never poll or wait on the job. Completion is surfaced automatically at the next turn boundary; a repeat job_status poll of an unchanged running job is refused by a cooldown (doubling on consecutive refusals).
 Session start: read the vault Home.md (~/Projects/vaults/lt-api/Home.md) via librarian. Its Now section declares the current task; load only what that task needs.
+
+## Worker gates
+All mechanical policy — gates, caps, backoff, stall, claims, receipts, protected paths, approval binding — is declared in \`/WORKFLOW.md\` (front matter) and enforced by the extension; read it before spawning. The extension gates workers after their writes and at settle, and it writes the receipts — never the worker. One task-packet convention still belongs to you: state the worker's scope on a \`SPEC-SCOPE:\` line so its gate can be scoped. If a gate says the workflow policy is unavailable, the tree cannot be gated at all: stop and report it instead of working around it.
 `;
 
 /**
@@ -939,6 +1152,21 @@ const pickupsInFlight = new Set<string>();
 const emittedCardKeys = new Set<string>();
 /** Set by the extension factory; card emission needs pi.appendEntry. */
 let delegateApi: ExtensionAPI | undefined;
+/**
+ * One-shot: the settle gate emitted its HARD STOP message with continue:true
+ * (the worker's terminal turn, for its verbatim failure report). The NEXT
+ * agent_before_settle consumes it: no receipt, no gate run, return undefined.
+ *
+ * Why the hard stop is NOT an entries-only return: pi's
+ * `_runBeforeSettleBoundary` commits the drafts and, with `continue` false,
+ * ends the run with that committed CUSTOM message as the last message. Print
+ * mode derives stdout from `state.messages[last].role === "assistant"`, so a
+ * custom/user-role draft last means exit 0 with EMPTY stdout and no failure
+ * report (observed live, deterministic). Ending on a real assistant turn keeps
+ * the buffered output and hands the parent the worker's report.
+ * Cleared on read; a PASSING gate run also clears it.
+ */
+let settleGateTerminal = false;
 
 /** Payload persisted on delegate-job entry cards (also used as message details). */
 interface JobCardData {
@@ -1450,8 +1678,9 @@ export default function (pi: ExtensionAPI) {
   // reminder, confirming allows harness/plan work. Non-UI main sessions (-p)
   // get a HARD block instead — nobody can approve a dialog there, and without
   // this the orchestrator could silently implement. bash is not gated (prompt
-  // layer discourages it). Children (PI_DELEGATE_CHILD set) skip the gate
-  // entirely so delegated work runs unattended.
+  // layer discourages it). Children (PI_DELEGATE_CHILD set) skip THIS gate so
+  // delegated work runs unattended — they get the batch-1 gate-file DENY path
+  // in the handler right below instead.
   pi.on("tool_call", async (event, ctx) => {
     if (process.env.PI_DELEGATE_CHILD) return;
     if (event.toolName !== "edit" && event.toolName !== "write") return;
@@ -1470,6 +1699,61 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  // Batch 1: child sessions no longer skip the gate entirely — they get a DENY
+  // path for the GATE FILES. Delegated implementation work still runs
+  // unattended everywhere else; what is protected is the specification
+  // machinery itself (docs/spec/** except nothing, cmd/spec/**, Makefile,
+  // .pi/** minus the prose dirs). The single escape hatch is
+  // .pi/delegate/gate-allowlist.json (see the gates.ts header) — no env-var
+  // bypasses, and a missing/invalid allowlist denies.
+  pi.on("tool_call", async (event, ctx) => {
+    if (process.env.PI_DELEGATE_CHILD !== "1") return;
+    if (event.toolName !== "edit" && event.toolName !== "write") return;
+    const input = event.input as { path?: unknown };
+    if (typeof input.path !== "string" || input.path.length === 0) return;
+    const decision = evaluateGateFileWrite(ctx.cwd, input.path);
+    if (!decision.blocked) return;
+    return { block: true, reason: decision.reason ?? "Gate file is protected from delegated edits." };
+  });
+
+  // Batch 3, stage 1: the SECOND write channel. bash is not a tool the deny hook
+  // above can see, so `echo x > WORKFLOW.md` used to sail straight through the
+  // protected set. Every child bash command is now scanned BEFORE execution by
+  // the deterministic write-channel scanner (see ./bashscan.ts): pattern-class
+  // detection over top-level segments, every extracted write target classified by
+  // the SAME evaluateGateFileWrite path as edit/write, and any ambiguity in a
+  // write target is a denial ("fail closed"). Which classes run is declared in
+  // WORKFLOW.md `bash_write_patterns`; an unknown class refuses the policy.
+  // Allowed commands (`make audit`, `go test ./...`, `git diff`, …) are covered
+  // by regression checks in smoke-bashscan.mjs — over-matching would get the gate
+  // switched off, which protects nothing.
+  pi.on("tool_call", async (event, ctx) => {
+    if (process.env.PI_DELEGATE_CHILD !== "1") return;
+    if (event.toolName !== "bash") return;
+    const input = event.input as { command?: unknown };
+    if (typeof input.command !== "string" || input.command.length === 0) return;
+    const decision = evaluateBashWrite(ctx.cwd, input.command);
+    if (!decision.blocked) return;
+    // Best-effort deny receipt — the extension writes it, never the worker; a
+    // receipt failure never changes the verdict.
+    try {
+      await writeReceipt({
+        cwd: ctx.cwd,
+        agent: process.env.PI_DELEGATE_ROLE ?? "worker",
+        session: process.env.PI_SESSION_ID,
+        commands: [{ command: input.command, exitCode: null, timedOut: false, durationMs: 0 }],
+        ok: false,
+        note: "bash write-channel deny: " + (decision.pattern ?? "ambiguous"),
+      });
+    } catch {
+      /* receipt failure never changes the verdict */
+    }
+    return {
+      block: true,
+      reason: decision.reason ?? "bash command would write a protected path (write-channel scanner)",
+    };
+  });
+
   // Tool execute results cannot set runtime error state directly, so patch it
   // through the result hook. AnyToolDetails: the background start-failure
   // result also sets isError (BackgroundJobDetails.isError).
@@ -1477,6 +1761,86 @@ export default function (pi: ExtensionAPI) {
     if (event.toolName !== "subagent") return;
     const details = event.details as AnyToolDetails | undefined;
     if (details?.isError) return { isError: true };
+  });
+
+  // Batch 1: POST-WRITE scoped gate (worker children only). After a successful
+  // edit/write of a gate-relevant file (.go / .feature / .yaml / docs/spec/**)
+  // the extension itself runs `make audit/static` + the scoped spec check and
+  // appends a failure block to the tool result. Successes stay silent (context
+  // stays small); a debounced skip still leaves a one-line note so the worker
+  // knows a gate is due. The extension writes the receipt, never the worker.
+  pi.on("tool_result", async (event, ctx) => {
+    if (!isWorkerChild()) return;
+    if (event.toolName !== "edit" && event.toolName !== "write") return;
+    if (event.isError) return;
+    const input = event.input as { path?: unknown };
+    if (typeof input.path !== "string" || input.path.length === 0) return;
+    if (!isGateRelevantWrite(ctx.cwd, input.path)) return;
+
+    const sessionKey = process.env.PI_SESSION_ID ?? "proc:" + String(process.pid);
+    if (shouldRunPostWriteGate(sessionKey) !== "run") {
+      void logGateDebug(ctx.cwd, "post-write gate skipped (debounce) after " + event.toolName + " " + input.path);
+      return {
+        content: appendToolResultNote(
+          event.content,
+          "\n[scoped gate] run skipped (debounced ~10s) — a gate run is due/running; results land after the next write or at settle.",
+        ),
+      };
+    }
+
+    markPostWriteGateStart(sessionKey);
+    let run: Awaited<ReturnType<typeof runScopedGate>>;
+    try {
+      run = await runScopedGate({ cwd: ctx.cwd, scopeEnv: process.env.PI_DELEGATE_SPEC_SCOPE });
+    } catch (error) {
+      // Internal error ⇒ failure, never a silent pass (fail closed).
+      console.error("[delegate] post-write gate crashed:", error);
+      run = {
+        ok: false,
+        steps: [
+          {
+            command: "(scoped gate)",
+            argv: [],
+            ok: false,
+            exitCode: null,
+            timedOut: false,
+            durationMs: 0,
+            stdout: "",
+            stderr: error instanceof Error ? error.message : String(error),
+            spawnError: null,
+            reason: "gate runner threw",
+          },
+        ],
+      };
+    } finally {
+      markPostWriteGateEnd(sessionKey);
+    }
+    try {
+      await writeReceipt({
+        cwd: ctx.cwd,
+        agent: process.env.PI_DELEGATE_ROLE ?? "worker",
+        session: process.env.PI_SESSION_ID,
+        commands: receiptCommandsOf(run),
+        ok: run.ok,
+        note: "post-write gate after " + event.toolName + " " + input.path,
+      });
+    } catch (error) {
+      console.error("[delegate] post-write receipt failed:", error);
+    }
+    if (run.ok) return;
+    return {
+      content: appendToolResultNote(
+        event.content,
+        "\n" +
+          formatGateReport(run, {
+            header: "\u2500\u2500 SCOPED GATE FAILED \u2500\u2500",
+            footer:
+              "Fix these before reporting done. The gate reruns after your next write; " +
+              "make audit/static and spec check must pass before settle.",
+            maxLines: 30,
+          }),
+      ),
+    };
   });
 
   // Phase 5 two-tier: workers cannot recurse — skip the subagent tool
@@ -1610,6 +1974,69 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
+      // Batch 2: claims log + overlap blocking. Foreground single and tasks[]
+      // spawns claim their SPEC-SCOPE / CLAIMS-PATHS before any child
+      // launches; an overlapping ACTIVE claim blocks the WHOLE call (no child
+      // starts, no claim is written). Background orchestrator spawns are not
+      // claimed here: their lifetime is tracked by the job registry, not by
+      // this tool result, so a claim would stay active for the whole job.
+      // Parameter errors that return before a child exists are handled ABOVE
+      // (the MAX_PARALLEL_TASKS guard below too): a claim must never outlive a
+      // refused call.
+      if (hasTasks && params.tasks && params.tasks.length > maxParallelTasksFor(ctx.cwd)) {
+        const maxTasks = maxParallelTasksFor(ctx.cwd);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Too many parallel tasks (${params.tasks.length}). Max is ${maxTasks}.`,
+            },
+          ],
+          details: makeDetails("parallel", true)([]),
+        };
+      }
+      const claimsJobId = jobIdForEnv();
+      const claimsSessionId = process.env.PI_SESSION_ID ?? "";
+      const singleAgentForClaims = resolvedSingle?.agent;
+      const singleIsBackground = Boolean(
+        hasSingle && singleAgentForClaims && (params.background ?? singleAgentForClaims.background),
+      );
+      const spawnRequests: SpawnRequest[] = hasTasks
+        ? (params.tasks ?? []).map((entry) => ({ worker: entry.agent, task: entry.task }))
+        : hasSingle && singleAgentForClaims && !singleIsBackground && params.agent && params.task
+          ? [{ worker: params.agent, task: params.task }]
+          : [];
+      let spawnClaims: ClaimRecord[] = [];
+      const releasedClaimIds = new Set<string>();
+      // Release exactly once per claim: the completion record is what makes a
+      // claim inactive, so it must be appended on every exit path (a crashed
+      // spawn included) — an orphaned active claim would block the next worker.
+      const releaseClaim = async (claim: ClaimRecord | undefined, ok: boolean): Promise<void> => {
+        if (!claim || releasedClaimIds.has(claim.claimId)) return;
+        releasedClaimIds.add(claim.claimId);
+        try {
+          await completeSpawnClaim({ cwd: ctx.cwd, jobId: claimsJobId, claim, ok });
+        } catch (error) {
+          console.error("[delegate] claim completion write failed:", error);
+        }
+      };
+      if (spawnRequests.length > 0) {
+        const prepared = await prepareSpawnClaims({
+          cwd: ctx.cwd,
+          jobId: claimsJobId,
+          sessionId: claimsSessionId,
+          requests: spawnRequests,
+        });
+        if (prepared.blocked.length > 0) {
+          const text = prepared.blocked.map((conflict) => formatClaimConflict(conflict)).join("\n\n");
+          return {
+            content: [{ type: "text", text }],
+            details: makeDetails(hasTasks ? "parallel" : "single", true)([]),
+          };
+        }
+        spawnClaims = prepared.claims;
+      }
+
       if (params.chain && params.chain.length > 0) {
         const results: SingleResult[] = [];
         let previousOutput = "";
@@ -1672,12 +2099,13 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (params.tasks && params.tasks.length > 0) {
-        if (params.tasks.length > MAX_PARALLEL_TASKS)
+        const maxTasks = maxParallelTasksFor(ctx.cwd);
+        if (params.tasks.length > maxTasks)
           return {
             content: [
               {
                 type: "text",
-                text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`,
+                text: `Too many parallel tasks (${params.tasks.length}). Max is ${maxTasks}.`,
               },
             ],
             details: makeDetails("parallel", true)([]),
@@ -1718,24 +2146,33 @@ export default function (pi: ExtensionAPI) {
         };
 
         const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
-          const result = await runSingleAgent(
-            dispatchDefaults,
-            resolvedTasks[index],
-            t.agent,
-            t.task,
-            undefined,
-            signal,
-            // Per-task update callback
-            (partial) => {
-              if (partial.details?.results[0]) {
-                allResults[index] = partial.details.results[0];
-                emitParallelUpdate();
-              }
-            },
-            makeDetails("parallel"),
-          );
+          let result: SingleResult;
+          try {
+            result = await runSingleAgent(
+              dispatchDefaults,
+              resolvedTasks[index],
+              t.agent,
+              t.task,
+              undefined,
+              signal,
+              // Per-task update callback
+              (partial) => {
+                if (partial.details?.results[0]) {
+                  allResults[index] = partial.details.results[0];
+                  emitParallelUpdate();
+                }
+              },
+              makeDetails("parallel"),
+            );
+          } catch (error) {
+            // A thrown spawn must still release its claim (fail-open telemetry).
+            await releaseClaim(spawnClaims[index], false);
+            throw error;
+          }
           allResults[index] = result;
           emitParallelUpdate();
+          // Batch 2: release the claim with the paths that actually changed.
+          await releaseClaim(spawnClaims[index], !isFailedResult(result));
           return result;
         });
 
@@ -1814,16 +2251,25 @@ export default function (pi: ExtensionAPI) {
           }
           return await startBackgroundRun(dispatchDefaults, singleAgent, params.task, ctx, params.handoff);
         }
-        const result = await runSingleAgent(
-          dispatchDefaults,
-          resolvedSingle,
-          params.agent,
-          params.task,
-          undefined,
-          signal,
-          onUpdate,
-          makeDetails("single"),
-        );
+        let result: SingleResult;
+        try {
+          result = await runSingleAgent(
+            dispatchDefaults,
+            resolvedSingle,
+            params.agent,
+            params.task,
+            undefined,
+            signal,
+            onUpdate,
+            makeDetails("single"),
+          );
+        } catch (error) {
+          // A thrown spawn must still release its claim (fail-open telemetry).
+          await releaseClaim(spawnClaims[0], false);
+          throw error;
+        }
+        // Batch 2: release the claim with the paths that actually changed.
+        await releaseClaim(spawnClaims[0], !isFailedResult(result));
         const isError = isFailedResult(result);
         if (isError) {
           const errorMsg = getResultOutput(result);
@@ -2246,7 +2692,7 @@ export default function (pi: ExtensionAPI) {
     description:
       "Inspect background subagent jobs (artifacts in .pi/jobs/). " +
       "Omit id to list all jobs (id, status, agent, task preview, elapsed). " +
-      "With id: for done jobs returns the final assistant output; for failed jobs exit code + stderr + last events; for running jobs current activity; for awaiting_approval jobs (confirm handoff) returns the orchestrator's approval request — decide via job_approve. " +
+      "With id: for done jobs returns the final assistant output; for failed jobs exit code + stderr + last events; for running jobs current activity; for awaiting_approval jobs (confirm handoff) returns the orchestrator's approval request — check its `HEAD SHA: <sha>` line, then decide via job_approve (which refuses if the worktree HEAD moved). " +
       "On-demand only: for when the user asks or you need one data point — never loop-wait on a job. A repeat poll of the same unchanged running job is refused by a cooldown (doubling on consecutive refusals), and completion arrives automatically as an injected message at the next turn boundary.",
     parameters: JobStatusParams,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -2385,9 +2831,11 @@ export default function (pi: ExtensionAPI) {
     label: "Job approve",
     description:
       "Relay an approval decision to a background orchestrator job that is waiting in confirm handoff mode (status awaiting_approval). " +
+      "SHA-BOUND: when the approval block carries a `HEAD SHA: <sha>` line (the job registry records it), the decision is only relayed while the job's worktree HEAD still matches — a moved HEAD makes the approval stale and the relay is refused (the orchestrator emits a fresh AWAITING_APPROVAL block to review). " +
+      'On a match the relayed message gets " (bound to <sha>)" appended, so the child pane also sees the binding. Blocks without a HEAD SHA line (legacy) relay unbound. ' +
       "The message is typed verbatim into the job's idle tmux pane (tmux send-keys -l + Enter), exactly as if the user typed it there. " +
       'message "approved [note]" → the orchestrator performs its merge-back and reports HANDOFF_COMPLETE (the job then advances to done); "rejected: <reason>" → it iterates and emits a fresh approval request. ' +
-      "Refuses: unknown id, non-tmux job, dead tmux session, mid-round job, or a job whose last message carries no approval request. " +
+      "Refuses: unknown id, non-tmux job, dead tmux session, mid-round job, a job whose last message carries no approval request, or a worktree HEAD that moved since the request. " +
       "After delivery, follow up with job_status on the same id to watch the continuation.",
     parameters: JobApproveParams,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -2397,9 +2845,10 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: "Refused: " + (outcome.reason ?? "unknown reason") }], details: { delivered: false, id: params.id } };
       }
       const text =
-        "Delivered to tmux session " + outcome.session + " (job " + params.id + "): \"" + params.message + "\"." +
+        "Delivered to tmux session " + outcome.session + " (job " + params.id + "): \"" + (outcome.deliveredMessage ?? params.message) + "\"." +
+        (outcome.boundSha ? "\nBound to HEAD " + outcome.boundSha + " (the worktree HEAD still matched the approved block)." : "\nNo HEAD SHA recorded in the approval block — relayed unbound (legacy block).") +
         "\nThe orchestrator pane received your decision; follow up with job_status id \"" + params.id + "\" to watch it advance (approval → HANDOFF_COMPLETE, job done; rejection → a fresh approval request).";
-      return { content: [{ type: "text", text }], details: { delivered: true, id: params.id, session: outcome.session } };
+      return { content: [{ type: "text", text }], details: { delivered: true, id: params.id, session: outcome.session, boundSha: outcome.boundSha } };
     },
     renderCall(args, theme, _context) {
       const preview = args.message ? String(args.message).slice(0, 40) : "...";
@@ -2580,5 +3029,135 @@ export default function (pi: ExtensionAPI) {
     // jobs all failed to build returns undefined and the run ends.
     if (delivered.length === 0) return undefined;
     return { entries: drafts, continue: true };
+  });
+
+  // Batch 1 + batch 2: WORKER-SETTLE gate. A worker child may not settle as
+  // "done" while the scoped gate fails: the same two commands as the
+  // post-write gate run again (no debounce), the extension writes a receipt,
+  // and a bounded continue:true hands the worker turns to fix the failures.
+  //
+  // Batch 2 additions: (a) past the batch-1 immediate window the continuation
+  // waits an exponential backoff (2s, 4s at the default base) and its reason
+  // text is ESCALATING; after the last attempt the hard stop prints the full
+  // per-attempt receipt trail. (b) A PASSING ladder is followed by
+  // reconciliation-lite: the ladder is re-run and diffed against the newest
+  // passing receipt (HEAD sha, rules.yaml hash, exit codes). The receipt for
+  // THIS attempt is written first, so the checkpoint is the tree state the
+  // green ladder just described — the drift it catches is a concurrent writer
+  // (another worker committing mid-ladder), not a day-old receipt from a
+  // sibling. That matters: `<cwd>/.pi/receipts/` is per REPO, not per worker,
+  // and a mismatch against a stale day-long checkpoint would block a
+  // legitimately green worker forever. A mismatch still counts as a failed
+  // attempt and is reported in full.
+  //
+  // Loop safety: continue is conditional on NEW state — the attempt counter
+  // (module state, reset by a PASSING run) strictly increases per failure, so
+  // the attempt cap hands out the HARD STOP message as a TERMINAL turn
+  // (continue:true once, bounded by the one-shot settleGateTerminal flag)
+  // rather than an entries-only return. The flag is consumed by the very next
+  // settle, which runs no gate and returns undefined — the proven-safe ending
+  // (assistant message last ⇒ print mode flushes the worker's output).
+  pi.on("agent_before_settle", async (event, ctx) => {
+    if (!isWorkerChild()) return;
+    // Terminal turn already handed out: end unconditionally, exactly once.
+    if (settleGateTerminal) {
+      settleGateTerminal = false;
+      resetSettleGateAttempts();
+      return undefined;
+    }
+    if (event.outcome !== "completed") return;
+
+    const maxAttempts = settleGateMaxAttempts(ctx.cwd);
+    const baseMs = settleBackoffBaseMs(ctx.cwd);
+    const attempt = settleGateStateFor().attempts + 1;
+    const agentName = process.env.PI_DELEGATE_ROLE ?? "worker";
+    const scopeEnv = process.env.PI_DELEGATE_SPEC_SCOPE;
+
+    let run = await runWorkerGate(ctx.cwd, scopeEnv);
+
+    // Receipt FIRST (note names the attempt number for every attempt): on a
+    // green ladder this receipt is the reconciliation checkpoint.
+    const receiptPath = await writeSettleReceipt({
+      cwd: ctx.cwd,
+      agent: agentName,
+      commands: receiptCommandsOf(run),
+      ok: run.ok,
+      note: "settle gate attempt " + String(attempt) + "/" + String(maxAttempts),
+    });
+
+    let reconciliation: ReconciliationResult | undefined;
+    if (run.ok) {
+      // Reconciliation-lite: only worth running on a green ladder, and only
+      // once per settle. A crash is a failure (fail closed), never a pass.
+      try {
+        reconciliation = await runReconciliation(ctx.cwd, {
+          agent: agentName,
+          session: process.env.PI_SESSION_ID,
+          scopeEnv,
+        });
+      } catch (error) {
+        console.error("[delegate] reconciliation crashed:", error);
+        reconciliation = {
+          ok: false,
+          report:
+            "── RECONCILIATION ──\nstatus: MISMATCH — reconciliation crashed: " +
+            (error instanceof Error ? error.message : String(error)),
+          steps: [],
+          receipt: null,
+        };
+      }
+      if (!reconciliation.ok) {
+        run = reconciliationGateRun(reconciliation);
+        if (reconciliation.steps.length > 0) {
+          // The reconciliation ladder's own commands go into their own receipt
+          // so a later trail can name exactly which run drifted.
+          await writeSettleReceipt({
+            cwd: ctx.cwd,
+            agent: agentName,
+            commands: receiptCommandsOf({ ok: reconciliation.ok, steps: reconciliation.steps }),
+            ok: false,
+            note: "reconciliation attempt " + String(attempt) + "/" + String(maxAttempts),
+          });
+        }
+      }
+    }
+
+    if (run.ok) {
+      resetSettleGateAttempts();
+      settleGateTerminal = false;
+      return undefined;
+    }
+
+    const plan = planSettleGateAttempt(attempt, { maxAttempts, baseMs, cwd: ctx.cwd });
+    bumpSettleGateAttempts();
+    recordSettleGateAttempt({ run, receiptPath });
+    // Wait BEFORE handing the continuation back: the backoff is the point, and
+    // an entries-only early return would burn the turn instead.
+    if (plan.waitMs > 0) await sleepMs(plan.waitMs);
+
+    const escalation = formatSettleEscalation(plan, recentSettleFailures());
+    const header =
+      "\u2500\u2500 SETTLE GATE BLOCKED (attempt " + String(attempt) + "/" + String(maxAttempts) + ") \u2500\u2500";
+    const failureFooter =
+      "HARD STOP \u2014 TERMINAL TURN: " + String(maxAttempts) + " failed gate attempts. " +
+      "This is your LAST turn: make NO further changes (no edits, no fixes), run no more gate commands, " +
+      "and reply with your verbatim failure report \u2014 each failing command, its exit code, the failing " +
+      "output lines above, and the receipt path. That report is what your parent receives.";
+    const footer = plan.terminal
+      ? escalation + "\n" + formatSettleTrail(settleGateStateFor()) + "\n" + failureFooter
+      : escalation + "\nDo not report done; fix the gate failures.";
+    const content =
+      formatGateReport(run, { header, footer, maxLines: plan.terminal ? 20 : 30 }) +
+      "\nreceipt: " + (receiptPath ?? "(not written)") +
+      (reconciliation && !reconciliation.ok ? "\n" + reconciliation.report : "");
+    const entries: SessionBoundaryDraft[] = [
+      ...event.entries,
+      { type: "custom_message", customType: "delegate-gate", content, display: true },
+    ];
+    // Hard stop: still continue ONCE (the terminal turn) so the run ends on an
+    // assistant message instead of an entries-only return (see the
+    // settleGateTerminal comment above).
+    if (plan.terminal) settleGateTerminal = true;
+    return { entries, continue: true };
   });
 }
