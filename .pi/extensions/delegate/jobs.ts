@@ -841,18 +841,25 @@ export async function relayApprovalDecision(cwd: string, id: string, message: st
 
   // PROVE at merge-back: a task whose SPEC-SCOPE names rules must have VERIFIED
   // prove receipts covering EVERY named rule before its approval is relayed —
-  // this relay IS the merge-back choke point. Fail closed: missing/stale/failed
-  // evidence refuses with the rule ids named, because a green static check does
-  // not mean the behavior was exercised. Rejections and every other message
-  // pass through untouched (only an approval claims the merge-back).
+  // this relay IS a merge-back choke point (the merge execution path enforces
+  // the same precondition independently, so a decision typed straight into the
+  // pane cannot bypass it). Fail closed: missing/stale/failed evidence refuses
+  // with the rule ids named, because a green static check does not mean the
+  // behavior was exercised. Rejections and every other message pass through
+  // untouched (only an approval claims the merge-back).
+  //
+  // Receipts are HOST-ONLY: `cwd` (the calling host session's own repo root) is
+  // the receipts root, never the worktree — a worker's mount could otherwise
+  // carry a pre-forged VERIFIED receipt. The reviewed-HEAD binding is applied to
+  // the approval decision itself (above, `awaitingApprovalHeadSha`), not to the
+  // coverage read: prove receipts are written by the orchestrator host session
+  // and name the verifier plane's HEAD, not the worktree's.
   const scopedRules = parseSpecScope(entry.task)?.rules ?? [];
   const isApproval = /^approved\b/i.test(message.trim());
   if (isApproval && scopedRules.length > 0) {
     let coverage: Awaited<ReturnType<typeof checkProveCoverage>>;
     try {
-      coverage = await checkProveCoverage(worktreePath, scopedRules, {
-        expectedHeadSha: entry.awaitingApprovalHeadSha,
-      });
+      coverage = await checkProveCoverage(cwd, scopedRules, { worktreePath });
     } catch (error) {
       // An internal error is a refusal, never a pass (fail closed).
       coverage = {
@@ -872,10 +879,11 @@ export async function relayApprovalDecision(cwd: string, id: string, message: st
         reason:
           "PROVE receipts missing for this merge-back (HANDOFF_BLOCKED): " + missingLabel + ". " +
           "The task's SPEC-SCOPE names " + scopedRules.join(", ") + ", so an approval relay needs a VERIFIED " +
-          "prove receipt for EVERY scoped rule, bound to the reviewed HEAD — HANDOFF BLOCKED, the approval " +
+          "prove receipt for EVERY scoped rule — HANDOFF BLOCKED, the approval " +
           "cannot proceed. Relay \"rejected: missing VERIFIED prove receipts for " + missingLabel + "\" instead: " +
-          "the orchestrator runs `cd " + worktreePath + " && make prove args='--rule <id>'` once per scoped " +
-          "rule inside the worktree (the extension records the prove receipt), then re-emits a fresh " +
+          "the orchestrator runs `make prove args='--rule <id>'` once per scoped " +
+          "rule ON THE HOST (the extension records the receipt in the host receipts dir, not in the " +
+          "worktree), then re-emits a fresh " +
           APPROVAL_MARKER + " block for a fresh approval.\n" + coverage.report,
       };
     }
