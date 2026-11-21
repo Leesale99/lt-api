@@ -5,6 +5,13 @@
 // a harness for headless verification only: nothing here is imported by the
 // extension. Run:  node .pi/extensions/delegate/smoke-gates.mjs
 // (needs Node >= 22.18 for unflagged .ts type stripping).
+//
+// Sandbox era: the checks for the DELETED mechanisms are gone with them —
+// evaluateGateFileWrite / the gate allowlist / protected+editable path sets /
+// bash_write_patterns no longer exist in the modules under test. New suites for
+// the sandbox seams (./sbx.ts exit mapping + argv shapes, the host integrity
+// check, the merge-command detector, the in-VM advisory ladder) belong in their
+// own files so this one stays a gate/receipt/policy suite.
 import * as assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
@@ -16,9 +23,9 @@ import {
   SETTLE_BACKOFF_BASE_MS,
   SETTLE_GATE_MAX_ATTEMPTS,
   bumpSettleGateAttempts,
+  checkProveCoverage,
   describeWaitMs,
   diffReceiptAgainst,
-  evaluateGateFileWrite,
   formatGateReport,
   formatSettleEscalation,
   formatSettleTrail,
@@ -59,7 +66,6 @@ import {
 import {
   DEFAULT_AUDIT_STATIC_CMD,
   DEFAULT_MAX_CONCURRENT_WORKERS,
-  DEFAULT_PROTECTED_PATHS,
   DEFAULT_SETTLE_BACKOFF_BASE_MS,
   DEFAULT_SETTLE_MAX_ATTEMPTS,
   DEFAULT_WORKER_STALL_TIMEOUT_MS,
@@ -191,45 +197,6 @@ await check("parseSpecScopeEnv: env round-trip", async () => {
   assert.deepEqual(parseSpecScopeEnv("module=game rules=R-1"), { module: "game", rules: ["R-1"] });
   assert.equal(parseSpecScopeEnv(""), null);
   assert.equal(parseSpecScopeEnv(undefined), null);
-});
-
-// ── gate-file protection ───────────────────────────────────────────────────
-await check("evaluateGateFileWrite: deny list + exceptions + fail-closed allowlist", async () => {
-  const repo = path.join(tmp, "repo");
-  fs.mkdirSync(path.join(repo, ".pi", "delegate"), { recursive: true });
-  fs.mkdirSync(path.join(repo, "docs", "spec"), { recursive: true });
-  fs.mkdirSync(path.join(repo, "cmd", "spec"), { recursive: true });
-  fs.writeFileSync(path.join(repo, "Makefile"), "all:\n");
-  fs.writeFileSync(path.join(repo, "docs", "spec", "rules.schema.md"), "# schema\n");
-  fs.writeFileSync(path.join(repo, "main.go"), "package main\n");
-  writeWorkflow(repo);
-
-  // Ordinary files stay editable.
-  assert.equal(evaluateGateFileWrite(repo, "main.go").blocked, false);
-  assert.equal(evaluateGateFileWrite(repo, "internal/x/y.go").blocked, false);
-  // Gate files denied.
-  assert.equal(evaluateGateFileWrite(repo, "Makefile").blocked, true);
-  assert.equal(evaluateGateFileWrite(repo, "cmd/spec/main.go").blocked, true);
-  assert.equal(evaluateGateFileWrite(repo, "docs/spec/rules.schema.md").blocked, true);
-  assert.equal(evaluateGateFileWrite(repo, "docs/spec/rules.yaml").blocked, true);
-  assert.equal(evaluateGateFileWrite(repo, ".pi/extensions/delegate/index.ts").blocked, true);
-  // Prose exceptions.
-  assert.equal(evaluateGateFileWrite(repo, ".pi/agents/go-worker.md").blocked, false);
-  assert.equal(evaluateGateFileWrite(repo, ".pi/prompts/x.md").blocked, false);
-  assert.equal(evaluateGateFileWrite(repo, ".pi/plans/plan.md").blocked, false);
-  assert.equal(evaluateGateFileWrite(repo, ".pi/delegate/orchestrator.md").blocked, false);
-  // Allowlist file itself is always denied, even with a matching allowlist.
-  fs.writeFileSync(path.join(repo, ".pi", "delegate", "gate-allowlist.json"), '["**"]');
-  assert.equal(evaluateGateFileWrite(repo, ".pi/delegate/gate-allowlist.json").blocked, true);
-  assert.equal(evaluateGateFileWrite(repo, "Makefile").blocked, false, "allowlist grants Makefile");
-  // Invalid JSON ⇒ fail closed (deny).
-  fs.writeFileSync(path.join(repo, ".pi", "delegate", "gate-allowlist.json"), "{not json");
-  assert.equal(evaluateGateFileWrite(repo, "cmd/spec/main.go").blocked, true);
-  // Missing file ⇒ deny.
-  fs.rmSync(path.join(repo, ".pi", "delegate", "gate-allowlist.json"));
-  assert.equal(evaluateGateFileWrite(repo, "cmd/spec/main.go").blocked, true);
-  // Outside the repo is not a gate file.
-  assert.equal(evaluateGateFileWrite(repo, "../elsewhere.go").blocked, false);
 });
 
 await check("isGateRelevantWrite", async () => {
@@ -948,18 +915,6 @@ const FULL_POLICY_BODY = fieldsPolicy([
   "audit_cmd: make audit",
   "prove_cmd: make prove",
   'scoped_check_cmd: "go run ./cmd/spec check --strict"',
-  "protected_paths:",
-  "  - Makefile",
-  "  - cmd/spec",
-  "  - cmd/spec/**",
-  "  - docs/spec/**",
-  "  - .pi/**",
-  "pi_editable_paths:",
-  "  - .pi/agents/**",
-  "  - .pi/prompts/**",
-  "  - .pi/delegate/**",
-  "  - .pi/plans/**",
-  "allowlist_path: .pi/delegate/gate-allowlist.json",
   "receipts_dir: .pi/receipts",
   "claims_dir: .pi/jobs",
   "settle_max_attempts: 5",
@@ -987,9 +942,6 @@ await check("policy: full front matter loads and every field reads back", async 
   assert.equal(p.auditCmd, "make audit");
   assert.equal(p.proveCmd, "make prove");
   assert.equal(p.scopedCheckCmd, "go run ./cmd/spec check --strict");
-  assert.deepEqual(p.protectedPaths, ["Makefile", "cmd/spec", "cmd/spec/**", "docs/spec/**", ".pi/**"]);
-  assert.deepEqual(p.piEditablePaths, [".pi/agents/**", ".pi/prompts/**", ".pi/delegate/**", ".pi/plans/**"]);
-  assert.equal(p.allowlistPath, ".pi/delegate/gate-allowlist.json");
   assert.equal(p.receiptsDir, ".pi/receipts");
   assert.equal(p.claimsDir, ".pi/jobs");
   assert.equal(p.settleMaxAttempts, 5);
@@ -1002,7 +954,7 @@ await check("policy: full front matter loads and every field reads back", async 
   assert.equal(p.redApprovalMarker, "AWAITING_APPROVAL");
   assert.equal(p.redApprovalHeadShaLine, "HEAD SHA:");
   assert.deepEqual(p.handoffTerminalTokens, ["HANDOFF_COMPLETE", "HANDOFF_BLOCKED"]);
-  assert.equal(loaded.declared.size, 19, "every declared field is marked present");
+  assert.equal(loaded.declared.size, 16, "every declared field is marked present");
 });
 
 await check("policy: parser handles quotes, comments, lists and the command splitter", async () => {
@@ -1034,7 +986,6 @@ await check("policy: omitted fields take the batch-1/2 defaults", async () => {
   assert.equal(loaded.policy.settleBackoffBaseMs, DEFAULT_SETTLE_BACKOFF_BASE_MS);
   assert.equal(loaded.policy.workerStallTimeoutMs, DEFAULT_WORKER_STALL_TIMEOUT_MS);
   assert.equal(loaded.policy.maxConcurrentWorkers, DEFAULT_MAX_CONCURRENT_WORKERS);
-  assert.deepEqual(loaded.policy.protectedPaths, [...DEFAULT_PROTECTED_PATHS]);
   assert.equal(loaded.declared.size, 0, "nothing is declared in a version-only file");
   // The gate knobs fall through to the env override when the field is omitted.
   assert.equal(settleGateMaxAttempts(dir), 5);
@@ -1166,34 +1117,6 @@ await check("policy: the declared gate commands are the ones executed", async ()
   assert.deepEqual(scoped.steps.map((step) => step.command), ["./audit.sh", "./spec.sh --rule R-A-1"]);
 });
 
-await check("policy: protected/editable path sets come from the file, not the hardcode", async () => {
-  const dir = path.join(tmp, "policy-paths");
-  writeWorkflow(dir, fieldsPolicy(["protected_paths:", "  - src/**"]));
-  assert.equal(evaluateGateFileWrite(dir, "src/a.go").blocked, true, "declared path is denied");
-  assert.equal(evaluateGateFileWrite(dir, "Makefile").blocked, false, "hardcoded Makefile is NOT denied by this policy");
-  assert.equal(evaluateGateFileWrite(dir, "docs/spec/rules.yaml").blocked, false, "hardcoded docs/spec is NOT denied by this policy");
-  assert.equal(evaluateGateFileWrite(dir, "main.go").blocked, false);
-
-  const piDir = path.join(tmp, "policy-pi-editable");
-  writeWorkflow(
-    piDir,
-    fieldsPolicy(["protected_paths:", "  - .pi/**", "pi_editable_paths:", "  - .pi/delegate/**", "  - .pi/plans/**"]),
-  );
-  assert.equal(evaluateGateFileWrite(piDir, ".pi/agents/x.md").blocked, true, "not in the declared editable set");
-  assert.equal(evaluateGateFileWrite(piDir, ".pi/delegate/orchestrator.md").blocked, false);
-  assert.equal(evaluateGateFileWrite(piDir, ".pi/plans/p.md").blocked, false);
-  assert.equal(evaluateGateFileWrite(piDir, "docs/spec/rules.yaml").blocked, false, "outside the declared set");
-  // The allowlist file is ALWAYS self-denied, even when the file declares a
-  // different protected set and even with a matching allowlist glob.
-  fs.mkdirSync(path.join(piDir, ".pi", "plans"), { recursive: true });
-  assert.equal(evaluateGateFileWrite(piDir, ".pi/delegate/gate-allowlist.json").blocked, true);
-  // So is the policy file itself: a worker must not rewrite its own gates.
-  assert.equal(evaluateGateFileWrite(dir, "WORKFLOW.md").blocked, true, "policy file is self-denied");
-  fs.mkdirSync(path.join(dir, ".pi", "delegate"), { recursive: true });
-  fs.writeFileSync(path.join(dir, ".pi", "delegate", "gate-allowlist.json"), '["WORKFLOW.md"]');
-  assert.equal(evaluateGateFileWrite(dir, "WORKFLOW.md").blocked, true, "not grantable via the allowlist");
-});
-
 await check("policy: approval-contract mismatch refuses (marker / sha line / tokens / binding)", async () => {
   const dir = path.join(tmp, "policy-approval");
   const cases = [
@@ -1223,10 +1146,6 @@ await check("policy: gate paths refuse loudly when the policy is missing", async
   assert.equal(workflowPolicyRefusal("x"), "workflow policy unavailable: x \u2014 gates refuse rather than run unpoliced");
   const report = formatGateReport(run, { header: "\u2500\u2500 SETTLE GATE BLOCKED \u2500\u2500", footer: "fix" });
   assert.match(report, /workflow policy unavailable/);
-  // The deny hook refuses every in-repo write under an undeclared policy.
-  const decision = evaluateGateFileWrite(dir, "main.go");
-  assert.equal(decision.blocked, true, "writes are denied, not silently policed by an old hardcode");
-  assert.match(decision.reason, /workflow policy unavailable/);
   // The refusal is RECORDED (ok:false), so a settle gate counts it as a failed attempt.
   const receipt = await writeReceipt({
     cwd: dir,
@@ -1239,6 +1158,147 @@ await check("policy: gate paths refuse loudly when the policy is missing", async
   const record = JSON.parse(fs.readFileSync(receipt, "utf8").trim().split("\n").pop());
   assert.equal(record.ok, false);
   assert.equal(record.commands[0].command, "(workflow policy)");
+});
+
+// ── PROVE coverage at merge-back ────────────────────────────────────────────
+// The receipt the extension writes on a scoped `make prove` is the ONLY prove
+// evidence; the merge-back gate (jobs.ts) refuses an approval without it, so
+// these cases pin the coverage semantics rather than the git plumbing.
+const PROVE_HEAD = "a".repeat(40);
+
+/** A worktree fixture whose WORKFLOW.md loads (⇒ receipts_dir resolves). */
+function proveWorktree(name) {
+  const dir = path.join(tmp, name);
+  writeWorkflow(dir);
+  return dir;
+}
+
+/** Append one raw receipt record to `<dir>/.pi/receipts/<day>.jsonl`. */
+function writeProveReceipt(dir, record, day = new Date().toISOString().slice(0, 10)) {
+  const receipts = path.join(dir, ".pi", "receipts");
+  fs.mkdirSync(receipts, { recursive: true });
+  const full = {
+    timestamp: day + "T00:00:00.000Z",
+    agent: "orchestrator",
+    session: "s-prove",
+    commands: [],
+    rulesHash: "hash",
+    headSha: PROVE_HEAD,
+    ok: true,
+    note: "",
+    ...record,
+  };
+  fs.appendFileSync(path.join(receipts, day + ".jsonl"), JSON.stringify(full) + "\n");
+}
+
+/** One green scoped prove command row for `rule` (the shape the writer records). */
+function proveCommand(rule, exitCode = 0) {
+  return {
+    command: "cd ../lt-api-wt-job-1 && make prove args='--rule " + rule + "'",
+    exitCode,
+    timedOut: false,
+    durationMs: 5,
+  };
+}
+
+await check("checkProveCoverage: no receipts ⇒ every scoped rule missing", async () => {
+  const dir = proveWorktree("prove-none");
+  const result = await checkProveCoverage(dir, ["R-GAME-001", "R-GAME-002"], { expectedHeadSha: PROVE_HEAD });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.missing, ["R-GAME-001", "R-GAME-002"]);
+  assert.deepEqual(result.covered, []);
+  assert.match(result.report, /R-GAME-001/);
+  assert.match(result.report, /R-GAME-002/);
+  assert.match(result.report, /no prove receipt at all/);
+  assert.match(result.report, /status: BLOCKED/);
+});
+
+await check("checkProveCoverage: unavailable policy refuses (fail closed)", async () => {
+  const dir = path.join(tmp, "prove-no-policy");
+  fs.mkdirSync(dir, { recursive: true });
+  const result = await checkProveCoverage(dir, ["R-GAME-001"]);
+  assert.equal(result.ok, false, "no policy ⇒ no receipts dir to trust");
+  assert.deepEqual(result.missing, ["R-GAME-001"]);
+  assert.match(result.report, /workflow policy unavailable/);
+});
+
+await check("checkProveCoverage: a failed prove run is not coverage", async () => {
+  const dir = proveWorktree("prove-failed");
+  writeProveReceipt(dir, {
+    ok: false,
+    note: "prove rules=R-GAME-001",
+    commands: [proveCommand("R-GAME-001", 1)],
+  });
+  const result = await checkProveCoverage(dir, ["R-GAME-001"], { expectedHeadSha: PROVE_HEAD });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.missing, ["R-GAME-001"]);
+  assert.match(result.report, /non-VERIFIED/);
+});
+
+await check("checkProveCoverage: green scoped receipts cover (all day files, both --rule forms)", async () => {
+  const dir = proveWorktree("prove-covered");
+  // Yesterday's file: jobs cross midnight, so the whole receipts dir is read.
+  writeProveReceipt(dir, { note: "prove rules=R-GAME-001", commands: [proveCommand("R-GAME-001")] }, "2026-01-01");
+  writeProveReceipt(dir, {
+    note: "prove rules=R-GAME-002",
+    commands: [
+      {
+        command: "go run ./cmd/spec prove --rule=R-GAME-002",
+        exitCode: 0,
+        timedOut: false,
+        durationMs: 5,
+      },
+    ],
+  });
+  const result = await checkProveCoverage(dir, ["R-GAME-001", "R-GAME-002"], { expectedHeadSha: PROVE_HEAD });
+  assert.equal(result.ok, true, result.report);
+  assert.deepEqual(result.covered, ["R-GAME-001", "R-GAME-002"]);
+  assert.deepEqual(result.missing, []);
+  assert.match(result.report, /2 jsonl file\(s\)/);
+  assert.match(result.report, /status: ok/);
+});
+
+await check("checkProveCoverage: a receipt at another commit is stale", async () => {
+  const dir = proveWorktree("prove-stale");
+  writeProveReceipt(dir, {
+    headSha: "b".repeat(40),
+    note: "prove rules=R-GAME-001",
+    commands: [proveCommand("R-GAME-001")],
+  });
+  const stale = await checkProveCoverage(dir, ["R-GAME-001"], { expectedHeadSha: PROVE_HEAD });
+  assert.equal(stale.ok, false, "prove must cover the exact reviewed commit");
+  assert.deepEqual(stale.missing, ["R-GAME-001"]);
+  assert.match(stale.report, /stale \(headSha mismatch/);
+  // Without a binding the same receipt covers: the check is only as strict as asked.
+  assert.equal((await checkProveCoverage(dir, ["R-GAME-001"])).ok, true);
+});
+
+await check("checkProveCoverage: rule ids match on a token boundary", async () => {
+  const longerRecord = proveWorktree("prove-boundary-longer");
+  writeProveReceipt(longerRecord, {
+    note: "prove rules=R-GAME-0011",
+    commands: [proveCommand("R-GAME-0011")],
+  });
+  const shorter = await checkProveCoverage(longerRecord, ["R-GAME-001"], { expectedHeadSha: PROVE_HEAD });
+  assert.equal(shorter.ok, false, "R-GAME-0011 must not cover R-GAME-001");
+  assert.match(shorter.report, /no prove receipt at all/);
+
+  const shorterRecord = proveWorktree("prove-boundary-shorter");
+  writeProveReceipt(shorterRecord, { note: "prove rules=R-GAME-001", commands: [proveCommand("R-GAME-001")] });
+  const longer = await checkProveCoverage(shorterRecord, ["R-GAME-0011"], { expectedHeadSha: PROVE_HEAD });
+  assert.equal(longer.ok, false, "R-GAME-001 must not cover R-GAME-0011");
+});
+
+await check("checkProveCoverage: an ordinary green receipt is not prove evidence", async () => {
+  const dir = proveWorktree("prove-settle-only");
+  writeProveReceipt(dir, {
+    note: "settle gate attempt 1/5",
+    commands: [proveCommand("R-GAME-001")],
+  });
+  const result = await checkProveCoverage(dir, ["R-GAME-001"], { expectedHeadSha: PROVE_HEAD });
+  assert.equal(result.ok, false, "a green settle receipt does not launder into coverage");
+  assert.deepEqual(result.missing, ["R-GAME-001"]);
+  assert.match(result.report, /no prove receipt at all/);
 });
 
 fs.rmSync(tmp, { recursive: true, force: true });

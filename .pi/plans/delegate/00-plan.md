@@ -73,12 +73,11 @@ Routing table for the orchestrator prompt: librarian → vault ops; researcher �
 
 1. **Project `.pi/settings.json` applies to children too.** If the main session gets a restricted `defaultTools`, children are unaffected only because every agent config lists `tools:` explicitly (frontmatter `tools` → explicit `--tools` allowlist overrides defaults). Keep that invariant: every agent `.md` names its tools.
 2. **AGENTS.md is read by every process in the cwd, including subagents.** See instruction split above.
-3. **Global packages load in children too** (context7, pi-web-access, pi-obsidian, pi-sbx) — needed for librarian/researcher tools; each child pays extension startup cost.
+3. **Global packages load in children too** (context7, pi-web-access, pi-obsidian) — needed for librarian/researcher tools; each child pays extension startup cost.
 4. **Children are cold starts** — no shared prompt cache with the parent. Keep tasks self-contained; that's why scout exists.
 5. **Subagent result = parent's context budget** (~50 KB cap). Every agent prompt enforces "return a summary, not a dump".
 6. **Project agents are repo-controlled prompts with user permissions** — keep `.pi/agents/` in review. `agentScope: "both"` (project overrides user); trusted project → no confirm prompt.
 7. **`obsidian` tool is deferred-exposure** — naming it in `--tools` should declare it; `tool_search` is the fallback. Verify in phase 1.
-8. Phase sessions run on the host; if sandbox tools are unavailable in a session, run `/sbx off` (happened in the planning session).
 
 ## Phases
 
@@ -106,8 +105,7 @@ Rule: **decisions live in these docs, not in chat history.** Append session-spec
 ## Learnings (append across phases)
 
 - (phase 1, 2026-11-12) `/skill:<name>` DOES expand in `-p` mode (print mode → `session.prompt()` with `expandPromptTemplates` default true), but expansion is single-pass and only expands the LEADING command. Multi-skill agents: first skill inlined via `/skill:`, remaining skills named explicitly for the child to read from its advertised path. Implemented in `buildTaskPrompt` in `.pi/extensions/delegate/index.ts`.
-- (phase 1, 2026-11-12) **pi-sbx removed from global packages — TEMPORARILY** (user decision): its version gate (requires SBX 0.48.x, host sbx is v0.53.0) left `-p` children with no usable tools — host fallback requires interactive approval children can't grant. While building this delegate workflow, pi runs directly on the host (no sandbox). AGENTS.md's sandbox facts (Docker container, `host.docker.internal` DSN overrides) are NOT stale — they describe how project sessions will run once the workflow is done and pi runs inside the sandbox with pi-sbx again. Do not remove them in phase 2's AGENTS.md slim.
-- (phase 1, 2026-11-12) During the host-run workflow phases, children resolve `host.docker.internal` NOT — the host-side DSN that works is `postgres://lt_test:test@localhost:5432/lt_api_test?sslmode=disable` (verified: `go test ./internal/api` passes). go-worker tasks delegated now should use the localhost DSN; once project work moves back into the sandbox, AGENTS.md's DSN guidance applies again.
+- (phase 1, 2026-11-12) During the workflow phases children run on the host; `host.docker.internal` does NOT resolve there — the host-side DSN that works is `postgres://lt_test:test@localhost:5432/lt_api_test?sslmode=disable` (verified: `go test ./internal/api` passes). go-worker tasks delegated on the host should use the localhost DSN.
 - (phase 2, 2026-11-12) Extension code is loaded at session start. Edits to `.pi/extensions/delegate/index.ts` mid-session apply to child processes (they load fresh from disk) but NOT to the running parent — its spawn env and hooks stay the old version until `/reload` or restart. Test child-side changes by spawning `pi` directly with the expected env; `/reload` before dogfooding after any extension edit.
 - (phase 2, 2026-11-12) Extension-loader parser rejects `?:` ternaries with double-quoted strings inside a template literal's `${}` — keep nested quoting in extension messages trivial (concatenation).
 - (phase 1, 2026-11-12) Project-agent confirm prompt only fires when `ctx.hasUI` — `-p` children/parents skip it; interactive sessions prompt unless the project is trusted.

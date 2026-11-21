@@ -146,6 +146,15 @@ audit/static:
 audit: audit/static
 	go test -race -vet=off -count=1 ./...
 
+# The two suites below are plain `node` harnesses (node's built-in .ts type
+# stripping): the gate/receipt/policy suite plus the sandbox-seam suite (sbx
+# argv + exit mapping, host integrity check, merge detector, host-only receipts).
+## smoke: run the delegate extension's headless smoke suites — gate/receipt/policy plus the sandbox seams (sbx argv, integrity check, merge detector, host-only receipts); no database, no network, no real sandboxes
+.PHONY: smoke
+smoke:
+	node .pi/extensions/delegate/smoke-gates.mjs
+	node .pi/extensions/delegate/smoke-sbx.mjs
+
 # ============================================================================================================================ #
 # SPEC CATALOG
 # ============================================================================================================================ #

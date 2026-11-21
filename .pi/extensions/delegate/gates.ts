@@ -1,6 +1,6 @@
 /**
- * Worker gates (batch 1): fail-closed gate runner, receipts, gate-file
- * protection and content-bound approval helpers.
+ * Worker gates: fail-closed gate runner, receipts, the host-side integrity
+ * check and content-bound approval helpers.
  *
  * Design rules, in order of authority:
  *
@@ -13,30 +13,46 @@
  *    falls back to the full `go run ./cmd/spec check --strict`. A failed full
  *    run is a failed gate.
  * 3. The EXTENSION writes receipts; workers never do. Receipts are appended to
- *    `<cwd>/<receipts_dir>/<ISO-date>.jsonl` (default `.pi/receipts`,
- *    gitignored). Receipt metadata is fail-open (a missing rules.yaml or a
- *    broken git just records an empty field) — ONLY the receipt degrades,
- *    never the gate verdict.
- * 4. Gate-file protection is a DENY list with a single file-based escape
- *    hatch: the policy's `allowlist_path` (default
- *    `.pi/delegate/gate-allowlist.json`, a JSON array of repo-root-relative
- *    globs). There are deliberately NO env-var bypasses. A missing,
- *    unreadable or invalid allowlist behaves exactly like an empty one (deny).
- *    The allowlist file itself is always denied, even if its own globs match
- *    it, so no worker can self-authorize — and so is WORKFLOW.md itself.
+ *    `<host-root>/<receipts_dir>/<ISO-date>.jsonl` (default `.pi/receipts`,
+ *    gitignored) where the host root is the HOST SESSION's own repo root —
+ *    never a `cd` target named inside a command. A worker cannot write here:
+ *    the receipts dir is gitignored and absent from a fresh worktree, and the
+ *    extension instance inside a sandbox is inert (`isSandboxedChild`).
+ *    Receipt metadata is fail-open (a missing rules.yaml or a broken git just
+ *    records an empty field) — ONLY the receipt degrades, never the verdict.
+ * 4. THE WRITE BOUNDARY IS THE HYPERVISOR (sandbox era). The child-side deny
+ *    paths, the bash write-channel scanner and the gate allowlist are DELETED,
+ *    not disabled: a worker runs inside a per-task micro-VM whose only host
+ *    surface is its mount (./sbx.ts chooses the mount per role). Their
+ *    replacement is `checkWorktreeIntegrity` — a host-side detector at the
+ *    merge boundary, run BEFORE any gate command: the gate files ARE the
+ *    definition of green, so a worker that touched them has invalidated its
+ *    own verdict and the host refuses to run gates at all.
  * 5. THE POLICY IS DECLARED, NOT HARDCODED (batch 3). Gate commands, the
- *    protected/editable path sets, the allowlist path, the receipt/claims
- *    dirs, the settle limits, the stall timeout and the concurrency cap come
- *    from the repo-root WORKFLOW.md front matter (policy.ts). A missing or
- *    invalid policy is a REFUSAL: no command runs and every in-repo write is
- *    denied until the file exists and parses.
+ *    receipt/claims dirs, the settle limits, the stall timeout and the
+ *    concurrency cap come from the repo-root WORKFLOW.md front matter
+ *    (policy.ts). A missing or invalid policy is a REFUSAL: no command runs
+ *    until the file exists and parses.
+ * 6. PROVE IS EVIDENCE, NOT A PROMISE (merge-back). A job whose SPEC-SCOPE
+ *    (recorded at spawn in the claims log) names rules needs a VERIFIED prove
+ *    receipt for EVERY named rule before the merge executes
+ *    (`checkProveCoverage`, enforced in the merge execution path in index.ts
+ *    and in the approval relay in jobs.ts): receipts written by the host
+ *    extension on a scoped `make prove args='--rule <id>'` run. The scoped gate
+ *    (`runScopedGate`) checks the spec statically; only prove says the behavior
+ *    was actually exercised.
+ * 7. IN-VM GATES ARE ADVISORY. `runInVmAdvisoryGate` is the only gate ladder a
+ *    sandboxed worker may run for itself: the declared scoped spec check plus a
+ *    direct `gofmt -l` over the changed Go files. It never runs the Makefile
+ *    target (`make audit/static`'s gofmt step enumerates `git ls-files`, and the
+ *    mount carries no usable `.git`) and it never writes a receipt.
  *
  * Task-packet convention (SPEC-SCOPE):
  *   The orchestrator includes a line in the worker task text —
  *     SPEC-SCOPE: module=game rules=R-GAME-001,R-GAME-002
  *   (module and/or rules, both optional but at least one required for the line
  *   to count). `parseSpecScope` extracts it and index.ts exports the normalized
- *   form as PI_DELEGATE_SPEC_SCOPE in the child spawn env; children spawned
+ *   form as PI_DELEGATE_SPEC_SCOPE into the sandbox's `-e` env; workers spawned
  *   without a scope line get NO env var and gate on the FULL spec check.
  *
  * Loader gotcha (pi 1.5.2 extension parser): avoid `?:` ternaries containing
@@ -49,12 +65,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
-  DEFAULT_ALLOWLIST_PATH,
-  DEFAULT_CLAIMS_DIR,
-  DEFAULT_PI_EDITABLE_PATHS,
-  DEFAULT_PROTECTED_PATHS,
   DEFAULT_RECEIPTS_DIR,
-  type WorkflowPolicy,
   WORKFLOW_FILE_REL_PATH,
   loadWorkflowPolicy,
   workflowPolicyRefusal,
@@ -852,7 +863,9 @@ function toPosix(value: string): string {
   return value.split(path.sep).join("/");
 }
 
-/** Repo-root-relative posix path, or null when the path escapes the repo. */
+/**
+ * Repo-root-relative posix path, or null when the path escapes the repo.
+ */
 export function repoRelativePath(repoRoot: string, inputPath: string): string | null {
   const absolute = path.resolve(repoRoot, inputPath);
   const relative = toPosix(path.relative(repoRoot, absolute));
@@ -862,10 +875,12 @@ export function repoRelativePath(repoRoot: string, inputPath: string): string | 
 }
 
 /**
- * Tiny glob matcher for allowlist patterns and gate rules: `**` spans path
- * segments (including none), `*` and `?` stay inside one segment. Everything
- * else is literal (regex metacharacters escaped). Patterns and paths are
- * repo-root-relative posix strings.
+ * Tiny glob matcher: `**` spans path segments (including none), `*` and `?`
+ * stay inside one segment. Everything else is literal (regex metacharacters
+ * escaped). Patterns and paths are repo-root-relative posix strings.
+ *
+ * Still used by the claims log (owned-path overlap detection); the gate-allowlist
+ * caller it was written for is deleted.
  */
 export function matchGlob(pattern: string, relPath: string): boolean {
   const normalized = toPosix(pattern).replace(/^\.\//, "").replace(/\/+$/, "");
@@ -903,120 +918,6 @@ export function matchGlob(pattern: string, relPath: string): boolean {
   return regex.test(toPosix(relPath));
 }
 
-/**
- * Repo-root-relative path of the single gate-file escape hatch. Batch 3: the
- * effective path comes from the WORKFLOW.md policy (`allowlist_path`); this
- * constant is the default, kept for the callers/tests that never load policy.
- */
-export const GATE_ALLOWLIST_REL_PATH = DEFAULT_ALLOWLIST_PATH;
-
-/** Default deny set / editable set (the policy file's defaults when omitted). */
-export const DEFAULT_GATE_PROTECTED_PATHS = DEFAULT_PROTECTED_PATHS;
-export const DEFAULT_GATE_EDITABLE_PATHS = DEFAULT_PI_EDITABLE_PATHS;
-
-export interface GatePathDecision {
-  /** true ⇒ block the edit/write. */
-  blocked: boolean;
-  /** Repo-root-relative path when it resolved inside the repo. */
-  rel: string | null;
-  /** Why a non-blocked path was allowed. */
-  allowedBy?: "not-gate-file" | "editable-pi-prose" | "allowlist" | "outside-repo";
-  /** Blocking reason (names the protected files). */
-  reason?: string;
-}
-
-/**
- * Read the escape-hatch allowlist. Missing / unreadable / non-array / non-
- * string entries ⇒ empty list (fail closed: gate files stay denied).
- */
-export function readGateAllowlist(repoRoot: string, relPath: string = GATE_ALLOWLIST_REL_PATH): string[] {
-  const file = path.join(repoRoot, relPath);
-  let raw: string;
-  try {
-    raw = fs.readFileSync(file, "utf8");
-  } catch {
-    return [];
-  }
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      console.error("[delegate] " + relPath + ": expected a JSON array of globs; ignoring (gate files stay denied)");
-      return [];
-    }
-    return parsed.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
-  } catch (error) {
-    console.error("[delegate] " + relPath + ": invalid JSON; ignoring (gate files stay denied):", error);
-    return [];
-  }
-}
-
-/**
- * Gate-file protection for child-session edits/writes: DENY by default for
- * every path in the policy's `protected_paths` — except the policy's
- * `pi_editable_paths` prose and any path matched by the allowlist escape
- * hatch. An unavailable policy denies every in-repo write loudly: a worker
- * must not edit under an undeclared rule set.
- */
-export function evaluateGateFileWrite(repoRoot: string, inputPath: string): GatePathDecision {
-  const rel = repoRelativePath(repoRoot, inputPath);
-  if (!rel) return { blocked: false, rel: null, allowedBy: "outside-repo" };
-
-  const loaded = loadWorkflowPolicy(repoRoot);
-  if (!loaded.ok) {
-    return { blocked: true, rel, reason: workflowPolicyRefusal(loaded.reason) };
-  }
-  const policy = loaded.policy;
-
-  // Always denied, even when a protected-path or allowlist glob matches it: a
-  // worker must not be able to authorize itself (the file is the ONLY
-  // mechanism). This invariant is code, not policy.
-  if (rel === policy.allowlistPath) {
-    return { blocked: true, rel, reason: gateFileReason(rel, policy) };
-  }
-  // Same invariant for the policy itself (batch 3): a child that can rewrite
-  // WORKFLOW.md can rewrite its own gates. Never grantable, not even through
-  // the allowlist — that needs a human edit outside a delegated session.
-  if (rel === WORKFLOW_FILE_REL_PATH) {
-    return { blocked: true, rel, reason: workflowPolicySelfDeny(rel) };
-  }
-
-  const isGateFile = policy.protectedPaths.some((pattern) => matchGlob(pattern, rel));
-  if (!isGateFile) return { blocked: false, rel, allowedBy: "not-gate-file" };
-
-  if (policy.piEditablePaths.some((pattern) => matchGlob(pattern, rel))) {
-    return { blocked: false, rel, allowedBy: "editable-pi-prose" };
-  }
-
-  const allowlist = readGateAllowlist(repoRoot, policy.allowlistPath);
-  if (allowlist.some((pattern) => matchGlob(pattern, rel))) {
-    return { blocked: false, rel, allowedBy: "allowlist" };
-  }
-
-  return { blocked: true, rel, reason: gateFileReason(rel, policy) };
-}
-
-function workflowPolicySelfDeny(rel: string): string {
-  return (
-    "The workflow policy file is protected from delegated edits: " + rel + ". " +
-    "It declares the gates, caps and protected paths that bind this session, so a worker must not " +
-    "rewrite it (not grantable through the allowlist either). Report the needed policy change to the " +
-    "orchestrator/user instead."
-  );
-}
-
-function gateFileReason(rel: string, policy?: WorkflowPolicy): string {
-  const protectedList = (policy ? policy.protectedPaths : DEFAULT_GATE_PROTECTED_PATHS).join(", ");
-  const editableList = (policy ? policy.piEditablePaths : DEFAULT_GATE_EDITABLE_PATHS).join(", ");
-  const allowlist = policy ? policy.allowlistPath : GATE_ALLOWLIST_REL_PATH;
-  return (
-    "Gate file is protected from delegated edits: " + rel + ". " +
-    "Protected by WORKFLOW.md protected_paths: " + protectedList + ". " +
-    "Worker-editable exception (pi_editable_paths): " + editableList + ". " +
-    "Only a matching glob in " + allowlist + " (repo-root-relative) allows this edit; " +
-    "no env-var bypass exists. Report the needed change to the orchestrator instead."
-  );
-}
-
 // ── Post-write gate relevance ───────────────────────────────────────────────
 
 /**
@@ -1028,6 +929,272 @@ export function isGateRelevantWrite(repoRoot: string, inputPath: string): boolea
   if (!rel) return false;
   if (rel.startsWith("docs/spec/")) return true;
   return rel.endsWith(".go") || rel.endsWith(".feature") || rel.endsWith(".yaml");
+}
+
+// ── Host-side integrity check (the replacement for the deleted mechanisms) ──
+
+/**
+ * The paths whose content DEFINES green. A worker that changes any of them has
+ * voided its own verdict: the host must never execute a Makefile, cmd/spec
+ * binary, CI workflow or WORKFLOW.md that differs from HEAD.
+ */
+export const GATE_FILE_PATHS: readonly string[] = ["Makefile", "cmd/spec", ".github", WORKFLOW_FILE_REL_PATH];
+
+/** Exit code `git diff --exit-code` uses for "there is a diff". */
+export const GIT_DIFF_DIRTY_EXIT = 1;
+
+export interface IntegrityCheckResult {
+  /** true ⇒ HEAD's gate files are exactly what is on disk (worktree + index). */
+  clean: boolean;
+  /** true ⇒ gates MUST NOT run (dirty, or unverifiable). */
+  refused: boolean;
+  /** One human line per command (status + what it means). */
+  report: string;
+  /** The executed checks, so a receipt can record them verbatim. */
+  steps: GateStep[];
+  /** Paths covered by the check (the four gate paths). */
+  paths: string[];
+}
+
+/**
+ * HOST-SIDE integrity check, run in the worktree BEFORE any gate command.
+ *
+ *   git diff --exit-code HEAD -- Makefile cmd/spec .github WORKFLOW.md
+ *   git diff --cached --exit-code HEAD -- Makefile cmd/spec .github WORKFLOW.md
+ *
+ * The index variant matters for the same reason: workers are git-less, so only
+ * the host moves HEAD, and any working-tree OR index deviation from HEAD in
+ * these paths is worker-introduced poison.
+ *
+ * FAIL CLOSED: exit 1 = dirty (refuse the gates and route to human review).
+ * Anything else that is not a clean exit 0 — a missing git, a broken HEAD, a
+ * timeout — is "cannot verify", which is also a refusal: the point of the check
+ * is that the host never runs an unverified gate file.
+ */
+export async function checkWorktreeIntegrity(
+  worktreePath: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<IntegrityCheckResult> {
+  const paths = [...GATE_FILE_PATHS];
+  const timeoutMs = opts.timeoutMs ?? GIT_TIMEOUT_MS;
+  const commands: string[][] = [
+    ["diff", "--exit-code", "HEAD", "--", ...paths],
+    ["diff", "--cached", "--exit-code", "HEAD", "--", ...paths],
+  ];
+  const steps: GateStep[] = [];
+  const lines: string[] = ["\u2500\u2500 INTEGRITY CHECK (host, pre-gate) \u2500\u2500"];
+  lines.push("paths: " + paths.join(" "));
+  let dirty = false;
+  let unverifiable = false;
+
+  for (const args of commands) {
+    const result = await runGate("git", args, { cwd: worktreePath, timeoutMs });
+    const argv = ["git", ...args];
+    const step = stepOf(result, argv, result.exitCode === 0 ? "clean" : "dirty/unverifiable");
+    steps.push(step);
+    if (result.ok) {
+      lines.push("- " + argv.join(" ") + " \u2014 clean");
+      continue;
+    }
+    if (result.exitCode === GIT_DIFF_DIRTY_EXIT && !result.timedOut && !result.spawnError) {
+      dirty = true;
+      lines.push("- " + argv.join(" ") + " \u2014 DIRTY (gate files differ from HEAD)");
+      continue;
+    }
+    unverifiable = true;
+    lines.push(
+      "- " + argv.join(" ") + " \u2014 CANNOT VERIFY (" + result.reason + ")",
+    );
+  }
+
+  const clean = !dirty && !unverifiable;
+  if (clean) {
+    lines.push("status: clean \u2014 gate files match HEAD; authoritative gates may run.");
+  } else {
+    lines.push(
+      "status: REFUSED \u2014 " +
+        (dirty
+          ? "the worktree/index gate files differ from HEAD, so running them would grade the worker with the worker's own definition of green"
+          : "the integrity of the gate files could not be verified") +
+        ". No gate command was run; this batch routes to human review (HANDOFF_BLOCKED).",
+    );
+  }
+  return { clean, refused: !clean, report: lines.join("\n"), steps, paths };
+}
+
+/**
+ * The loud, routing reason a dirty integrity check produces. Kept as a function
+ * so the refusal text cannot drift between the host gate path and a receipt.
+ */
+export function integrityRefusalReason(result: IntegrityCheckResult): string {
+  const detail = result.clean
+    ? ""
+    : tailLines(
+      result.steps.filter((step) => !step.ok).map((step) => step.command + ": " + step.reason).join("\n"),
+      8,
+    );
+  return (
+    "INTEGRITY CHECK FAILED \u2014 gates REFUSED, batch routes to human review (HANDOFF_BLOCKED). " +
+    "The worktree's " + result.paths.join(", ") +
+    " do not match HEAD; the gate files are the definition of green, so a batch that touched them " +
+    "cannot be graded by them. No gate command was run and no verdict was produced. " + detail
+  );
+}
+
+// ── Merge-path PROVE enforcement helpers ────────────────────────────────────
+
+export interface MergeBackCommand {
+  /** The shell segment the merge was found in (trimmed, verbatim). */
+  segment: string;
+  /** The merge target token (e.g. `delegate/<job-id>` or a base branch). */
+  target: string;
+  /** `-C <path>` argument when the command carried one, else null. */
+  worktree: string | null;
+  /** true for `--abort` / `--continue` / `--quit` (never blocked). */
+  controlOnly: boolean;
+}
+
+/** Quote-aware split of a bash command on `&&`, `||`, `;`, `|` and newlines. */
+export function splitTopLevelSegments(command: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index];
+    if (quote) {
+      current += char;
+      if (char === "\\" && quote === '"' && index + 1 < command.length) {
+        current += command[++index];
+        continue;
+      }
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === "\\" && index + 1 < command.length) {
+      current += char + command[++index];
+      continue;
+    }
+    const two = command.slice(index, index + 2);
+    if (two === "&&" || two === "||") {
+      segments.push(current);
+      current = "";
+      index++;
+      continue;
+    }
+    if (char === ";" || char === "|" || char === "\n") {
+      segments.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  segments.push(current);
+  return segments.map((segment) => segment.trim()).filter((segment) => segment.length > 0);
+}
+
+/**
+ * Detect merge-back executions in a bash command: `git merge …` in any of its
+ * spellings, including the `git -C <worktree> merge` form the orchestrator
+ * protocol uses. Detection is on the EXECUTION PATH, not on the approval path,
+ * so a typed-in-pane `approved` cannot bypass the PROVE precondition.
+ *
+ * `--abort` / `--continue` / `--quit` are reported as `controlOnly` (they end or
+ * resume a merge, they do not merge) and are never blocked. A bare `git merge`
+ * with no target token is not a merge either.
+ */
+export function detectMergeBackCommands(command: string): MergeBackCommand[] {
+  const found: MergeBackCommand[] = [];
+  for (const segment of splitTopLevelSegments(command)) {
+    const words = splitCommandLine(segment);
+    let index = 0;
+    // Tolerate a leading `cd <dir>` (the orchestrator's handoff form).
+    if (words[index] === "cd" && words[index + 1] !== undefined) index += 2;
+    if (words[index] !== "git") continue;
+    index += 1;
+    let worktree: string | null = null;
+    if (words[index] === "-C" && words[index + 1] !== undefined) {
+      worktree = words[index + 1];
+      index += 2;
+    }
+    if (words[index] !== "merge") continue;
+    index += 1;
+    const rest = words.slice(index);
+    const control = rest.find((word) => word === "--abort" || word === "--continue" || word === "--quit");
+    if (control) {
+      found.push({ segment, target: control, worktree, controlOnly: true });
+      continue;
+    }
+    const target = rest.find((word) => !word.startsWith("-"));
+    if (!target) continue;
+    found.push({ segment, target, worktree, controlOnly: false });
+  }
+  return found;
+}
+
+// ── In-VM advisory ladder (sandboxed workers only) ──────────────────────────
+
+export interface AdvisoryGateOptions {
+  cwd: string;
+  scopeEnv?: string;
+  /** Paths the worker just wrote (used for the direct `gofmt -l` check). */
+  changedPaths?: string[];
+  specTimeoutMs?: number;
+}
+
+/**
+ * The IN-VM advisory ladder. Deliberately narrow:
+ *
+ *   - the declared scoped spec check (`go run ./cmd/spec check --strict`, plus
+ *     `--module`/`--rule`), which needs no `.git` and therefore runs fine in a
+ *     mount where `.git` is unresolvable;
+ *   - a DIRECT `gofmt -l` over the changed Go files — never `make audit/static`,
+ *     whose gofmt step enumerates `git ls-files` and fails in the VM for an
+ *     environment reason rather than a code reason.
+ *
+ * Nothing here writes a receipt or produces a verdict: the host re-runs the
+ * authoritative gates after the sandbox exits, and its verdict decides. A
+ * missing policy in the VM is reported as an advisory note, not a failure loop.
+ */
+export async function runInVmAdvisoryGate(opts: AdvisoryGateOptions): Promise<GateRun> {
+  const loaded = loadWorkflowPolicy(opts.cwd);
+  if (!loaded.ok) {
+    return policyRefusalGateRun(loaded.reason);
+  }
+  const steps: GateStep[] = [];
+  const specTimeout = opts.specTimeoutMs ?? SPEC_CHECK_TIMEOUT_MS;
+  const base = splitCommandLine(loaded.policy.scopedCheckCmd);
+  const scope = parseSpecScopeEnv(opts.scopeEnv);
+  const scopedArgv: string[][] = [];
+  if (scope?.module) scopedArgv.push([...base, "--module", scope.module]);
+  for (const rule of scope?.rules ?? []) scopedArgv.push([...base, "--rule", rule]);
+  if (scopedArgv.length === 0) {
+    steps.push(await runStep(base, opts.cwd, specTimeout, "advisory full check"));
+  } else {
+    for (const argv of scopedArgv) steps.push(await runStep(argv, opts.cwd, specTimeout, "advisory scoped check"));
+  }
+
+  const goFiles = (opts.changedPaths ?? [])
+    .filter((entry) => typeof entry === "string" && entry.endsWith(".go"))
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  if (goFiles.length > 0) {
+    const argv = ["gofmt", "-l", ...goFiles];
+    const result = await runGate("gofmt", ["-l", ...goFiles], { cwd: opts.cwd, timeoutMs: 60_000 });
+    const unformatted = result.stdout.trim();
+    const step = stepOf(result, argv, "advisory gofmt -l (no git needed)");
+    if (result.ok && unformatted !== "") {
+      step.ok = false;
+      step.reason = "needs gofmt: " + unformatted.split("\n").join(", ");
+    }
+    steps.push(step);
+  }
+
+  return { ok: steps.every((step) => step.ok), steps };
 }
 
 // ── Reconciliation-lite ─────────────────────────────────────────────────────
@@ -1050,17 +1217,12 @@ export function receiptsFileFor(cwd: string, day: string = new Date().toISOStrin
 }
 
 /**
- * Every readable receipt of `day` (default: today), oldest first. Malformed
- * lines are skipped: the receipt log is telemetry and must never throw.
+ * Parse one day's JSONL text into records, oldest first. Malformed lines are
+ * skipped: the receipt log is telemetry and must never throw. Shared by the
+ * per-day reader and the all-days prove reader below so both stay lenient in
+ * exactly the same way.
  */
-export async function readDayReceipts(cwd: string, day?: string): Promise<ReceiptRecord[]> {
-  const file = receiptsFileFor(cwd, day);
-  let raw: string;
-  try {
-    raw = await fs.promises.readFile(file, "utf8");
-  } catch {
-    return [];
-  }
+function parseReceiptLines(raw: string): ReceiptRecord[] {
   const records: ReceiptRecord[] = [];
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
@@ -1082,6 +1244,21 @@ export async function readDayReceipts(cwd: string, day?: string): Promise<Receip
     }
   }
   return records;
+}
+
+/**
+ * Every readable receipt of `day` (default: today), oldest first. Malformed
+ * lines are skipped: the receipt log is telemetry and must never throw.
+ */
+export async function readDayReceipts(cwd: string, day?: string): Promise<ReceiptRecord[]> {
+  const file = receiptsFileFor(cwd, day);
+  let raw: string;
+  try {
+    raw = await fs.promises.readFile(file, "utf8");
+  } catch {
+    return [];
+  }
+  return parseReceiptLines(raw);
 }
 
 /**
@@ -1247,4 +1424,182 @@ export function reconciliationGateRun(result: ReconciliationResult): GateRun {
     note: "fresh ladder vs recorded receipt",
   };
   return { ok: false, steps: result.steps.length > 0 ? [...result.steps.filter((entry) => !entry.ok), step] : [step] };
+}
+
+// ── PROVE coverage (merge-back gate) ────────────────────────────────────────
+
+/**
+ * The merge-back PROVE verdict. `missing` is what the caller prints: every rule
+ * id that has no VERIFIED prove receipt behind it, verbatim.
+ */
+export interface ProveCoverageResult {
+  ok: boolean;
+  covered: string[];
+  missing: string[];
+  report: string;
+}
+
+/** Escape one rule id for the `--rule` matcher (ids are [A-Za-z0-9_-]). */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The `--rule <id>` / `--rule=<id>` matcher for ONE rule. The trailing token
+ * boundary is load-bearing: a receipt for R-GAME-001 must never count as
+ * covering R-GAME-0011 (nor the reverse) — a substring match would silently
+ * widen what a green scoped run is allowed to prove.
+ */
+function ruleFlagPattern(rule: string): RegExp {
+  return new RegExp("--rule(?:=|\\s+)" + escapeRegExp(rule) + "(?![A-Za-z0-9_-])");
+}
+
+/** Did any command of this receipt mention `--rule <rule>`? */
+function receiptMentionsRule(record: ReceiptRecord, pattern: RegExp): boolean {
+  return record.commands.some(
+    (entry) => typeof entry?.command === "string" && pattern.test(entry.command),
+  );
+}
+
+/** Did a command mentioning this rule actually exit 0? */
+function receiptVerifiesRule(record: ReceiptRecord, pattern: RegExp): boolean {
+  return record.commands.some(
+    (entry) => entry?.exitCode === 0 && typeof entry.command === "string" && pattern.test(entry.command),
+  );
+}
+
+/**
+ * Every readable `<dir>/*.jsonl` record, all days, oldest file name first.
+ * Jobs cross midnight and a prove run can land in yesterday's file, so the
+ * reader takes the whole (small) receipts dir rather than today's log only.
+ * Malformed lines are skipped exactly like readDayReceipts; a missing or
+ * unreadable dir is "no receipts", never a throw — the receipt log is
+ * telemetry. Fail-closed decisions are made on top of it, in checkProveCoverage.
+ */
+async function readAllReceipts(dir: string): Promise<{ records: ReceiptRecord[]; files: number }> {
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(dir);
+  } catch {
+    return { records: [], files: 0 };
+  }
+  const dayFiles = names.filter((name) => name.endsWith(".jsonl")).sort();
+  const records: ReceiptRecord[] = [];
+  for (const name of dayFiles) {
+    try {
+      records.push(...parseReceiptLines(await fs.promises.readFile(path.join(dir, name), "utf8")));
+    } catch {
+      /* unreadable day file — skip (telemetry only) */
+    }
+  }
+  return { records, files: dayFiles.length };
+}
+
+/**
+ * Merge-back PROVE coverage: does the HOST receipts root hold a VERIFIED prove
+ * receipt for EVERY rule the job's SPEC-SCOPE named?
+ *
+ * `receiptsRoot` is the HOST SESSION's own repo root (its cwd) — receipts are
+ * host-only artifacts and are never read out of a worker's worktree, where a
+ * worker could pre-forge one. The optional `opts.worktreePath` is reported for
+ * context only; it does not change where evidence is read from.
+ *
+ * A rule R is covered iff one receipt record carries ALL of:
+ *   - `ok === true`,
+ *   - a note starting with "prove" (the extension-written prove receipt; an
+ *     ordinary green gate receipt is not prove evidence),
+ *   - a commands entry with `exitCode === 0` whose command mentions
+ *     `--rule <R>` or `--rule=<R>` on a token boundary,
+ *   - and, when `expectedHeadSha` is given, `headSha` equal to it.
+ *
+ * FAIL CLOSED: an unavailable WORKFLOW.md policy is `ok:false` (no receipts
+ * dir, no declared prove command ⇒ no evidence can be trusted), and every
+ * missing rule is named verbatim in `report` with the reason it does not
+ * count (no receipt at all / non-VERIFIED exit / stale headSha).
+ */
+export async function checkProveCoverage(
+  receiptsRoot: string,
+  rules: string[],
+  opts: { expectedHeadSha?: string; worktreePath?: string } = {},
+): Promise<ProveCoverageResult> {
+  const scoped = rules
+    .filter((rule): rule is string => typeof rule === "string")
+    .map((rule) => rule.trim())
+    .filter((rule) => rule.length > 0);
+  if (scoped.length === 0) {
+    return {
+      ok: true,
+      covered: [],
+      missing: [],
+      report: "PROVE coverage: no scoped rules \u2014 the merge-back needs no prove receipts.",
+    };
+  }
+
+  const loaded = loadWorkflowPolicy(receiptsRoot);
+  if (!loaded.ok) {
+    return {
+      ok: false,
+      covered: [],
+      missing: scoped,
+      report:
+        "PROVE coverage REFUSED: " + workflowPolicyRefusal(loaded.reason) +
+        " (scoped rules: " + scoped.join(", ") + ")",
+    };
+  }
+
+  const dir = path.join(receiptsRoot, loaded.policy.receiptsDir);
+  const { records, files } = await readAllReceipts(dir);
+  // Only extension-written prove receipts are prove evidence: the writer notes
+  // them "prove rules=…". Anything else may share a command line (a settle
+  // gate whose scope env ran `--rule`) and must not launder into coverage.
+  const proveRecords = records.filter((record) => /^prove\b/i.test(record.note.trim()));
+  const expectedHeadSha = opts.expectedHeadSha ? opts.expectedHeadSha.trim().toLowerCase() : "";
+
+  const covered: string[] = [];
+  const missing: string[] = [];
+  const notes: string[] = [];
+  for (const rule of scoped) {
+    const pattern = ruleFlagPattern(rule);
+    const candidates = proveRecords.filter((record) => receiptMentionsRule(record, pattern));
+    if (candidates.length === 0) {
+      missing.push(rule);
+      notes.push("- " + rule + ": MISSING \u2014 no prove receipt at all");
+      continue;
+    }
+    const verified = candidates.filter((record) => record.ok === true && receiptVerifiesRule(record, pattern));
+    if (verified.length === 0) {
+      missing.push(rule);
+      notes.push("- " + rule + ": MISSING \u2014 receipt exists but non-VERIFIED (the scoped run did not exit 0)");
+      continue;
+    }
+    if (expectedHeadSha) {
+      const atReviewedHead = verified.filter((record) => record.headSha.toLowerCase() === expectedHeadSha);
+      if (atReviewedHead.length === 0) {
+        const recorded = verified.map((record) => record.headSha || "(not recorded)").join(", ");
+        missing.push(rule);
+        notes.push(
+          "- " + rule + ": MISSING \u2014 receipt stale (headSha mismatch: expected " + expectedHeadSha +
+          ", recorded " + recorded + ")",
+        );
+        continue;
+      }
+    }
+    covered.push(rule);
+    notes.push("- " + rule + ": covered by a VERIFIED prove receipt");
+  }
+
+  const lines: string[] = ["\u2500\u2500 PROVE COVERAGE (merge-back) \u2500\u2500"];
+  lines.push("receipts root (host): " + receiptsRoot);
+  if (opts.worktreePath) lines.push("worktree: " + opts.worktreePath);
+  lines.push(
+    "receipts: " + dir + " (" + String(files) + " jsonl file(s), " + String(records.length) + " record(s))",
+  );
+  if (expectedHeadSha) lines.push("reviewed HEAD: " + expectedHeadSha);
+  for (const note of notes) lines.push(note);
+  lines.push(
+    missing.length === 0
+      ? "status: ok \u2014 every scoped rule has a VERIFIED prove receipt."
+      : "status: BLOCKED \u2014 missing VERIFIED prove receipts for " + missing.join(", ") + ".",
+  );
+  return { ok: missing.length === 0, covered, missing, report: lines.join("\n") };
 }

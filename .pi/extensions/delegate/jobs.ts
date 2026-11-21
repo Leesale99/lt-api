@@ -63,7 +63,7 @@ import {
   APPROVAL_MARKER,
   HANDOFF_TERMINAL_TOKENS,
 } from "./contracts.ts";
-import { runReconciliation } from "./gates.ts";
+import { runReconciliation, checkProveCoverage, parseSpecScope } from "./gates.ts";
 import { getFinalOutput, parseChildJsonl, truncateParallelOutput } from "./output.ts";
 
 const execFileP = promisify(execFile);
@@ -104,6 +104,18 @@ export interface JobEntry {
    * unbound, exactly as before.
    */
   awaitingApprovalHeadSha?: string;
+  /**
+   * The worktree the orchestrator does its work in: the conventional sibling
+   * `../lt-api-wt-<id>` of the cwd that launched the job (the worktree handoff
+   * in .pi/delegate/orchestrator.md). Recorded ONCE at creation, for both
+   * runner variants, instead of reconstructed at every probe: the registry does
+   * not persist the job's cwd, and a relay derives the path from ITS OWN cwd,
+   * so a caller in another checkout would otherwise probe the wrong tree. The
+   * probe is fail-closed (no worktree ⇒ no matching HEAD ⇒ no relay), which is
+   * exactly why the path a job was launched for must be the path it is read
+   * from. Legacy entries lack it: relays fall back to today's reconstruction.
+   */
+  worktreePath?: string;
   /**
    * Batch 2 (reconciliation-lite): attached once, when the entry first reaches
    * a terminal status (done/failed/aborted). Telemetry only — a failed
@@ -377,6 +389,12 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
   const exitPath = base + ".exit";
   const runnerPath = base + ".sh";
   const tmuxSession = "pi-" + id;
+  // The orchestrator's worktree, by convention a sibling of the launching
+  // checkout: .pi/delegate/orchestrator.md has the child create
+  // `../lt-api-wt-<job-id>` on branch `delegate/<job-id>`. Recorded here (not
+  // derived later) so the approval probe and the prove-coverage check read the
+  // tree this job was launched for — see JobEntry.worktreePath.
+  const worktreePath = path.resolve(opts.cwd, "..", "lt-api-wt-" + id);
 
   const hasSystemPrompt = Boolean(opts.agent.systemPrompt && opts.agent.systemPrompt.trim());
   if (hasSystemPrompt) await writeAtomic(sysPath, opts.agent.systemPrompt);
@@ -443,7 +461,7 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
   let entry: JobEntry;
   try {
     await execFileP("tmux", ["new-session", "-d", "-s", tmuxSession, "sh " + shq(runnerPath)]);
-    entry = { id, agent: opts.agent.name, task: opts.task, startedAt: new Date().toISOString(), runner: "tmux", tmuxSession, status: "running" };
+    entry = { id, agent: opts.agent.name, task: opts.task, startedAt: new Date().toISOString(), runner: "tmux", tmuxSession, worktreePath, status: "running" };
   } catch {
     // Headless fallback: no TTY to draw the TUI on. Rewrite the runner as the
     // json-mode variant (stdout streams events into <id>.jsonl) and detach.
@@ -451,7 +469,7 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
     await fs.promises.writeFile(runnerPath, buildScript(false), "utf8");
     const child = spawn("sh", [runnerPath], { cwd: opts.cwd, detached: true, stdio: "ignore" });
     child.unref();
-    entry = { id, agent: opts.agent.name, task: opts.task, startedAt: new Date().toISOString(), runner: "fallback", pid: child.pid, status: "running" };
+    entry = { id, agent: opts.agent.name, task: opts.task, startedAt: new Date().toISOString(), runner: "fallback", pid: child.pid, worktreePath, status: "running" };
   }
   await persistEntry(dir, entry);
   return entry;
@@ -748,6 +766,13 @@ export interface ApprovalRelayOutcome {
  * exactly what a user typing in the pane does. Delivery is always
  * user-initiated; never resend automatically (a duplicate is harmless to pi
  * but confusing). Every refusal is a clean, actionable message.
+ *
+ * This relay is also the extension's merge-back choke point, so it carries both
+ * content bindings: the reviewed HEAD SHA (the worktree must not have moved)
+ * and, for a task whose SPEC-SCOPE names rules, VERIFIED prove receipts for
+ * EVERY named rule (checkProveCoverage). A refusal names the rule ids and
+ * tells the caller to relay `rejected:` so the orchestrator runs prove and
+ * re-emits a fresh approval request — never approve over missing evidence.
  */
 export async function relayApprovalDecision(cwd: string, id: string, message: string): Promise<ApprovalRelayOutcome> {
   const dir = jobsDirFor(cwd);
@@ -776,6 +801,12 @@ export async function relayApprovalDecision(cwd: string, id: string, message: st
     return { ok: false, reason: "Approval message must be a single line — a newline would submit the pane's editor early and split the decision from its note." };
   }
 
+  // The orchestrator worktree this job was launched for. Recorded at creation
+  // (JobEntry.worktreePath); a legacy entry falls back to today's
+  // reconstruction from the caller's cwd — the same leniency
+  // awaitingApprovalHeadSha grants legacy blocks.
+  const worktreePath = entry.worktreePath ?? path.resolve(cwd, "../lt-api-wt-" + entry.id);
+
   // Batch 1: content-bound approval. When the block carried `HEAD SHA: <sha>`,
   // the worktree HEAD must still be that commit — otherwise the reviewed plan
   // is not what would be merged, and the relay refuses (the orchestrator will
@@ -785,9 +816,6 @@ export async function relayApprovalDecision(cwd: string, id: string, message: st
   let deliveredMessage = message;
   let boundSha: string | undefined;
   if (entry.awaitingApprovalHeadSha) {
-    // The registry does not persist the job's cwd; the caller's cwd is the
-    // parent checkout that owns .pi/jobs and the sibling worktree.
-    const worktreePath = path.resolve(cwd, "../lt-api-wt-" + entry.id);
     let found = "";
     let probeError = "";
     try {
@@ -807,6 +835,56 @@ export async function relayApprovalDecision(cwd: string, id: string, message: st
           "worktree HEAD moved since the approval request (expected " + entry.awaitingApprovalHeadSha +
           ", found " + foundLabel + "). The approval is stale — the child orchestrator will emit a fresh " +
           APPROVAL_MARKER + " block; approve again after reviewing it.",
+      };
+    }
+  }
+
+  // PROVE at merge-back: a task whose SPEC-SCOPE names rules must have VERIFIED
+  // prove receipts covering EVERY named rule before its approval is relayed —
+  // this relay IS a merge-back choke point (the merge execution path enforces
+  // the same precondition independently, so a decision typed straight into the
+  // pane cannot bypass it). Fail closed: missing/stale/failed evidence refuses
+  // with the rule ids named, because a green static check does not mean the
+  // behavior was exercised. Rejections and every other message pass through
+  // untouched (only an approval claims the merge-back).
+  //
+  // Receipts are HOST-ONLY: `cwd` (the calling host session's own repo root) is
+  // the receipts root, never the worktree — a worker's mount could otherwise
+  // carry a pre-forged VERIFIED receipt. The reviewed-HEAD binding is applied to
+  // the approval decision itself (above, `awaitingApprovalHeadSha`), not to the
+  // coverage read: prove receipts are written by the orchestrator host session
+  // and name the verifier plane's HEAD, not the worktree's.
+  const scopedRules = parseSpecScope(entry.task)?.rules ?? [];
+  const isApproval = /^approved\b/i.test(message.trim());
+  if (isApproval && scopedRules.length > 0) {
+    let coverage: Awaited<ReturnType<typeof checkProveCoverage>>;
+    try {
+      coverage = await checkProveCoverage(cwd, scopedRules, { worktreePath });
+    } catch (error) {
+      // An internal error is a refusal, never a pass (fail closed).
+      coverage = {
+        ok: false,
+        covered: [],
+        missing: scopedRules,
+        report:
+          "PROVE coverage check crashed: " + (error instanceof Error ? error.message : String(error)) +
+          " (scoped rules: " + scopedRules.join(", ") + ")",
+      };
+    }
+    if (!coverage.ok) {
+      const missingIds = coverage.missing.length > 0 ? coverage.missing : scopedRules;
+      const missingLabel = missingIds.join(", ");
+      return {
+        ok: false,
+        reason:
+          "PROVE receipts missing for this merge-back (HANDOFF_BLOCKED): " + missingLabel + ". " +
+          "The task's SPEC-SCOPE names " + scopedRules.join(", ") + ", so an approval relay needs a VERIFIED " +
+          "prove receipt for EVERY scoped rule — HANDOFF BLOCKED, the approval " +
+          "cannot proceed. Relay \"rejected: missing VERIFIED prove receipts for " + missingLabel + "\" instead: " +
+          "the orchestrator runs `make prove args='--rule <id>'` once per scoped " +
+          "rule ON THE HOST (the extension records the receipt in the host receipts dir, not in the " +
+          "worktree), then re-emits a fresh " +
+          APPROVAL_MARKER + " block for a fresh approval.\n" + coverage.report,
       };
     }
   }
