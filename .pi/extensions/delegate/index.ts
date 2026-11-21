@@ -951,10 +951,18 @@ async function runSingleAgent(
     // Sandbox routing. Every role except `researcher` (host passthrough — the
     // documented residual whose profile is deferred) runs inside its own
     // micro-VM. The pi invocation is otherwise the same one the local path
-    // uses; two deltas are forced by the mount boundary:
+    // uses; three deltas are forced by the mount boundary:
     //   - the system prompt goes INLINE: `--append-system-prompt` resolves its
     //     argument as a file only when that path exists, and a host temp path
     //     does not exist inside the VM;
+    //   - `--approve` is appended: project-local `.pi/extensions` load only
+    //     after project trust, and the VM's HOME (/home/agent) has no
+    //     `trust.json` and print mode cannot show the trust prompt — without
+    //     the override pi silently skips the delegate extension in the VM, so
+    //     the IN-VM ADVISORY gate never runs at all (found by the S1 e2e
+    //     dogfood: a misformatted write produced no ADVISORY note until the
+    //     same write was run with `-a`). The override loads the INERT instance,
+    //     which by design only appends advisory notes;
     //   - `--no-skills` is appended (no shared skills store in the VM; pi has
     //     no `--skills=off` flag — unknown `--key=value` flags are silently
     //     collected, so that spelling left skills ON).
@@ -1149,7 +1157,7 @@ async function runSingleAgent(
           try {
             sandboxExec = await execInSandbox(
               sandbox.name,
-              ["pi", ...args, "--no-skills"],
+              ["pi", ...args, "--no-skills", "--approve"],
               {
                 worktreePath: effectiveCwd,
                 env: sandboxChildEnv(task),

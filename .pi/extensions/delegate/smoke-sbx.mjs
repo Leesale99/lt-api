@@ -25,6 +25,7 @@ import {
   SANDBOX_TEMPLATE_NAME,
   SANDBOX_VAULT_PATH,
   SANDBOX_WORKER_EGRESS_HOSTS,
+  SANDBOX_MODEL_EGRESS_HOSTS,
   SBX_EXIT_COULD_NOT_RUN,
   SBX_EXIT_MISSING_EXECUTABLE,
   classifySbxExit,
@@ -190,11 +191,13 @@ await check("profileForRole: worker/general are RW worktree + the 4 egress hosts
   }
 });
 
-await check("profileForRole: scout is :ro with NO network, librarian is vault RW + worktree :ro", async () => {
+await check("profileForRole: scout is :ro with NO task egress, librarian is vault RW + worktree :ro", async () => {
   const scout = profileForRole("scout");
   assert.equal(scout.hostPassthrough, false);
   assert.deepEqual(scout.mounts, [{ kind: "worktree", mode: "ro" }]);
-  assert.deepEqual(scout.networkHosts, []);
+  // Model provider only: a "no network" role still has to reach the model it
+  // thinks with (an empty allowlist makes the VM die on its first turn).
+  assert.deepEqual(scout.networkHosts, [...SANDBOX_MODEL_EGRESS_HOSTS]);
   assert.deepEqual(scout.secretSentinelEnvs, []);
 
   const librarian = profileForRole("librarian");
@@ -203,7 +206,7 @@ await check("profileForRole: scout is :ro with NO network, librarian is vault RW
     { kind: "vault", mode: "rw" },
     { kind: "worktree", mode: "ro" },
   ]);
-  assert.deepEqual(librarian.networkHosts, []);
+  assert.deepEqual(librarian.networkHosts, [...SANDBOX_MODEL_EGRESS_HOSTS]);
   assert.deepEqual(librarian.secretSentinelEnvs, []);
 });
 
@@ -273,7 +276,7 @@ await check("createSandboxArgs: template create --cpus --memory, positional work
       "--no-progress",
       "--cpus", "4",
       "--memory", "8g",
-      "-t", "pi-worker",
+      "-t", SANDBOX_TEMPLATE_NAME,
       "shell",
       "/tmp/host/vault",
       worktree + ":ro",
@@ -368,14 +371,15 @@ await check("createWorkerSandbox: template create + per-sandbox egress, argv fro
   setSbxProcessOps(null);
 });
 
-await check("createWorkerSandbox: scout adds NO egress rule (default deny, no policy call)", async () => {
+await check("createWorkerSandbox: scout adds only the model-provider egress rule", async () => {
   const repo = path.join(tmp, "create-scout");
   fs.mkdirSync(repo, { recursive: true });
   const stub = installStub();
   const handle = await createWorkerSandbox({ role: "scout", worktreePath: repo, cwd: repo, name: "pi-scout-fixed-1" });
   assert.equal(handle.createdFrom, "template");
-  assert.deepEqual(handle.networkHosts, []);
-  assert.equal(stub.calls.length, 1, "create only — no egress rules to add");
+  assert.deepEqual(handle.networkHosts, [...SANDBOX_MODEL_EGRESS_HOSTS]);
+  assert.equal(stub.calls.length, 2, "create + the one model-provider egress rule");
+  assert.deepEqual(stub.calls[1], policyAllowArgs("pi-scout-fixed-1", SANDBOX_MODEL_EGRESS_HOSTS));
   assert.equal(stub.calls[0][stub.calls[0].length - 1], repo + ":ro", "scout mounts the worktree read-only");
   setSbxProcessOps(null);
 });

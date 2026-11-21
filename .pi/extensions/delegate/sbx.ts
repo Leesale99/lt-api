@@ -47,8 +47,16 @@ export const SBX_BINARY = "sbx";
  * parallel kit/template step; it may not exist yet on a fresh host, which is
  * exactly why the create path has the `SANDBOX_KIT_FALLBACK_PATH` fallback and
  * records which one produced the VM (`createdFrom`).
+ *
+ * QUALIFIED ON PURPOSE: `sbx template ls` prints saved snapshots as
+ * REPOSITORY + TAG, and `-t` resolves against the local image store by that
+ * fully-qualified name. A bare `pi-worker` is NOT cached under the short name
+ * with sbx 0.54.0: sbx falls back to its default pull policy and fails the
+ * create with `403 Forbidden: pull failed for image "pi-worker"` (the S1 e2e
+ * dogfood hit exactly that). Keep the REPOSITORY:TAG form; `docker.io/library`
+ * is where the saved `pi-worker` snapshot lives.
  */
-export const SANDBOX_TEMPLATE_NAME = "pi-worker";
+export const SANDBOX_TEMPLATE_NAME = "docker.io/library/pi-worker:v1";
 /**
  * Fallback create-from-kit reference, relative to the launching repo root
  * (resolved by `createWorkerSandbox`). Used only when the saved template is
@@ -70,6 +78,19 @@ export const SANDBOX_WORKER_EGRESS_HOSTS: readonly string[] = [
   "sum.golang.org:443",
   "storage.googleapis.com:443",
 ];
+
+/**
+ * The model provider, and nothing else.
+ *
+ * "No network" cannot mean literally zero egress for a role that runs pi: the
+ * agent's own model call goes through the same default-deny proxy as everything
+ * else, so a profile with an empty allowlist creates a VM that dies on its first
+ * turn with `403 Approval required for opencode.ai:443` (the S1 e2e dogfood hit
+ * exactly that with the librarian). The sentinel-delivered key is useless
+ * without this one rule. A role whose policy is "no network" therefore gets the
+ * provider only — no module proxies, no general web, no task-relevant egress.
+ */
+export const SANDBOX_MODEL_EGRESS_HOSTS: readonly string[] = ["opencode.ai:443"];
 
 /** The librarian's read-write vault. Not a git repo: no integrity check covers it. */
 export const SANDBOX_VAULT_PATH = "/Users/aleksrdvn/Projects/vaults/lt-api";
@@ -403,7 +424,8 @@ export const SANDBOX_PROFILES: Record<string, SandboxProfile> = {
     role: "scout",
     hostPassthrough: false,
     mounts: [{ kind: "worktree", mode: "ro" }],
-    networkHosts: [],
+    // Model provider only: the agent has to be able to think. No task egress.
+    networkHosts: [...SANDBOX_MODEL_EGRESS_HOSTS],
     secretSentinelEnvs: [],
     cpus: SANDBOX_DEFAULT_CPUS,
     memory: SANDBOX_DEFAULT_MEMORY,
@@ -416,7 +438,8 @@ export const SANDBOX_PROFILES: Record<string, SandboxProfile> = {
       { kind: "vault", mode: "rw" },
       { kind: "worktree", mode: "ro" },
     ],
-    networkHosts: [],
+    // Model provider only — the vault is the work surface, not the network.
+    networkHosts: [...SANDBOX_MODEL_EGRESS_HOSTS],
     secretSentinelEnvs: [],
     cpus: SANDBOX_DEFAULT_CPUS,
     memory: SANDBOX_DEFAULT_MEMORY,
