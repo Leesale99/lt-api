@@ -163,59 +163,129 @@ scenario, run `make spec/gen`, then `make audit`.
 `<feature-file>::<scenario name>` is the pointer in `verification.gherkin`. Reuse
 `gherkin-style.md` vocabulary; no transport or SQL words in facade steps.
 
-## 5. Agent quickstart: delegated work and the gates
+## 5. Delegated work: the two planes and the gates
 
 A delegated task is shaped by `.pi/prompts/implement.md`, executed under
 `.pi/agents/go-worker.md` (the loop and report format) and driven by the child
-orchestrator in `.pi/delegate/orchestrator.md` (worktree, commits, approval).
-Those files are authoritative; this section is the map between them.
+orchestrator in `.pi/agents/orchestrator.md` with the generic protocol in
+`.pi/delegate/orchestrator.md` (worktree, commits, approval, merge-back).
+`WORKFLOW.md` carries the machine-checked policy: gate commands, sandbox profiles,
+retry/backoff/stall limits, receipt paths, approval tokens. Those files are
+authoritative; this section is the map between them and never restates them.
 
-**The loop.** RED: catalog entry + `@rule` scenario only, until the check is red for
-the right reason. GREEN: code, `//rule:` annotations, verification pointers. PROVE:
-`make prove` for the touched rules. REFACTOR: `make spec/gen`, then `make audit`.
-3 attempts per phase, then stop and report — never a silent retry.
+*(§4's closing sentence still names three retired mechanisms — the file-tools deny,
+the bash write-channel scanner, the receipt/reconciliation net. They are deleted in
+this generation; what replaced them is below.)*
 
-**Gates, cheapest first.** `make audit/static` and a scoped
-`go run ./cmd/spec check --strict --module <m>` / `--rule <id>` are the fast,
-DB-free worker gates; `make prove` is the slow DB-backed verdict gate for touched
-rules; `make audit` is the merge gate. The delegate extension runs the two fast ones
-itself after each relevant write and again at settle — it blocks `done` for 3
-attempts, then hard-stops for a failure report; a worker reads that feedback block
-instead of arguing with it.
+**Two planes.** A worker runs inside a per-task Docker Sandbox micro-VM (`sbx`),
+with one mount: the worktree, read-write, at the same absolute path (`scout` gets it
+read-only; `librarian` gets the vault read-write and the repo read-only). Egress is
+default-deny per profile, the SSH agent is not forwarded, and no DB credential is
+ever exported. The in-VM extension instance sees `PI_DELEGATE_SANDBOX=1` and is
+inert: it registers no gate, issues no verdict, writes no receipt. The host — main
+session and child orchestrators — is the trusted verifier plane: all authoritative
+gates, the integrity check, receipts, claims, commits and merges happen only there.
 
-**What each write boundary covers**, cheapest and most specific first:
+**The write boundary is the hypervisor and the mount.** No path classifier sits in
+the agent: outside the mount there is no filesystem, no host process table, no SSH
+agent. Three consequences shape the spec loop:
 
-- *File tools.* The edit/write deny covers the file-tools channel: every path is
-  classified against `protected_paths` and `pi_editable_paths` in `WORKFLOW.md`
-  front matter, then the allowlist escape hatch, then the never-grantable
-  self-deny of `WORKFLOW.md` and the allowlist itself.
-- *Bash.* The write-channel scanner covers the shell channel — best-effort,
-  deterministic, fail-closed on ambiguity. It matches the pattern classes
-  declared there as `bash_write_patterns` (redirect, tee, sed-in-place,
-  file-transfer, heredoc, git-mutating) over command words and write operators
-  only, so `grep -n "sed -i" notes.md` passes; every extracted target routes
-  through the same classification, and a target that does not resolve to one
-  literal path (command substitution, variables, globs, unbalanced quotes,
-  eval / `sh -c` past the recursion cap) is denied before the command runs. A
-  shell is Turing-complete: this raises the cost of bypass, it does not close
-  the channel.
-- *The net around both.* The receipt trail, reconciliation against the newest
-  passing checkpoint, then the merge-boundary `make audit` (and `make prove`
-  for rule work): a write that slips the deterministic net still has to survive
-  a receipt trail it did not write and an audit at merge.
+- *Workers are git-less.* `.git` is unresolvable through the mount — no status,
+  diff, commit, stash, checkout or branch. The host owns every ref; a worker reports
+  a change set, it never names a commit.
+- *Workers are DSN-less.* `make audit`, `make prove`, `make test/**` and
+  `make test/spec` need `LT_API_TEST_DSN` and cannot run in a VM even if typed.
+- *Workers are vault-less*, except the librarian profile — that is a mount, not a
+  special case in the prompt.
 
-**Receipts.** Every gate run appends a JSON receipt to `.pi/receipts/`
-(extension-written, gitignored). Workers report receipt paths and exit codes;
-prose claims are not evidence.
+**RED is host-authored, before the task begins.** The catalog entry in
+`docs/spec/rules.yaml` and its `@rule:R-...` scenario under
+`docs/spec/features/**` are written and committed on `delegate/<job-id>` on the host
+plane, and the batch is shown red *for the right reason* there: the new scenario
+fails and `spec/check` names the untraceable entry. Only then is a task text
+written. A missing or unjustified RED is a stop, not a task. The worker never
+authors RED and never edits the scenario into agreement with its code — if the
+scenario looks wrong, that is a report, not an edit.
 
-**SPEC-SCOPE.** Each go-worker task text carries one machine-readable line —
-`SPEC-SCOPE: module=<m>` or `SPEC-SCOPE: rules=R-...,R-...`. The extension parses
-it and scopes that worker's gates; without the line the worker gates on the full
-spec check.
+**GREEN-first: the worker loop, against advisory gates.** Implement; add the
+`//rule:` annotations and the verification pointers the catalog entry needs. The
+in-VM loop is the scoped `go run ./cmd/spec check --strict --module <m>` (or
+`--rule <id>`), plus `gofmt` on the touched files, plus `make spec/gen` when the
+catalog changed. `make audit/static` is git-aware — its gofmt step enumerates
+`git ls-files` — so it is a host-side gate in practice: a worker that hits that
+wall reports the exact failing line and keeps iterating on the scoped check; it
+does not edit the Makefile and does not invent an `ls-files` substitute. Each of
+these runs is **advisory** — it shortens the loop, it does not certify it. Budget:
+3 attempts per phase, then a stop and a report; never a silent retry.
 
-**Red-commit approval.** A batch that adds or changes rules stops mid-job: the
-spec-only RED commit is reviewed through an AWAITING_APPROVAL block carrying its
-`HEAD SHA:`. `job_approve` binds that exact SHA, and GREEN/PROVE/REFACTOR continue
-only while HEAD still matches it; a moved worktree needs a fresh approval. Gate
-files stay denied to workers except through `.pi/delegate/gate-allowlist.json`,
-which only the main session edits.
+Handoff mechanics that still apply, from `.pi/prompts/implement.md`: paste
+`make spec/brief args='<id>'` output as the task packet (statement, sites, refusal
+map, verification pointers, linked scenarios); carry exactly one machine-readable
+`SPEC-SCOPE: module=<m>` or `SPEC-SCOPE: rules=R-...,R-...` line — the host
+extension parses it to scope the worker's advisory gates, and without it they fall
+back to the full spec check; name the owned paths; state the acceptance commands
+split by plane; state the budget.
+
+**After exit, the host runs the authoritative gates — behind the integrity check.**
+In the order the verification ladder in `.pi/agents/orchestrator.md` declares:
+
+1. **Integrity check first**, before any gate:
+   `git diff --exit-code <base> -- Makefile cmd/spec .github WORKFLOW.md`. Dirty →
+   the host refuses to run the gates, the batch goes to human review
+   (`HANDOFF_BLOCKED`). The gate files are the definition of green, so a worker
+   that touched them has invalidated its own verdict.
+2. **Authoritative gates**: the scoped spec check, `make audit/static`,
+   `make spec/gen` and, for a rule-change batch, the full `make audit` (DB-backed,
+   host-only). These verdicts — not the worker's — are the ones that count.
+3. **Diff review** against the acceptance criteria, then commit on
+   `delegate/<job-id>` (granular, staged by path, never `git add -A`).
+4. **PROVE at merge-back.** `make prove args='--rule <id>'` is a host merge-back
+   gate, never a worker step. It is enforced in the merge execution path itself:
+   the merge command is blocked when the scoped rules lack VERIFIED prove receipts,
+   whatever the approval route. VERIFIED needs nothing more; VACUOUS and
+   BROKEN-TEST are hard fails; UNVALIDATABLE is reported and stops for human
+   sign-off.
+
+**Receipts and claims are host-only.** The host extension writes them to the
+`receipts_dir` and `claims_dir` declared in `WORKFLOW.md`; a fresh worktree carries
+neither (both gitignored), so a sandbox never sees them. A worker citing a receipt
+is a category error: a worker's report is claims plus command exit codes, and the
+orchestrator's report cites the receipts it caused.
+
+**Red-commit approval.** A batch that adds or changes rules still stops mid-job:
+the spec-only RED commit is reviewed through an `AWAITING_APPROVAL` block carrying
+its `HEAD SHA:` line; `job_approve` binds that exact SHA, and GREEN/PROVE/REFACTOR
+continue only while HEAD still matches it — a moved worktree needs a fresh
+approval. The main session's edit/write UI confirmation also stays: it is
+host-side, it is the human's, and no sandbox policy replaces it.
+
+### Honest residuals
+
+Documented limitations, not hidden ones — the policy copy is `WORKFLOW.md`'s
+"Honest residuals":
+
+- **In-VM gates are advisory only.** Nothing a worker reports is a verdict; the
+  authoritative run happens on the host after the VM is gone.
+- **The researcher still runs host-side.** Its sandbox profile is not built in this
+  batch, so its items run with host reach and host network — the one un-sandboxed
+  role.
+- **The librarian has the vault read-write.** It can write the vault; the bound is
+  the profile plus the `lt-api-kb` skill's rules, not a deny. A librarian mistake
+  there is caught by the human, not by a gate.
+- **Hard links can cross out of a mount** on the same filesystem: a link created
+  inside the worktree can point at an inode the mount was never meant to expose.
+  Nothing here detects that.
+- **The integrity check is the net for poisoned gate files** — and only for the
+  four paths it names. A worker can still poison a non-gate file in its read-write
+  mount: the full audit at the merge boundary is the backstop, and the
+  orchestrator is expected to read the diff rather than trust exit codes alone.
+
+### Not built yet
+
+- **Gate-VM** — running the authoritative gates inside a second, locked-down VM
+  instead of on the host. Today the host is trusted and the gates inherit that
+  trust.
+- **Sealed fleet mode** — one mountless sandbox for everything, with no worktree
+  handed to workers at all. Deferred by the user for POC use.
+- **Researcher sandbox profile** — until it exists, web and doc research stays on
+  the host plane.
