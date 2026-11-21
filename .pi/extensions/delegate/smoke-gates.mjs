@@ -16,6 +16,7 @@ import {
   SETTLE_BACKOFF_BASE_MS,
   SETTLE_GATE_MAX_ATTEMPTS,
   bumpSettleGateAttempts,
+  checkProveCoverage,
   describeWaitMs,
   diffReceiptAgainst,
   evaluateGateFileWrite,
@@ -1239,6 +1240,147 @@ await check("policy: gate paths refuse loudly when the policy is missing", async
   const record = JSON.parse(fs.readFileSync(receipt, "utf8").trim().split("\n").pop());
   assert.equal(record.ok, false);
   assert.equal(record.commands[0].command, "(workflow policy)");
+});
+
+// ── PROVE coverage at merge-back ────────────────────────────────────────────
+// The receipt the extension writes on a scoped `make prove` is the ONLY prove
+// evidence; the merge-back gate (jobs.ts) refuses an approval without it, so
+// these cases pin the coverage semantics rather than the git plumbing.
+const PROVE_HEAD = "a".repeat(40);
+
+/** A worktree fixture whose WORKFLOW.md loads (⇒ receipts_dir resolves). */
+function proveWorktree(name) {
+  const dir = path.join(tmp, name);
+  writeWorkflow(dir);
+  return dir;
+}
+
+/** Append one raw receipt record to `<dir>/.pi/receipts/<day>.jsonl`. */
+function writeProveReceipt(dir, record, day = new Date().toISOString().slice(0, 10)) {
+  const receipts = path.join(dir, ".pi", "receipts");
+  fs.mkdirSync(receipts, { recursive: true });
+  const full = {
+    timestamp: day + "T00:00:00.000Z",
+    agent: "orchestrator",
+    session: "s-prove",
+    commands: [],
+    rulesHash: "hash",
+    headSha: PROVE_HEAD,
+    ok: true,
+    note: "",
+    ...record,
+  };
+  fs.appendFileSync(path.join(receipts, day + ".jsonl"), JSON.stringify(full) + "\n");
+}
+
+/** One green scoped prove command row for `rule` (the shape the writer records). */
+function proveCommand(rule, exitCode = 0) {
+  return {
+    command: "cd ../lt-api-wt-job-1 && make prove args='--rule " + rule + "'",
+    exitCode,
+    timedOut: false,
+    durationMs: 5,
+  };
+}
+
+await check("checkProveCoverage: no receipts ⇒ every scoped rule missing", async () => {
+  const dir = proveWorktree("prove-none");
+  const result = await checkProveCoverage(dir, ["R-GAME-001", "R-GAME-002"], { expectedHeadSha: PROVE_HEAD });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.missing, ["R-GAME-001", "R-GAME-002"]);
+  assert.deepEqual(result.covered, []);
+  assert.match(result.report, /R-GAME-001/);
+  assert.match(result.report, /R-GAME-002/);
+  assert.match(result.report, /no prove receipt at all/);
+  assert.match(result.report, /status: BLOCKED/);
+});
+
+await check("checkProveCoverage: unavailable policy refuses (fail closed)", async () => {
+  const dir = path.join(tmp, "prove-no-policy");
+  fs.mkdirSync(dir, { recursive: true });
+  const result = await checkProveCoverage(dir, ["R-GAME-001"]);
+  assert.equal(result.ok, false, "no policy ⇒ no receipts dir to trust");
+  assert.deepEqual(result.missing, ["R-GAME-001"]);
+  assert.match(result.report, /workflow policy unavailable/);
+});
+
+await check("checkProveCoverage: a failed prove run is not coverage", async () => {
+  const dir = proveWorktree("prove-failed");
+  writeProveReceipt(dir, {
+    ok: false,
+    note: "prove rules=R-GAME-001",
+    commands: [proveCommand("R-GAME-001", 1)],
+  });
+  const result = await checkProveCoverage(dir, ["R-GAME-001"], { expectedHeadSha: PROVE_HEAD });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.missing, ["R-GAME-001"]);
+  assert.match(result.report, /non-VERIFIED/);
+});
+
+await check("checkProveCoverage: green scoped receipts cover (all day files, both --rule forms)", async () => {
+  const dir = proveWorktree("prove-covered");
+  // Yesterday's file: jobs cross midnight, so the whole receipts dir is read.
+  writeProveReceipt(dir, { note: "prove rules=R-GAME-001", commands: [proveCommand("R-GAME-001")] }, "2026-01-01");
+  writeProveReceipt(dir, {
+    note: "prove rules=R-GAME-002",
+    commands: [
+      {
+        command: "go run ./cmd/spec prove --rule=R-GAME-002",
+        exitCode: 0,
+        timedOut: false,
+        durationMs: 5,
+      },
+    ],
+  });
+  const result = await checkProveCoverage(dir, ["R-GAME-001", "R-GAME-002"], { expectedHeadSha: PROVE_HEAD });
+  assert.equal(result.ok, true, result.report);
+  assert.deepEqual(result.covered, ["R-GAME-001", "R-GAME-002"]);
+  assert.deepEqual(result.missing, []);
+  assert.match(result.report, /2 jsonl file\(s\)/);
+  assert.match(result.report, /status: ok/);
+});
+
+await check("checkProveCoverage: a receipt at another commit is stale", async () => {
+  const dir = proveWorktree("prove-stale");
+  writeProveReceipt(dir, {
+    headSha: "b".repeat(40),
+    note: "prove rules=R-GAME-001",
+    commands: [proveCommand("R-GAME-001")],
+  });
+  const stale = await checkProveCoverage(dir, ["R-GAME-001"], { expectedHeadSha: PROVE_HEAD });
+  assert.equal(stale.ok, false, "prove must cover the exact reviewed commit");
+  assert.deepEqual(stale.missing, ["R-GAME-001"]);
+  assert.match(stale.report, /stale \(headSha mismatch/);
+  // Without a binding the same receipt covers: the check is only as strict as asked.
+  assert.equal((await checkProveCoverage(dir, ["R-GAME-001"])).ok, true);
+});
+
+await check("checkProveCoverage: rule ids match on a token boundary", async () => {
+  const longerRecord = proveWorktree("prove-boundary-longer");
+  writeProveReceipt(longerRecord, {
+    note: "prove rules=R-GAME-0011",
+    commands: [proveCommand("R-GAME-0011")],
+  });
+  const shorter = await checkProveCoverage(longerRecord, ["R-GAME-001"], { expectedHeadSha: PROVE_HEAD });
+  assert.equal(shorter.ok, false, "R-GAME-0011 must not cover R-GAME-001");
+  assert.match(shorter.report, /no prove receipt at all/);
+
+  const shorterRecord = proveWorktree("prove-boundary-shorter");
+  writeProveReceipt(shorterRecord, { note: "prove rules=R-GAME-001", commands: [proveCommand("R-GAME-001")] });
+  const longer = await checkProveCoverage(shorterRecord, ["R-GAME-0011"], { expectedHeadSha: PROVE_HEAD });
+  assert.equal(longer.ok, false, "R-GAME-001 must not cover R-GAME-0011");
+});
+
+await check("checkProveCoverage: an ordinary green receipt is not prove evidence", async () => {
+  const dir = proveWorktree("prove-settle-only");
+  writeProveReceipt(dir, {
+    note: "settle gate attempt 1/5",
+    commands: [proveCommand("R-GAME-001")],
+  });
+  const result = await checkProveCoverage(dir, ["R-GAME-001"], { expectedHeadSha: PROVE_HEAD });
+  assert.equal(result.ok, false, "a green settle receipt does not launder into coverage");
+  assert.deepEqual(result.missing, ["R-GAME-001"]);
+  assert.match(result.report, /no prove receipt at all/);
 });
 
 fs.rmSync(tmp, { recursive: true, force: true });

@@ -42,10 +42,17 @@
  *     write side touches a protected path is denied before it runs (./bashscan.ts).
  *   - Receipts: the EXTENSION appends one JSON line per gate run to
  *     .pi/receipts/<iso-date>.jsonl (commands, exit codes, rules hash, HEAD).
+ *   - PROVE receipts: a child bash run of the DECLARED prove command
+ *     (WORKFLOW.md `prove_cmd`) carrying `--rule <id>` gets its own receipt
+ *     (note "prove rules=…") in the directory it ran in — a leading
+ *     `cd <worktree>` redirects it, which is how the orchestrator's scoped
+ *     `make prove` inside its worktree leaves merge-back evidence.
  *   - SPEC-SCOPE: a `SPEC-SCOPE: module=… rules=…` line in the task text is
  *     exported as PI_DELEGATE_SPEC_SCOPE into the worker's spawn env.
  *   - job_approve now binds the relayed decision to the `HEAD SHA:` recorded in
- *     the job's approval block and refuses when the worktree HEAD moved.
+ *     the job's approval block and refuses when the worktree HEAD moved; for a
+ *     task whose SPEC-SCOPE names rules it also refuses while any scoped rule
+ *     lacks a VERIFIED prove receipt (checkProveCoverage in ./gates.ts).
  */
 
 import { spawn } from "node:child_process";
@@ -65,6 +72,7 @@ import {
   getAgentDir,
   getMarkdownTheme,
   type SessionBoundaryDraft,
+  type ToolResultEvent,
   truncateHead,
   withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
@@ -116,9 +124,10 @@ import {
   settleGateMaxAttempts,
   settleGateStateFor,
   shouldRunPostWriteGate,
+  splitCommandLine,
   writeReceipt,
 } from "./gates.ts";
-import { evaluateBashWrite } from "./bashscan.ts";
+import { evaluateBashWrite, splitTopLevelSegments } from "./bashscan.ts";
 import { formatStallReason, startStallWatchdog, workerStallTimeoutMs } from "./runtime.ts";
 import {
   createChildStreamParser,
@@ -978,6 +987,7 @@ A task delegated to the orchestrator agent must state its handoff mode in the ta
 - HANDOFF=auto: the orchestrator implements via workers inside a dedicated git worktree (../lt-api-wt-<job-id> on branch delegate/<job-id>, created from HEAD), verifies, commits, merges back into the captured base branch, removes the worktree, and reports HANDOFF_COMPLETE with the merge summary.
 - HANDOFF=confirm: after verification the orchestrator stops and emits an AWAITING_APPROVAL block (plan summary, branch, worktree path, files changed, test results) and ends its round without merging; the job surfaces to you as status awaiting_approval with that block as its result. Approve or reject from here with the job_approve tool: job_approve (id: the job id, message: "approved [note]") → the orchestrator merges back and reports HANDOFF_COMPLETE and the job advances to done; message "rejected: <reason>" → the orchestrator iterates (adjust or re-spawn workers) and emits a fresh AWAITING_APPROVAL block. Attaching to the pane still works: tmux attach -t pi-<job-id> and type the same message. Omitted HANDOFF means confirm (safe default).
 Merge conflicts and blocked merges are reported as HANDOFF_BLOCKED with the conflict list; the worktree and branch stay in place for manual resolution, nothing is force-resolved, and implementation work never touches the parent checkout's working tree.
+PROVE before the approval round (confirm) or the merge-back (auto): a task whose SPEC-SCOPE line names rules needs a green scoped \`make prove\` for EVERY named rule, run inside the worktree as \`cd ../lt-api-wt-<job-id> && make prove args='--rule <id>'\` so the extension records the prove receipt. The approval relay refuses without VERIFIED prove receipts covering every scoped rule, fail closed and naming the missing ids — a HANDOFF_BLOCKED condition: run the missing proves and re-emit a fresh AWAITING_APPROVAL block rather than merging over the gap.
 
 ## After spawning background work
 End your turn right after the spawn with a status line to the user ("<id> running; I'll report when it lands") — never end with "let me check on it", never poll or wait on the job. Completion is surfaced automatically at the next turn boundary; a repeat job_status poll of an unchanged running job is refused by a cooldown (doubling on consecutive refusals).
@@ -1618,6 +1628,73 @@ async function openAgentsView(ctx: ExtensionContext): Promise<void> {
 const DELEGATE_REASON =
   "Orchestrator does not implement. Delegate this to a subagent (go-worker for Go, general for anything else) via the subagent tool";
 
+// ── PROVE receipts (the extension writes them, never the worker) ────────────
+
+/** `--rule <id>` / `--rule=<id>` occurrences in a command line (deduped, order kept). */
+function proveRuleIdsIn(command: string): string[] {
+  const ids: string[] = [];
+  const pattern = /--rule(?:=|\s+)([A-Za-z0-9_-]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(command)) !== null) {
+    if (!ids.includes(match[1])) ids.push(match[1]);
+  }
+  return ids;
+}
+
+/**
+ * The directory of a leading `cd <dir>` segment, or null. Only the FIRST
+ * segment counts: the orchestrator's handoff form is
+ * `cd ../lt-api-wt-<id> && make prove args='--rule <id>'`, and a cd later in
+ * the chain says nothing about where the prove run happened.
+ */
+function leadingCdTarget(segment: string): string | null {
+  const words = splitCommandLine(segment);
+  if (words.length !== 2 || words[0] !== "cd") return null;
+  return words[1];
+}
+
+/**
+ * Does this segment's command word sequence begin with the declared prove
+ * tokens (`make prove`)? Word-exact: `make proven` and `echo make prove` are
+ * not prove runs, so a receipt cannot be minted by mentioning the command.
+ */
+function isProveSegment(segment: string, proveTokens: string[]): boolean {
+  if (proveTokens.length === 0) return false;
+  const words = splitCommandLine(segment);
+  if (words.length < proveTokens.length) return false;
+  for (let index = 0; index < proveTokens.length; index++) {
+    if (words[index] !== proveTokens[index]) return false;
+  }
+  return true;
+}
+
+/** Non-negative integer or null for anything else (never assume a code). */
+function exitCodeNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  return null;
+}
+
+/**
+ * Exit code of a bash tool result. pi 1.5.2 carries it in the result's
+ * `structuredContent.exit_code`; the details object is typed without it, so
+ * every location is read defensively and a status line in the content is the
+ * last resort. Unreadable ⇒ null (a null exitCode is never ok:true), never 0.
+ */
+function bashExitCodeOf(event: ToolResultEvent): number | null {
+  const details = event.details as { exitCode?: unknown; exit_code?: unknown } | undefined;
+  const fromDetails = exitCodeNumber(details?.exitCode) ?? exitCodeNumber(details?.exit_code);
+  if (fromDetails !== null) return fromDetails;
+  const structured = event.structuredContent as { exit_code?: unknown } | undefined;
+  const fromStructured = exitCodeNumber(structured?.exit_code);
+  if (fromStructured !== null) return fromStructured;
+  for (const part of event.content) {
+    if (part.type !== "text") continue;
+    const match = /Command exited with code (-?\d+)\s*$/.exec(part.text.trim());
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
 export default function (pi: ExtensionAPI) {
   delegateApi = pi;
 
@@ -1752,6 +1829,72 @@ export default function (pi: ExtensionAPI) {
       block: true,
       reason: decision.reason ?? "bash command would write a protected path (write-channel scanner)",
     };
+  });
+
+  // PROVE receipt writer (merge-back evidence). The extension records every
+  // scoped prove run, because the merge-back gate (jobs.ts →
+  // checkProveCoverage) trusts receipts and nothing else — and no worker ever
+  // writes one. Active in CHILD sessions only: prove is the orchestrator's
+  // merge-back step, and a main session has no job to prove for. The
+  // orchestrator runs it inside its worktree, so an effective cwd is derived
+  // from a leading `cd <dir>` (only when that dir carries a WORKFLOW.md — a cd
+  // into some unrelated directory must not redirect the receipt). A receipt
+  // failure is logged and never changes the tool result, same as the deny
+  // receipt above.
+  pi.on("tool_result", async (event, ctx) => {
+    if (process.env.PI_DELEGATE_CHILD !== "1") return;
+    if (event.toolName !== "bash") return;
+    const input = event.input as { command?: unknown };
+    if (typeof input.command !== "string" || input.command.trim().length === 0) return;
+    const command = input.command;
+    const ruleIds = proveRuleIdsIn(command);
+    if (ruleIds.length === 0) return;
+
+    // Top-level segments: `&&` / `;` (and the rest of the separator set) split
+    // the same way the write-channel scanner splits them.
+    const segments = splitTopLevelSegments(command)
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0);
+    if (segments.length === 0) return;
+
+    const cdTarget = leadingCdTarget(segments[0]);
+    let receiptCwd = ctx.cwd;
+    let rest = segments;
+    if (cdTarget !== null) {
+      const candidate = path.resolve(ctx.cwd, cdTarget);
+      if (fs.existsSync(path.join(candidate, "WORKFLOW.md"))) {
+        receiptCwd = candidate;
+        rest = segments.slice(1);
+      }
+    }
+
+    // The prove command is DECLARED (WORKFLOW.md `prove_cmd`), never
+    // hardcoded: an unavailable policy means the gate set is undeclared, so no
+    // run can be identified as prove — log it and write nothing (the
+    // merge-back gate then refuses for the missing policy anyway).
+    const loaded = loadWorkflowPolicy(receiptCwd);
+    if (!loaded.ok) {
+      void logGateDebug(receiptCwd, "prove receipt skipped (policy unavailable): " + command);
+      return;
+    }
+    const proveTokens = splitCommandLine(loaded.policy.proveCmd);
+    if (!rest.some((segment) => isProveSegment(segment, proveTokens))) return;
+
+    const exitCode = bashExitCodeOf(event);
+    try {
+      await writeReceipt({
+        cwd: receiptCwd,
+        agent: process.env.PI_DELEGATE_ROLE ?? "worker",
+        session: process.env.PI_SESSION_ID,
+        // The FULL command line, so the receipt names the run a human/checker
+        // reads back (including the `cd`); its exit code decides VERIFIED.
+        commands: [{ command, exitCode, timedOut: false, durationMs: 0 }],
+        ok: exitCode === 0,
+        note: "prove rules=" + ruleIds.join(","),
+      });
+    } catch (error) {
+      console.error("[delegate] prove receipt failed:", error);
+    }
   });
 
   // Tool execute results cannot set runtime error state directly, so patch it
@@ -2835,7 +2978,7 @@ export default function (pi: ExtensionAPI) {
       'On a match the relayed message gets " (bound to <sha>)" appended, so the child pane also sees the binding. Blocks without a HEAD SHA line (legacy) relay unbound. ' +
       "The message is typed verbatim into the job's idle tmux pane (tmux send-keys -l + Enter), exactly as if the user typed it there. " +
       'message "approved [note]" → the orchestrator performs its merge-back and reports HANDOFF_COMPLETE (the job then advances to done); "rejected: <reason>" → it iterates and emits a fresh approval request. ' +
-      "Refuses: unknown id, non-tmux job, dead tmux session, mid-round job, a job whose last message carries no approval request, or a worktree HEAD that moved since the request. " +
+      "Refuses: unknown id, non-tmux job, dead tmux session, mid-round job, a job whose last message carries no approval request, a worktree HEAD that moved since the request, or an approval whose task SPEC-SCOPE names rules that have no VERIFIED prove receipt yet (missing ids are listed; relay `rejected: missing VERIFIED prove receipts for <ids>` so the orchestrator runs the scoped prove and re-requests). " +
       "After delivery, follow up with job_status on the same id to watch the continuation.",
     parameters: JobApproveParams,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

@@ -63,7 +63,7 @@ import {
   APPROVAL_MARKER,
   HANDOFF_TERMINAL_TOKENS,
 } from "./contracts.ts";
-import { runReconciliation } from "./gates.ts";
+import { runReconciliation, checkProveCoverage, parseSpecScope } from "./gates.ts";
 import { getFinalOutput, parseChildJsonl, truncateParallelOutput } from "./output.ts";
 
 const execFileP = promisify(execFile);
@@ -766,6 +766,13 @@ export interface ApprovalRelayOutcome {
  * exactly what a user typing in the pane does. Delivery is always
  * user-initiated; never resend automatically (a duplicate is harmless to pi
  * but confusing). Every refusal is a clean, actionable message.
+ *
+ * This relay is also the extension's merge-back choke point, so it carries both
+ * content bindings: the reviewed HEAD SHA (the worktree must not have moved)
+ * and, for a task whose SPEC-SCOPE names rules, VERIFIED prove receipts for
+ * EVERY named rule (checkProveCoverage). A refusal names the rule ids and
+ * tells the caller to relay `rejected:` so the orchestrator runs prove and
+ * re-emits a fresh approval request — never approve over missing evidence.
  */
 export async function relayApprovalDecision(cwd: string, id: string, message: string): Promise<ApprovalRelayOutcome> {
   const dir = jobsDirFor(cwd);
@@ -828,6 +835,48 @@ export async function relayApprovalDecision(cwd: string, id: string, message: st
           "worktree HEAD moved since the approval request (expected " + entry.awaitingApprovalHeadSha +
           ", found " + foundLabel + "). The approval is stale — the child orchestrator will emit a fresh " +
           APPROVAL_MARKER + " block; approve again after reviewing it.",
+      };
+    }
+  }
+
+  // PROVE at merge-back: a task whose SPEC-SCOPE names rules must have VERIFIED
+  // prove receipts covering EVERY named rule before its approval is relayed —
+  // this relay IS the merge-back choke point. Fail closed: missing/stale/failed
+  // evidence refuses with the rule ids named, because a green static check does
+  // not mean the behavior was exercised. Rejections and every other message
+  // pass through untouched (only an approval claims the merge-back).
+  const scopedRules = parseSpecScope(entry.task)?.rules ?? [];
+  const isApproval = /^approved\b/i.test(message.trim());
+  if (isApproval && scopedRules.length > 0) {
+    let coverage: Awaited<ReturnType<typeof checkProveCoverage>>;
+    try {
+      coverage = await checkProveCoverage(worktreePath, scopedRules, {
+        expectedHeadSha: entry.awaitingApprovalHeadSha,
+      });
+    } catch (error) {
+      // An internal error is a refusal, never a pass (fail closed).
+      coverage = {
+        ok: false,
+        covered: [],
+        missing: scopedRules,
+        report:
+          "PROVE coverage check crashed: " + (error instanceof Error ? error.message : String(error)) +
+          " (scoped rules: " + scopedRules.join(", ") + ")",
+      };
+    }
+    if (!coverage.ok) {
+      const missingIds = coverage.missing.length > 0 ? coverage.missing : scopedRules;
+      const missingLabel = missingIds.join(", ");
+      return {
+        ok: false,
+        reason:
+          "PROVE receipts missing for this merge-back (HANDOFF_BLOCKED): " + missingLabel + ". " +
+          "The task's SPEC-SCOPE names " + scopedRules.join(", ") + ", so an approval relay needs a VERIFIED " +
+          "prove receipt for EVERY scoped rule, bound to the reviewed HEAD — HANDOFF BLOCKED, the approval " +
+          "cannot proceed. Relay \"rejected: missing VERIFIED prove receipts for " + missingLabel + "\" instead: " +
+          "the orchestrator runs `cd " + worktreePath + " && make prove args='--rule <id>'` once per scoped " +
+          "rule inside the worktree (the extension records the prove receipt), then re-emits a fresh " +
+          APPROVAL_MARKER + " block for a fresh approval.\n" + coverage.report,
       };
     }
   }
