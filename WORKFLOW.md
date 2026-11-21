@@ -75,9 +75,9 @@ saved sandbox template. A host-side orchestrator creates the sandbox, mounts the
 absolute path, and runs a foreground `sbx exec` of pi with `-e` forwarding (`PI_DELEGATE_CHILD`,
 `PI_DELEGATE_ROLE`, `PI_DELEGATE_SPEC_SCOPE`). What a worker can write is therefore decided by what is
 mounted, not by a path classifier in the agent: outside the mount there is no filesystem, no host process
-table, no SSH agent, and — per profile — no network at all. Egress is default-deny, SSH agent forwarding is
-disabled host-wide, and a worker's model API key reaches the VM through the `sbx` secret sentinel mechanism,
-never as a handwritten value in a file.
+table, no SSH agent, and — per profile — no network at all (beyond the model provider). Egress is
+default-deny, SSH agent forwarding is disabled host-wide, and a worker's model API key reaches the VM through
+the `sbx` secret sentinel mechanism, never as a handwritten value in a file.
 
 Because the worktree arrives as a mount, `.git` is unresolvable inside it: **workers are git-less**. They
 cannot commit, stash, checkout, reset or merge. The host commits, the host merges, and the host owns every
@@ -90,8 +90,8 @@ The profile is the policy. Each role gets exactly this, and nothing else:
 | Role | Mounts | Network egress (default-deny) | Secrets |
 |---|---|---|---|
 | `go-worker`, `general` | worktree, RW, same absolute path | model provider endpoint + `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com` | model API key via the `sbx` sentinel |
-| `scout` | project worktree, read-only | none | none |
-| `librarian` | vault `~/Projects/vaults/lt-api` RW + project repo read-only | none | none |
+| `scout` | project worktree, read-only | model provider only (opencode.ai:443, per-sandbox allow) | none |
+| `librarian` | vault `~/Projects/vaults/lt-api` RW + project repo read-only | model provider only (opencode.ai:443, per-sandbox allow) | none |
 | `researcher` | — (still host-side this batch; profile deferred) | — | — |
 
 No DB: no `LT_API_TEST_DSN` is exported into any sandbox, so `make audit` and `make prove` cannot run there
