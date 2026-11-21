@@ -105,6 +105,18 @@ export interface JobEntry {
    */
   awaitingApprovalHeadSha?: string;
   /**
+   * The worktree the orchestrator does its work in: the conventional sibling
+   * `../lt-api-wt-<id>` of the cwd that launched the job (the worktree handoff
+   * in .pi/delegate/orchestrator.md). Recorded ONCE at creation, for both
+   * runner variants, instead of reconstructed at every probe: the registry does
+   * not persist the job's cwd, and a relay derives the path from ITS OWN cwd,
+   * so a caller in another checkout would otherwise probe the wrong tree. The
+   * probe is fail-closed (no worktree ⇒ no matching HEAD ⇒ no relay), which is
+   * exactly why the path a job was launched for must be the path it is read
+   * from. Legacy entries lack it: relays fall back to today's reconstruction.
+   */
+  worktreePath?: string;
+  /**
    * Batch 2 (reconciliation-lite): attached once, when the entry first reaches
    * a terminal status (done/failed/aborted). Telemetry only — a failed
    * reconciliation annotates the entry and never fails the job registry.
@@ -377,6 +389,12 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
   const exitPath = base + ".exit";
   const runnerPath = base + ".sh";
   const tmuxSession = "pi-" + id;
+  // The orchestrator's worktree, by convention a sibling of the launching
+  // checkout: .pi/delegate/orchestrator.md has the child create
+  // `../lt-api-wt-<job-id>` on branch `delegate/<job-id>`. Recorded here (not
+  // derived later) so the approval probe and the prove-coverage check read the
+  // tree this job was launched for — see JobEntry.worktreePath.
+  const worktreePath = path.resolve(opts.cwd, "..", "lt-api-wt-" + id);
 
   const hasSystemPrompt = Boolean(opts.agent.systemPrompt && opts.agent.systemPrompt.trim());
   if (hasSystemPrompt) await writeAtomic(sysPath, opts.agent.systemPrompt);
@@ -443,7 +461,7 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
   let entry: JobEntry;
   try {
     await execFileP("tmux", ["new-session", "-d", "-s", tmuxSession, "sh " + shq(runnerPath)]);
-    entry = { id, agent: opts.agent.name, task: opts.task, startedAt: new Date().toISOString(), runner: "tmux", tmuxSession, status: "running" };
+    entry = { id, agent: opts.agent.name, task: opts.task, startedAt: new Date().toISOString(), runner: "tmux", tmuxSession, worktreePath, status: "running" };
   } catch {
     // Headless fallback: no TTY to draw the TUI on. Rewrite the runner as the
     // json-mode variant (stdout streams events into <id>.jsonl) and detach.
@@ -451,7 +469,7 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
     await fs.promises.writeFile(runnerPath, buildScript(false), "utf8");
     const child = spawn("sh", [runnerPath], { cwd: opts.cwd, detached: true, stdio: "ignore" });
     child.unref();
-    entry = { id, agent: opts.agent.name, task: opts.task, startedAt: new Date().toISOString(), runner: "fallback", pid: child.pid, status: "running" };
+    entry = { id, agent: opts.agent.name, task: opts.task, startedAt: new Date().toISOString(), runner: "fallback", pid: child.pid, worktreePath, status: "running" };
   }
   await persistEntry(dir, entry);
   return entry;
@@ -776,6 +794,12 @@ export async function relayApprovalDecision(cwd: string, id: string, message: st
     return { ok: false, reason: "Approval message must be a single line — a newline would submit the pane's editor early and split the decision from its note." };
   }
 
+  // The orchestrator worktree this job was launched for. Recorded at creation
+  // (JobEntry.worktreePath); a legacy entry falls back to today's
+  // reconstruction from the caller's cwd — the same leniency
+  // awaitingApprovalHeadSha grants legacy blocks.
+  const worktreePath = entry.worktreePath ?? path.resolve(cwd, "../lt-api-wt-" + entry.id);
+
   // Batch 1: content-bound approval. When the block carried `HEAD SHA: <sha>`,
   // the worktree HEAD must still be that commit — otherwise the reviewed plan
   // is not what would be merged, and the relay refuses (the orchestrator will
@@ -785,9 +809,6 @@ export async function relayApprovalDecision(cwd: string, id: string, message: st
   let deliveredMessage = message;
   let boundSha: string | undefined;
   if (entry.awaitingApprovalHeadSha) {
-    // The registry does not persist the job's cwd; the caller's cwd is the
-    // parent checkout that owns .pi/jobs and the sibling worktree.
-    const worktreePath = path.resolve(cwd, "../lt-api-wt-" + entry.id);
     let found = "";
     let probeError = "";
     try {
