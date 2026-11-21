@@ -139,7 +139,7 @@ func buildQueue(ctx *briefContext, rules []Rule) []queueTask {
 			Module:   rule.Module,
 			Status:   rule.Status,
 			Reason:   reason,
-			BriefCmd: "cmd/spec brief " + rule.ID,
+			BriefCmd: "make spec/brief args='" + rule.ID + "'",
 			GateCmd:  "go run ./cmd/spec check --strict --rule " + rule.ID,
 			priority: priority,
 		})
@@ -262,7 +262,7 @@ func renderQueue(tasks []queueTask, rules []Rule, module, rulesPath string) []by
 			task.priority, mdCell(task.RuleID), mdCell(task.Title), mdCell(task.Module),
 			mdCell(task.Status), mdCell(task.Reason))
 	}
-	fmt.Fprintf(&b, "\n**Next step.** Take the top row; `%s` (or `make spec/brief args='%s'`) prints its work order, "+
+	fmt.Fprintf(&b, "\n**Next step.** Take the top row; `%s` (or `go run ./cmd/spec brief %s`) prints its work order, "+
 		"and `%s` is its scoped gate.\n\n", tasks[0].BriefCmd, tasks[0].RuleID, tasks[0].GateCmd)
 
 	writeQueueScopeNote(&b)
