@@ -179,12 +179,16 @@ this generation; what replaced them is below.)*
 
 **Two planes.** A worker runs inside a per-task Docker Sandbox micro-VM (`sbx`),
 with one mount: the worktree, read-write, at the same absolute path (`scout` gets it
-read-only; `librarian` gets the vault read-write and the repo read-only). Egress is
-default-deny per profile, the SSH agent is not forwarded, and no DB credential is
-ever exported. The in-VM extension instance sees `PI_DELEGATE_SANDBOX=1` and is
-inert: it registers no gate, issues no verdict, writes no receipt. The host — main
-session and child orchestrators — is the trusted verifier plane: all authoritative
-gates, the integrity check, receipts, claims, commits and merges happen only there.
+read-only; `librarian` gets the vault read-write and the repo read-only;
+`researcher` gets no mount at all). Egress is default-deny per profile, the SSH
+agent is not forwarded, and no DB credential is ever exported. The in-VM extension
+instance sees `PI_DELEGATE_SANDBOX=1` and is inert: it registers no gate, issues no
+verdict, writes no receipt. The host — main session and child orchestrators — is the
+verifier plane, but it no longer executes worktree code: every authoritative gate
+runs inside a second, locked-down gate VM (`pi-gate:v1`), and the host's execution
+surface for the tree is `git` (the integrity check — a trusted host binary reading
+paths) and `sbx exec` into that VM. The verdict is still the host's: it consumes the
+gate VM's exit codes, and receipts, claims, commits and merges stay host-only.
 
 **The write boundary is the hypervisor and the mount.** No path classifier sits in
 the agent: outside the mount there is no filesystem, no host process table, no SSH
@@ -226,8 +230,9 @@ extension parses it to scope the worker's advisory gates, and without it they fa
 back to the full spec check; name the owned paths; state the acceptance commands
 split by plane; state the budget.
 
-**After exit, the host runs the authoritative gates — behind the integrity check.**
-In the order the verification ladder in `.pi/agents/orchestrator.md` declares:
+**After exit, the authoritative gates run — behind the integrity check.** The host
+drives them; the gate VM executes them. In the order the verification ladder in
+`.pi/agents/orchestrator.md` declares:
 
 1. **Integrity check first**, before any gate:
    `git diff --exit-code <base> -- Makefile cmd/spec .github WORKFLOW.md`. Dirty →
@@ -235,16 +240,19 @@ In the order the verification ladder in `.pi/agents/orchestrator.md` declares:
    (`HANDOFF_BLOCKED`). The gate files are the definition of green, so a worker
    that touched them has invalidated its own verdict.
 2. **Authoritative gates**: the scoped spec check, `make audit/static`,
-   `make spec/gen` and, for a rule-change batch, the full `make audit` (DB-backed,
-   host-only). These verdicts — not the worker's — are the ones that count.
+   `make spec/gen` and, for a rule-change batch, the full `make audit` (DB-backed)
+   — each executed in the gate VM, whose image carries an apt-baked Postgres on the
+   repo's documented port 5433 (the DSN arrives as a make command-line override,
+   the only form that survives the Makefile's `-include .envrc`). The host reads the
+   exit codes; these verdicts — not the worker's — are the ones that count.
 3. **Diff review** against the acceptance criteria, then commit on
    `delegate/<job-id>` (granular, staged by path, never `git add -A`).
-4. **PROVE at merge-back.** `make prove args='--rule <id>'` is a host merge-back
-   gate, never a worker step. It is enforced in the merge execution path itself:
-   the merge command is blocked when the scoped rules lack VERIFIED prove receipts,
-   whatever the approval route. VERIFIED needs nothing more; VACUOUS and
-   BROKEN-TEST are hard fails; UNVALIDATABLE is reported and stops for human
-   sign-off.
+4. **PROVE at merge-back.** `make prove args='--rule <id>'` is a merge-back gate
+   executed in the gate VM, never a worker step. It is enforced in the merge
+   execution path itself: the merge command is blocked when the scoped rules lack
+   VERIFIED prove receipts, whatever the approval route. VERIFIED needs nothing
+   more; VACUOUS and BROKEN-TEST are hard fails; UNVALIDATABLE is reported and
+   stops for human sign-off.
 
 **Receipts and claims are host-only.** The host extension writes them to the
 `receipts_dir` and `claims_dir` declared in `WORKFLOW.md`; a fresh worktree carries
@@ -265,10 +273,14 @@ Documented limitations, not hidden ones — the policy copy is `WORKFLOW.md`'s
 "Honest residuals":
 
 - **In-VM gates are advisory only.** Nothing a worker reports is a verdict; the
-  authoritative run happens on the host after the VM is gone.
-- **The researcher still runs host-side.** Its sandbox profile is not built in this
-  batch, so its items run with host reach and host network — the one un-sandboxed
-  role.
+  authoritative run happens in the gate VM after the worker's VM is gone, and the
+  host records the verdict the gate VM's exit codes produce.
+- **The researcher's web search rides a host relay.** Its profile is built and
+  mountless — no repo, no host filesystem view — and egress is the model provider,
+  `context7.com`, and the host codex-search relay on `localhost:8787`, the only
+  process allowed to talk to `chatgpt.com`. The codex OAuth stays host-side, so no
+  OpenAI credential ever enters a VM; while the relay is down or the token is
+  expired, web search fails closed (503) — a blocked report, not host reach.
 - **The librarian has the vault read-write.** It can write the vault; the bound is
   the profile plus the `lt-api-kb` skill's rules, not a deny. A librarian mistake
   there is caught by the human, not by a gate.
@@ -282,10 +294,12 @@ Documented limitations, not hidden ones — the policy copy is `WORKFLOW.md`'s
 
 ### Not built yet
 
-- **Gate-VM** — running the authoritative gates inside a second, locked-down VM
-  instead of on the host. Today the host is trusted and the gates inherit that
-  trust.
 - **Sealed fleet mode** — one mountless sandbox for everything, with no worktree
   handed to workers at all. Deferred by the user for POC use.
-- **Researcher sandbox profile** — until it exists, web and doc research stays on
-  the host plane.
+
+Both former entries are built: the gate VM (`pi-gate:v1`) executes every
+authoritative gate, and the researcher runs in its mountless profile. What remains
+for them is drift to watch, not a gap — the gate image is trusted infrastructure
+(like `sbx` and the host `git`), and a *compound* bash command that mixes a declared
+gate with other segments is deliberately not rewritten into the gate VM, so do not
+write compound gate commands.

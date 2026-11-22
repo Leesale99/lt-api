@@ -54,10 +54,11 @@
  *     VERIFIED prove receipt (checkProveCoverage in ./gates.ts).
  *
  * Sandbox era (this file):
- *   - Every foreground worker except `researcher` runs inside a per-task Docker
- *     Sandbox micro-VM (./sbx.ts owns the whole CLI): the worktree is mounted
- *     per the role's profile, the pi invocation is exec'd foreground, and the
- *     stall watchdog owns teardown (`sbx stop`, then `rm --force`).
+ *   - Every foreground worker runs inside a per-task Docker Sandbox micro-VM
+ *     (./sbx.ts owns the whole CLI): the worktree is mounted per the role's
+ *     profile (`researcher` is mountless), the pi invocation is exec'd
+ *     foreground, and the stall watchdog owns teardown (`sbx stop`, then
+ *     `rm --force`).
  *   - The HOST session is the verifier plane: after a sandboxed exec exits it
  *     runs the integrity check FIRST (`checkWorktreeIntegrity`), refuses the
  *     gates on a dirty result, and otherwise runs the authoritative ladder and
@@ -1186,9 +1187,11 @@ async function runSingleAgent(
     };
 
     /**
-     * The HOST-PASSTHROUGH spawn path (researcher today), unchanged in shape:
-     * `getPiInvocation` + a local child, its env scrubbed of pi's own session
-     * identity, and the caller's abort signal mapped to SIGTERM→SIGKILL.
+     * The HOST-PASSTHROUGH spawn path, unchanged in shape: `getPiInvocation` + a
+     * local child, its env scrubbed of pi's own session identity, and the
+     * caller's abort signal mapped to SIGTERM→SIGKILL. No role uses it today
+     * (the researcher is a mountless sandbox); it is the retained seam for a
+     * future deliberate host role.
      */
     const runLocalSpawn = async (): Promise<ProcessOutcome> => {
       return await new Promise<ProcessOutcome>((resolve) => {
@@ -2839,9 +2842,10 @@ export default function (pi: ExtensionAPI) {
     if (details?.isError) return { isError: true };
   });
 
-  // Batch 1: POST-WRITE scoped gate. Now that sandboxed workers are inert in-VM
-  // and verified by the HOST after exit, this hook serves only the
-  // HOST-PASSTHROUGH role (researcher today, whose sandbox profile is deferred):
+  // Batch 1: POST-WRITE scoped gate. Sandboxed workers are inert in-VM and
+  // verified by the HOST after exit (the gate VM executes), so this hook serves
+  // only a HOST-PASSTHROUGH child — a role no profile defines today, since the
+  // researcher is mountless; the seam stays for a future deliberate host role:
   // after a successful edit/write of a gate-relevant file (.go / .feature /
   // .yaml / docs/spec/**) the extension runs `make audit/static` + the scoped
   // spec check and appends a failure block to the tool result. Successes stay

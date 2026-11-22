@@ -70,17 +70,18 @@ starts `pi` itself through `sbx exec`.
 ## pi-gate kit → `pi-gate:v1` template (the authoritative gate VM)
 
 The pi-worker template answers "where does an agent run". This one answers
-"where does the **gate** run". Today `WORKFLOW.md` lists Gate-VM under "Not built
-yet" and names the reason precisely: *"the host is trusted and the gates inherit
-that trust"* — `make audit/static` executes the worktree's Makefile, Go toolchain
-and `cmd/spec` on the host itself.
+"where does the **gate** run". `WORKFLOW.md` settles that question the other way
+from the host-passthrough era: *"the host never executes worktree code, only `git`
+(the integrity check) and `sbx exec`"*. Before `pi-gate:v1`, `make audit/static`
+executed the worktree's Makefile, Go toolchain and `cmd/spec` on the host itself,
+and the verdict inherited the host's own trust.
 
 `pi-gate:v1` moves that execution into a VM. The worktree root is mounted into a
 locked-down sandbox, `make audit/static` runs **there**, and the host only reads an
 exit code and the output. Worktree code is data to the host, never a process it
-spawned. The baked Postgres means the DB-backed `make audit` can run there too;
-wiring that target is the extension's call (see the scope note at the end of this
-section).
+spawned. The baked Postgres means the DB-backed `make audit` runs there too, with
+its DSN passed as a make command-line override (see the scope note at the end of
+this section).
 
 The image is deliberately the smallest thing that can run a gate — `git`, Go,
 `make`, `jq`, a Postgres server — and nothing else: **no `pi`, no npm, no node, no
@@ -94,7 +95,7 @@ that cannot run an agent cannot be talked into one.
 | base image | `docker/sandbox-templates:shell` — the non-Docker flavor; a gate needs no nested daemon |
 | gate toolchain | `git`, `make`, `jq`, `curl`, `ca-certificates` (apt, one transaction) |
 | Go | `1.27.1` at `/usr/local/go`, symlinked to `/usr/local/bin/go` and `gofmt` (`ARG GO_VERSION`) |
-| Postgres | Debian's `postgresql` + `postgresql-contrib` (+ `libpq-dev` for `pg_config`), with a **pre-initialised cluster** at `/home/agent/pgdata`: superuser role `lt_test` / password `test`, database `lt_api_test`, loopback TCP `127.0.0.1:5432`, unix socket `/home/agent/pgsock` |
+| Postgres | Debian's `postgresql` + `postgresql-contrib` (+ `libpq-dev` for `pg_config`), with a **pre-initialised cluster** at `/home/agent/pgdata`: superuser role `lt_test` / password `test`, database `lt_api_test`, loopback TCP `127.0.0.1:5433`, unix socket `/home/agent/pgsock` |
 | image env | `GOTOOLCHAIN=local`, `GOPROXY=https://proxy.golang.org`, `GOSUMDB=sum.golang.org`, `PGDATA`/`PGHOST`/`PGPORT`/`PGUSER`/`PGDATABASE` — plus the same three Go values in `/home/agent/.config/go/env` |
 | Go module cache | `/home/agent/go/pkg/mod`, ~132 MB / 45 module zips, warmed **at image build** from a staged `go.mod`+`go.sum` |
 | helpers | `/usr/local/bin/pg-up` (start + `pg_isready`, idempotent) and `/usr/local/bin/pg-down` |
@@ -106,13 +107,14 @@ runner calls `pg-up` (the descriptor has no lifecycle capability by design, so
 there is no boot hook to hide the start in), then points the DB-backed gate at
 
 ```
-postgres://lt_test:test@127.0.0.1:5432/lt_api_test?sslmode=disable
+postgres://lt_test:test@127.0.0.1:5433/lt_api_test?sslmode=disable
 ```
 
 Same role, password and database name as CI's `postgres:18` service container and
-`.envrc`'s compose DSN — only the port differs, because inside the VM there is no
-host 5432 to avoid (`5433` exists solely because the developer host already runs
-Postgres).
+`.envrc`'s compose DSN. The port is the repo's documented `5433` (image ENV
+`PGPORT`, written into `postgresql.conf` at build) — i.e. `.envrc`'s DSN verbatim:
+the gate VM has no host Postgres to avoid, so it can use the documented port rather
+than CI's `5432` service port.
 
 ### Workspace model: the repo ROOT, or git cannot resolve
 
@@ -240,12 +242,13 @@ gate's verdict on the worktree, not an image defect. The usual false alarm is a
 step of the gate); the script prints `git status --porcelain` and a pointer to the
 host command before it starts, so the distinction is visible in the log.
 
-Scope note: the pipeline proves the **static** gate only. Postgres is baked and
-round-tripped, but `make audit` (the DB-backed full gate) is not wired up here,
-because no sandbox is handed `LT_API_TEST_DSN` today (`WORKFLOW.md`: *"A worker
-that needs a host … is a blocked, explained report"*). Wiring it means exporting a
-DSN that points at `127.0.0.1:5432` inside the VM — an extension-policy decision,
-not a kit one.
+Scope note: the *build pipeline* proves the **static** gate only — that is the kit's
+scope, not the extension's. Postgres is baked and round-tripped, and the DB-backed
+`make audit` is wired: it runs in the gate VM with `LT_API_TEST_DSN` handed to make
+as a command-line variable pointing at the VM's own Postgres (a plain env var would
+lose to the Makefile's `-include .envrc`). Worker sandboxes are still DSN-less, so
+the old rule stands for them: *"A worker that needs a host … is a blocked, explained
+report"*.
 
 ### Assumptions the host build must watch
 
