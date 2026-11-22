@@ -34,8 +34,8 @@ import {
   SANDBOX_LIGHT_CPUS,
   SANDBOX_LIGHT_MEMORY,
   SANDBOX_MOUNTLESS_WORKDIR,
-  SANDBOX_OPENAI_SECRET_SENTINEL_ENV,
   SANDBOX_PROFILES,
+  SANDBOX_RELAY_EGRESS,
   SANDBOX_RESEARCHER_EGRESS_HOSTS,
   SANDBOX_SCRATCH_PREFIX,
   SANDBOX_TEMPLATE_NAME,
@@ -271,7 +271,7 @@ await check("profileForRole: scout is scratch RW + worktree :ro with NO task egr
   assert.equal(librarian.memory, SANDBOX_LIGHT_MEMORY);
 });
 
-await check("profileForRole: researcher is a MOUNTLESS sandbox (provider + api.openai.com + context7.com, OPENAI/CONTEXT7 sentinels)", async () => {
+await check("profileForRole: researcher is a MOUNTLESS sandbox (provider + host relay + context7.com, CONTEXT7 sentinel only)", async () => {
   const researcher = profileForRole("researcher");
   // The one un-sandboxed role is gone: it now runs in a VM with no workspace.
   assert.equal(researcher.hostPassthrough, false);
@@ -279,19 +279,25 @@ await check("profileForRole: researcher is a MOUNTLESS sandbox (provider + api.o
   assert.deepEqual(researcher.mounts, [], "genuinely mountless: no worktree, no vault, no scratch");
   assert.deepEqual(researcher.networkHosts, [...SANDBOX_RESEARCHER_EGRESS_HOSTS]);
   // Four egress hosts, one per capability the TOOLSET needs: the model
-  // provider (+ its wildcard), web search (api.openai.com, pi-web-access), and
-  // docs lookup (context7.com, @upstash/context7-pi).
+  // provider (+ its wildcard), the HOST codex search relay (web search, no VM
+  // credential), and docs lookup (context7.com, @upstash/context7-pi).
   assert.deepEqual(researcher.networkHosts, [
     "opencode.ai:443",
     "*.opencode.ai:443",
-    "api.openai.com:443",
+    "localhost:8787",
     "context7.com:443",
   ]);
   assert.equal(researcher.networkHosts.length, 4);
-  // Each backend key rides the custom-secret sentinel (the VM only ever sees the
-  // sbx-cs- placeholder), never an -e value.
-  assert.deepEqual(researcher.secretSentinelEnvs, ["OPENAI_API_KEY", "CONTEXT7_API_KEY"]);
-  assert.equal(SANDBOX_OPENAI_SECRET_SENTINEL_ENV, "OPENAI_API_KEY");
+  // The relay is pinned as a named constant: the profile and the README row
+  // both spell it from here, so a port change moves one place.
+  assert.equal(SANDBOX_RELAY_EGRESS, "localhost:8787");
+  assert.equal(researcher.networkHosts.includes(SANDBOX_RELAY_EGRESS), true);
+  // api.openai.com is GONE: web search spends the host codex subscription
+  // through the relay, so no pay-as-you-go key may be reachable from a VM.
+  assert.equal(researcher.networkHosts.includes("api.openai.com:443"), false);
+  // One sentinel only: context7. Web search has no credential in the VM — the
+  // relay holds it host-side and substitutes it upstream.
+  assert.deepEqual(researcher.secretSentinelEnvs, ["CONTEXT7_API_KEY"]);
   assert.equal(SANDBOX_CONTEXT7_SECRET_SENTINEL_ENV, "CONTEXT7_API_KEY");
   assert.deepEqual(profileDenyHosts(researcher), []);
   assert.equal(researcher.cpus, SANDBOX_LIGHT_CPUS);
@@ -626,7 +632,7 @@ await check("createWorkerSandbox: scout adds only the model-provider egress rule
   setSbxProcessOps(null);
 });
 
-await check("createWorkerSandbox: researcher is created MOUNTLESS with provider + web-search egress", async () => {
+await check("createWorkerSandbox: researcher is created MOUNTLESS with provider + relay + context7 egress", async () => {
   const repo = path.join(tmp, "create-researcher");
   fs.mkdirSync(repo, { recursive: true });
   const stub = installStub();
@@ -634,7 +640,8 @@ await check("createWorkerSandbox: researcher is created MOUNTLESS with provider 
   assert.equal(handle.createdFrom, "template");
   assert.equal(handle.hasWorkspace, false, "no workspace mount at all");
   assert.equal(handle.scratchPath, undefined, "a mountless profile needs no scratch primary");
-  assert.equal(handle.networkHosts.includes("api.openai.com:443"), true);
+  assert.equal(handle.networkHosts.includes("localhost:8787"), true);
+  assert.equal(handle.networkHosts.includes("api.openai.com:443"), false);
   assert.equal(handle.networkHosts.includes("context7.com:443"), true);
   assert.equal(stub.calls.length, 2, "create + one policy allow");
   // No workspace positional anywhere in the create argv: the repo path the

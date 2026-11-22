@@ -148,11 +148,15 @@ RUN set -eu; \
 COPY --chown=1000:1000 files/models.json files/settings.json /home/agent/.pi/agent/
 
 # Web search, baked for the MOUNTLESS researcher role (the only agent whose
-# frontmatter grants web_search). `{"provider":"openai"}` makes pi call
-# api.openai.com/v1, whose credential is the OPENAI_API_KEY sentinel — same
-# custom-secret mechanism as the model key (the VM only ever holds the
-# `sbx-cs-` placeholder; the host substitutes the real key in the header). A
-# role without web tools never reads this file, so it changes nothing for them.
+# frontmatter grants web_search). `provider: openai` + `openaiResponsesUrl`
+# pointing at the HOST relay (`localhost:8787` from inside the VM; the sbx proxy
+# rewrites `host.docker.internal`) makes pi POST to
+# `.pi/sandboxes/relay/codex-search-relay.mjs` instead of api.openai.com. The
+# relay holds the codex OAuth credential and talks to chatgpt.com; NO OpenAI
+# credential and no pay-as-you-go key ever enters the VM. `openaiApiKey` is a
+# dummy because pi-web-access requires a client-side credential value — the
+# relay replaces it upstream. A role without web tools never reads this file,
+# so it changes nothing for them.
 COPY --chown=1000:1000 files/web-search.json /home/agent/.pi/agent/web-search.json
 
 # Baked-config assertion: the files are present, owned by the agent, and the
@@ -163,6 +167,7 @@ RUN set -eu; \
     grep -q 'glm-5.3' /home/agent/.pi/agent/settings.json; \
     grep -q 'OPENCODE_GO_API_KEY' /home/agent/.pi/agent/models.json; \
     grep -q '"provider":"openai"' /home/agent/.pi/agent/web-search.json; \
+    grep -q 'openaiResponsesUrl' /home/agent/.pi/agent/web-search.json; \
     grep -q 'npm:pi-web-access' /home/agent/.pi/agent/settings.json; \
     grep -q 'npm:@upstash/context7-pi' /home/agent/.pi/agent/settings.json; \
     ls -ld /home/agent/.pi/agent/npm/node_modules/pi-web-access \

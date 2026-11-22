@@ -1,1 +1,1 @@
-{"provider":"openai"}
+{"provider":"openai","openaiResponsesUrl":"http://host.docker.internal:8787/responses","openaiApiKey":"relay-managed"}

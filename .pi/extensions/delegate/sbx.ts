@@ -124,16 +124,32 @@ export const SANDBOX_WORKER_EGRESS_HOSTS: readonly string[] = [
 export const SANDBOX_MODEL_EGRESS_HOSTS: readonly string[] = ["opencode.ai:443"];
 
 /**
- * The researcher's egress: the model provider (it has to think), the
- * web-search backend, and the docs-lookup backend. The role is MOUNTLESS, so
- * its only work surface is the network, and the whole surface is these four
- * rules:
+ * The host codex-search relay: the researcher's ONLY web-search path.
+ *
+ * `web_search` (`pi-web-access`) is configured by the baked
+ * `~/.pi/agent/web-search.json` to POST to
+ * `http://host.docker.internal:8787/responses`. The sbx proxy rewrites
+ * `host.docker.internal` to the host's `localhost`, so the per-sandbox allow
+ * rule is `localhost:8787` — nothing else needs to be reachable. The relay
+ * (`.pi/sandboxes/relay/codex-search-relay.mjs`) runs on the host, holds the
+ * host's `openai-codex` OAuth credential, and forwards to the codex backend.
+ *
+ * WHY THIS REPLACED `api.openai.com:443`: that path spent a pay-as-you-go
+ * OpenAI API key that had to be injected into the VM as a custom secret. Now no
+ * OpenAI credential enters any VM, and `chatgpt.com` never enters a VM either
+ * (the relay is the only thing that talks to it). A sandbox without this rule,
+ * or a relay that is not running, fails the web-search tool closed.
+ */
+export const SANDBOX_RELAY_EGRESS = "localhost:8787";
+
+/**
+ * The researcher's egress: the model provider (it has to think), the HOST codex
+ * search relay, and the docs-lookup backend. The role is MOUNTLESS, so its only
+ * work surface is the network, and the whole surface is these four rules:
  *
  *   opencode.ai:443      the model call (same provider as every other role)
  *   *.opencode.ai:443    provider subdomains (the proxy matches the wildcard)
- *   api.openai.com:443   pi's web-search provider — the baked
- *                        `~/.pi/agent/web-search.json` is `{"provider":"openai"}`,
- *                        which calls `api.openai.com/v1` with `OPENAI_API_KEY`
+ *   localhost:8787       the host codex-search relay — see SANDBOX_RELAY_EGRESS
  *   context7.com:443     the docs-lookup provider — the baked extension package
  *                        `@upstash/context7-pi` serves `resolve-library-id` and
  *                        `query-docs` from context7.com, authenticating with
@@ -146,7 +162,7 @@ export const SANDBOX_MODEL_EGRESS_HOSTS: readonly string[] = ["opencode.ai:443"]
 export const SANDBOX_RESEARCHER_EGRESS_HOSTS: readonly string[] = [
   "opencode.ai:443",
   "*.opencode.ai:443",
-  "api.openai.com:443",
+  SANDBOX_RELAY_EGRESS,
   "context7.com:443",
 ];
 
@@ -163,27 +179,21 @@ export const SANDBOX_VAULT_PATH = "/Users/aleksrdvn/Projects/vaults/lt-api";
 export const SANDBOX_SECRET_SENTINEL_ENVS: readonly string[] = ["OPENCODE_GO_API_KEY"];
 
 /**
- * The researcher's second credential surface. pi's web-search provider
- * (`~/.pi/agent/web-search.json` → `{"provider": "openai"}`) authenticates its
- * `api.openai.com/v1` calls with `OPENAI_API_KEY`, and that env var reaches the
- * VM through the SAME sentinel mechanism as the model key: the host stores the
- * real value with `sbx secret set-custom --host api.openai.com --env
- * OPENAI_API_KEY --value-stdin`, every sandbox then sees a `sbx-cs-<rand>`
- * placeholder, and the host proxy substitutes the real key in the HTTP header
- * on requests to that host. The real key is never in the VM, the image, or an
- * `-e` pair — exactly like `OPENCODE_GO_API_KEY` above.
- */
-export const SANDBOX_OPENAI_SECRET_SENTINEL_ENV = "OPENAI_API_KEY";
-
-/**
- * …and the researcher's THIRD credential surface: the docs-lookup key.
+ * The researcher's docs-lookup credential — and now its ONLY VM sentinel.
  *
  * `@upstash/context7-pi` (baked into the image as a pi extension package, see
  * `kit/pi-worker.dockerfile`) reads `CONTEXT7_API_KEY` for its `context7.com`
  * requests, and `resolve-library-id`/`query-docs` work only when that name is
  * injected. Same sentinel mechanism, and a GLOBAL custom secret targeting
- * `context7.com` already exists on the host — so unlike the web-search key this
- * one needs no per-host setup. The VM only ever holds the `sbx-cs-` placeholder.
+ * `context7.com` already exists on the host — so this one needs no per-host
+ * setup. The VM only ever holds the `sbx-cs-` placeholder.
+ *
+ * RETIRED: the web-search sentinel (`SANDBOX_OPENAI_SECRET_SENTINEL_ENV` =
+ * `OPENAI_API_KEY`, backed by `sbx secret set-custom --host api.openai.com`).
+ * Web search now goes through the host relay (`SANDBOX_RELAY_EGRESS`), which
+ * holds the codex credential HOST-side and substitutes it upstream, so there is
+ * no key for the VM to carry. The constant was deleted rather than repurposed
+ * so nothing can silently start injecting that retrograde env var again.
  */
 export const SANDBOX_CONTEXT7_SECRET_SENTINEL_ENV = "CONTEXT7_API_KEY";
 
@@ -576,19 +586,18 @@ export const SANDBOX_PROFILES: Record<string, SandboxProfile> = {
     // does not need. `mounts: []` emits NO workspace positionals on `sbx
     // create` (verified supported: the workspace list is `[PATH...]`, and a
     // create with none leaves the VM with its default (unmounted) root). Egress
-    // is the model provider plus the two backends its TOOLSET needs —
-    // api.openai.com for web search (`pi-web-access`) and context7.com for docs
-    // lookup (`@upstash/context7-pi`), both baked into the image as extension
-    // packages — see SANDBOX_RESEARCHER_EGRESS_HOSTS. Each backend's key rides
-    // the same custom-secret sentinel mechanism as the model key.
+    // is the model provider plus the two backends its TOOLSET needs — the host
+    // codex-search relay for web search (`pi-web-access`, see
+    // SANDBOX_RELAY_EGRESS) and context7.com for docs lookup
+    // (`@upstash/context7-pi`), both baked into the image as extension
+    // packages — see SANDBOX_RESEARCHER_EGRESS_HOSTS. Context7's key rides the
+    // custom-secret sentinel mechanism like the model key; web search has NO key
+    // in the VM at all (the relay holds it host-side).
     role: "researcher",
     hostPassthrough: false,
     mounts: [],
     networkHosts: [...SANDBOX_RESEARCHER_EGRESS_HOSTS],
-    secretSentinelEnvs: [
-      SANDBOX_OPENAI_SECRET_SENTINEL_ENV,
-      SANDBOX_CONTEXT7_SECRET_SENTINEL_ENV,
-    ],
+    secretSentinelEnvs: [SANDBOX_CONTEXT7_SECRET_SENTINEL_ENV],
     denyNetworkHosts: [],
     cpus: SANDBOX_LIGHT_CPUS,
     memory: SANDBOX_LIGHT_MEMORY,
