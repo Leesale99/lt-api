@@ -20,14 +20,14 @@
  *    extension instance inside a sandbox is inert (`isSandboxedChild`).
  *    Receipt metadata is fail-open (a missing rules.yaml or a broken git just
  *    records an empty field) — ONLY the receipt degrades, never the verdict.
- * 4. THE WRITE BOUNDARY IS THE HYPERVISOR (sandbox era). The child-side deny
- *    paths, the bash write-channel scanner and the gate allowlist are DELETED,
- *    not disabled: a worker runs inside a per-task micro-VM whose only host
- *    surface is its mount (./sbx.ts chooses the mount per role). Their
- *    replacement is `checkWorktreeIntegrity` — a host-side detector at the
- *    merge boundary, run BEFORE any gate command: the gate files ARE the
- *    definition of green, so a worker that touched them has invalidated its
- *    own verdict and the host refuses to run gates at all.
+ * 4. THE WRITE BOUNDARY IS THE HYPERVISOR (sandbox era). A worker runs inside
+ *    a per-task micro-VM whose only host surface is its mount (./sbx.ts
+ *    chooses the mount per role): what it may write is decided by what is
+ *    mounted, never by an in-process classifier. The net is
+ *    `checkWorktreeIntegrity` — a host-side detector at the merge boundary, run
+ *    BEFORE any gate command: the gate files ARE the definition of green, so a
+ *    worker that touched them has invalidated its own verdict and the host
+ *    refuses to run gates at all.
  * 5. THE POLICY IS DECLARED, NOT HARDCODED (batch 3). Gate commands, the
  *    receipt/claims dirs, the settle limits, the stall timeout and the
  *    concurrency cap come from the repo-root WORKFLOW.md front matter
@@ -1403,8 +1403,7 @@ export function repoRelativePath(repoRoot: string, inputPath: string): string | 
  * stay inside one segment. Everything else is literal (regex metacharacters
  * escaped). Patterns and paths are repo-root-relative posix strings.
  *
- * Still used by the claims log (owned-path overlap detection); the gate-allowlist
- * caller it was written for is deleted.
+ * Used by the claims log for owned-path overlap detection.
  */
 export function matchGlob(pattern: string, relPath: string): boolean {
   const normalized = toPosix(pattern).replace(/^\.\//, "").replace(/\/+$/, "");
@@ -1455,7 +1454,7 @@ export function isGateRelevantWrite(repoRoot: string, inputPath: string): boolea
   return rel.endsWith(".go") || rel.endsWith(".feature") || rel.endsWith(".yaml");
 }
 
-// ── Host-side integrity check (the replacement for the deleted mechanisms) ──
+// ── Host-side integrity check (the merge-boundary detector) ──
 
 /**
  * The paths whose content DEFINES green. A worker that changes any of them has

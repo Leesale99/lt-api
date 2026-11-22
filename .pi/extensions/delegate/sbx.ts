@@ -585,7 +585,8 @@ export interface SandboxProfile {
 }
 
 /**
- * The profile table IS the policy (WORKFLOW.md "Sandbox profiles as code").
+ * The profile table IS the policy: this file is the declaration of the sandbox
+ * profiles that WORKFLOW.md points at, and `smoke-sbx.mjs` asserts them.
  * Everything not listed here does not exist for that role: no mount, no
  * egress, no secret.
  */
