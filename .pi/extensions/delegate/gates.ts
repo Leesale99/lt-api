@@ -56,13 +56,9 @@
  *    mount is the worktree (rw: gates legitimately regenerate artifacts) plus,
  *    for a linked worktree, the main repo root (ro) so git resolves in-VM.
  *
- * Task-packet convention (SPEC-SCOPE):
- *   The orchestrator includes a line in the worker task text —
- *     SPEC-SCOPE: module=game rules=R-GAME-001,R-GAME-002
- *   (module and/or rules, both optional but at least one required for the line
- *   to count). `parseSpecScope` extracts it and index.ts exports the normalized
- *   form as PI_DELEGATE_SPEC_SCOPE into the sandbox's `-e` env; workers spawned
- *   without a scope line get NO env var and gate on the FULL spec check.
+ * Task packets (SPEC-SCOPE / CLAIMS-PATHS) are parsed by ./protocol.ts, the one
+ * owner of that grammar; this module only CONSUMES the normalized scope env
+ * (`parseSpecScopeEnv`) when it builds a scoped check.
  *
  * Loader gotcha (pi 1.5.2 extension parser): avoid `?:` ternaries containing
  * double-quoted strings inside a template literal's ${} — this module sticks to
@@ -79,6 +75,7 @@ import {
   loadWorkflowPolicy,
   workflowPolicyRefusal,
 } from "./policy.ts";
+import { parseSpecScopeEnv } from "./protocol.ts";
 import { workerStallTimeoutMs } from "./runtime.ts";
 import {
   ensureGateSandbox,
@@ -252,11 +249,6 @@ export interface GateStep {
 export interface GateRun {
   ok: boolean;
   steps: GateStep[];
-}
-
-export interface SpecScope {
-  module?: string;
-  rules: string[];
 }
 
 function stepOf(result: GateResult, argv: string[], note?: string): GateStep {
@@ -778,58 +770,7 @@ export function resolveDeclaredGateCommand(
   return null;
 }
 
-// ── SPEC-SCOPE parsing (task text → env → scoped check) ─────────────────────
-
-/**
- * Parse a SPEC-SCOPE body ("module=game rules=R-A-1,R-B-2") into a scope.
- * Returns null when neither module nor rules is present — a bare "SPEC-SCOPE:"
- * line must not silence the full check.
- */
-function parseScopeBody(body: string): SpecScope | null {
-  const moduleMatch = /module=([A-Za-z0-9_./-]+)/.exec(body);
-  const rulesMatch = /rules=([A-Za-z0-9_.,/-]+)/.exec(body);
-  const module = moduleMatch ? moduleMatch[1].replace(/[.\/]+$/, "") : undefined;
-  const rules = rulesMatch
-    ? rulesMatch[1]
-        .split(",")
-        .map((rule) => rule.trim())
-        .filter((rule) => /^[A-Za-z0-9_-]+$/.test(rule))
-    : [];
-  if (!module && rules.length === 0) return null;
-  return { module, rules };
-}
-
-/**
- * Extract the scope from a task packet. Only lines whose trimmed form starts
- * with `SPEC-SCOPE:` count; the first such line with usable content wins.
- */
-export function parseSpecScope(text: string): SpecScope | null {
-  for (const rawLine of text.split("\n")) {
-    const line = rawLine.trim();
-    if (!line.toUpperCase().startsWith("SPEC-SCOPE:")) continue;
-    const scope = parseScopeBody(line.slice("SPEC-SCOPE:".length));
-    if (scope) return scope;
-  }
-  return null;
-}
-
-/**
- * Parse the PI_DELEGATE_SPEC_SCOPE env value (already normalized by index.ts).
- * Lenient: a hand-set value in either "module=… rules=…" or bare "rules=…"
- * form is accepted; unusable values yield null (→ full check).
- */
-export function parseSpecScopeEnv(value: string | undefined): SpecScope | null {
-  if (!value || !value.trim()) return null;
-  return parseScopeBody(value);
-}
-
-/** Normalized single-line form exported into PI_DELEGATE_SPEC_SCOPE. */
-export function formatSpecScope(scope: SpecScope): string {
-  const parts: string[] = [];
-  if (scope.module) parts.push("module=" + scope.module);
-  if (scope.rules.length > 0) parts.push("rules=" + scope.rules.join(","));
-  return parts.join(" ");
-}
+// ── Scoped-check argv (normalized scope env → scoped check) ─────────────────
 
 /**
  * Split a declared policy command string ("go run ./cmd/spec check --strict")

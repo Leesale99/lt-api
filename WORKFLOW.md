@@ -86,6 +86,24 @@ host paths, and only for verdicts the host actually produced. A fresh worktree e
 worker's report is a set of claims plus command exit codes, and the orchestrator's report cites the receipts
 it caused.
 
+## Task packets
+
+Every task text handed to the `subagent` tool is parsed ONCE at spawn. Two line forms are reserved; the grammar
+below is owned by `.pi/extensions/delegate/protocol.ts` (change it there and here together). A task packet carries
+at most one `SPEC-SCOPE` line; the `CLAIMS-PATHS` line is optional.
+
+| Line form | Meaning | Failure behavior |
+| --- | --- | --- |
+| *(no `SPEC-SCOPE` line)* | Full spec check; no scope reaches the worker. | Valid; no `PI_DELEGATE_SPEC_SCOPE` env var. |
+| `SPEC-SCOPE: none` | Explicit empty scope; normalized env value is `none`. | Valid; the gate ladder runs the full spec check. |
+| `SPEC-SCOPE: module=<m>` | Scope the scoped check to one module. | Missing/invalid `<m>` → spawn refused, error names the line. |
+| `SPEC-SCOPE: rules=<id,...>` | Scope to the listed rule ids (`R-XXX-NNN`). | Empty list or empty/invalid id (`rules=`, `R-1,,R-2`) → spawn refused, error names the line. |
+| `SPEC-SCOPE: module=<m> rules=<id,...>` | Both parts on one line. | Unknown token/key (`modul=game`, `none extra`), duplicate key or a second `SPEC-SCOPE` line → spawn refused, error names the line. |
+| `CLAIMS-PATHS: <glob>,<glob>` | Repo-relative paths this spawn owns; an overlapping active claim blocks the call. | Whitespace-only entry (`CLAIMS-PATHS: a, , b`, trailing comma, empty body) → spawn refused, error names the line. Absent → no ownership claim. |
+
+A refused packet writes no claim, creates no sandbox and starts no worker: the refusal naming the offending line IS
+the tool result. The normalized valid scope is exported to the worker as `PI_DELEGATE_SPEC_SCOPE`.
+
 ## The worker loop: RED is host-authored, GREEN is the loop, PROVE is at merge-back
 
 RED is authored on the host plane BEFORE a task begins: the catalog entry and its `@rule:` scenario are

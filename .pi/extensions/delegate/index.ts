@@ -45,9 +45,12 @@
  *     `prove_cmd`) carrying `--rule <id>` gets its own receipt, recorded in the
  *     HOST SESSION'S OWN receipts dir (a leading `cd <worktree>` no longer
  *     redirects it — a worker could pre-forge a VERIFIED receipt there).
- *   - SPEC-SCOPE: a `SPEC-SCOPE: module=… rules=…` line in the task text is
- *     recorded in the claims log at spawn and exported as
- *     PI_DELEGATE_SPEC_SCOPE into the sandbox's `-e` env.
+ *   - TASK PACKETS: the task text's `SPEC-SCOPE` / `CLAIMS-PATHS` lines are
+ *     parsed ONCE at the subagent boundary (./protocol.ts, the grammar owner);
+ *     a malformed packet refuses the spawn before any claim/sandbox/child
+ *     exists. A valid scope is recorded in the claims log at spawn and its
+ *     normalized form is exported as PI_DELEGATE_SPEC_SCOPE into the sandbox's
+ *     `-e` env (no line = no env var = full spec check).
  *   - job_approve binds the relayed decision to the `HEAD SHA:` recorded in the
  *     job's approval block and refuses when the worktree HEAD moved; for a task
  *     whose SPEC-SCOPE names rules it also refuses while any scoped rule lacks a
@@ -143,13 +146,11 @@ import {
   formatGateReport,
   formatSettleEscalation,
   formatSettleTrail,
-  formatSpecScope,
   integrityRefusalReason,
   isGateRelevantWrite,
   logGateDebug,
   markPostWriteGateEnd,
   markPostWriteGateStart,
-  parseSpecScope,
   planSettleGateAttempt,
   prepareGateDbVm,
   receiptCommandsOf,
@@ -174,6 +175,12 @@ import {
   appendGateDbOverride,
   writeReceipt,
 } from "./gates.ts";
+import {
+  type TaskPacket,
+  formatTaskPacketRefusal,
+  parseSpecScope,
+  parseTaskPacket,
+} from "./protocol.ts";
 import {
   type SandboxExecResult,
   type SandboxHandle,
@@ -860,17 +867,18 @@ function buildTaskPrompt(agent: AgentConfig, task: string, siblingContext?: stri
  * model API key is NOT here — it reaches the VM through the `sbx` secret
  * sentinel/proxy (see SANDBOX_SECRET_SENTINEL_ENVS in ./sbx.ts).
  */
-function sandboxChildEnv(task: string): Record<string, string> {
+function sandboxChildEnv(specScopeEnv?: string): Record<string, string> {
   const env: Record<string, string> = {
     PI_DELEGATE_CHILD: "1",
     PI_DELEGATE_ROLE: "worker",
     [SANDBOX_ENV_FLAG]: "1",
   };
-  // Batch 1: the worker's spec scope travels as env, never re-parsed from the
-  // child's context. Only a task text carrying a `SPEC-SCOPE: module=… rules=…`
-  // line sets it; the allowlist above means no inherited value can narrow it.
-  const scope = parseSpecScope(task);
-  if (scope) env.PI_DELEGATE_SPEC_SCOPE = formatSpecScope(scope);
+  // Batch 1 + B3.1: the worker's spec scope travels as env, never re-parsed
+  // from the child's context. The normalized value was produced ONCE by the
+  // task-packet boundary in the subagent tool (./protocol.ts owns the grammar);
+  // no scope line means NO env var, so the allowlist above keeps any inherited
+  // value from narrowing the worker's gate.
+  if (specScopeEnv) env.PI_DELEGATE_SPEC_SCOPE = specScopeEnv;
   return env;
 }
 
@@ -1050,6 +1058,9 @@ async function runSingleAgent(
   // Ambient footer status lives on ctx.ui: the run counts itself in/out around
   // the spawn so the footer shows live sandboxed vs host workers.
   runCtx: Pick<ExtensionContext, "hasUI" | "ui">,
+  // Normalized PI_DELEGATE_SPEC_SCOPE value from the task-packet boundary in
+  // the subagent tool (undefined = the packet carried no SPEC-SCOPE line).
+  specScopeEnv?: string,
 ): Promise<SingleResult> {
   if (signal?.aborted) {
     return createUnstartedResult(agentName, task, step, "aborted", "Subagent was aborted before starting");
@@ -1239,11 +1250,10 @@ async function runSingleAgent(
         delete childEnv[SANDBOX_ENV_FLAG];
         // Batch 1: the worker's spec scope travels as env, never re-parsed from
         // the child's context (the child cannot see its own tool_result input
-        // reliably enough to scope a gate). Only a task text carrying a
-        // `SPEC-SCOPE: module=… rules=…` line sets it; otherwise the variable is
+        // reliably enough to scope a gate). The value was validated and
+        // normalized at the task-packet boundary; otherwise the variable is
         // removed, so no inherited value can ever narrow a worker's gate.
-        const specScope = parseSpecScope(task);
-        if (specScope) childEnv.PI_DELEGATE_SPEC_SCOPE = formatSpecScope(specScope);
+        if (specScopeEnv) childEnv.PI_DELEGATE_SPEC_SCOPE = specScopeEnv;
         else delete childEnv.PI_DELEGATE_SPEC_SCOPE;
         try {
           proc = spawn(invocation.command, invocation.args, {
@@ -1335,7 +1345,7 @@ async function runSingleAgent(
               ["pi", ...args, "--no-skills", "--approve"],
               {
                 worktreePath: effectiveCwd,
-                env: sandboxChildEnv(task),
+                env: sandboxChildEnv(specScopeEnv),
                 signal: execAbort.signal,
                 onStdout: onStdoutChunk,
                 onStderr: onStderrChunk,
@@ -1440,7 +1450,7 @@ async function runSingleAgent(
         hostRoot: resolvedAgent.hostRoot,
         worktreePath: effectiveCwd,
         agent: agentName,
-        scopeEnv: sandboxChildEnv(task).PI_DELEGATE_SPEC_SCOPE,
+        scopeEnv: specScopeEnv,
         runGates: currentResult.status === "completed",
       });
       currentResult.hostVerification = verification;
@@ -2919,6 +2929,7 @@ export default function (pi: ExtensionAPI) {
       "Single mode: background=true forces the detached tmux-backed job (results via job_status), background=false forces foreground, omitted = the agent config's background frontmatter decides; rejected with tasks/chain.",
       "Batching norm: several independent delegations → spawn all in one turn (parallel tasks[] for foreground work, one background spawn for the long orchestrator task); sequential spawn-then-wait is blocking with extra steps.",
       "Handoff (single background mode): handoff:\"auto\"|\"confirm\" is forwarded into the orchestrator task prompt as HANDOFF=..., overriding a HANDOFF mention in the task text; omitted keeps the task-text convention (no mention = confirm). Rejected with tasks/chain and foreground runs.",
+      "Task packets: a task text may carry at most ONE `SPEC-SCOPE: none | module=<m> | rules=<id,...> | module=<m> rules=<id,...>` line and one `CLAIMS-PATHS: <glob>,...` line; a malformed packet REFUSES the spawn with an error naming the offending line (grammar: WORKFLOW.md § Task packets).",
       `Default agent scope is "both": project-local agents (${CONFIG_DIR_NAME}/agents) override user agents (${path.join(getAgentDir(), "agents")}) with the same name.`,
       `Set agentScope: "user" to ignore project-local agents.`,
     ].join(" "),
@@ -2982,6 +2993,37 @@ export default function (pi: ExtensionAPI) {
               text: "Invalid parameters. handoff applies to single mode only.\nAvailable agents: " + available,
             },
           ],
+          details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single", true)([]),
+        };
+      }
+
+      // TASK-PACKET BOUNDARY (B3.1): the ONE parse of the task-packet grammar
+      // (./protocol.ts owns it). Every task text in this call — single, each
+      // tasks[] entry, each chain step — is parsed here, before agent
+      // resolution, claim writes, sandbox creation or any child spawn. A
+      // malformed SPEC-SCOPE / CLAIMS-PATHS packet REFUSES the whole call and
+      // the tool result names the offending line (fail-closed at spawn). The
+      // normalized scope env computed here is threaded into runSingleAgent, so
+      // nothing downstream re-parses the task text.
+      const packetErrors: string[] = [];
+      const packetOf = (label: string, task: string): TaskPacket | undefined => {
+        const parsed = parseTaskPacket(task);
+        if (parsed.ok) return parsed.packet;
+        for (const error of parsed.errors) packetErrors.push(label + ": " + error);
+        return undefined;
+      };
+      const chainPackets = (params.chain ?? []).map((step, index) =>
+        packetOf("chain step " + String(index + 1) + " (" + step.agent + ")", step.task),
+      );
+      const taskPackets = (params.tasks ?? []).map((entry, index) =>
+        packetOf("tasks[" + String(index) + "] (" + entry.agent + ")", entry.task),
+      );
+      const singlePacket = params.agent && params.task
+        ? packetOf("task (" + params.agent + ")", params.task)
+        : undefined;
+      if (packetErrors.length > 0) {
+        return {
+          content: [{ type: "text", text: formatTaskPacketRefusal(packetErrors) }],
           details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single", true)([]),
         };
       }
@@ -3125,6 +3167,7 @@ export default function (pi: ExtensionAPI) {
             chainUpdate,
             makeDetails("chain"),
             ctx,
+            chainPackets[i]?.scopeEnv,
           );
           results.push(result);
 
@@ -3227,6 +3270,7 @@ export default function (pi: ExtensionAPI) {
               },
               makeDetails("parallel"),
               ctx,
+              taskPackets[index]?.scopeEnv,
             );
           } catch (error) {
             // A thrown spawn must still release its claim (fail-open telemetry).
@@ -3327,6 +3371,7 @@ export default function (pi: ExtensionAPI) {
             onUpdate,
             makeDetails("single"),
             ctx,
+            singlePacket?.scopeEnv,
           );
         } catch (error) {
           // A thrown spawn must still release its claim (fail-open telemetry).

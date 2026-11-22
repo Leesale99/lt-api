@@ -28,13 +28,12 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { GIT_TIMEOUT_MS, matchGlob, parseSpecScope, runGate } from "./gates.ts";
+import { GIT_TIMEOUT_MS, matchGlob, runGate } from "./gates.ts";
+import { parseClaimsPaths, parseSpecScope } from "./protocol.ts";
 import { DEFAULT_CLAIMS_DIR, loadWorkflowPolicy } from "./policy.ts";
 
 /** How many recent completions ride along in a task prompt. */
 export const SIBLING_CONTEXT_MAX = 3;
-/** Line prefix that carries a spawn's owned paths in the task text. */
-export const CLAIMS_PATHS_PREFIX = "CLAIMS-PATHS:";
 
 export interface ChangedPath {
   /** Porcelain status letter(s): "M", "A", "??", "D", … */
@@ -112,23 +111,11 @@ export function claimsLogPath(cwd: string, jobId: string): string {
 // ── Task-text parsing ───────────────────────────────────────────────────────
 
 /**
- * Parse an optional `CLAIMS-PATHS: <comma-separated globs>` line. Same shape
- * as the SPEC-SCOPE convention: only trimmed lines starting with the prefix
- * count, the first usable one wins, and unusable entries are dropped.
+ * The task-packet grammar (SPEC-SCOPE / CLAIMS-PATHS) is owned by
+ * ./protocol.ts; this module consumes its lenient parsers to build a claim.
+ * Spawns are gated by protocol.ts's strict `parseTaskPacket` at the subagent
+ * tool boundary, so a malformed packet never reaches the claims log.
  */
-export function parseClaimsPaths(text: string): string[] {
-  for (const rawLine of text.split("\n")) {
-    const line = rawLine.trim();
-    if (!line.toUpperCase().startsWith(CLAIMS_PATHS_PREFIX)) continue;
-    const body = line.slice(CLAIMS_PATHS_PREFIX.length);
-    const paths = body
-      .split(",")
-      .map((entry) => entry.trim().replace(/^\.\//, "").replace(/\/+$/, ""))
-      .filter((entry) => entry.length > 0 && !/[\s]/.test(entry));
-    if (paths.length > 0) return paths;
-  }
-  return [];
-}
 
 /** Claim-relevant fields of one task text (SPEC-SCOPE + CLAIMS-PATHS). */
 export function claimCandidateOf(worker: string, task: string): ClaimCandidate {

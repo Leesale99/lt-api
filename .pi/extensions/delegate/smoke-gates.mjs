@@ -23,7 +23,7 @@ import * as fs from "node:fs";
 import { registerHooks } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   SETTLE_BACKOFF_BASE_MS,
   SETTLE_GATE_MAX_ATTEMPTS,
@@ -39,15 +39,12 @@ import {
   formatGateReport,
   formatSettleEscalation,
   formatSettleTrail,
-  formatSpecScope,
   gateDbPresteps,
   gateVmExecEnv,
   gateVmShellCommand,
   isGateRelevantWrite,
   latestPassingReceipt,
   matchGlob,
-  parseSpecScope,
-  parseSpecScopeEnv,
   parseGateVmShellCommand,
   planSettleGateAttempt,
   prepareGateDbVm,
@@ -77,6 +74,14 @@ import {
   markPostWriteGateStart,
   writeReceipt,
 } from "./gates.ts";
+import {
+  formatSpecScope,
+  formatTaskPacketRefusal,
+  parseClaimsPaths,
+  parseSpecScope,
+  parseSpecScopeEnv,
+  parseTaskPacket,
+} from "./protocol.ts";
 import { execSandboxArgs } from "./sbx.ts";import {
   WORKER_STALL_TIMEOUT_MS,
   formatStallReason,
@@ -104,7 +109,6 @@ import {
   completeSpawnClaim,
   formatClaimConflict,
   globsIntersect,
-  parseClaimsPaths,
   prepareSpawnClaims,
   readClaims,
   siblingContextFor,
@@ -319,6 +323,117 @@ await check("parseSpecScopeEnv: env round-trip", async () => {
   assert.deepEqual(parseSpecScopeEnv("module=game rules=R-1"), { module: "game", rules: ["R-1"] });
   assert.equal(parseSpecScopeEnv(""), null);
   assert.equal(parseSpecScopeEnv(undefined), null);
+  // `none` is the normalized value for an EXPLICIT empty scope (B3.1): it must
+  // parse to an empty scope, not to null (= full check, no scope at all).
+  assert.deepEqual(parseSpecScopeEnv("none"), { module: undefined, rules: [] });
+  assert.equal(formatSpecScope({ rules: [] }), "none");
+  assert.deepEqual(parseSpecScope("SPEC-SCOPE: none"), { module: undefined, rules: [] });
+});
+
+// ── Task packets (B3.1: protocol.ts owns the grammar) ──────────────────────
+// The subagent tool boundary calls parseTaskPacket once per task text and
+// refunds the spawn on any error; these cases pin the grammar and the exact
+// normalized PI_DELEGATE_SPEC_SCOPE value the boundary exports.
+await check("parseTaskPacket: valid packets normalize to the expected scope env", async () => {
+  const cases = [
+    ["none", "none"],
+    ["module=game", "module=game"],
+    ["rules=R-GAME-001,R-GAME-002", "rules=R-GAME-001,R-GAME-002"],
+    ["module=game rules=R-GAME-001,R-GAME-002", "module=game rules=R-GAME-001,R-GAME-002"],
+  ];
+  for (const [body, expected] of cases) {
+    const parsed = parseTaskPacket("Do the thing.\nSPEC-SCOPE: " + body + "\nmore prose");
+    assert.equal(parsed.ok, true, body + " is a valid packet");
+    assert.equal(parsed.packet.scopeEnv, expected, "normalized env for " + body);
+    // What index.ts exports into the sandbox is what the gate re-parses: the
+    // round-trip must be lossless (including the explicit empty scope).
+    assert.deepEqual(parseSpecScopeEnv(parsed.packet.scopeEnv), parsed.packet.scope, "env round-trip for " + body);
+  }
+  // Case-insensitive prefix, like today's lenient helper.
+  assert.equal(parseTaskPacket("spec-scope: rules=R-A-1").packet.scopeEnv, "rules=R-A-1");
+  // CLAIMS-PATHS still normalizes valid entries (./ prefix + trailing slash).
+  const claimed = parseTaskPacket("SPEC-SCOPE: rules=R-1\nCLAIMS-PATHS: ./internal/a/ , internal/b");
+  assert.equal(claimed.ok, true);
+  assert.deepEqual(claimed.packet.ownedPaths, ["internal/a", "internal/b"]);
+  assert.equal(claimed.packet.scopeEnv, "rules=R-1");
+});
+
+await check("parseTaskPacket: no SPEC-SCOPE line is valid and exports NO env var", async () => {
+  const parsed = parseTaskPacket("Do the thing.\nCLAIMS-PATHS: internal/game/**");
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.packet.scope, null, "no scope parsed");
+  assert.equal(Object.prototype.hasOwnProperty.call(parsed.packet, "scopeEnv"), false, "no scopeEnv key");
+  assert.deepEqual(parsed.packet.ownedPaths, ["internal/game/**"]);
+  // The env assembly in index.ts only sets the variable when the key exists.
+  assert.equal(undefined, parsed.packet.scopeEnv);
+});
+
+await check("parseTaskPacket: garbage SPEC-SCOPE lines are refused, naming the line", async () => {
+  const cases = [
+    { text: "SPEC-SCOPE: none extra-words", line: "SPEC-SCOPE: none extra-words" },
+    { text: "SPEC-SCOPE: modul=game", line: "SPEC-SCOPE: modul=game" },
+    { text: "SPEC-SCOPE: rules=", line: "SPEC-SCOPE: rules=" },
+    { text: "SPEC-SCOPE:", line: "SPEC-SCOPE:" },
+    { text: "SPEC-SCOPE: module=", line: "SPEC-SCOPE: module=" },
+    { text: "SPEC-SCOPE: module=game rules=", line: "SPEC-SCOPE: module=game rules=" },
+    { text: "SPEC-SCOPE: module=game rules=,R-1", line: "SPEC-SCOPE: module=game rules=,R-1" },
+    { text: "SPEC-SCOPE: (nothing usable)", line: "SPEC-SCOPE: (nothing usable)" },
+    { text: "SPEC-SCOPE: module=game rules=R-1 rules=R-2", line: "SPEC-SCOPE: module=game rules=R-1 rules=R-2" },
+    { text: "SPEC-SCOPE: module=game\nSPEC-SCOPE: module=identity", line: "SPEC-SCOPE: module=identity" },
+  ];
+  for (const { text, line } of cases) {
+    const parsed = parseTaskPacket("Do the thing.\n" + text);
+    assert.equal(parsed.ok, false, "refused: " + text);
+    const joined = parsed.errors.join("\n");
+    assert.ok(joined.includes(line), "error names the offending line for " + text + ": " + joined);
+    const refusal = formatTaskPacketRefusal(parsed.errors);
+    assert.match(refusal, /Refused: malformed task packet/);
+    assert.match(refusal, /SPEC-SCOPE line/);
+    assert.match(refusal, /WORKFLOW\.md § Task packets/);
+  }
+});
+
+await check("parseTaskPacket: whitespace-only CLAIMS-PATHS entries are refused, naming the line", async () => {
+  const cases = [
+    "CLAIMS-PATHS: internal/a, , internal/b",
+    "CLAIMS-PATHS: internal/a,",
+    "CLAIMS-PATHS:   ",
+  ];
+  for (const line of cases) {
+    const parsed = parseTaskPacket("Do the thing.\n" + line);
+    assert.equal(parsed.ok, false, "refused: " + JSON.stringify(line));
+    const joined = parsed.errors.join("\n");
+    assert.match(joined, /CLAIMS-PATHS line/);
+    assert.ok(joined.includes(line.trim()), "error names the offending line: " + joined);
+    assert.match(formatTaskPacketRefusal(parsed.errors), /Refused: malformed task packet/);
+  }
+  // A whitespace-containing entry is malformed too (it can never be a path).
+  const spaced = parseTaskPacket("CLAIMS-PATHS: internal/a b");
+  assert.equal(spaced.ok, false);
+  assert.match(spaced.errors.join("\n"), /contains whitespace/);
+});
+
+await check("subagent boundary: ONE packet parse refuses before any spawn", async () => {
+  // index.ts's execute() cannot be imported headless (it imports the pi
+  // packages); smoke-sbx.mjs models wiring checks like this at the source
+  // level. Assert the boundary shape instead: one strict parse, an error tool
+  // result, and the env threading from the parsed packet (no re-parse).
+  const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "index.ts"), "utf8");
+  assert.equal([...source.matchAll(/parseTaskPacket\(/g)].length, 1, "exactly one parseTaskPacket call site");
+  assert.match(source, /TASK-PACKET BOUNDARY \(B3\.1\)/);
+  const refusalAt = source.indexOf("text: formatTaskPacketRefusal(packetErrors)");
+  assert.ok(refusalAt > 0, "boundary returns the refusal as the tool result");
+  const resolveAt = source.indexOf("const resolvedChain = (params.chain ?? [])");
+  assert.ok(resolveAt > refusalAt, "refusal runs before agent resolution");
+  const claimsAt = source.indexOf("prepareSpawnClaims({");
+  assert.ok(claimsAt > refusalAt, "refusal runs before any claim is written");
+  const spawnAt = source.indexOf("await runSingleAgent(");
+  assert.ok(spawnAt > refusalAt, "refusal runs before any spawn");
+  // The validated env reaches the spawn; the task text is never re-parsed.
+  assert.match(source, /chainPackets\[i\]\?\.scopeEnv/);
+  assert.match(source, /taskPackets\[index\]\?\.scopeEnv/);
+  assert.match(source, /singlePacket\?\.scopeEnv/);
+  assert.doesNotMatch(source, /parseSpecScope\(task\)/);
 });
 
 await check("isGateRelevantWrite", async () => {

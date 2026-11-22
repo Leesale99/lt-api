@@ -63,7 +63,8 @@ import {
   APPROVAL_MARKER,
   HANDOFF_TERMINAL_TOKENS,
 } from "./contracts.ts";
-import { runReconciliation, checkProveCoverage, parseSpecScope } from "./gates.ts";
+import { parseSpecScope } from "./protocol.ts";
+import { runReconciliation, checkProveCoverage } from "./gates.ts";
 import { getFinalOutput, parseChildJsonl, truncateParallelOutput } from "./output.ts";
 
 const execFileP = promisify(execFile);
