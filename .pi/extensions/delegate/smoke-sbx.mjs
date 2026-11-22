@@ -25,6 +25,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  GATE_SANDBOX_CPUS,
+  GATE_SANDBOX_EGRESS_HOSTS,
+  GATE_SANDBOX_MEMORY,
+  GATE_SANDBOX_PROFILE,
+  GATE_SANDBOX_ROLE,
+  GATE_SANDBOX_TEMPLATE_NAME,
   SANDBOX_CONTEXT7_SECRET_SENTINEL_ENV,
   SANDBOX_CREATE_AGENT,
   SANDBOX_DEFAULT_CPUS,
@@ -45,8 +51,17 @@ import {
   SBX_EXIT_COULD_NOT_RUN,
   SBX_EXIT_MISSING_EXECUTABLE,
   classifySbxExit,
+  createGateSandbox,
   createSandboxArgs,
   createWorkerSandbox,
+  ensureGateSandbox,
+  gateMountPlanFromCommonDir,
+  gateSandboxFor,
+  gateSandboxKey,
+  listGateSandboxes,
+  resetGateSandboxRegistryForTests,
+  resolveGateMountPlan,
+  teardownGateSandboxes,
   execInSandbox,
   execSandboxArgs,
   generatedSandboxName,
@@ -1232,6 +1247,188 @@ await check("checkProveCoverage: prove note + exit 0 VERIFIES, ordinary green do
   assert.equal(refused.ok, false);
   assert.deepEqual(refused.missing, [rule]);
   assert.match(refused.report, /REFUSED/);
+});
+
+
+// ── 7. Gate VM: template, mounts, lifecycle, reuse ──────────────────────────
+
+await check("gate VM: template/sizing/egress constants are the locked-down gate profile", async () => {
+  assert.equal(GATE_SANDBOX_TEMPLATE_NAME, "docker.io/library/pi-gate:v1");
+  assert.equal(GATE_SANDBOX_ROLE, "gate");
+  assert.equal(GATE_SANDBOX_CPUS, 4);
+  assert.equal(GATE_SANDBOX_MEMORY, "8g");
+  assert.deepEqual([...GATE_SANDBOX_EGRESS_HOSTS], [
+    "proxy.golang.org:443",
+    "sum.golang.org:443",
+    "storage.googleapis.com:443",
+  ]);
+  // No model, no secret sentinel: a gate VM never calls a model and carries no
+  // credential. Egress is the Go proxy fallback only.
+  assert.deepEqual(GATE_SANDBOX_PROFILE.secretSentinelEnvs, []);
+  assert.equal(GATE_SANDBOX_PROFILE.networkHosts.includes("opencode.ai:443"), false);
+  assert.deepEqual(GATE_SANDBOX_PROFILE.mounts, [{ kind: "worktree", mode: "rw" }]);
+  assert.deepEqual(profileDenyHosts(GATE_SANDBOX_PROFILE), []);
+  // The gate profile is NOT in the role table: an agent named "gate" must not
+  // silently become the verifier plane (it gets the worker profile instead).
+  assert.equal(GATE_SANDBOX_PROFILE.role, "gate");
+  assert.notEqual(profileForRole("gate"), GATE_SANDBOX_PROFILE);
+});
+
+await check("gate VM: linked-worktree mount plan adds the main repo root :ro, otherwise one mount", async () => {
+  const worktree = "/host/repo/.worktrees/job-1";
+  // Own .git directory: not linked, no extra mount.
+  assert.deepEqual(gateMountPlanFromCommonDir(worktree, ".git"), {
+    worktreePath: worktree,
+    repoRoot: null,
+    linkedWorktree: false,
+  });
+  assert.deepEqual(gateMountPlanFromCommonDir(worktree, "/host/repo/.worktrees/job-1/.git"), {
+    worktreePath: worktree,
+    repoRoot: null,
+    linkedWorktree: false,
+  });
+  // Linked: the common dir is the MAIN repo's .git ⇒ mount its parent :ro.
+  assert.deepEqual(gateMountPlanFromCommonDir(worktree, "/host/repo/.git"), {
+    worktreePath: worktree,
+    repoRoot: "/host/repo",
+    linkedWorktree: true,
+  });
+  // Unprobeable (git failed) keeps the provable single mount.
+  const plan = resolveGateMountPlan(worktree, () => ({ ok: false, commonDir: "", reason: "no git" }));
+  assert.equal(plan.repoRoot, null);
+  assert.equal(plan.linkedWorktree, false);
+  const probed = resolveGateMountPlan(worktree, () => ({ ok: true, commonDir: "/host/repo/.git", reason: "" }));
+  assert.equal(probed.repoRoot, "/host/repo");
+});
+
+await check("createGateSandbox: pi-gate template, worktree rw primary, per-sandbox Go egress only", async () => {
+  resetGateSandboxRegistryForTests();
+  const worktree = path.join(tmp, "gate-wt-plain");
+  fs.mkdirSync(worktree, { recursive: true });
+  const stub = installStub();
+  const handle = await createGateSandbox(worktree, {
+    name: "pi-gate-fixed-1",
+    mountPlan: gateMountPlanFromCommonDir(worktree, ""),
+  });
+  assert.equal(handle.name, "pi-gate-fixed-1");
+  assert.equal(handle.role, "gate");
+  assert.equal(handle.createdFrom, "template");
+  assert.equal(handle.hasWorkspace, true);
+  assert.deepEqual(handle.networkHosts, [...GATE_SANDBOX_EGRESS_HOSTS]);
+  assert.equal(handle.extraWorkspaces, undefined, "a plain worktree needs no extra mount");
+  assert.equal(stub.calls.length, 2, "create + one policy allow");
+  assert.deepEqual(
+    stub.calls[0],
+    createSandboxArgs({
+      name: "pi-gate-fixed-1",
+      profile: GATE_SANDBOX_PROFILE,
+      worktreePath: path.resolve(worktree),
+      reference: "template",
+      template: GATE_SANDBOX_TEMPLATE_NAME,
+    }),
+  );
+  assert.equal(stub.calls[0].includes("docker.io/library/pi-gate:v1"), true);
+  assert.equal(stub.calls[0].includes("docker.io/library/pi-worker:v1"), false);
+  assert.equal(stub.calls[0][stub.calls[0].indexOf("--cpus") + 1], "4");
+  assert.equal(stub.calls[0][stub.calls[0].indexOf("--memory") + 1], "8g");
+  assert.deepEqual(stub.calls[1], policyAllowArgs("pi-gate-fixed-1", GATE_SANDBOX_EGRESS_HOSTS));
+  assert.equal(stub.calls[1].join(" ").includes("opencode.ai"), false, "no model egress for a gate VM");
+  setSbxProcessOps(null);
+  resetGateSandboxRegistryForTests();
+});
+
+await check("createGateSandbox: a linked worktree mounts the main repo root :ro so gitdir resolves", async () => {
+  resetGateSandboxRegistryForTests();
+  const worktree = path.join(tmp, "gate-linked", ".worktrees", "job-2");
+  fs.mkdirSync(worktree, { recursive: true });
+  const repoRoot = path.join(tmp, "gate-linked");
+  const stub = installStub();
+  const handle = await createGateSandbox(worktree, {
+    name: "pi-gate-linked-1",
+    mountPlan: gateMountPlanFromCommonDir(worktree, path.join(repoRoot, ".git")),
+  });
+  assert.deepEqual(handle.extraWorkspaces, [repoRoot]);
+  const create = stub.calls[0];
+  // Worktree RW first (primary), main repo root :ro second (pointer target).
+  assert.equal(create[create.length - 1], repoRoot + ":ro");
+  assert.equal(create[create.length - 2], path.resolve(worktree));
+  setSbxProcessOps(null);
+  resetGateSandboxRegistryForTests();
+});
+
+await check("createGateSandbox: a missing template is a loud infra failure (no worker-image fallback)", async () => {
+  resetGateSandboxRegistryForTests();
+  const worktree = path.join(tmp, "gate-wt-missing");
+  fs.mkdirSync(worktree, { recursive: true });
+  const stub = installStub((args) => (args[0] === "create" ? { exitCode: 1, stderr: "template not found" } : {}));
+  await assert.rejects(
+    createGateSandbox(worktree, { name: "pi-gate-missing-1", mountPlan: gateMountPlanFromCommonDir(worktree, "") }),
+    /gate VM from template 'docker\.io\/library\/pi-gate:v1' failed/,
+  );
+  assert.equal(stub.calls.length, 1, "one create attempt, no kit retry");
+  assert.equal(stub.calls[0].includes("shell"), true, "a template create never swaps the agent slot for a kit");
+  assert.equal(stub.existsCalls.length, 0, "no kit probe for a gate VM");
+  setSbxProcessOps(null);
+  resetGateSandboxRegistryForTests();
+});
+
+await check("ensureGateSandbox: session reuse keyed by worktree path; a new path gets a new VM", async () => {
+  resetGateSandboxRegistryForTests();
+  const first = path.join(tmp, "gate-reuse-a");
+  const second = path.join(tmp, "gate-reuse-b");
+  fs.mkdirSync(first, { recursive: true });
+  fs.mkdirSync(second, { recursive: true });
+  const stub = installStub();
+  const a1 = await ensureGateSandbox(first, { mountPlan: gateMountPlanFromCommonDir(first, "") });
+  const a2 = await ensureGateSandbox(first, { mountPlan: gateMountPlanFromCommonDir(first, "") });
+  assert.equal(a1.name, a2.name, "the SAME worktree path reuses the VM");
+  assert.equal(stub.calls.filter((args) => args[0] === "create").length, 1, "one create for the reused path");
+  assert.equal(gateSandboxKey(first), path.resolve(first));
+  assert.equal(gateSandboxFor(first).name, a1.name);
+
+  const b = await ensureGateSandbox(second, { mountPlan: gateMountPlanFromCommonDir(second, "") });
+  assert.notEqual(b.name, a1.name, "a different worktree path NEVER reuses the old mount");
+  assert.equal(stub.calls.filter((args) => args[0] === "create").length, 2);
+  assert.deepEqual(listGateSandboxes().map((handle) => handle.name).sort(), [a1.name, b.name].sort());
+
+  // Concurrent decisions on one path share the in-flight create.
+  const raced = path.join(tmp, "gate-reuse-c");
+  fs.mkdirSync(raced, { recursive: true });
+  const before = stub.calls.filter((args) => args[0] === "create").length;
+  const [r1, r2] = await Promise.all([
+    ensureGateSandbox(raced, { mountPlan: gateMountPlanFromCommonDir(raced, "") }),
+    ensureGateSandbox(raced, { mountPlan: gateMountPlanFromCommonDir(raced, "") }),
+  ]);
+  assert.equal(r1.name, r2.name);
+  assert.equal(stub.calls.filter((args) => args[0] === "create").length, before + 1, "one create under a race");
+
+  // Session end: every gate VM is stopped and removed.
+  const results = await teardownGateSandboxes();
+  assert.equal(results.length, 3);
+  assert.equal(results.every((entry) => entry.stopped && entry.removed), true);
+  assert.deepEqual(listGateSandboxes(), [], "registry is empty after teardown");
+  const rmCalls = stub.calls.filter((args) => args[0] === "rm").map((args) => args[2]).sort();
+  assert.deepEqual(rmCalls, [a1.name, b.name, r1.name].sort());
+  setSbxProcessOps(null);
+  resetGateSandboxRegistryForTests();
+});
+
+await check("gate VM: resolveGateMountPlan uses the host git probe for a real linked worktree", async () => {
+  resetGateSandboxRegistryForTests();
+  const main = path.join(tmp, "gate-real-link");
+  fs.mkdirSync(main, { recursive: true });
+  git(main, ["init", "-q"]);
+  fs.writeFileSync(path.join(main, "README.md"), "# linked\n");
+  git(main, ["add", "."]);
+  git(main, ["commit", "-q", "-m", "fixture"]);
+  const worktree = path.join(tmp, "gate-real-link-wt");
+  git(main, ["worktree", "add", "-q", worktree, "-b", "gate-linked-branch"]);
+  // createGateSandbox calls the real probe: this is the host-side trust anchor
+  // reading git metadata (never worktree code).
+  const plan = resolveGateMountPlan(worktree);
+  assert.equal(plan.linkedWorktree, true, "a git worktree add path is linked");
+  assert.equal(plan.repoRoot, fs.realpathSync(main), "the main repo root is the :ro extra mount");
+  resetGateSandboxRegistryForTests();
 });
 
 // ── Teardown of the harness ─────────────────────────────────────────────────

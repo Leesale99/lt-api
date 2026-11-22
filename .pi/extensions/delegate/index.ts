@@ -73,6 +73,19 @@
  *     merge command when the job's recorded SPEC-SCOPE names rules without
  *     VERIFIED host-side prove receipts — independent of how the approval
  *     arrived.
+ *
+ * Gate-VM era (this file):
+ *   - The AUTHORITATIVE gate commands (declared in WORKFLOW.md) no longer run
+ *     on the host. They run in a second, locked-down `pi-gate:v1` VM
+ *     (./sbx.ts `createGateSandbox`): the host spawns `sbx exec` and nothing
+ *     else. A gate command typed into a host bash session is recognised and
+ *     REWRITTEN to the equivalent `sbx exec` line (after the host integrity
+ *     check and, for `make audit`/`make prove`, the Postgres pre-sequence); the
+ *     extension-driven ladder/settle/reconciliation paths call the gate VM
+ *     directly. The host keeps only the integrity check (`git`) and receipts.
+ *   - Gate VMs are session-scoped and keyed by worktree path (a background
+ *     job's fresh worktree gets its own VM); all are torn down at
+ *     `session_shutdown`.
  */
 
 import { spawn } from "node:child_process";
@@ -138,11 +151,13 @@ import {
   markPostWriteGateStart,
   parseSpecScope,
   planSettleGateAttempt,
+  prepareGateDbVm,
   receiptCommandsOf,
   recentSettleFailures,
   reconciliationGateRun,
   recordSettleGateAttempt,
   resetSettleGateAttempts,
+  resolveDeclaredGateCommand,
   runInVmAdvisoryGate,
   runReconciliation,
   runScopedGate,
@@ -152,6 +167,10 @@ import {
   shouldRunPostWriteGate,
   splitCommandLine,
   splitTopLevelSegments,
+  tailLines,
+  gateVmExecEnv,
+  gateVmShellCommand,
+  parseGateVmShellCommand,
   writeReceipt,
 } from "./gates.ts";
 import {
@@ -160,10 +179,13 @@ import {
   type SandboxMount,
   SANDBOX_ENV_FLAG,
   createWorkerSandbox,
+  ensureGateSandbox,
   execInSandbox,
+  gateSandboxFor,
   isHostPassthroughRole,
   isSandboxedChild,
   profileForRole,
+  teardownGateSandboxes,
   teardownSandbox,
 } from "./sbx.ts";
 import { formatStallReason, startStallWatchdog, workerStallTimeoutMs } from "./runtime.ts";
@@ -275,6 +297,7 @@ async function writeSettleReceipt(input: {
   commands: ReturnType<typeof receiptCommandsOf>;
   ok: boolean;
   note: string;
+  sandbox?: string;
 }): Promise<string | null> {
   try {
     return await writeReceipt({
@@ -284,6 +307,7 @@ async function writeSettleReceipt(input: {
       commands: input.commands,
       ok: input.ok,
       note: input.note,
+      ...(input.sandbox ? { sandbox: input.sandbox } : {}),
     });
   } catch (error) {
     console.error("[delegate] settle receipt failed:", error);
@@ -856,6 +880,7 @@ async function safeHostReceipt(input: {
   commands: ReturnType<typeof receiptCommandsOf>;
   ok: boolean;
   note: string;
+  sandbox?: string;
 }): Promise<string | null> {
   try {
     return await writeReceipt({
@@ -865,6 +890,7 @@ async function safeHostReceipt(input: {
       commands: input.commands,
       ok: input.ok,
       note: input.note,
+      ...(input.sandbox ? { sandbox: input.sandbox } : {}),
     });
   } catch (error) {
     console.error("[delegate] host receipt failed:", error);
@@ -880,8 +906,9 @@ async function safeHostReceipt(input: {
  *      worktree + index). Dirty/unverifiable ⇒ REFUSE to run any gate, write a
  *      receipt saying so, and fail the result loudly (human review).
  *   2. otherwise, when the child exited normally, the authoritative ladder
- *      (`make audit/static` + the scoped spec check) IN THE WORKTREE, and its
- *      receipt — in the HOST's receipts dir, not the worktree's.
+ *      (`make audit/static` + the scoped spec check) IN THE GATE VM (mounted at
+ *      the worktree path; the host only spawns `sbx exec`), and its receipt —
+ *      in the HOST's receipts dir, not the worktree's.
  */
 async function verifySandboxedWorker(input: {
   hostRoot: string;
@@ -957,7 +984,8 @@ async function verifySandboxedWorker(input: {
     agent: input.agent,
     commands: receiptCommandsOf(gates),
     ok: gates.ok,
-    note: "host gate (authoritative, post-exit)",
+    note: "host gate (authoritative, post-exit; executed in the gate VM)",
+    sandbox: gates.steps.find((step) => step.gateSandbox)?.gateSandbox,
   });
   if (gateReceipt) receipts.push(gateReceipt);
   return { integrity, receipts, refused: false, gatesRan: true, gates };
@@ -2591,9 +2619,134 @@ export default function (pi: ExtensionAPI) {
         "requires a VERIFIED host-side prove receipt for EVERY scoped rule \u2014 no matter how the " +
         "approval arrived (typed in the pane or relayed via job_approve). Missing: " +
         coverage.missing.join(", ") + ". " +
-        "Run `make prove args='--rule <id>'` on the host once per scoped rule (the extension records " +
-        "the receipt in the host receipts dir), then retry the merge.\n" + coverage.report,
+        "Run `make prove args='--rule <id>'` once per scoped rule (the bash gate hook " +
+        "dispatches it into the gate VM; the extension records the receipt in the host receipts dir), " +
+        "then retry the merge.\n" + coverage.report,
     };
+  });
+
+  // GATE-VM EXECUTION (host shell → gate VM). The authoritative gates used to
+  // be typed into the host's bash tool, so the host shell executed the
+  // worktree's Makefile / cmd/spec directly. They now run in the locked-down
+  // gate VM instead: a declared gate command typed here is recognised
+  // (`resolveDeclaredGateCommand`), the host integrity check runs FIRST (the
+  // trust anchor — dirty gate files ⇒ refuse, never execute), the DB-backed
+  // gates get the Postgres pre-sequence, and the bash input is REWRITTEN to the
+  // equivalent `sbx exec` line. The host therefore executes only `sbx`; the
+  // gate argv is passed verbatim to the VM. A compound command (pipe, redirect,
+  // several segments) is not rewritten: it is not the declared invocation.
+  pi.on("tool_call", async (event, ctx) => {
+    if (isSandboxedChild()) return;
+    if (event.toolName !== "bash") return;
+    const input = event.input as { command?: unknown };
+    if (typeof input.command !== "string" || input.command.trim().length === 0) return;
+    const resolved = resolveDeclaredGateCommand(input.command, ctx.cwd);
+    if (!resolved) return;
+
+    // 1. Host-side integrity check — unchanged, and still BEFORE any gate
+    // execution: the four gate paths must match HEAD in this worktree.
+    let integrity: IntegrityCheckResult;
+    try {
+      integrity = await checkWorktreeIntegrity(resolved.cwd);
+    } catch (error) {
+      integrity = {
+        clean: false,
+        refused: true,
+        report:
+          "\u2500\u2500 INTEGRITY CHECK (host, pre-gate) \u2500\u2500\nintegrity check crashed: " +
+          (error instanceof Error ? error.message : String(error)),
+        steps: [],
+        paths: [],
+      };
+    }
+    if (integrity.refused || !integrity.clean) {
+      await safeHostReceipt({
+        cwd: ctx.cwd,
+        agent: process.env.PI_DELEGATE_ROLE ?? "agent",
+        commands: integrity.steps.map((step) => ({
+          command: step.command,
+          exitCode: step.exitCode,
+          timedOut: step.timedOut,
+          durationMs: step.durationMs,
+        })),
+        ok: false,
+        note: "integrity check (host, pre-gate VM): REFUSED \u2014 gate command not executed",
+      });
+      return {
+        block: true,
+        reason:
+          integrityRefusalReason(integrity) +
+          "\n\nThe gate command was NOT executed anywhere (no gate VM exec): " + resolved.segment,
+      };
+    }
+
+    // 2. DB-backed gates only: start Postgres, wait, reset the test DB. A
+    // failure here stops the gate with a named step instead of running it
+    // against a broken database.
+    try {
+      if (resolved.db) {
+        const prep = await prepareGateDbVm(resolved.cwd);
+        if (!prep.ok && prep.step) {
+          const failing = prep.step;
+          return {
+            block: true,
+            reason:
+              "GATE VM DB PRE-SEQUENCE FAILED \u2014 the gate command was not run (no verdict).\n" +
+              "- " + failing.command + " \u2014 " +
+              (failing.exitCode === null ? "no exit code" : "exit " + String(failing.exitCode)) +
+              " \u00b7 " + failing.reason + "\n" + tailLines(failing.stdout + failing.stderr, 20),
+          };
+        }
+      }
+
+      // 3. Lazily create/reuse the session's gate VM for this worktree path and
+      // rewrite the bash input to the equivalent `sbx exec` argv.
+      const sandbox = await ensureGateSandbox(resolved.cwd);
+      const rewritten = gateVmShellCommand(
+        sandbox.name,
+        resolved.cwd,
+        gateVmExecEnv(resolved.cwd, { db: resolved.db }),
+        resolved.argv,
+      );
+      (input as { command: string }).command = rewritten;
+      // The host-side watchdog for the bash-dispatched gate: sbx exec has no
+      // timeout flag, so bound the host command with the declared stall budget.
+      // The bash tool's `timeout` parameter is in SECONDS (pi schema), so the
+      // ms budget is converted up. A caller that already asked for MORE time
+      // keeps its value.
+      const stallMs = workerStallTimeoutMs(process.env, ctx.cwd);
+      if (stallMs > 0) {
+        const stallSeconds = Math.ceil(stallMs / 1000);
+        const requested = (input as { timeout?: number }).timeout;
+        (input as { timeout?: number }).timeout =
+          typeof requested === "number" && requested > stallSeconds ? requested : stallSeconds;
+      }
+      void logGateDebug(
+        ctx.cwd,
+        "gate command re-dispatched to gate VM " + sandbox.name + " (worktree " + resolved.cwd +
+          "): " + resolved.argv.join(" "),
+      );
+    } catch (error) {
+      return {
+        block: true,
+        reason:
+          "GATE VM UNAVAILABLE \u2014 the gate command was not run (no verdict): " +
+          (error instanceof Error ? error.message : String(error)) +
+          "\nThe gate set has no host fallback: a gate that cannot run in the gate VM FAILS.",
+      };
+    }
+  });
+
+  // Gate VM lifecycle: session-scoped reuse, all torn down at session end.
+  // `session_shutdown` is the clean session-end hook (RELOAD/NEW/RESUME/FORK and
+  // exit all emit it), so the VMs survive across turns and gate decisions and
+  // die with the session. There is no local TTL; the host owns wall-clock.
+  pi.on("session_shutdown", async () => {
+    try {
+      await teardownGateSandboxes();
+    } catch (error) {
+      console.error("[delegate] gate VM teardown failed:", error);
+    }
   });
 
   // PROVE receipt writer (merge-back evidence). The extension records every
@@ -2637,10 +2790,29 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     const proveTokens = splitCommandLine(loaded.policy.proveCmd);
-    if (!rest.some((segment) => isProveSegment(segment, proveTokens))) return;
+    // The command may already be the REWRITTEN `sbx exec` line (the gate-VM
+    // tool_call hook ran before this tool_result). Unwrap it: the in-VM argv is
+    // what identifies a prove run, and `-w` names the worktree whose gate VM
+    // executed it. A plain (unrewritten) command keeps the original matching.
+    const unwrapped = parseGateVmShellCommand(command);
+    const proves =
+      unwrapped !== null
+        ? isProveSegment(unwrapped.argv.join(" "), proveTokens)
+        : rest.some((segment) => isProveSegment(segment, proveTokens));
+    if (!proves) return;
 
     const exitCode = bashExitCodeOf(event);
     try {
+      // The prove command ran in the gate VM (the bash tool_call hook rewrites
+      // a declared gate command to `sbx exec`), so the receipt names the VM it
+      // executed in. A missing VM entry simply means the receipt predates the
+      // rewrite (or the command was identified after the fact) — no key.
+      const proveCwd =
+        unwrapped && unwrapped.worktree
+          ? unwrapped.worktree
+          : cdTarget !== null
+            ? path.resolve(ctx.cwd, cdTarget)
+            : ctx.cwd;
       await writeReceipt({
         cwd: receiptCwd,
         agent: process.env.PI_DELEGATE_ROLE ?? "worker",
@@ -2650,6 +2822,7 @@ export default function (pi: ExtensionAPI) {
         commands: [{ command, exitCode, timedOut: false, durationMs: 0 }],
         ok: exitCode === 0,
         note: "prove rules=" + ruleIds.join(","),
+        sandbox: gateSandboxFor(proveCwd)?.name,
       });
     } catch (error) {
       console.error("[delegate] prove receipt failed:", error);
@@ -2728,6 +2901,7 @@ export default function (pi: ExtensionAPI) {
         commands: receiptCommandsOf(run),
         ok: run.ok,
         note: "post-write gate after " + event.toolName + " " + input.path,
+        sandbox: run.steps.find((step) => step.gateSandbox)?.gateSandbox,
       });
     } catch (error) {
       console.error("[delegate] post-write receipt failed:", error);
@@ -4045,6 +4219,7 @@ export default function (pi: ExtensionAPI) {
       commands: receiptCommandsOf(run),
       ok: run.ok,
       note: "settle gate attempt " + String(attempt) + "/" + String(maxAttempts),
+      sandbox: run.steps.find((step) => step.gateSandbox)?.gateSandbox,
     });
 
     let reconciliation: ReconciliationResult | undefined;
@@ -4079,6 +4254,7 @@ export default function (pi: ExtensionAPI) {
             commands: receiptCommandsOf({ ok: reconciliation.ok, steps: reconciliation.steps }),
             ok: false,
             note: "reconciliation attempt " + String(attempt) + "/" + String(maxAttempts),
+            sandbox: reconciliation.steps.find((step) => step.gateSandbox)?.gateSandbox,
           });
         }
       }
