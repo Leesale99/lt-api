@@ -45,8 +45,7 @@ docs/spec/
   `knowledge-ref` (16). `--strict` makes any check error fatal.
 - **Enforcement suite.** `internal/spec` is a godog suite run as a plain `go test`
   against real Postgres — real migrations, role-restricted pools, the product's own
-  entry points, plus sabotage steps for database-authority proofs. Scenarios tagged
-  `@known-defect:<n>` are excluded by default; `SPEC_KNOWN_DEFECTS=1` runs them.
+  entry points, plus sabotage steps for database-authority proofs.
 
 ## 2. Rule-change protocol
 
@@ -152,8 +151,8 @@ is a cheap triage view, not a verdict: policies 13, 15 and 18 still only run in
 `enforcement`, `verification` and `notes`, then open the feature file it points at.
 Implement against the behavior those two describe. Run `make audit`; done when green.
 If the behavior must change, change the catalog and scenario first (§2). The
-write boundaries that bind this loop — the file-tools deny, the bash write-channel
-scanner and the receipt/reconciliation net — are in §5.
+write boundaries that bind this loop — the worktree mount, the inert in-VM
+extension, and the host-only receipts — are in §5.
 
 **Adding a rule.** Follow §2 — the recipe is canonical there. Pick the authority and id,
 verify every site and test against the code today, add the catalog entry and its `@rule`
@@ -166,16 +165,14 @@ scenario, run `make spec/gen`, then `make audit`.
 ## 5. Delegated work: the two planes and the gates
 
 A delegated task is shaped by `.pi/prompts/implement.md`, executed under
-`.pi/agents/go-worker.md` (the loop and report format) and driven by the child
-orchestrator in `.pi/agents/orchestrator.md` with the generic protocol in
-`.pi/delegate/orchestrator.md` (worktree, commits, approval, merge-back).
-`WORKFLOW.md` carries the machine-checked policy: gate commands, sandbox profiles,
-retry/backoff/stall limits, receipt paths, approval tokens. Those files are
-authoritative; this section is the map between them and never restates them.
-
-*(§4's closing sentence still names three retired mechanisms — the file-tools deny,
-the bash write-channel scanner, the receipt/reconciliation net. They are deleted in
-this generation; what replaced them is below.)*
+`.pi/agents/go-worker.md` (the loop and report format) and driven by the main session
+(persona: `.pi/agents/main.md`) and its child orchestrators, against the protocol
+those files carry (worktree, commits, approval, merge-back).
+`WORKFLOW.md` carries the machine-checked policy: the write boundary, the gate
+planes, the integrity check, receipts and claims, and the RED/GREEN/PROVE ladder.
+Sandbox profiles — mounts, egress, resources — are declared in
+`.pi/extensions/delegate/sbx.ts`. Those files are authoritative; this section is the
+map between them and never restates them.
 
 **Two planes.** A worker runs inside a per-task Docker Sandbox micro-VM (`sbx`),
 with one mount: the worktree, read-write, at the same absolute path (`scout` gets it
@@ -187,7 +184,7 @@ verdict, writes no receipt. The host — main session and child orchestrators �
 verifier plane, but it no longer executes worktree code: every authoritative gate
 runs inside a second, locked-down gate VM (`pi-gate:v1`), and the host's execution
 surface for the tree is `git` (the integrity check — a trusted host binary reading
-paths) and `sbx exec` into that VM. The verdict is still the host's: it consumes the
+paths) and `sbx exec` into that VM. The verdict is the host's: it consumes the
 gate VM's exit codes, and receipts, claims, commits and merges stay host-only.
 
 **The write boundary is the hypervisor and the mount.** No path classifier sits in
@@ -269,8 +266,7 @@ host-side, it is the human's, and no sandbox policy replaces it.
 
 ### Honest residuals
 
-Documented limitations, not hidden ones — the policy copy is `WORKFLOW.md`'s
-"Honest residuals":
+Documented limitations, not hidden ones:
 
 - **In-VM gates are advisory only.** Nothing a worker reports is a verdict; the
   authoritative run happens in the gate VM after the worker's VM is gone, and the
@@ -291,15 +287,6 @@ Documented limitations, not hidden ones — the policy copy is `WORKFLOW.md`'s
   four paths it names. A worker can still poison a non-gate file in its read-write
   mount: the full audit at the merge boundary is the backstop, and the
   orchestrator is expected to read the diff rather than trust exit codes alone.
-
-### Not built yet
-
-- **Sealed fleet mode** — one mountless sandbox for everything, with no worktree
-  handed to workers at all. Deferred by the user for POC use.
-
-Both former entries are built: the gate VM (`pi-gate:v1`) executes every
-authoritative gate, and the researcher runs in its mountless profile. What remains
-for them is drift to watch, not a gap — the gate image is trusted infrastructure
-(like `sbx` and the host `git`), and a *compound* bash command that mixes a declared
-gate with other segments is deliberately not rewritten into the gate VM, so do not
-write compound gate commands.
+- **Gate commands are single commands.** A compound bash command that mixes a
+  declared gate with other segments is deliberately not rewritten into the gate VM,
+  so do not write compound gate commands.

@@ -199,42 +199,6 @@ layer, because the database refuses the write itself.
 
 ---
 
-## 9. `@known-defect:<item>` — the red scenario that is a finding
-
-A scenario that is **red because of a catalogued defect** carries, in addition to its
-`@rule` tag, `@known-defect:<item>` — the defect's item number from the historical
-Phase B report, e.g. `@known-defect:2` for the unmapped SQLSTATEs that surface as an
-unnamed server error. The report is no longer a file in the tree; the catalogued defects
-live in the report as it last existed, recoverable in git history at `a92249a^`
-(`git show a92249a^:docs/spec/history/misalignment-report.md`).
-
-```gherkin
-    # Defect 2 (historical report, item 2): a check violation from the rides table is not
-    # translated into a named ride refusal, so the caller learns only that something
-    # failed, never that the stake was the problem.
-    @known-defect:2
-    Scenario: The refused stake is not yet named for the caller
-      Given it is 3 hours before round 1's first match
-      When the player locks 0 tokens on "Team A" for match day 1
-      Then the refusal is unnamed for the caller
-      And the ride was not created
-```
-
-Semantics the harness implements:
-
-- **default run:** skipped with a loud note naming the historical item —
-  `KNOWN-DEFECT 2 (misalignment-report §6.2): <scenario> — skipped`, the harness's
-  historical label — so a green run never silently claims the behaviour is correct;
-- **opt-in run:** executed only under a flag (`SPEC_KNOWN_DEFECTS=1`);
-- reported as a **finding**, not a pass and not a failure: it never breaks the build. A
-  finding that starts passing means the defect is fixed — remove the tag *and* the item;
-- it never counts towards a rule's coverage: the rule still needs a non-defect scenario;
-- the item number must name a defect catalogued in the historical report (recoverable at
-  `a92249a^`), and the scenario body says in business words what is wrong today and what
-  it should be. A catalogued defect is the only justification for a known-red scenario.
-
----
-
 ## 10. What does not belong in a feature
 
 Mechanical field rules (format, length, rounding); concurrency interleavings needing two
@@ -267,5 +231,3 @@ remain §6.
 - [ ] Does every sabotage `Then` name a real database object — as the migration spells
       it, or by the default name the store gives it — and does the sabotaged rule really
       have a database authority?
-- [ ] Does every `@known-defect:<n>` map to a catalogued item in the historical report,
-      with a non-defect scenario carrying the same rule?

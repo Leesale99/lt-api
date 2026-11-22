@@ -148,9 +148,7 @@ comment pointing at a deleted test, enforcement that moved away from where the d
 claim it lives — does NOT make a rule `drifted`: its content still holds. Keep `status:
 implemented` and record the rot in `notes` behind a `stale-pointer:` prefix. Both
 `drifted` rules and every `stale-pointer` note MUST be surfaced by `spec/check` and
-preserved in the catalog's own `notes`; the historical Phase B misalignment report that
-first catalogued them is recoverable at `a92249a^`
-(`git show a92249a^:docs/spec/history/misalignment-report.md`).
+preserved in the catalog's own `notes`.
 
 Applied migrations are immutable history; when rot is caused by stale prose in an
 applied migration, the fix is the catalog (and a comment at the current site), not a
@@ -160,14 +158,12 @@ rewrite of the migration.
 
 `schedule` | `game` | `identity` | `ledger` | `kernel` | `platform`
 
-### Mapping to the plan sketch's coarser enums (historical provenance)
+### Mapping from the coarser enums
 
-The original plan sketch — no longer a file in the tree, recoverable in git history at
-`a92249a^` (e.g. `git show a92249a^:docs/spec/history/plan.md`) — used `authority:
-db|app|both` and `layer: validator|domain|service|db|middleware`. This schema uses the
-taxonomy's five-value authority and six-value layer because they name *which* app layer.
-The mapping below records how the coarse enums were resolved; when generating
-`business-rules.md`, map:
+The coarse enum values `authority: db|app|both` and
+`layer: validator|domain|service|db|middleware` map onto this schema's taxonomy: the
+five-value authority and six-value layer name *which* app layer. The table below records
+the mapping; when generating `business-rules.md`, map:
 
 | coarse | this schema |
 |---|---|

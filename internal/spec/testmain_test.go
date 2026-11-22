@@ -34,30 +34,25 @@ import (
 	"lt-api.aleksrdvn.com/internal/testdb"
 )
 
-// godogOpts is the suite's run configuration. runMain installs the tag filter
-// that keeps every catalogued known-defect scenario out of the default run
-// (style guide §9) and SPEC_KNOWN_DEFECTS=1 clears it so those scenarios
-// execute and report their outcome. The filter is built from the feature tree
-// rather than written as "~@known-defect" because godog's Behat filter matches
-// tag names exactly — no wildcards — and the catalogued tags are
-// @known-defect:<item>.
+// featurePaths is the directory the feature tree is read from (the same tree
+// godog parses); `spec prove` narrows the suite to that tree's registry
+// scenarios by overriding godogOpts.Paths.
+const featurePaths = "../../docs/spec/features"
+
+// godogOpts is the suite's run configuration.
 var godogOpts = godog.Options{
 	Output:   os.Stdout,
 	Format:   "progress",
-	Paths:    []string{"../../docs/spec/features"},
+	Paths:    []string{featurePaths},
 	NoColors: true,
 }
-
-// featurePaths is the directory the known-defect notes are read from (the same
-// tree godog parses).
-const featurePaths = "../../docs/spec/features"
 
 func TestMain(m *testing.M) {
 	os.Exit(runMain(m))
 }
 
-// runMain owns the single os.Exit: harness setup, the known-defect notes, the
-// godog suite, then m.Run(). The exit status is the worse of the two.
+// runMain owns the single os.Exit: harness setup, the godog suite, then
+// m.Run(). The exit status is the worse of the two.
 func runMain(m *testing.M) int {
 	// The registration and password scenarios hash for real (dozens of them);
 	// the catalog pins the behaviour, never how long a hash takes.
@@ -114,14 +109,6 @@ func runMain(m *testing.M) int {
 	if err := composeSpecApplication(db); err != nil {
 		fmt.Fprintf(os.Stderr, "compose spec application: %v\n", err)
 		return 1
-	}
-
-	running := os.Getenv("SPEC_KNOWN_DEFECTS") == "1"
-	defectTags := announceKnownDefects(featurePaths, running)
-	if running {
-		godogOpts.Tags = ""
-	} else {
-		godogOpts.Tags = excludeTags(defectTags)
 	}
 
 	// `spec prove` narrows the suite to its registry scenarios by handing the
