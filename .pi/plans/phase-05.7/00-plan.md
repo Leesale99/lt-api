@@ -1,6 +1,6 @@
 # Phase 05.7 — Spec + delegate meta-refactor
 
-- **Status:** planned — authored 2026-11-22, baseline HEAD `8a4e35e` (re-verify at job start)
+- **Status:** A + B complete — execution merged through `232c08f` (see Phase log below). C (docs) pending; expanded in phase-C.md.
 - **Scope:** the meta-system (executable specification + delegate workflow + docs). The league-token application and Phase 06 domain work are out of scope.
 - **Execution:** each phase runs as one background orchestrator job from this plan; per-phase files carry the task breakdown, acceptance gates, and HANDOFF mode.
 
@@ -58,6 +58,21 @@ Order: A → B1 → B2 → B3 → C. B1 deliberately precedes Phase 06 so R-LEDG
 
 - **Blocked-report norm** ("a blocked, well-explained report beats a green-looking summary"): retained in WORKFLOW.md judgment rules (~L113). `main.md` stays lean and does not duplicate it.
 - **Host-passthrough retention for future roles**: the doc-of-record is the code — `sbx.ts` comments (~L672/682: "NO role is passthrough today"). No WORKFLOW.md prose needed; consistent with the one-owner thesis.
+
+## Phase log
+
+| Phase | Merged | Head | Notes |
+|---|---|---|---|
+| A | 2026-11-22 | `8ec10a7` | 43 files, +266/−1780; WORKFLOW.md → 117 lines; persona → `.pi/agents/main.md`; parked calls resolved |
+| B1 | 2026-11-22 | `34ce993` | 191 files; 126 per-rule files under `docs/spec/rules/`; round-trip 126/126; ERROR 0 pre/post; prove VERIFIED (R-SCHEDULE-003) |
+| B2 | 2026-11-22 | `b49be02` | policy registry (contiguous, refusal=17); defect 1 closed (scoped runs report catalog/feature findings); `spec work` live |
+| B3 | 2026-11-22 | `232c08f` | 27 files; root `index.ts` 4,278 → 340; protocol.ts (defect 3 closed) + mergegate.ts (defect 2 closed); `gate_file_paths` live; roster: `worker` (was `go-worker`) |
+
+All three recon defects are closed. Receipts are schema v2 (catalogHash); v1 receipts superseded — expected reconciliation noise, do not "fix".
+
+## Session restart required before further spawns
+
+A session started before B3 runs the old extension code in memory, while the checkout's WORKFLOW.md now declares `gate_file_paths` — the old `policy.ts` refuses to run gates (fail-closed, exactly as designed). Restart the session so the new extension loads, then run Phase C.
 
 ## Follow-ups flagged at B1 landing (2026-11-22, merged at `34ce993`)
 
