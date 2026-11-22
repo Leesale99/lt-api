@@ -58,3 +58,9 @@ Order: A → B1 → B2 → B3 → C. B1 deliberately precedes Phase 06 so R-LEDG
 
 - **Blocked-report norm** ("a blocked, well-explained report beats a green-looking summary"): retained in WORKFLOW.md judgment rules (~L113). `main.md` stays lean and does not duplicate it.
 - **Host-passthrough retention for future roles**: the doc-of-record is the code — `sbx.ts` comments (~L672/682: "NO role is passthrough today"). No WORKFLOW.md prose needed; consistent with the one-owner thesis.
+
+## Follow-ups flagged at B1 landing (2026-11-22, merged at `34ce993`)
+
+- `docs/league-tokens-learning-phases/phase-06-ledger-and-accounting.md:171` still names `rules.yaml` — update when Phase 06 starts so R-LEDGER-001..007 land in the per-file format guidance.
+- Cosmetic carryover into B2: `brief.go` labels the write-scope row `| scope |` — fix during the `spec work` rewrite.
+- Expected one-time noise (decision 12): next reconciliation pass reports today's v1 receipts as superseded. Do not "fix" it.
