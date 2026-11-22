@@ -33,14 +33,16 @@ func vocabularyRepo(t *testing.T, features ...string) *testRepo {
 }
 
 // vocabularyFindings runs policy 13 over a synthetic checkout and returns the
-// findings plus their messages in order.
+// findings plus their messages in order. The catalog is the one the fixture repo
+// declares (none in most fixtures, matching the old reality-set read).
 func vocabularyFindings(t *testing.T, repo *testRepo) ([]Finding, []string) {
 	t.Helper()
 
-	findings := collectVocabulary(repo.root)
+	catalog, _ := loadCatalog(repo.rulesPath)
+	findings := collectVocabulary(catalog, repo.root)
 	messages := make([]string, 0, len(findings))
 	for _, f := range findings {
-		messages = append(messages, f.RuleID+" :: "+f.Message)
+		messages = append(messages, f.Subject+" :: "+f.Message)
 	}
 	sort.Strings(messages)
 	return findings, messages
@@ -131,8 +133,8 @@ func TestVocabularyReportsDeniedAndUndeclaredTokens(t *testing.T) {
 		if f.Severity != severityError {
 			t.Errorf("finding %q is not an error", f.Message)
 		}
-		if !strings.Contains(f.RuleID, "docs/spec/features/game/vocabulary-denied.feature::") {
-			t.Errorf("finding %q does not name file::scenario (got %q)", f.Message, f.RuleID)
+		if !strings.Contains(f.Subject, "docs/spec/features/game/vocabulary-denied.feature::") {
+			t.Errorf("finding %q does not name file::scenario (got %q)", f.Message, f.Subject)
 		}
 	}
 }
@@ -242,8 +244,12 @@ func TestVocabularyRejectsMalformedGlossaryTerms(t *testing.T) {
 // agree.
 func TestVocabularyRealTreePassesSeededGlossary(t *testing.T) {
 	root := filepath.Join("..", "..")
+	catalog, err := loadCatalog(filepath.Join(root, "docs", "spec", "rules.yaml"))
+	if err != nil {
+		t.Fatalf("load the seeded catalog: %v", err)
+	}
 
-	findings := collectVocabulary(root)
+	findings := collectVocabulary(catalog, root)
 	if len(findings) != 0 {
 		t.Fatalf("the seeded glossary does not cover the real feature tree:\n%s",
 			describeFindings(findings))
@@ -286,7 +292,7 @@ func TestPrintFindingsReportsVocabularyPolicy(t *testing.T) {
 	repo := vocabularyRepo(t, "features/game/vocabulary-denied.feature")
 	catalog := Catalog{gherkinRule("R-KERNEL-001")}
 
-	findings := collectVocabulary(repo.root)
+	findings := collectVocabulary(catalog, repo.root)
 	var report bytes.Buffer
 	printFindings(&report, repo.rulesPath, catalog, findings, nil)
 	rendered := report.String()

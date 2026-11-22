@@ -184,8 +184,8 @@ func TestReceiverResolutionAtEnforcementSite(t *testing.T) {
 				t.Errorf("policy-15 findings = %d, want 1 mentioning %q:\n%s",
 					len(got15), tt.wantPolicy15, describeFindings(findings))
 			} else {
-				if got15[0].RuleID != "R-TEST-001" {
-					t.Errorf("policy-15 finding attributed to %q, want R-TEST-001", got15[0].RuleID)
+				if got15[0].Subject != "R-TEST-001" {
+					t.Errorf("policy-15 finding attributed to %q, want R-TEST-001", got15[0].Subject)
 				}
 				if !strings.Contains(got15[0].Message, tt.wantPolicy15File) {
 					t.Errorf("policy-15 message %q does not name %q", got15[0].Message, tt.wantPolicy15File)

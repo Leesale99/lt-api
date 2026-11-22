@@ -62,10 +62,6 @@ const (
 	// glossaryCommonSection is the shared section every module may use.
 	glossaryCommonSection = "common"
 
-	// catalogFile is the canonical catalog, relative to the repository root: the
-	// §8 reality gate reads every rule's refusal names from it.
-	catalogFile = "docs/spec/rules.yaml"
-
 	// migrationsGlob matches the SQL migrations, relative to the repository
 	// root: the second half of the §8 reality gate.
 	migrationsGlob = "migrations/*.sql"
@@ -528,11 +524,11 @@ func (c *checker) loadGlossary() *glossary {
 // gherkin-style.md §8 promises that a sabotage assertion names a REAL database
 // object, and rules.schema.md policy 13 exempts those names from the denylisted
 // PHRASES. The set is built once per run (realObjectNames): a name is REAL when
-// it is a value of some rule's `refusal.constraint` or `refusal.sentinel` in
-// docs/spec/rules.yaml, or when it appears literally in a migrations/*.sql
-// file. The loader is deliberately cheap (one catalog read, one glob) and
-// silent on catalog-shape problems: those are other policies' findings, and
-// reporting them here would double-report them.
+// it is a value of some rule's `refusal.constraint` or `refusal.sentinel` in the
+// already-loaded catalog, or when it appears literally in a migrations/*.sql
+// file. The catalog half is threaded in from runCheck, so this policy reads the
+// same catalog the --rules flag named (and the one every other policy sees);
+// only the migrations glob is read here.
 
 // realObjectNames is the §8 reality gate's set of database object names.
 type realObjectNames struct {
@@ -545,29 +541,25 @@ type realObjectNames struct {
 	migrations []string
 }
 
-// loadRealObjectNames builds the §8 reality set for one checker run. A missing
-// or unparseable catalog, and a missing migrations directory, yield the empty
-// half: the policies that own the catalog's shape report those problems, and
-// their absence here must not turn into a second finding.
-func loadRealObjectNames(root string) *realObjectNames {
+// loadRealObjectNames builds the §8 reality set for one checker run: the refusal
+// names of the loaded catalog plus the text of every migrations/*.sql file. A
+// missing migrations directory yields the empty migrations half — the policies
+// that own the tree's shape report those problems, and their absence here must
+// not turn into a second finding.
+func loadRealObjectNames(catalog Catalog, root string) *realObjectNames {
 	real := &realObjectNames{named: map[string]bool{}}
 
-	if data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(catalogFile))); err == nil {
-		var catalog Catalog
-		if err := yaml.Unmarshal(data, &catalog); err == nil {
-			for _, rule := range catalog {
-				if rule.Refusal == nil {
-					continue
-				}
-				for _, name := range rule.Refusal.Constraint {
-					if name != "" {
-						real.named[name] = true
-					}
-				}
-				if sentinel := rule.Refusal.Sentinel; sentinel != nil && *sentinel != "" {
-					real.named[*sentinel] = true
-				}
+	for _, rule := range catalog {
+		if rule.Refusal == nil {
+			continue
+		}
+		for _, name := range rule.Refusal.Constraint {
+			if name != "" {
+				real.named[name] = true
 			}
+		}
+		if sentinel := rule.Refusal.Sentinel; sentinel != nil && *sentinel != "" {
+			real.named[*sentinel] = true
 		}
 	}
 
@@ -675,9 +667,10 @@ func fragmentOwners(tokens []string) []int {
 	return owners
 }
 
-// collectVocabulary runs policy 13 over the feature tree.
-func collectVocabulary(root string) []Finding {
-	c := &checker{root: root, realObjects: loadRealObjectNames(root)}
+// collectVocabulary runs policy 13 over the feature tree. The catalog is the one
+// runCheck already loaded: the §8 reality gate reads its refusal names.
+func collectVocabulary(catalog Catalog, root string) []Finding {
+	c := &checker{root: root, realObjects: loadRealObjectNames(catalog, root)}
 	g := c.loadGlossary()
 	c.checkStepVocabulary(g)
 	sortFindings(c.findings)

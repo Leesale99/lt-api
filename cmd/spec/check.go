@@ -68,7 +68,6 @@ var policyIndex = func() map[string]int {
 
 // Frozen enums, docs/spec/rules.schema.md §1.
 var (
-	moduleEnum   = enum("schedule", "game", "identity", "ledger", "kernel", "platform")
 	categoryEnum = enum("invariant", "policy", "orchestration", "interface",
 		"persistence-fact", "refusal-mapping", "boundary")
 	statusEnum    = enum(statusImplemented, statusSpecifiedOnly, statusDrifted)
@@ -117,28 +116,6 @@ func enum(values ...string) map[string]bool {
 	return m
 }
 
-type severity int
-
-const (
-	severityError severity = iota
-	severityWarn
-)
-
-func (s severity) String() string {
-	if s == severityWarn {
-		return "WARN"
-	}
-	return "ERROR"
-}
-
-// Finding is one policy violation (or WARN line) for one rule.
-type Finding struct {
-	Policy   string
-	RuleID   string
-	Severity severity
-	Message  string
-}
-
 type checker struct {
 	root     string
 	fixtures map[string]bool
@@ -148,21 +125,21 @@ type checker struct {
 	findings    []Finding
 }
 
-func (c *checker) add(policyID, ruleID string, sev severity, format string, args ...any) {
+func (c *checker) add(policyID, subject string, sev severity, format string, args ...any) {
 	c.findings = append(c.findings, Finding{
 		Policy:   policyID,
-		RuleID:   ruleID,
+		Subject:  subject,
 		Severity: sev,
 		Message:  fmt.Sprintf(format, args...),
 	})
 }
 
-func (c *checker) errorf(policyID, ruleID, format string, args ...any) {
-	c.add(policyID, ruleID, severityError, format, args...)
+func (c *checker) errorf(policyID, subject, format string, args ...any) {
+	c.add(policyID, subject, severityError, format, args...)
 }
 
-func (c *checker) warnf(policyID, ruleID, format string, args ...any) {
-	c.add(policyID, ruleID, severityWarn, format, args...)
+func (c *checker) warnf(policyID, subject, format string, args ...any) {
+	c.add(policyID, subject, severityWarn, format, args...)
 }
 
 func runCheck(args []string, stdout, stderr io.Writer) int {
@@ -179,13 +156,9 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "spec check: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
-	if *module != "" && *ruleID != "" {
-		fmt.Fprintln(stderr, "spec check: --module and --rule are mutually exclusive")
-		return 2
-	}
-	if *module != "" && !moduleEnum[*module] {
-		fmt.Fprintf(stderr, "spec check: unknown module %q; one of %s\n",
-			*module, strings.Join(catalogModules(), ", "))
+	scope, err := ParseCLI(*module, *ruleID)
+	if err != nil {
+		fmt.Fprintf(stderr, "spec check: %v\n", err)
 		return 2
 	}
 
@@ -194,19 +167,9 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "spec check: %v\n", err)
 		return 1
 	}
-	if *ruleID != "" {
-		known := false
-		for _, rule := range catalog {
-			if rule.ID == *ruleID {
-				known = true
-				break
-			}
-		}
-		if !known {
-			fmt.Fprintf(stderr, "spec check: unknown rule id %q; %s is the catalog (try `go run ./cmd/spec check`)\n",
-				*ruleID, displayPath(*rulesPath))
-			return 1
-		}
+	if err := scope.Resolve(catalog, displayPath(*rulesPath)); err != nil {
+		fmt.Fprintf(stderr, "spec check: %v (try `go run ./cmd/spec check`)\n", err)
+		return 1
 	}
 	root, err := repoRoot(*rulesPath)
 	if err != nil {
@@ -217,38 +180,24 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	findings := collectFindings(catalog, root)
 	gherkinFindings, index := collectGherkin(catalog, root)
 	findings = append(findings, gherkinFindings...)
-	findings = append(findings, collectVocabulary(root)...)
+	findings = append(findings, collectVocabulary(catalog, root)...)
 	findings = append(findings, collectAnnotationsAgainst(catalog, root, *rulesPath)...)
 	findings = append(findings, collectOracle(catalog, root)...)
 	sortFindings(findings)
 
-	scopeLabel := ""
-	if *module != "" || *ruleID != "" {
-		scopeIDs := map[string]bool{}
-		switch {
-		case *module != "":
-			for _, rule := range catalog {
-				if rule.Module == *module {
-					scopeIDs[rule.ID] = true
-				}
-			}
-			scopeLabel = "module " + *module
-		default:
-			scopeIDs[*ruleID] = true
-			scopeLabel = "rule " + *ruleID
-		}
+	if !scope.Empty() {
 		inScope := findings[:0]
 		for _, f := range findings {
-			// Catalog-level findings carry no rule id, so no --rule or --module
+			// Catalog-level findings carry no subject, so no --rule or --module
 			// can implicate them: they are reported only unscoped.
-			if f.RuleID != "" && scopeIDs[f.RuleID] {
+			if scope.Contains(f.Subject) {
 				inScope = append(inScope, f)
 			}
 		}
 		findings = inScope
 	}
 
-	printFindings(stdout, *rulesPath, catalog, findings, index, scopeLabel)
+	printFindings(stdout, *rulesPath, catalog, findings, index, scope.String())
 
 	errorsFound, _ := countFindings(findings)
 	if *strict && errorsFound > 0 {
@@ -763,8 +712,8 @@ func sortFindings(findings []Finding) {
 		if pi != pj {
 			return pi < pj
 		}
-		if findings[i].RuleID != findings[j].RuleID {
-			return findings[i].RuleID < findings[j].RuleID
+		if findings[i].Subject != findings[j].Subject {
+			return findings[i].Subject < findings[j].Subject
 		}
 		if findings[i].Severity != findings[j].Severity {
 			return findings[i].Severity < findings[j].Severity
@@ -822,11 +771,11 @@ func printFindings(w io.Writer, rulesPath string, catalog Catalog, findings []Fi
 			if f.Severity == severityWarn {
 				prefix = "WARN "
 			}
-			ruleID := f.RuleID
-			if ruleID == "" {
-				ruleID = "(catalog)"
+			subject := f.Subject
+			if subject == "" {
+				subject = "(catalog)"
 			}
-			fmt.Fprintf(w, "- %s**%s** %s\n", prefix, ruleID, f.Message)
+			fmt.Fprintf(w, "- %s**%s** %s\n", prefix, subject, f.Message)
 		}
 		fmt.Fprint(w, "\n")
 	}

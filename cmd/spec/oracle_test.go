@@ -55,8 +55,8 @@ func TestOracleRejectsVacuousThen(t *testing.T) {
 			t.Errorf("finding does not mention %q: %s", want, group[0].Message)
 		}
 	}
-	if group[0].RuleID != "R-KERNEL-001" {
-		t.Errorf("finding names rule %q, want R-KERNEL-001", group[0].RuleID)
+	if group[0].Subject != "R-KERNEL-001" {
+		t.Errorf("finding names rule %q, want R-KERNEL-001", group[0].Subject)
 	}
 }
 

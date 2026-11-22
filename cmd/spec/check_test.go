@@ -21,7 +21,7 @@ func findingsFor(findings []Finding, policyID string) []Finding {
 func describeFindings(findings []Finding) string {
 	var b strings.Builder
 	for _, f := range findings {
-		b.WriteString(fmt.Sprintf("[%s] %s %s: %s\n", f.Policy, f.Severity, f.RuleID, f.Message))
+		b.WriteString(fmt.Sprintf("[%s] %s %s: %s\n", f.Policy, f.Severity, f.Subject, f.Message))
 	}
 	return b.String()
 }

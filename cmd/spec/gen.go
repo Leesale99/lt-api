@@ -414,6 +414,7 @@ func refusalChain(refusal *Refusal) string {
 	return fmt.Sprintf("%s → %s → %s → %s", code, constraints, sentinel, http)
 }
 
+// writeNotes renders a rule's notes as a block quote.
 func writeNotes(b *strings.Builder, notes string) {
 	fmt.Fprint(b, "**Notes**\n\n")
 	for _, line := range strings.Split(strings.TrimSpace(notes), "\n") {
@@ -425,9 +426,4 @@ func writeNotes(b *strings.Builder, notes string) {
 		fmt.Fprintf(b, "> %s\n", escapeQuoteLine(line))
 	}
 	fmt.Fprint(b, "\n")
-}
-
-// mdCell keeps a value from breaking the surrounding Markdown table or heading.
-func mdCell(s string) string {
-	return strings.ReplaceAll(s, "|", `\|`)
 }

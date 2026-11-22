@@ -17,6 +17,8 @@ package main
 // files), so a proof is never skipped because the work is not committed yet.
 
 import (
+	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"go/parser"
@@ -76,33 +78,34 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	known := map[string]bool{}
-	for _, rule := range catalog {
-		known[rule.ID] = true
-	}
-
 	registry, err := loadProveRegistry(filepath.Join(root, filepath.FromSlash(*registryPath)))
 	if err != nil {
 		fmt.Fprintf(stderr, "spec prove: %v\n", err)
 		return 1
 	}
 
-	scope := map[string]bool{}
+	var scope Scope
 	baseLabel := ""
-	if *all {
+	switch {
+	case *all:
+		ids := make([]string, 0, len(registry))
 		for id := range registry {
-			scope[id] = true
+			ids = append(ids, id)
 		}
+		scope = Scope{Rules: ids}
 		baseLabel = "registry (--all)"
-	} else if *ruleID != "" {
-		if !known[*ruleID] {
-			fmt.Fprintf(stderr, "spec prove: unknown rule id %q; %s is the catalog\n",
-				*ruleID, displayPath(*rulesPath))
+	case *ruleID != "":
+		scope, err = ParseCLI("", *ruleID)
+		if err != nil {
+			fmt.Fprintf(stderr, "spec prove: %v\n", err)
+			return 2
+		}
+		if err := scope.Resolve(catalog, displayPath(*rulesPath)); err != nil {
+			fmt.Fprintf(stderr, "spec prove: %v\n", err)
 			return 1
 		}
-		scope[*ruleID] = true
 		baseLabel = "manual --rule"
-	} else {
+	default:
 		if *base == "" {
 			*base, err = defaultProveBase(root)
 			if err != nil {
@@ -116,11 +119,15 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "spec prove: %v\n", err)
 			return 1
 		}
-		scope = derived
+		ids := make([]string, 0, len(derived))
+		for id := range derived {
+			ids = append(ids, id)
+		}
+		scope = Scope{Rules: ids}
 		baseLabel = *base + "...HEAD + dirty tree"
 	}
 
-	if len(scope) == 0 {
+	if scope.Empty() {
 		fmt.Fprintln(stdout, "spec prove: nothing to prove (no touched rule in the diff and no --rule)")
 		return 0
 	}
@@ -140,11 +147,7 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 		scenarioByPointer[scenario.ref.pointer()] = append(scenarioByPointer[scenario.ref.pointer()], scenario)
 	}
 
-	ids := make([]string, 0, len(scope))
-	for id := range scope {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := scope.IDs()
 
 	var verified, unvalidatable, brokenTest, vacuous, signedOff, hardFailures int
 	fmt.Fprintf(stdout, "spec prove: scope %s — %d rule(s)\n\n", baseLabel, len(ids))
@@ -317,14 +320,33 @@ func printTail(w io.Writer, output string, lines int) {
 	}
 }
 
+// loadProveRegistry reads the per-rule mutant registry. Decoding is strict — an
+// unknown field is an error (a misspelled `scenarios` would otherwise register a
+// rule as UNVALIDATABLE without saying so) — and the registry is exactly one
+// YAML document, for the same reason the catalog is.
 func loadProveRegistry(path string) (proveRegistry, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read prove registry: %w", err)
 	}
 	var registry proveRegistry
-	if err := yaml.Unmarshal(data, &registry); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&registry); err != nil {
 		return nil, fmt.Errorf("parse prove registry %s: %w", path, err)
+	}
+	// Keep decoding until EOF: a second document is a merge accident, not a
+	// registry.
+	trailing := fmt.Errorf("parse prove registry %s: trailing YAML document after the first — "+
+		"the registry must be exactly one document", path)
+	var extra yaml.Node
+	switch err := decoder.Decode(&extra); {
+	case errors.Is(err, io.EOF):
+		// Exactly one document: the registry.
+	case err != nil:
+		return nil, fmt.Errorf("%w: %w", trailing, err)
+	default:
+		return nil, trailing
 	}
 	return registry, nil
 }

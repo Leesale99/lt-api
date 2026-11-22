@@ -13,7 +13,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -36,26 +35,6 @@ func newBriefContext(root string) *briefContext {
 	return &briefContext{checker: c, index: c.indexFeatures()}
 }
 
-// catalogModules returns the six module names, sorted, straight from the frozen
-// enum so a module can never exist in the views and not in the checker.
-func catalogModules() []string {
-	modules := make([]string, 0, len(moduleEnum))
-	for name := range moduleEnum {
-		modules = append(modules, name)
-	}
-	sort.Strings(modules)
-	return modules
-}
-
-// sortedRules copies the catalog in id order. Every work order is deterministic:
-// none of the output depends on YAML or map ordering.
-func sortedRules(catalog Catalog) []Rule {
-	rules := make([]Rule, len(catalog))
-	copy(rules, catalog)
-	sort.SliceStable(rules, func(i, j int) bool { return rules[i].ID < rules[j].ID })
-	return rules
-}
-
 func runBrief(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("spec brief", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -73,9 +52,11 @@ func runBrief(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "spec brief: expected one rule id or --module <module>\n\n"+
 			"usage: spec brief R-XXX-NNN\n       spec brief --module %s\n", catalogModules()[0])
 		return 2
-	case *module != "" && !moduleEnum[*module]:
-		fmt.Fprintf(stderr, "spec brief: unknown module %q; one of %s\n",
-			*module, strings.Join(catalogModules(), ", "))
+	}
+
+	scope, err := ParseCLI(*module, "")
+	if err != nil {
+		fmt.Fprintf(stderr, "spec brief: %v\n", err)
 		return 1
 	}
 
@@ -93,13 +74,11 @@ func runBrief(args []string, stdout, stderr io.Writer) int {
 	rules := sortedRules(catalog)
 
 	if *module != "" {
-		selected := make([]Rule, 0, len(rules))
-		for _, rule := range rules {
-			if rule.Module == *module {
-				selected = append(selected, rule)
-			}
+		if err := scope.Resolve(catalog, displayPath(*rulesPath)); err != nil {
+			fmt.Fprintf(stderr, "spec brief: %v\n", err)
+			return 1
 		}
-		_, _ = stdout.Write(renderModuleBrief(ctx, selected, *module, *rulesPath))
+		_, _ = stdout.Write(renderModuleBrief(ctx, scope.Select(rules), *module, *rulesPath))
 		return 0
 	}
 
@@ -405,32 +384,4 @@ func writeQuoteBlock(b *strings.Builder, text string) {
 		fmt.Fprintf(b, "> %s\n", escapeQuoteLine(line))
 	}
 	fmt.Fprint(b, "\n")
-}
-
-// orderedListMarker matches a leading `1.`/`12.` list marker; only the dot is
-// escaped so the note reads as prose inside the quote, not a nested list.
-var orderedListMarker = regexp.MustCompile(`^([0-9]+)\.(?:[ \t]|$)`)
-
-// escapeQuoteLine neutralizes exactly the leading characters that would change
-// the Markdown structure of the block quote — a nested quote (`>`), a heading
-// (`#`), and a list marker (`-`, `*`, `+`, `1.`). Ordinary prose is untouched.
-func escapeQuoteLine(line string) string {
-	switch {
-	case strings.HasPrefix(line, ">"), strings.HasPrefix(line, "#"):
-		return `\` + line
-	case strings.HasPrefix(line, "- "), strings.HasPrefix(line, "* "), strings.HasPrefix(line, "+ "),
-		line == "-", line == "*", line == "+":
-		return `\` + line
-	}
-	if loc := orderedListMarker.FindStringSubmatchIndex(line); loc != nil {
-		dot := loc[3] // end of the digit group, i.e. the `.`
-		return line[:dot] + `\` + line[dot:]
-	}
-	return line
-}
-
-// finishMarkdown keeps every generated artifact byte-stable: exactly one
-// trailing newline.
-func finishMarkdown(b *strings.Builder) []byte {
-	return []byte(strings.TrimRight(b.String(), "\n") + "\n")
 }

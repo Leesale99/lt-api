@@ -162,17 +162,6 @@ func splitPointer(pointer string) (path, symbol string, ok bool) {
 	return path, symbol, true
 }
 
-// displayPath keeps site/verification pointers readable in Markdown tables.
-func displayPath(path string) string {
-	return filepath.ToSlash(filepath.Clean(path))
-}
-
-// normalizeProse folds a YAML block scalar into stable single-spaced text so
-// the generated Markdown does not depend on the YAML author's line wrapping.
-func normalizeProse(s string) string {
-	return strings.Join(strings.Fields(s), " ")
-}
-
 // sortedKeys returns map keys in ascending order for deterministic output.
 func sortedKeys(m map[string]int) []string {
 	keys := make([]string, 0, len(m))

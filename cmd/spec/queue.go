@@ -78,9 +78,9 @@ func runQueue(args []string, stdout, stderr io.Writer) int {
 	// An unknown module is a usage error (2), matching `spec check`: the flag
 	// can only be wrong, and a caller feeding it from a script wants the bad
 	// invocation distinguished from a broken checkout.
-	if *module != "" && !moduleEnum[*module] {
-		fmt.Fprintf(stderr, "spec queue: unknown module %q; one of %s\n",
-			*module, strings.Join(catalogModules(), ", "))
+	scope, err := ParseCLI(*module, "")
+	if err != nil {
+		fmt.Fprintf(stderr, "spec queue: %v\n", err)
 		return 2
 	}
 
@@ -98,12 +98,11 @@ func runQueue(args []string, stdout, stderr io.Writer) int {
 	rules := sortedRules(catalog)
 	selected := rules
 	if *module != "" {
-		selected = make([]Rule, 0, len(rules))
-		for _, rule := range rules {
-			if rule.Module == *module {
-				selected = append(selected, rule)
-			}
+		if err := scope.Resolve(catalog, displayPath(*rulesPath)); err != nil {
+			fmt.Fprintf(stderr, "spec queue: %v\n", err)
+			return 1
 		}
+		selected = scope.Select(rules)
 	}
 
 	ctx := newBriefContext(root)
