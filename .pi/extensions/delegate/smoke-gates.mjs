@@ -5,6 +5,11 @@
 // a harness for headless verification only: nothing here is imported by the
 // extension. Run:  node .pi/extensions/delegate/smoke-gates.mjs
 // (needs Node >= 22.18 for unflagged .ts type stripping).
+// On a Node build WITHOUT type stripping (`ERR_UNKNOWN_FILE_EXTENSION`) load it
+// through pi's bundled jiti instead — same pattern as smoke-sbx.mjs:
+//   node -e 'const {createJiti}=require("<pi-install>/node_modules/jiti/lib/jiti.cjs");\
+//     createJiti(process.cwd()+"/.pi/extensions/delegate/smoke-gates.mjs",{interopDefault:true})\
+//       .import(process.cwd()+"/.pi/extensions/delegate/smoke-gates.mjs")'
 //
 // Sandbox era: the checks for the DELETED mechanisms are gone with them —
 // evaluateGateFileWrite / the gate allowlist / protected+editable path sets /
@@ -27,6 +32,7 @@ import {
   GATE_DB_USER,
   GATE_PG_READY_ATTEMPTS,
   bumpSettleGateAttempts,
+  catalogHash,
   checkProveCoverage,
   describeWaitMs,
   diffReceiptAgainst,
@@ -46,6 +52,7 @@ import {
   planSettleGateAttempt,
   prepareGateDbVm,
   receiptsFileFor,
+  RECEIPT_SCHEMA_VERSION,
   receiptCommandsOf,
   recentSettleFailures,
   reconciliationGateRun,
@@ -187,6 +194,55 @@ const policyFree = path.join(tmp, "policy-free");
 fs.mkdirSync(policyFree, { recursive: true });
 
 
+// ── rule catalog fixtures ─────────────────────────────────────────────────
+// The catalog is one authored file per rule: docs/spec/rules/<module>/<ID>.md
+// (docs/spec/rules.yaml is GONE). A receipt's catalogHash is the MANIFEST hash
+// of that tree, so a fixture needs one file. It is kept well-formed (two `---`
+// fences around real front matter) so a future change that PARSES the stub
+// instead of only hashing it still works.
+const STUB_RULE_FILE = [
+  "---",
+  "id: R-KERNEL-001",
+  "title: A smoke fixture rule",
+  "statement: |",
+  "  A minimal but well-formed rule file: the catalog manifest has something",
+  "  real to hash and a parser would find every required field.",
+  "module: kernel",
+  "entity: fixture",
+  "category: invariant",
+  "status: implemented",
+  "authority: handler",
+  "mechanism: null",
+  "write_scope: row-local",
+  "enforcement: []",
+  "refusal: null",
+  "fixture: null",
+  "verification:",
+  "  unit: []",
+  "  e2e: []",
+  "  gherkin: []",
+  "expert-ref: null",
+  "knowledge-ref: null",
+  "stale_pointer: null",
+  "tie: null",
+  "---",
+  "",
+  "## Notes",
+  "",
+  "Smoke stub: exists so the catalog manifest has a file to hash.",
+  "",
+].join("\n");
+
+/** Write the minimal one-file rule catalog under `<dir>/docs/spec/rules/`. */
+function writeRuleCatalogStub(dir, ruleId = "R-KERNEL-001") {
+  const moduleDir = path.join(dir, "docs", "spec", "rules", "kernel");
+  fs.mkdirSync(moduleDir, { recursive: true });
+  const file = path.join(moduleDir, ruleId + ".md");
+  fs.writeFileSync(file, STUB_RULE_FILE);
+  return file;
+}
+
+
 // ── runGate: fail-closed contract ───────────────────────────────────────────
 await check("runGate: exit 0 is ok", async () => {
   const r = await runGate("sh", ["-c", "echo hi"], { cwd: tmp, timeoutMs: 5000 });
@@ -276,10 +332,40 @@ await check("isGateRelevantWrite", async () => {
 });
 
 // ── receipts ───────────────────────────────────────────────────────────────
+await check("catalogHash: deterministic manifest hash over docs/spec/rules", async () => {
+  const repo = path.join(tmp, "catalog-repo");
+  fs.mkdirSync(repo, { recursive: true });
+  assert.equal(await catalogHash(repo), "", "missing catalog dir ⇒ \"\" (fail-open)");
+
+  writeRuleCatalogStub(repo);
+  const first = await catalogHash(repo);
+  assert.match(first, /^[0-9a-f]{64}$/);
+  assert.equal(await catalogHash(repo), first, "same tree ⇒ same hash");
+
+  // A dotfile is not catalog content; a real nested file is.
+  fs.writeFileSync(path.join(repo, "docs", "spec", "rules", ".DS_Store"), "junk\n");
+  assert.equal(await catalogHash(repo), first, "dotfiles are skipped");
+  const nested = path.join(repo, "docs", "spec", "rules", "identity");
+  fs.mkdirSync(nested, { recursive: true });
+  fs.writeFileSync(path.join(nested, "R-IDENTITY-001.md"), STUB_RULE_FILE);
+  const withNested = await catalogHash(repo);
+  assert.notEqual(withNested, first, "a new rule file changes the manifest hash");
+
+  // Same paths + same bytes ⇒ same hash regardless of write order.
+  fs.rmSync(path.join(repo, "docs", "spec", "rules"), { recursive: true, force: true });
+  fs.mkdirSync(nested, { recursive: true });
+  fs.writeFileSync(path.join(nested, "R-IDENTITY-001.md"), STUB_RULE_FILE);
+  writeRuleCatalogStub(repo);
+  assert.equal(await catalogHash(repo), withNested, "the manifest is order-independent");
+
+  // A content edit (same path) is caught.
+  fs.appendFileSync(path.join(repo, "docs", "spec", "rules", "kernel", "R-KERNEL-001.md"), "\nedit\n");
+  assert.notEqual(await catalogHash(repo), withNested, "content edits change the manifest hash");
+});
+
 await check("writeReceipt: JSONL line with sha/hash fields", async () => {
   const repo = path.join(tmp, "receipt-repo");
-  fs.mkdirSync(path.join(repo, "docs", "spec"), { recursive: true });
-  fs.writeFileSync(path.join(repo, "docs", "spec", "rules.yaml"), "rules: []\n");
+  writeRuleCatalogStub(repo);
   const file = await writeReceipt({
     cwd: repo,
     agent: "worker",
@@ -295,7 +381,11 @@ await check("writeReceipt: JSONL line with sha/hash fields", async () => {
   assert.equal(record.agent, "worker");
   assert.equal(record.session, "s-1");
   assert.equal(record.commands[0].exitCode, 1);
-  assert.match(record.rulesHash, /^[0-9a-f]{64}$/);
+  assert.equal(record.schema_version, 2, "receipts are catalog schema v2");
+  assert.equal(RECEIPT_SCHEMA_VERSION, 2);
+  assert.match(record.catalogHash, /^[0-9a-f]{64}$/);
+  assert.equal(record.catalogHash, await catalogHash(repo), "the hash is the catalog manifest");
+  assert.equal("rulesHash" in record, false, "the v1 rulesHash field is gone");
   assert.equal(typeof record.headSha, "string"); // no git repo ⇒ "" (fail-open)
   await writeReceipt({ cwd: repo, agent: "worker", commands: [] });
   assert.equal(fs.readFileSync(file, "utf8").trim().split("\n").length, 2, "appends");
@@ -909,14 +999,15 @@ await check("diffReceiptAgainst: names each discrepancy, empty when matching", a
     agent: "worker",
     session: "s",
     commands: [{ command: "make audit/static", exitCode: 0, timedOut: false, durationMs: 5 }],
-    rulesHash: "hash-a",
+    schema_version: 2,
+    catalogHash: "hash-a",
     headSha: "a".repeat(40),
     ok: true,
     note: "",
   };
   const current = {
     headSha: "a".repeat(40),
-    rulesHash: "hash-a",
+    catalogHash: "hash-a",
     commands: [{ command: "make audit/static", exitCode: 0, timedOut: false, durationMs: 7 }],
   };
   assert.deepEqual(diffReceiptAgainst(receipt, current), []);
@@ -926,8 +1017,10 @@ await check("diffReceiptAgainst: names each discrepancy, empty when matching", a
   assert.equal(movedHead.length, 1);
   assert.match(movedHead[0], /^headSha: receipt a{40}, now b{40}$/);
 
-  const movedRules = diffReceiptAgainst(receipt, { ...current, rulesHash: "hash-b" });
-  assert.match(movedRules[0], /^rulesHash: receipt hash-a, now hash-b$/);
+  // A v2 receipt's catalogHash mismatch is still a full discrepancy.
+  const movedRules = diffReceiptAgainst(receipt, { ...current, catalogHash: "hash-b" });
+  assert.equal(movedRules.length, 1);
+  assert.match(movedRules[0], /^catalogHash: receipt hash-a, now hash-b$/);
 
   const flipped = diffReceiptAgainst(receipt, {
     ...current,
@@ -937,6 +1030,41 @@ await check("diffReceiptAgainst: names each discrepancy, empty when matching", a
 
   const missing = diffReceiptAgainst(receipt, { ...current, commands: [] });
   assert.match(missing[0], /not run now/);
+
+  // ── v1 receipts are SUPERSEDED, not compared ──────────────────────────
+  // A pre-v2 receipt hashed the deleted docs/spec/rules.yaml, so its hash can
+  // never match the manifest hash. Exactly ONE note, even when the hashes
+  // differ wildly; headSha and exit codes keep their meaning.
+  const v1Receipt = {
+    timestamp: "2026-01-01T00:00:00.000Z",
+    agent: "worker",
+    session: "s",
+    commands: receipt.commands,
+    rulesHash: "old-rules-yaml-hash",
+    headSha: "a".repeat(40),
+    ok: true,
+    note: "",
+  };
+  const superseded = diffReceiptAgainst(v1Receipt, current);
+  assert.equal(superseded.length, 1, "one superseded note: " + JSON.stringify(superseded));
+  assert.match(superseded[0], /^catalogHash: receipt predates catalog schema v2 \u2014 superseded, not compared$/);
+
+  // The same v1 receipt still reports headSha drift AND the one note.
+  const supersededAndMoved = diffReceiptAgainst(v1Receipt, { ...current, headSha: "b".repeat(40) });
+  assert.equal(supersededAndMoved.length, 2);
+  assert.match(supersededAndMoved[0], /^headSha: /);
+  assert.match(supersededAndMoved[1], /superseded, not compared$/);
+
+  // schema_version 1 (explicitly old) is superseded too; 2 is not.
+  assert.equal(diffReceiptAgainst({ ...receipt, schema_version: 1, catalogHash: "hash-b" }, current).length, 1);
+  assert.match(
+    diffReceiptAgainst({ ...receipt, schema_version: 1, catalogHash: "hash-b" }, current)[0],
+    /superseded, not compared$/,
+  );
+  assert.match(
+    diffReceiptAgainst({ ...receipt, catalogHash: "hash-b" }, current)[0],
+    /^catalogHash: receipt hash-b, now hash-a$/,
+  );
 
   // A failed reconciliation becomes a failing GateRun (shared report path).
   const run = reconciliationGateRun({ ok: false, report: "MISMATCH: headSha", steps: [], receipt: null });
@@ -948,8 +1076,7 @@ await check("diffReceiptAgainst: names each discrepancy, empty when matching", a
 
 await check("latestPassingReceipt: only passing receipts are checkpoints", async () => {
   const repo = path.join(tmp, "checkpoint-repo");
-  fs.mkdirSync(path.join(repo, "docs", "spec"), { recursive: true });
-  fs.writeFileSync(path.join(repo, "docs", "spec", "rules.yaml"), "rules: []\n");
+  writeRuleCatalogStub(repo);
   await writeReceipt({ cwd: repo, agent: "worker", session: "s", commands: [], ok: false, note: "first failed" });
   assert.equal(await latestPassingReceipt(repo), null, "a failing receipt is not a checkpoint");
   await writeReceipt({ cwd: repo, agent: "worker", session: "s", commands: [], ok: true, note: "passing" });
@@ -966,8 +1093,7 @@ await check("runReconciliation: matching checkpoint ok, moved HEAD reported", as
   fs.writeFileSync(path.join(repo, "go.mod"), "module recontmp\n\ngo 1.21\n");
   fs.mkdirSync(path.join(repo, "cmd", "spec"), { recursive: true });
   fs.writeFileSync(path.join(repo, "cmd", "spec", "main.go"), "package main\n\nfunc main() {}\n");
-  fs.mkdirSync(path.join(repo, "docs", "spec"), { recursive: true });
-  fs.writeFileSync(path.join(repo, "docs", "spec", "rules.yaml"), "rules: []\n");
+  writeRuleCatalogStub(repo);
   gitExec(repo, ["add", "-A"]);
   gitExec(repo, ["commit", "-q", "-m", "gates"]);
 
@@ -1013,8 +1139,58 @@ await check("runReconciliation: matching checkpoint ok, moved HEAD reported", as
   assert.equal(drifted.ok, false, "stale checkpoint must not reconcile");
   assert.match(drifted.report, /MISMATCH headSha:/);
   assert.match(drifted.report, /status: MISMATCH/);
+  assert.doesNotMatch(drifted.report, /catalogHash:/, "a v2 receipt's hash still matches the catalog");
   const asGateRun = reconciliationGateRun(drifted);
   assert.match(formatGateReport(asGateRun, { header: "── SETTLE GATE BLOCKED ──", footer: "fix" }), /RECONCILIATION/);
+});
+
+await check("runReconciliation: a v1 receipt (no schema_version) is superseded, not hash-mismatched", async () => {
+  // The one-time transition: yesterday's receipt hashed the deleted
+  // docs/spec/rules.yaml. HEAD and exit codes still line up, so the ONLY
+  // discrepancy is the single superseded note — never a bogus hash mismatch.
+  const repo = makeGitRepo(path.join(tmp, "recon-v1-repo"));
+  writeWorkflow(repo);
+  fs.writeFileSync(path.join(repo, "Makefile"), "audit/static:\n\t@true\n");
+  fs.writeFileSync(path.join(repo, "go.mod"), "module reconv1tmp\n\ngo 1.21\n");
+  fs.mkdirSync(path.join(repo, "cmd", "spec"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "cmd", "spec", "main.go"), "package main\n\nfunc main() {}\n");
+  writeRuleCatalogStub(repo);
+  gitExec(repo, ["add", "-A"]);
+  gitExec(repo, ["commit", "-q", "-m", "gates"]);
+
+  const head = gitExec(repo, ["rev-parse", "HEAD"]);
+  const day = new Date().toISOString().slice(0, 10);
+  fs.mkdirSync(path.dirname(receiptsFileFor(repo)), { recursive: true });
+  fs.appendFileSync(
+    receiptsFileFor(repo),
+    JSON.stringify({
+      timestamp: day + "T00:00:00.000Z",
+      agent: "worker",
+      session: "recon-v1",
+      commands: [{ command: "make audit/static", exitCode: 0, timedOut: false, durationMs: 1 }],
+      rulesHash: "legacy-rules-yaml-hash",
+      headSha: head,
+      ok: true,
+      note: "v1 checkpoint",
+    }) + "\n",
+  );
+  const checkpoint = await latestPassingReceipt(repo);
+  assert.ok(checkpoint, "the v1 receipt is still a checkpoint");
+  assert.equal(checkpoint?.schema_version, 0, "an absent schema_version reads as v1");
+  assert.equal(checkpoint?.catalogHash, "", "a v1 receipt has no catalogHash");
+
+  const superseded = await (async () => {
+    installGateVmStub();
+    try {
+      return await runReconciliation(repo, { agent: "worker", makeTimeoutMs: 60_000, specTimeoutMs: 60_000 });
+    } finally {
+      resetGateVmStub();
+    }
+  })();
+  assert.equal(superseded.ok, false, "the superseded note is reported, once: " + superseded.report);
+  assert.match(superseded.report, /catalogHash: receipt predates catalog schema v2 \u2014 superseded, not compared/);
+  assert.doesNotMatch(superseded.report, /MISMATCH headSha:/, "headSha still matches");
+  assert.equal(superseded.report.match(/catalogHash:/g)?.length, 1, "exactly one catalogHash note");
 });
 
 // ── Batch 3: WORKFLOW.md is the declarative policy source ───────────────────
@@ -1305,7 +1481,8 @@ function writeProveReceipt(dir, record, day = new Date().toISOString().slice(0, 
     agent: "orchestrator",
     session: "s-prove",
     commands: [],
-    rulesHash: "hash",
+    schema_version: RECEIPT_SCHEMA_VERSION,
+    catalogHash: "hash",
     headSha: PROVE_HEAD,
     ok: true,
     note: "",

@@ -4153,7 +4153,8 @@ export default function (pi: ExtensionAPI) {
   // text is ESCALATING; after the last attempt the hard stop prints the full
   // per-attempt receipt trail. (b) A PASSING ladder is followed by
   // reconciliation-lite: the ladder is re-run and diffed against the newest
-  // passing receipt (HEAD sha, rules.yaml hash, exit codes). The receipt for
+  // passing receipt (HEAD sha, docs/spec/rules catalog hash, exit codes). The
+  // receipt for
   // THIS attempt is written first, so the checkpoint is the tree state the
   // green ladder just described — the drift it catches is a concurrent writer
   // (another worker committing mid-ladder), not a day-old receipt from a

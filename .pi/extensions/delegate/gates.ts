@@ -18,8 +18,9 @@
  *    never a `cd` target named inside a command. A worker cannot write here:
  *    the receipts dir is gitignored and absent from a fresh worktree, and the
  *    extension instance inside a sandbox is inert (`isSandboxedChild`).
- *    Receipt metadata is fail-open (a missing rules.yaml or a broken git just
- *    records an empty field) — ONLY the receipt degrades, never the verdict.
+ *    Receipt metadata is fail-open (a missing docs/spec/rules catalog or a
+ *    broken git just records an empty field) — ONLY the receipt degrades,
+ *    never the verdict.
  * 4. THE WRITE BOUNDARY IS THE HYPERVISOR (sandbox era). A worker runs inside
  *    a per-task micro-VM whose only host surface is its mount (./sbx.ts
  *    chooses the mount per role): what it may write is decided by what is
@@ -1045,8 +1046,9 @@ export function receiptsDirFor(cwd: string): string {
  * file path, or null when even the receipt could not be written (the caller
  * logs; a receipt failure never changes a gate verdict).
  *
- * Metadata is fail-open: rulesHash is "" when docs/spec/rules.yaml is missing,
- * headSha is "" when git fails. The gate commands themselves stay fail-closed.
+ * Metadata is fail-open: catalogHash is "" when the docs/spec/rules catalog is
+ * missing, headSha is "" when git fails. The gate commands themselves stay
+ * fail-closed.
  */
 export async function writeReceipt(input: ReceiptInput): Promise<string | null> {
   const dir = receiptsDirFor(input.cwd);
@@ -1057,7 +1059,10 @@ export async function writeReceipt(input: ReceiptInput): Promise<string | null> 
     agent: input.agent,
     session: input.session ?? "",
     commands: input.commands,
-    rulesHash: await hashSpecRules(input.cwd),
+    // Catalog schema v2 (per-rule-file catalog): `schema_version` lets a reader
+    // tell a v1 receipt (rules.yaml hash) from a v2 one and supersede it.
+    schema_version: RECEIPT_SCHEMA_VERSION,
+    catalogHash: await catalogHash(input.cwd),
     headSha: await headShaOf(input.cwd),
     ok: input.ok === true,
     note: input.note ?? "",
@@ -1076,14 +1081,60 @@ export async function writeReceipt(input: ReceiptInput): Promise<string | null> 
   }
 }
 
-/** sha256 of docs/spec/rules.yaml; "" when unreadable (fail-open, receipt only). */
-export async function hashSpecRules(cwd: string): Promise<string> {
+/** Current receipt schema: 2 = per-rule-file catalog manifest hash. */
+export const RECEIPT_SCHEMA_VERSION = 2;
+
+/**
+ * MANIFEST sha256 over the rule catalog `docs/spec/rules/**`; "" when the
+ * directory is missing/unreadable (fail-open, receipt only — never stricter
+ * than the old single-file hash it replaces).
+ *
+ * Recipe (deterministic across platforms and filesystems):
+ *   1. Walk `docs/spec/rules` recursively from `cwd`. Skip dot-entries only
+ *      (a path segment whose name starts with "."); every other file counts,
+ *      including `README.md` and non-`.md` files.
+ *   2. For every file, form the pair (relpath, content) where relpath is
+ *      relative to `cwd` and slash-normalized (`path.sep` → "/"). File bytes
+ *      are used verbatim (no newline translation, no re-encoding).
+ *   3. Sort the pairs by relpath (plain code-unit order).
+ *   4. Feed ONE running sha256 with, per entry in that order, the UTF-8 bytes
+ *      of  relpath + "\0" + content + "\0"  and return the lowercase hex
+ *      digest. The NUL separators make the framing unambiguous.
+ *
+ * Any walk/read error yields "": a partly-read catalog must not masquerade as
+ * a valid checkpoint hash.
+ */
+export async function catalogHash(cwd: string): Promise<string> {
+  const pairs: Array<{ rel: string; content: Buffer }> = [];
+  const walk = async (dir: string): Promise<void> => {
+    const dirents = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const dirent of dirents) {
+      if (dirent.name.startsWith(".")) continue;
+      const abs = path.join(dir, dirent.name);
+      if (dirent.isDirectory()) {
+        await walk(abs);
+        continue;
+      }
+      pairs.push({
+        rel: path.relative(cwd, abs).split(path.sep).join("/"),
+        content: await fs.promises.readFile(abs),
+      });
+    }
+  };
   try {
-    const raw = await fs.promises.readFile(path.join(cwd, "docs", "spec", "rules.yaml"));
-    return createHash("sha256").update(raw).digest("hex");
+    await walk(path.join(cwd, "docs", "spec", "rules"));
   } catch {
     return "";
   }
+  pairs.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+  const hash = createHash("sha256");
+  for (const pair of pairs) {
+    hash.update(pair.rel, "utf8");
+    hash.update("\0", "utf8");
+    hash.update(pair.content);
+    hash.update("\0", "utf8");
+  }
+  return hash.digest("hex");
 }
 
 /** `git rev-parse HEAD` in cwd; "" on any failure (fail-open, receipt only). */
@@ -1728,7 +1779,9 @@ export interface ReceiptRecord {
   agent: string;
   session: string;
   commands: ReceiptCommand[];
-  rulesHash: string;
+  /** Receipt schema; 2 = catalogHash is the docs/spec/rules manifest hash. */
+  schema_version: number;
+  catalogHash: string;
   headSha: string;
   ok: boolean;
   note: string;
@@ -1759,7 +1812,10 @@ function parseReceiptLines(raw: string): ReceiptRecord[] {
         agent: typeof parsed.agent === "string" ? parsed.agent : "",
         session: typeof parsed.session === "string" ? parsed.session : "",
         commands: Array.isArray(parsed.commands) ? (parsed.commands as ReceiptCommand[]) : [],
-        rulesHash: typeof parsed.rulesHash === "string" ? parsed.rulesHash : "",
+        // Absent = v1 (the deleted docs/spec/rules.yaml hash); keep it as 0 so
+        // diffReceiptAgainst can supersede it instead of comparing hashes.
+        schema_version: typeof parsed.schema_version === "number" ? parsed.schema_version : 0,
+        catalogHash: typeof parsed.catalogHash === "string" ? parsed.catalogHash : "",
         headSha: typeof parsed.headSha === "string" ? parsed.headSha : "",
         ok: parsed.ok === true,
         note: typeof parsed.note === "string" ? parsed.note : "",
@@ -1804,7 +1860,7 @@ export async function latestPassingReceipt(cwd: string, day?: string): Promise<R
 
 export interface ReconciliationCurrent {
   headSha: string;
-  rulesHash: string;
+  catalogHash: string;
   commands: ReceiptCommand[];
 }
 
@@ -1820,10 +1876,21 @@ export function diffReceiptAgainst(record: ReceiptRecord | null, current: Reconc
   if (record.headSha !== current.headSha) {
     discrepancies.push("headSha: receipt " + recordedSha + ", now " + currentSha);
   }
-  const recordedHash = record.rulesHash || "(not recorded)";
-  const currentHash = current.rulesHash || "(not recorded)";
-  if (record.rulesHash !== current.rulesHash) {
-    discrepancies.push("rulesHash: receipt " + recordedHash + ", now " + currentHash);
+  // Catalog schema v2 (one authored file per rule under docs/spec/rules/): a v2
+  // receipt's catalogHash is the manifest hash of that tree, so it compares
+  // directly. A v1 receipt (no schema_version, or < 2) hashed the DELETED
+  // docs/spec/rules.yaml — comparing it would be a permanent false mismatch, so
+  // it is SUPERSEDED: headSha and exit codes still count, the hash is reported
+  // once as not compared. That one-time note is accepted; do NOT loosen the v2
+  // comparison to silence it.
+  if (!(typeof record.schema_version === "number" && record.schema_version >= 2)) {
+    discrepancies.push("catalogHash: receipt predates catalog schema v2 \u2014 superseded, not compared");
+  } else {
+    const recordedHash = record.catalogHash || "(not recorded)";
+    const currentHash = current.catalogHash || "(not recorded)";
+    if (record.catalogHash !== current.catalogHash) {
+      discrepancies.push("catalogHash: receipt " + recordedHash + ", now " + currentHash);
+    }
   }
   for (const recorded of record.commands) {
     const fresh = current.commands.find((entry) => entry.command === recorded.command);
@@ -1854,8 +1921,9 @@ export interface ReconciliationResult {
 /**
  * Reconciliation-lite: re-run the cheap gate ladder (`make audit/static` +
  * the scoped spec check via runScopedGate) and diff the fresh result against
- * the newest passing receipt of the day — HEAD sha, rules.yaml hash, and every
- * recorded command's exit code. Any difference is a mismatch, and a failing
+ * the newest passing receipt of the day — HEAD sha, the docs/spec/rules
+ * catalog manifest hash, and every recorded command's exit code. Any difference
+ * is a mismatch, and a failing
  * fresh ladder is always a mismatch (fail closed on the ladder, fail open on
  * the receipt metadata).
  */
@@ -1906,7 +1974,7 @@ export async function runReconciliation(
 
   const current: ReconciliationCurrent = {
     headSha: await headShaOf(cwd),
-    rulesHash: await hashSpecRules(cwd),
+    catalogHash: await catalogHash(cwd),
     commands: receiptCommandsOf(fresh),
   };
   const recorded = await latestPassingReceipt(cwd, opts.day);
