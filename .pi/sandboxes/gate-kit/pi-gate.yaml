@@ -1,0 +1,79 @@
+# syntax=docker/sandbox-kit:3
+#
+# pi-gate — a v3 (idiomatic) workload kit for the authoritative merge gate.
+#
+# The point is trust placement, not tooling: the worktree is mounted into a
+# locked-down VM and `make audit/static` (and, with the baked Postgres, the
+# DB-backed `make audit`) runs there, so the host never executes code that lives
+# in the worktree. The image is therefore exactly what a gate needs and nothing
+# else — git, Go, make, jq and a Postgres server — and it has no `pi`, no npm,
+# no node and no model configuration, because a gate never thinks, commits or
+# talks to a provider.
+#
+# .pi/sandboxes/build-gate.sh turns this kit into the reusable `pi-gate:v1`
+# template (`sbx create <this dir> <repo-root>` → probe → `sbx template save`).
+#
+# Descriptor rules that bite (strict decode — an unknown key is a hard error):
+#   * `schemaVersion: "3"` is required and `kind: workload` is the only spelling.
+#   * there is NO `name` field in v3; the identity is `displayName`. The
+#     directory/recipe stem (`pi-gate`) is what the CLI reports.
+#   * exactly one of `build` | `dockerfile` | `kits` — this kit uses `dockerfile`
+#     with the stem-paired recipe next to it.
+#   * no lifecycle / long-running / host-mount / git-identity capability: a gate
+#     is a one-shot executor, it never commits, and the worktree arrives as a
+#     workspace positional at create time (the extension decides read-only or
+#     read-write), never as image content.
+schemaVersion: "3"
+kind: workload
+displayName: pi-gate
+version: "1.0.0"
+description: >-
+  A locked-down gate executor: git, Go, make, jq and a Postgres server baked into
+  one image with a deny-all runtime policy (Go module fallback only), so the
+  authoritative gates run inside a VM that has the worktree mounted instead of on
+  the host.
+dockerfile: pi-gate.dockerfile
+
+capabilities:
+  # The sbx runtime contract for a host-launched workload: workspace mount
+  # plumbing plus WORKSPACE_DIR / SANDBOX_ID / IS_SANDBOX in the workload's
+  # environment. Without it a workload created directly from this kit is not
+  # managed by the host daemon the way `sbx create` expects.
+  - type: com.docker.sandbox/sbx@1
+
+  # Egress is declared per phase (v3). Both phases are default-deny; an entry in
+  # `runtime` does NOT grant access during a build, and vice versa.
+  #
+  #   install — only what the recipe's build fetches:
+  #     deb.debian.org / security.debian.org   apt (git, make, jq, postgresql)
+  #       also listed on :80 because Debian sources.list entries are plain
+  #       http:// by default; if the base's sources are https-only, drop :80.
+  #     go.dev                  the Go tarball URL
+  #     dl.google.com           go.dev's download redirect
+  #     storage.googleapis.com  where the tarball bytes actually live
+  #     proxy.golang.org        module bytes for the GOMODCACHE warm
+  #     sum.golang.org          checksums for the same warm
+  #
+  #   runtime — the smallest list a gate VM can get away with: the Go module
+  #     fallback for a cache miss (`go vet` / `go tool staticcheck` on a worktree
+  #     whose go.mod moved since the image was built). No model host, no npm, no
+  #     apt, nothing else: a gate has no reason to reach anywhere and, if the
+  #     warm cache is complete, it does not.
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      install:
+        allow:
+          - deb.debian.org:443
+          - deb.debian.org:80
+          - security.debian.org:443
+          - security.debian.org:80
+          - go.dev:443
+          - dl.google.com:443
+          - storage.googleapis.com:443
+          - proxy.golang.org:443
+          - sum.golang.org:443
+      runtime:
+        allow:
+          - proxy.golang.org:443
+          - sum.golang.org:443
+          - storage.googleapis.com:443

@@ -46,6 +46,14 @@
  *    direct `gofmt -l` over the changed Go files. It never runs the Makefile
  *    target (`make audit/static`'s gofmt step enumerates `git ls-files`, and the
  *    mount carries no usable `.git`) and it never writes a receipt.
+ * 8. AUTHORITATIVE GATES RUN IN A GATE VM (gate-VM era). The declared gate
+ *    commands still come from WORKFLOW.md verbatim, but the host does not
+ *    spawn them: it spawns `sbx exec` into a second, locked-down VM created
+ *    from `pi-gate:v1` (see ./sbx.ts `createGateSandbox`). The host keeps two
+ *    jobs only — the pre-gate integrity check (`git`, a trusted host binary
+ *    reading paths, never worktree code) and writing receipts. The gate VM's
+ *    mount is the worktree (rw: gates legitimately regenerate artifacts) plus,
+ *    for a linked worktree, the main repo root (ro) so git resolves in-VM.
  *
  * Task-packet convention (SPEC-SCOPE):
  *   The orchestrator includes a line in the worker task text —
@@ -70,6 +78,13 @@ import {
   loadWorkflowPolicy,
   workflowPolicyRefusal,
 } from "./policy.ts";
+import { workerStallTimeoutMs } from "./runtime.ts";
+import {
+  ensureGateSandbox,
+  execInSandbox,
+  execSandboxArgs,
+  type SandboxExecResult,
+} from "./sbx.ts";
 
 // ── Fail-closed command runner ───────────────────────────────────────────────
 
@@ -229,6 +244,8 @@ export interface GateStep {
   reason: string;
   /** Why this step exists (fallback marker, scope line, …). */
   note?: string;
+  /** Name of the gate VM that executed the step (absent for a policy refusal). */
+  gateSandbox?: string;
 }
 
 export interface GateRun {
@@ -261,6 +278,503 @@ async function runStep(argv: string[], cwd: string, timeoutMs: number, note?: st
   const [command, ...args] = argv;
   const result = await runGate(command, args, { cwd, timeoutMs });
   return stepOf(result, argv, note);
+}
+
+// ── Gate VM: the authoritative execution plane ──────────────────────────────
+//
+// Every authoritative gate command (the declared `audit_static_cmd`,
+// `scoped_check_cmd`, `audit_cmd`, `prove_cmd`) is handed VERBATIM to a
+// locked-down gate VM: `sbx exec --no-input -w <worktree> <gate-vm> [-e …]
+// <argv…>`. The host never spawns `make`/`go` for a gate again — it only runs
+// `sbx`, the trusted CLI. `runGate` (a host spawn) therefore remains only for
+// the two things that MUST stay host-side: the integrity check's `git` probe
+// and the in-VM ADVISORY ladder (which already runs inside the worker VM).
+//
+// `sbx exec` has no timeout flag, so the host keeps the watchdog: the executor
+// below passes the caller's timeout budget to the adapter, which SIGTERMs and
+// then SIGKILLs the exec. A timed-out exec is a failed gate, never a hang.
+
+/** Database the DB-backed gates use inside the gate VM (the repo's test DB). */
+export const GATE_DB_NAME = "lt_api_test";
+/** Role the throwaway in-VM DSN authenticates as (SUPERUSER in the image). */
+export const GATE_DB_USER = "lt_test";
+/** Throwaway in-VM password; plaintext on purpose — it protects nothing real. */
+export const GATE_DB_PASSWORD = "test";
+/**
+ * How the DSN reaches the VM-local server. `127.0.0.1` (TCP) rather than the
+ * image's unix socket: the suites connect over TCP anyway, and the pi-gate
+ * image configures `listen_addresses = '127.0.0.1'` with `auth-host=trust`.
+ */
+export const GATE_DB_HOST = "127.0.0.1";
+/**
+ * 5433 on purpose: `internal/testdb.DefaultTestDSN` and the (gitignored)
+ * `.envrc` both pin the test database to localhost:5433, and the Makefile
+ * `-include .envrc` re-exports it — overriding any env-passed DSN. The gate
+ * image's Postgres therefore LISTENS on 5433, so the repo's documented DSN is
+ * literally true inside the gate VM.
+ */
+export const GATE_DB_PORT = 5433;
+/**
+ * The pi-gate image bakes an agent-owned cluster (PGDATA=/home/agent/pgdata)
+ * because `sbx template save` snapshots the filesystem, not /var/lib/docker. It
+ * starts it with the image's `pg-up` helper (Debian's `pg_ctlcluster`/
+ * `service postgresql start` require root and the VM runs as `agent`), and its
+ * unix socket lives here (image ENV `PGHOST`).
+ */
+export const GATE_DB_SOCKET_DIR = "/home/agent/pgsock";
+/**
+ * The DSN a DB-backed gate receives, mirroring the shape the Makefile and
+ * internal/testdb expect (`<dsn-db>_<suite>` databases are created by the
+ * suites themselves). It is delivered as a make COMMAND-LINE variable
+ * (`make audit LT_API_TEST_DSN=…`), NOT via `-e`: the Makefile's
+ * `-include .envrc` re-exports the repo DSN, and a makefile assignment beats
+ * the process environment — only a command-line variable beats it, and fresh
+ * worktrees (where the gitignored `.envrc` does not exist) still need one.
+ */
+export const GATE_DB_DSN =
+  "postgres://" + GATE_DB_USER + ":" + GATE_DB_PASSWORD + "@" + GATE_DB_HOST + ":" +
+  String(GATE_DB_PORT) + "/" + GATE_DB_NAME + "?sslmode=disable";
+/** `pg_isready` attempts before the DB gate pre-sequence gives up. */
+export const GATE_PG_READY_ATTEMPTS = 30;
+/** Wait between `pg_isready` attempts (ms). */
+export const GATE_PG_READY_INTERVAL_MS = 500;
+/** Timeout for one DB pre-sequence command (start / drop / create). */
+export const GATE_DB_STEP_TIMEOUT_MS = 60_000;
+
+/**
+ * Env for an `sbx exec` gate.
+ *
+ * `GIT_OPTIONAL_LOCKS=0` stops `git status` from taking the index lock in a
+ * shared mount. The `safe.directory` config is load-bearing: the repo-root
+ * mount is owned by another UID once it is read-only in the VM, and git refuses
+ * to operate on a repo it considers foreign (dubious ownership) without it.
+ * `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` is the env-only way to set it, so no
+ * in-VM git config has to be written.
+ *
+ * A DB-backed gate gets `LT_API_TEST_DSN` as a make command-line variable
+ * (see GATE_DB_DSN) — never via this env, which `-include .envrc` would
+ * override. Static gates get nothing DB-related at all.
+ */
+export function gateVmExecEnv(worktreePath: string, opts: { db?: boolean } = {}): Record<string, string> {
+  const env: Record<string, string> = {
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "safe.directory",
+    GIT_CONFIG_VALUE_0: "*",
+  };
+  void opts;
+  return env;
+}
+
+/** One command of the DB pre-sequence (argv + its exec env). */
+export interface GateDbPrestep {
+  argv: string[];
+  env: Record<string, string>;
+}
+
+/**
+ * The DB gate pre-sequence, in order: start Postgres → wait for readiness →
+ * drop the test DB → create it. The gate command itself runs AFTER this.
+ *
+ * `pg-up` is the pi-gate image's own helper (baked cluster + `pg_isready`
+ * health check); Debian's `service postgresql start`/`pg_ctlcluster` are NOT
+ * used because the VM runs as `agent` and the image deliberately keeps no
+ * root-owned distro cluster. Readiness is re-checked explicitly so a failed
+ * start cannot fall through to the gate. The role (`lt_test`, SUPERUSER) and
+ * the cluster are baked into the image; only the throwaway database is reset
+ * per gate run.
+ */
+export function gateDbPresteps(): GateDbPrestep[] {
+  const clientEnv = { PGPASSWORD: GATE_DB_PASSWORD };
+  const endpoint = ["-h", GATE_DB_SOCKET_DIR, "-p", String(GATE_DB_PORT), "-U", GATE_DB_USER];
+  return [
+    { argv: ["pg-up"], env: {} },
+    {
+      argv: ["pg_isready", ...endpoint, "-d", GATE_DB_NAME],
+      env: {},
+    },
+    { argv: ["dropdb", "--if-exists", ...endpoint, GATE_DB_NAME], env: clientEnv },
+    { argv: ["createdb", ...endpoint, "-O", GATE_DB_USER, GATE_DB_NAME], env: clientEnv },
+  ];
+}
+
+function sleepGap(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * One `sbx exec` in the gate VM, mapped into the fail-closed GateResult shape.
+ * A 125/127/timeout/spawn error is infrastructure (no verdict) and still a
+ * FAILED gate: the caller never sees a silent pass.
+ */
+async function execGateVmCommand(
+  sandbox: string,
+  argv: readonly string[],
+  opts: { cwd: string; timeoutMs: number; env: Record<string, string> },
+): Promise<{ result: GateResult; sandbox: string }> {
+  const startedAt = Date.now();
+  let raw: SandboxExecResult;
+  try {
+    raw = await execInSandbox(sandbox, argv, {
+      worktreePath: opts.cwd,
+      env: opts.env,
+      timeoutMs: opts.timeoutMs,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      sandbox,
+      result: {
+        ok: false,
+        exitCode: null,
+        stdout: "",
+        stderr: message,
+        timedOut: false,
+        spawnError: message,
+        durationMs: Date.now() - startedAt,
+        reason: "gate VM exec threw: " + message,
+      },
+    };
+  }
+
+  let reason = "";
+  if (!raw.ok) {
+    if (raw.timedOut) reason = "timed out after " + String(opts.timeoutMs) + "ms";
+    else if (raw.classification.infraFailure) reason = raw.classification.reason;
+    else if (raw.exitCode === null) reason = "no exit code";
+    else reason = "exited with code " + String(raw.exitCode);
+  }
+  return {
+    sandbox,
+    result: {
+      ok: raw.ok,
+      exitCode: raw.exitCode,
+      stdout: raw.stdout,
+      stderr: raw.stderr,
+      timedOut: raw.timedOut,
+      spawnError: raw.spawnError,
+      durationMs: raw.durationMs,
+      reason,
+    },
+  };
+}
+
+/**
+ * Run the DB gate pre-sequence in the gate VM. Returns ok:true when Postgres is
+ * ready and the test DB was recreated; ok:false carries a failed GateStep so
+ * the gate report names exactly which step stopped the run. The pre-sequence is
+ * NOT part of the receipt's command list on success (it produces no verdict);
+ * a failure IS reported as a step.
+ */
+export async function prepareGateDbVm(
+  worktreePath: string,
+  opts: { timeoutMs?: number; readyAttempts?: number; intervalMs?: number } = {},
+): Promise<{ ok: boolean; step: GateStep | null; sandbox: string }> {
+  const sandbox = await ensureGateSandbox(worktreePath);
+  const timeoutMs = opts.timeoutMs ?? GATE_DB_STEP_TIMEOUT_MS;
+  const attempts = Math.max(1, opts.readyAttempts ?? GATE_PG_READY_ATTEMPTS);
+  const intervalMs = Math.max(0, opts.intervalMs ?? GATE_PG_READY_INTERVAL_MS);
+  const [start, ready, drop, create] = gateDbPresteps();
+
+  const fail = (argv: string[], failure: GateResult): { ok: false; step: GateStep; sandbox: string } => ({
+    ok: false,
+    sandbox,
+    step: stepOf(failure, argv, "gate VM db pre-sequence"),
+  });
+
+  const started = await execGateVmCommand(sandbox.name, start.argv, {
+    cwd: worktreePath,
+    timeoutMs,
+    env: { ...gateVmExecEnv(worktreePath), ...start.env },
+  });
+  if (!started.result.ok) return fail(start.argv, started.result);
+
+  let readyRun = await execGateVmCommand(sandbox.name, ready.argv, {
+    cwd: worktreePath,
+    timeoutMs,
+    env: { ...gateVmExecEnv(worktreePath), ...ready.env },
+  });
+  for (let attempt = 1; !readyRun.result.ok && attempt < attempts; attempt++) {
+    if (intervalMs > 0) await sleepGap(intervalMs);
+    readyRun = await execGateVmCommand(sandbox.name, ready.argv, {
+      cwd: worktreePath,
+      timeoutMs,
+      env: { ...gateVmExecEnv(worktreePath), ...ready.env },
+    });
+  }
+  if (!readyRun.result.ok) return fail(ready.argv, readyRun.result);
+
+  for (const step of [drop, create]) {
+    const run = await execGateVmCommand(sandbox.name, step.argv, {
+      cwd: worktreePath,
+      timeoutMs,
+      env: { ...gateVmExecEnv(worktreePath), ...step.env },
+    });
+    if (!run.result.ok) return fail(step.argv, run.result);
+  }
+  return { ok: true, step: null, sandbox };
+}
+
+/**
+ * Run one gate command argv in the gate VM (lazily creating/reusing the VM for
+ * this worktree path). DB-backed gates run the Postgres pre-sequence first.
+ * This is the ONLY execution path for an authoritative gate command; the host
+ * spawns `sbx`, not the command.
+ */
+export async function runStepInGateVm(
+  argv: string[],
+  cwd: string,
+  timeoutMs: number,
+  note?: string,
+  opts: { db?: boolean } = {},
+): Promise<GateStep> {
+  if (opts.db) {
+    const prep = await prepareGateDbVm(cwd);
+    if (!prep.ok && prep.step) return prep.step;
+  }
+  const sandbox = await ensureGateSandbox(cwd);
+  const run = await execGateVmCommand(sandbox.name, argv, {
+    cwd,
+    timeoutMs,
+    env: gateVmExecEnv(cwd, { db: opts.db === true }),
+  });
+  const step = stepOf(run.result, argv, note);
+  step.gateSandbox = sandbox.name;
+  return step;
+}
+
+/**
+ * Run one DECLARED gate command string (WORKFLOW.md value, verbatim argv) in
+ * the gate VM. `db` selects the Postgres pre-sequence; `extraArgs` appends
+ * tokens (`make prove` + `args=--rule R-X`).
+ */
+export async function runDeclaredGateStep(
+  command: string,
+  opts: { cwd: string; db?: boolean; timeoutMs?: number; extraArgs?: string[]; note?: string },
+): Promise<GateStep> {
+  const argv = [...splitCommandLine(command), ...(opts.extraArgs ?? [])];
+  // The DB DSN rides the make command line — see appendGateDbOverride.
+  const withDb = appendGateDbOverride(argv, opts.db === true);
+  return await runStepInGateVm(
+    withDb,
+    opts.cwd,
+    opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    opts.note,
+    { db: opts.db === true },
+  );
+}
+
+/**
+ * The full-audit gate (`audit_cmd`, DB-backed). Exported so any call site that
+ * needs the merge-boundary audit gets the gate-VM plane and the DB sequence
+ * without re-implementing either.
+ */
+export async function runAuditGate(opts: { cwd: string; timeoutMs?: number }): Promise<GateRun> {
+  const loaded = loadWorkflowPolicy(opts.cwd);
+  if (!loaded.ok) return policyRefusalGateRun(loaded.reason);
+  const step = await runDeclaredGateStep(loaded.policy.auditCmd, {
+    cwd: opts.cwd,
+    db: true,
+    // `make audit` runs the whole tree; the host watchdog is the declared
+    // stall budget (worker_stall_timeout_ms) unless the caller tightens it.
+    timeoutMs: opts.timeoutMs ?? workerStallTimeoutMs(process.env, opts.cwd),
+    note: "full audit (DB-backed, gate VM)",
+  });
+  return { ok: step.ok, steps: [step] };
+}
+
+/**
+ * The prove gate (`prove_cmd`, DB-backed). `args` is the declared `args=…`
+ * tail the Makefile forwards (`--rule <id>` / `--base …`); omitted ⇒ `--all`
+ * is the Makefile's own default.
+ */
+export async function runProveGate(opts: {
+  cwd: string;
+  args?: string;
+  timeoutMs?: number;
+}): Promise<GateRun> {
+  const loaded = loadWorkflowPolicy(opts.cwd);
+  if (!loaded.ok) return policyRefusalGateRun(loaded.reason);
+  const extraArgs = opts.args && opts.args.trim() ? ["args=" + opts.args.trim()] : [];
+  const step = await runDeclaredGateStep(loaded.policy.proveCmd, {
+    cwd: opts.cwd,
+    db: true,
+    timeoutMs: opts.timeoutMs ?? workerStallTimeoutMs(process.env, opts.cwd),
+    extraArgs,
+    note: "prove (DB-backed, gate VM)",
+  });
+  return { ok: step.ok, steps: [step] };
+}
+
+/** Quote one token for a POSIX shell command line (bash tool re-dispatch). */
+export function shellQuote(token: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(token)) return token;
+  return "'" + token.replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * The DB DSN as a make COMMAND-LINE variable, for both delivery paths
+ * (`runDeclaredGateStep` and the bash-rewrite in index.ts). See GATE_DB_DSN
+ * for why command-line and not env: the Makefile's `-include .envrc` re-exports
+ * the repo DSN and a makefile assignment beats the process environment.
+ */
+export function appendGateDbOverride(argv: readonly string[], db: boolean): string[] {
+  if (!db) return [...argv];
+  if (!(argv[0] === "make" || argv[0] === "/usr/bin/make")) return [...argv];
+  return [...argv, "LT_API_TEST_DSN=" + GATE_DB_DSN];
+}
+
+/**
+ * The host shell line that runs one gate argv in the gate VM. Used when a host
+ * session types a declared gate command into the bash tool: the tool_call hook
+ * replaces that line with this `sbx exec` line, so the host executes the trusted
+ * CLI only and the gate command itself runs in the VM. Every token is quoted,
+ * so the in-VM argv is the declared argv verbatim — no shell interpretation.
+ */
+export function gateVmShellCommand(
+  sandbox: string,
+  worktreePath: string,
+  env: Record<string, string>,
+  argv: readonly string[],
+): string {
+  const sbxArgv = ["sbx", ...execSandboxArgs(sandbox, worktreePath, env, argv)];
+  return sbxArgv.map(shellQuote).join(" ");
+}
+
+export interface ParsedGateVmShellCommand {
+  sandbox: string;
+  /** `-w` value: the worktree the gate ran against ("" when omitted). */
+  worktree: string;
+  env: Record<string, string>;
+  /** The in-VM argv, verbatim. */
+  argv: string[];
+}
+
+/**
+ * Parse a rewritten `sbx exec --no-input -w <wt> [-e K=V]… <sandbox> <argv…>`
+ * line back into its parts. Read-only helper for post-exec receipt writing: a
+ * tool_result sees the REWRITTEN bash command, so the prove receipt path needs
+ * the in-VM argv and the worktree to identify the run and its gate VM. Returns
+ * null for anything that is not the gate-VM shape.
+ */
+export function parseGateVmShellCommand(command: string): ParsedGateVmShellCommand | null {
+  const words = splitCommandLine(command);
+  if (words[0] !== "sbx" || words[1] !== "exec") return null;
+  let index = 2;
+  let worktree = "";
+  const env: Record<string, string> = {};
+  while (index < words.length) {
+    const token = words[index];
+    if (token === "--no-input") {
+      index += 1;
+      continue;
+    }
+    if (token === "-w" && index + 1 < words.length) {
+      worktree = words[index + 1];
+      index += 2;
+      continue;
+    }
+    if (token === "-e" && index + 1 < words.length) {
+      const pair = words[index + 1];
+      const split = pair.indexOf("=");
+      if (split > 0) env[pair.slice(0, split)] = pair.slice(split + 1);
+      index += 2;
+      continue;
+    }
+    break;
+  }
+  const sandbox = words[index];
+  if (!sandbox || sandbox.startsWith("-")) return null;
+  return { sandbox, worktree, env, argv: words.slice(index + 1) };
+}
+
+/** A host-shell command recognised as a declared gate run. */
+export interface ResolvedDeclaredGate {
+  kind: "audit_static" | "audit" | "prove" | "scoped_check";
+  /** true ⇒ DB-backed: run the Postgres pre-sequence and export the DSN. */
+  db: boolean;
+  /** Absolute worktree the gate must run against (a leading `cd` wins). */
+  cwd: string;
+  /** The declared command argv, verbatim (never re-quoted through a shell). */
+  argv: string[];
+  /** Original gate segment text (for reports/debug). */
+  segment: string;
+}
+
+function startsWithTokens(words: string[], base: string[]): boolean {
+  if (base.length === 0 || words.length < base.length) return false;
+  for (let index = 0; index < base.length; index++) {
+    if (words[index] !== base[index]) return false;
+  }
+  return true;
+}
+
+/**
+ * Recognise a host-shell command that IS a declared gate command, so it can be
+ * re-dispatched into the gate VM instead of executing in the host shell.
+ *
+ * Deliberately strict: exactly one gate segment, optionally preceded by one
+ * `cd <dir>`. Anything else (pipes, redirects, extra commands) is NOT
+ * rewritten — a compound command is not the declared gate invocation, and
+ * guessing at intent is how a "gate" runs half on the host. `audit`/
+ * `audit_static` must match the declared argv exactly; `prove` may carry the
+ * Makefile `args=…` tail; `scoped_check` may carry `--module`/`--rule` flags.
+ */
+export function resolveDeclaredGateCommand(
+  command: string,
+  sessionCwd: string,
+): ResolvedDeclaredGate | null {
+  const loaded = loadWorkflowPolicy(sessionCwd);
+  if (!loaded.ok) return null;
+  const segments = splitTopLevelSegments(command)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+  if (segments.length === 0) return null;
+
+  let cwd = sessionCwd;
+  let gateSegment = segments[0];
+  if (segments.length === 2) {
+    const cdWords = splitCommandLine(segments[0]);
+    if (cdWords.length === 2 && cdWords[0] === "cd") {
+      cwd = path.resolve(sessionCwd, cdWords[1]);
+      gateSegment = segments[1];
+    } else {
+      return null;
+    }
+  } else if (segments.length !== 1) {
+    return null;
+  }
+
+  const words = splitCommandLine(gateSegment);
+  const policy = loaded.policy;
+  const exact = (declared: string): boolean => {
+    const base = splitCommandLine(declared);
+    return base.length > 0 && words.length === base.length && startsWithTokens(words, base);
+  };
+  if (exact(policy.auditCmd)) {
+    return { kind: "audit", db: true, cwd, argv: words, segment: gateSegment };
+  }
+  if (exact(policy.auditStaticCmd)) {
+    return { kind: "audit_static", db: false, cwd, argv: words, segment: gateSegment };
+  }
+  const proveBase = splitCommandLine(policy.proveCmd);
+  if (startsWithTokens(words, proveBase)) {
+    const extras = words.slice(proveBase.length);
+    if (extras.every((token) => token.startsWith("args="))) {
+      return { kind: "prove", db: true, cwd, argv: words, segment: gateSegment };
+    }
+  }
+  const scopedBase = splitCommandLine(policy.scopedCheckCmd);
+  if (startsWithTokens(words, scopedBase)) {
+    const extras = words.slice(scopedBase.length);
+    // `--module game` / `--rule R-1` are flag + value pairs: the first extra
+    // must be a long flag, the rest ride along. A shell metacharacter or a
+    // second command word is not part of a scoped check.
+    if (extras.length === 0 || extras[0].startsWith("--")) {
+      return { kind: "scoped_check", db: false, cwd, argv: words, segment: gateSegment };
+    }
+  }
+  return null;
 }
 
 // ── SPEC-SCOPE parsing (task text → env → scoped check) ─────────────────────
@@ -389,6 +903,10 @@ export function policyRefusalGateRun(reason: string): GateRun {
  * Run the worker gate: the declared `audit_static_cmd` plus the scoped spec
  * check (`scoped_check_cmd` from WORKFLOW.md, scope flags appended).
  *
+ * EXECUTION PLANE: both commands run in the session's gate VM (see
+ * `runStepInGateVm`), not on the host. The argv still comes from WORKFLOW.md
+ * verbatim; only the executor changed.
+ *
  * Spec check resolution (never weaker than full):
  *   - no scope      → `go run ./cmd/spec check --strict`
  *   - module scoped → `--strict --module <m>` (one run per module)
@@ -410,7 +928,7 @@ export async function runScopedGate(opts: {
   if (!loaded.ok) return policyRefusalGateRun(loaded.reason);
 
   const steps: GateStep[] = [];
-  const makeStep = await runStep(
+  const makeStep = await runStepInGateVm(
     splitCommandLine(loaded.policy.auditStaticCmd),
     opts.cwd,
     opts.makeTimeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -425,20 +943,20 @@ export async function runScopedGate(opts: {
   for (const rule of scope?.rules ?? []) scopedArgv.push([...base, "--rule", rule]);
 
   if (scopedArgv.length === 0) {
-    steps.push(await runStep(base, opts.cwd, specTimeout, "full (no SPEC-SCOPE)"));
+    steps.push(await runStepInGateVm(base, opts.cwd, specTimeout, "full (no SPEC-SCOPE)"));
     return { ok: steps.every((step) => step.ok), steps };
   }
 
   let scopedFailed = false;
   for (const argv of scopedArgv) {
-    const step = await runStep(argv, opts.cwd, specTimeout, "scoped");
+    const step = await runStepInGateVm(argv, opts.cwd, specTimeout, "scoped");
     steps.push(step);
     if (!step.ok) scopedFailed = true;
   }
   if (scopedFailed) {
     // Fail-closed fallback: a scoped failure (including "unknown flag") must
     // never be reported as a pass; the full check decides.
-    steps.push(await runStep(base, opts.cwd, specTimeout, "full fallback (scoped check failed)"));
+    steps.push(await runStepInGateVm(base, opts.cwd, specTimeout, "full fallback (scoped check failed)"));
     const full = steps[steps.length - 1];
     return { ok: makeStep.ok && full.ok, steps };
   }
@@ -508,6 +1026,8 @@ export interface ReceiptInput {
   /** Extra context (gate kind, pass/fail, debounce skip). */
   note?: string;
   ok?: boolean;
+  /** Gate VM that executed the commands, when they ran in one (additive). */
+  sandbox?: string;
 }
 
 /**
@@ -541,6 +1061,10 @@ export async function writeReceipt(input: ReceiptInput): Promise<string | null> 
     headSha: await headShaOf(input.cwd),
     ok: input.ok === true,
     note: input.note ?? "",
+    // Additive and optional: the gate VM's name when the commands ran there.
+    // Every existing field keeps its meaning; a receipt without this key is
+    // still a complete receipt (the host plane is the default).
+    ...(input.sandbox ? { sandbox: input.sandbox } : {}),
   };
   try {
     await fs.promises.mkdir(dir, { recursive: true });
@@ -1209,6 +1733,8 @@ export interface ReceiptRecord {
   headSha: string;
   ok: boolean;
   note: string;
+  /** Gate VM name when the commands ran there (optional, additive). */
+  sandbox?: string;
 }
 
 /** `<cwd>/.pi/receipts/<YYYY-MM-DD>.jsonl` — the day's receipt log. */
@@ -1238,6 +1764,9 @@ function parseReceiptLines(raw: string): ReceiptRecord[] {
         headSha: typeof parsed.headSha === "string" ? parsed.headSha : "",
         ok: parsed.ok === true,
         note: typeof parsed.note === "string" ? parsed.note : "",
+        ...(typeof (parsed as { sandbox?: unknown }).sandbox === "string"
+          ? { sandbox: (parsed as { sandbox: string }).sandbox }
+          : {}),
       });
     } catch {
       /* unreadable receipt line — skip */

@@ -1,0 +1,30 @@
+#!/bin/sh
+# pg-down — stop the Postgres cluster baked into the pi-gate image (fast
+# shutdown: the gate database is throwaway, and a clean stop before
+# `sbx template save` keeps the snapshot's data directory tidy).
+#
+# Idempotent: stopping a stopped cluster is a no-op.
+set -eu
+
+PGDATA="${PGDATA:-/home/agent/pgdata}"
+from_pgconfig="$(pg_config --bindir 2>/dev/null || true)"
+bindir="$from_pgconfig"
+if [ ! -x "$bindir/pg_ctl" ]; then
+    bindir="$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -n 1 || true)"
+fi
+if [ ! -x "$bindir/pg_ctl" ]; then
+    echo "pg-down: cannot find pg_ctl — pg_config --bindir said '${from_pgconfig}' and no /usr/lib/postgresql/*/bin has one" >&2
+    exit 1
+fi
+
+if [ ! -s "$PGDATA/PG_VERSION" ]; then
+    echo "pg-down: no cluster at $PGDATA" >&2
+    exit 1
+fi
+
+if "$bindir/pg_ctl" -D "$PGDATA" status >/dev/null 2>&1; then
+    "$bindir/pg_ctl" -D "$PGDATA" -w -t 60 -m fast stop
+    echo "pg-down: stopped"
+else
+    echo "pg-down: not running"
+fi

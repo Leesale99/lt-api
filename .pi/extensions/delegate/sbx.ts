@@ -20,6 +20,14 @@
  * delegates to the active `SbxProcessOps`. Tests stub `setSbxProcessOps` and
  * assert on argv without a daemon, a VM, or a subnet.
  *
+ * TWO VM SHAPES. `createWorkerSandbox` builds a per-task worker VM from the
+ * `pi-worker` profile table. `createGateSandbox` builds the GATE VM the
+ * authoritative gates execute in: `pi-gate:v1`, one read-write worktree mount
+ * (plus the main repo root `:ro` when the worktree is linked, so its gitdir
+ * pointer resolves in-VM), Go-proxy-only egress, no secret sentinel, no model.
+ * The gate VM registry is session-scoped and keyed by worktree path; all of
+ * them are torn down at session end.
+ *
  * FAIL CLOSED. A create/exec that cannot run is an INFRA-FAILURE result — never
  * a silent fallback to a host-side spawn, which would hand a worker host reach
  * behind the profile's back.
@@ -29,8 +37,9 @@
  * to concatenation throughout.
  */
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 // ── Version pin + binary ────────────────────────────────────────────────────
@@ -41,6 +50,37 @@ export const SBX_CLI_VERSION = "0.54.0";
 export const SBX_BINARY = "sbx";
 
 // ── Sandbox image / sizing constants ────────────────────────────────────────
+
+/**
+ * Saved sandbox template the GATE VMs are created from.
+ *
+ * THIS IS NOT THE WORKER IMAGE. A gate VM is a second, locked-down VM that runs
+ * the authoritative gate commands (WORKFLOW.md `audit_static_cmd`,
+ * `scoped_check_cmd`, `audit_cmd`, `prove_cmd`) against a mount of the
+ * worktree. It has no model, no secret sentinel, and egress for the Go module
+ * proxy only, so a poisoned worktree cannot turn a gate run into host reach.
+ * The template is built by the parallel `pi-gate` kit step; there is NO kit
+ * fallback here — a missing template is a loud infra failure, because falling
+ * back to the worker image would silently widen the gate VM's surface.
+ */
+export const GATE_SANDBOX_TEMPLATE_NAME = "docker.io/library/pi-gate:v1";
+/** Role tag for a gate VM (`pi-gate-<stamp>`), never an agent name. */
+export const GATE_SANDBOX_ROLE = "gate";
+/** Gate VM vCPUs: `make audit` runs the whole tree, so it gets the worker's shape. */
+export const GATE_SANDBOX_CPUS = 4;
+/** Gate VM memory (binary units). Explicit for the same reason as every role. */
+export const GATE_SANDBOX_MEMORY = "8g";
+/**
+ * The gate VM's ENTIRE egress allowlist (default-deny otherwise): the Go module
+ * proxy fallback only, for a worktree whose module cache is not warm yet. No
+ * model endpoint and no secret sentinel — a gate VM never calls a model and
+ * never carries a credential.
+ */
+export const GATE_SANDBOX_EGRESS_HOSTS: readonly string[] = [
+  "proxy.golang.org:443",
+  "sum.golang.org:443",
+  "storage.googleapis.com:443",
+];
 
 /**
  * Saved sandbox template the worker VMs are created from. Produced by a
@@ -62,13 +102,43 @@ export const SANDBOX_TEMPLATE_NAME = "docker.io/library/pi-worker:v1";
  * (resolved by `createWorkerSandbox`). Used only when the saved template is
  * unavailable. An absent kit path is a loud infra-failure, never a silent
  * agent-image fallback.
+ *
+ * The KIT DIRECTORY is the artifact. It is a v3 workload kit (`pi-worker.yaml`
+ * plus the stem-paired `pi-worker.dockerfile`), so the image is built from the
+ * checked-in recipe: there is nothing to pack, and no `.zip` is produced any
+ * more (`sbx kit pack` was the v2 flow). `dist/` is gitignored and written by
+ * the same `.pi/sandboxes/build.sh` run that saves the `pi-worker:v1` template,
+ * so on the fresh host this fallback exists for, the checked-in directory is
+ * the only thing guaranteed to be present.
+ *
+ * PASSED POSITIONALLY, NOT WITH `--kit`. `sbx create AGENT|SANDBOX_KIT
+ * [PATH...]` takes the kit in the agent slot (`sbx create ../path/to/my-agent/`
+ * is the documented local-kit form), while `--kit` is documented as a MIXIN
+ * flag (`sbx create claude --kit ./my-mixin/`) — a v3 workload in the `--kit`
+ * slot is the wrong kind of kit. Local refs also have to be explicit paths; the
+ * path handed to `sbx` here is resolved to an absolute one.
  */
-export const SANDBOX_KIT_FALLBACK_PATH = ".pi/sandbox/pi-worker-kit";
+export const SANDBOX_KIT_FALLBACK_PATH = ".pi/sandboxes/kit";
 /** CPU allocation per VM. `sbx create` defaults to ALL host CPUs — never default. */
 export const SANDBOX_DEFAULT_CPUS = 4;
 /** Memory per VM (binary units). `sbx create` defaults to 50% of host RAM. */
 export const SANDBOX_DEFAULT_MEMORY = "8g";
-/** Agent positional used for every VM: the image comes from the template/kit. */
+/**
+ * CPU allocation for the read-only / mountless roles (scout, librarian,
+ * researcher). Those roles never run a build or a gate in the VM: they are
+ * model-call-bound (read, write prose, fetch pages), so half the worker's CPUs
+ * is the right shape. `sbx create --cpus 0` means ALL host CPUs, so every role
+ * states an explicit number — the table never relies on an sbx default.
+ */
+export const SANDBOX_LIGHT_CPUS = 2;
+/** Memory for the read-only / mountless roles. Explicit for the same reason. */
+export const SANDBOX_LIGHT_MEMORY = "4g";
+/**
+ * Agent positional for a TEMPLATE create: the image comes from the template, so
+ * the slot only names a built-in agent. On the kit fallback this token is
+ * replaced by the kit directory itself (`sbx create AGENT|SANDBOX_KIT
+ * [PATH...]`), which is why `createSandboxArgs` pushes exactly one of the two.
+ */
 export const SANDBOX_CREATE_AGENT = "shell";
 
 /** Egress allowlist for roles with a read-write worktree mount (default-deny). */
@@ -92,6 +162,49 @@ export const SANDBOX_WORKER_EGRESS_HOSTS: readonly string[] = [
  */
 export const SANDBOX_MODEL_EGRESS_HOSTS: readonly string[] = ["opencode.ai:443"];
 
+/**
+ * The host codex-search relay: the researcher's ONLY web-search path.
+ *
+ * `web_search` (`pi-web-access`) is configured by the baked
+ * `~/.pi/agent/web-search.json` to POST to
+ * `http://host.docker.internal:8787/responses`. The sbx proxy rewrites
+ * `host.docker.internal` to the host's `localhost`, so the per-sandbox allow
+ * rule is `localhost:8787` — nothing else needs to be reachable. The relay
+ * (`.pi/sandboxes/relay/codex-search-relay.mjs`) runs on the host, holds the
+ * host's `openai-codex` OAuth credential, and forwards to the codex backend.
+ *
+ * WHY THIS REPLACED `api.openai.com:443`: that path spent a pay-as-you-go
+ * OpenAI API key that had to be injected into the VM as a custom secret. Now no
+ * OpenAI credential enters any VM, and `chatgpt.com` never enters a VM either
+ * (the relay is the only thing that talks to it). A sandbox without this rule,
+ * or a relay that is not running, fails the web-search tool closed.
+ */
+export const SANDBOX_RELAY_EGRESS = "localhost:8787";
+
+/**
+ * The researcher's egress: the model provider (it has to think), the HOST codex
+ * search relay, and the docs-lookup backend. The role is MOUNTLESS, so its only
+ * work surface is the network, and the whole surface is these four rules:
+ *
+ *   opencode.ai:443      the model call (same provider as every other role)
+ *   *.opencode.ai:443    provider subdomains (the proxy matches the wildcard)
+ *   localhost:8787       the host codex-search relay — see SANDBOX_RELAY_EGRESS
+ *   context7.com:443     the docs-lookup provider — the baked extension package
+ *                        `@upstash/context7-pi` serves `resolve-library-id` and
+ *                        `query-docs` from context7.com, authenticating with
+ *                        `CONTEXT7_API_KEY`
+ *
+ * Anything else a `fetch_content` call reaches for is denied by the default-deny
+ * proxy. That is the profile, not an accident: a research task that needs some
+ * other host is a blocked report, not a reason to widen the list.
+ */
+export const SANDBOX_RESEARCHER_EGRESS_HOSTS: readonly string[] = [
+  "opencode.ai:443",
+  "*.opencode.ai:443",
+  SANDBOX_RELAY_EGRESS,
+  "context7.com:443",
+];
+
 /** The librarian's read-write vault. Not a git repo: no integrity check covers it. */
 export const SANDBOX_VAULT_PATH = "/Users/aleksrdvn/Projects/vaults/lt-api";
 
@@ -103,6 +216,25 @@ export const SANDBOX_VAULT_PATH = "/Users/aleksrdvn/Projects/vaults/lt-api";
  * table. Documented here so the profile table can name its secret surface.
  */
 export const SANDBOX_SECRET_SENTINEL_ENVS: readonly string[] = ["OPENCODE_GO_API_KEY"];
+
+/**
+ * The researcher's docs-lookup credential — and now its ONLY VM sentinel.
+ *
+ * `@upstash/context7-pi` (baked into the image as a pi extension package, see
+ * `kit/pi-worker.dockerfile`) reads `CONTEXT7_API_KEY` for its `context7.com`
+ * requests, and `resolve-library-id`/`query-docs` work only when that name is
+ * injected. Same sentinel mechanism, and a GLOBAL custom secret targeting
+ * `context7.com` already exists on the host — so this one needs no per-host
+ * setup. The VM only ever holds the `sbx-cs-` placeholder.
+ *
+ * RETIRED: the web-search sentinel (`SANDBOX_OPENAI_SECRET_SENTINEL_ENV` =
+ * `OPENAI_API_KEY`, backed by `sbx secret set-custom --host api.openai.com`).
+ * Web search now goes through the host relay (`SANDBOX_RELAY_EGRESS`), which
+ * holds the codex credential HOST-side and substitutes it upstream, so there is
+ * no key for the VM to carry. The constant was deleted rather than repurposed
+ * so nothing can silently start injecting that retrograde env var again.
+ */
+export const SANDBOX_CONTEXT7_SECRET_SENTINEL_ENV = "CONTEXT7_API_KEY";
 
 /** Exit code: `sbx` could not run the command (missing sandbox, not runnable). */
 export const SBX_EXIT_COULD_NOT_RUN = 125;
@@ -370,29 +502,85 @@ export function classifySbxExit(
 
 // ── Per-role profiles ───────────────────────────────────────────────────────
 
-/** A mount source: the task worktree, or the (non-git) vault. */
-export type SandboxMountKind = "worktree" | "vault";
+/**
+ * A mount source: the task worktree, the (non-git) vault, or a disposable
+ * scratch directory the adapter creates on the host (see
+ * `createScratchWorkspace`).
+ */
+export type SandboxMountKind = "worktree" | "vault" | "scratch";
+
+/**
+ * Host temp-dir prefix for a profile's disposable primary workspace. `sbx`
+ * rejects a read-only primary workspace ("primary workspace must be
+ * read/write"), so a role that must not write the repo (scout) is created with
+ * a throwaway rw dir first and the worktree mounted read-only second.
+ */
+export const SANDBOX_SCRATCH_PREFIX = "pi-scratch-";
 
 export interface SandboxMount {
   kind: SandboxMountKind;
   mode: "rw" | "ro";
 }
 
+/**
+ * The GATE profile: one read-write worktree mount (gates legitimately write
+ * generated artifacts such as docs/spec/business-rules.md), plus — for a LINKED
+ * worktree — the main repo root as a read-only EXTRA workspace so the
+ * worktree's `.git` pointer (`.git` is a file naming the main repo's gitdir)
+ * resolves inside the VM. Absolute paths are preserved, which is what makes the
+ * pointer work. Egress and secrets are the narrowest in the table.
+ */
+export const GATE_SANDBOX_PROFILE: SandboxProfile = {
+  role: GATE_SANDBOX_ROLE,
+  hostPassthrough: false,
+  // The extra repo-root :ro workspace is NOT in this table: it is conditional
+  // on the host-side linked-worktree probe and is passed to `create` as an
+  // extra workspace (see createGateSandbox), so the static profile is honest
+  // about the mounts every gate VM has.
+  mounts: [{ kind: "worktree", mode: "rw" }],
+  networkHosts: [...GATE_SANDBOX_EGRESS_HOSTS],
+  secretSentinelEnvs: [],
+  denyNetworkHosts: [],
+  cpus: GATE_SANDBOX_CPUS,
+  memory: GATE_SANDBOX_MEMORY,
+};
+
 export interface SandboxProfile {
   /** Agent/role name this profile applies to. */
   role: string;
-  /** true ⇒ spawn on the host (no VM). Documented residual, not a policy escape. */
+  /**
+   * true ⇒ spawn on the host (no VM). A mechanism, not a policy escape: NO role
+   * uses it today (researcher used to, and is now a mountless sandbox). Kept so
+   * a future role can be declared host-side deliberately, and so `false` here
+   * is an explicit statement rather than an absence.
+   */
   hostPassthrough: boolean;
   /**
    * Mounts in `sbx create` positional order. The FIRST entry is the primary
-   * workspace; the rest are additional workspaces (`:ro` for read-only).
+   * workspace and sbx requires it to be read/write ("primary workspace must be
+   * read/write" — it rejects a `:ro` primary outright); the rest are additional
+   * workspaces (`:ro` for read-only). A role that must not write the repo
+   * therefore declares `scratch` (rw) first and `worktree` (`:ro`) second.
    */
   mounts: SandboxMount[];
   /** Hosts allowed through the default-deny egress proxy (empty ⇒ no rules added). */
   networkHosts: string[];
   /** Secret sentinel env NAMES the proxy injects (never values, never `-e`). */
   secretSentinelEnvs: string[];
+  /**
+   * Per-sandbox network DENY rules passed at create time as repeated
+   * `--deny-network <host>` (sbx 0.54.0: `--deny-network strings`, repeatable).
+   * They are applied by `sbx create` itself, i.e. BEFORE the per-sandbox allow
+   * policy below runs, which closes the post-create egress window for anything
+   * a role must never reach. Deny beats allow (a local deny can only narrow).
+   *
+   * Default is EMPTY for every role: this is the mechanism, and no role has a
+   * justified deny yet. Omit or list [] rather than inventing one.
+   */
+  denyNetworkHosts?: string[];
+  /** vCPUs for the VM. Always explicit — `--cpus 0` means all host CPUs. */
   cpus: number;
+  /** Memory (binary units). Always explicit — sbx defaults to 50% of host RAM. */
   memory: string;
 }
 
@@ -423,12 +611,21 @@ export const SANDBOX_PROFILES: Record<string, SandboxProfile> = {
   scout: {
     role: "scout",
     hostPassthrough: false,
-    mounts: [{ kind: "worktree", mode: "ro" }],
+    // sbx needs a writable primary workspace, and scout must have zero write
+    // access to the repo. The primary is therefore a disposable host temp dir
+    // (`createScratchWorkspace`) and the task worktree is the read-only SECOND
+    // workspace: reads work, every write lands in a directory that dies with
+    // the VM.
+    mounts: [
+      { kind: "scratch", mode: "rw" },
+      { kind: "worktree", mode: "ro" },
+    ],
     // Model provider only: the agent has to be able to think. No task egress.
     networkHosts: [...SANDBOX_MODEL_EGRESS_HOSTS],
     secretSentinelEnvs: [],
-    cpus: SANDBOX_DEFAULT_CPUS,
-    memory: SANDBOX_DEFAULT_MEMORY,
+    denyNetworkHosts: [],
+    cpus: SANDBOX_LIGHT_CPUS,
+    memory: SANDBOX_LIGHT_MEMORY,
   },
   librarian: {
     role: "librarian",
@@ -441,20 +638,31 @@ export const SANDBOX_PROFILES: Record<string, SandboxProfile> = {
     // Model provider only — the vault is the work surface, not the network.
     networkHosts: [...SANDBOX_MODEL_EGRESS_HOSTS],
     secretSentinelEnvs: [],
-    cpus: SANDBOX_DEFAULT_CPUS,
-    memory: SANDBOX_DEFAULT_MEMORY,
+    denyNetworkHosts: [],
+    cpus: SANDBOX_LIGHT_CPUS,
+    memory: SANDBOX_LIGHT_MEMORY,
   },
   researcher: {
-    // NOT sandboxed this batch: the profile is deferred and documented as the
-    // one un-sandboxed role. `hostPassthrough` is a marker, not an escape hatch
-    // for other roles — see profileForRole.
+    // SANDBOXED, MOUNTLESS. There is no worktree in the VM at all: the role's
+    // whole product is prose about the web, so a repo mount would be reach it
+    // does not need. `mounts: []` emits NO workspace positionals on `sbx
+    // create` (verified supported: the workspace list is `[PATH...]`, and a
+    // create with none leaves the VM with its default (unmounted) root). Egress
+    // is the model provider plus the two backends its TOOLSET needs — the host
+    // codex-search relay for web search (`pi-web-access`, see
+    // SANDBOX_RELAY_EGRESS) and context7.com for docs lookup
+    // (`@upstash/context7-pi`), both baked into the image as extension
+    // packages — see SANDBOX_RESEARCHER_EGRESS_HOSTS. Context7's key rides the
+    // custom-secret sentinel mechanism like the model key; web search has NO key
+    // in the VM at all (the relay holds it host-side).
     role: "researcher",
-    hostPassthrough: true,
+    hostPassthrough: false,
     mounts: [],
-    networkHosts: [],
-    secretSentinelEnvs: [],
-    cpus: SANDBOX_DEFAULT_CPUS,
-    memory: SANDBOX_DEFAULT_MEMORY,
+    networkHosts: [...SANDBOX_RESEARCHER_EGRESS_HOSTS],
+    secretSentinelEnvs: [SANDBOX_CONTEXT7_SECRET_SENTINEL_ENV],
+    denyNetworkHosts: [],
+    cpus: SANDBOX_LIGHT_CPUS,
+    memory: SANDBOX_LIGHT_MEMORY,
   },
 };
 
@@ -469,7 +677,11 @@ export function profileForRole(role: string): SandboxProfile {
   return { ...SANDBOX_PROFILES.worker, role };
 }
 
-/** true ⇒ this role spawns on the host (only `researcher` today). */
+/**
+ * true ⇒ this role spawns on the host. NO role is passthrough today (researcher
+ * became a mountless sandbox); the predicate is retained because the spawn seam
+ * branches on it and an unknown role must never be one (it gets `worker`).
+ */
 export function isHostPassthroughRole(role: string): boolean {
   return profileForRole(role).hostPassthrough === true;
 }
@@ -524,7 +736,11 @@ export function generatedSandboxName(
 export interface CreateSandboxOptions {
   /** Role name from the agent frontmatter (`go-worker`, `scout`, …). */
   role: string;
-  /** Absolute host path of the worktree to mount at the same path in the VM. */
+  /**
+   * Absolute host path of the worktree to mount at the same path in the VM.
+   * IGNORED by a mountless profile (researcher), which emits no workspace
+   * positionals at all rather than mounting a path it has no business seeing.
+   */
   worktreePath: string;
   /** Repo root, for resolving the fallback kit path. */
   cwd?: string;
@@ -543,10 +759,29 @@ export interface SandboxHandle {
   role: string;
   profile: SandboxProfile;
   worktreePath: string;
+  /**
+   * Disposable rw primary workspace (only for a `scratch`-mount profile: scout).
+   * Host-managed and removed by `teardownSandbox`. `undefined` otherwise.
+   */
+  scratchPath?: string;
   /** Which reference produced the VM. */
   createdFrom: "template" | "kit";
+  /**
+   * Extra workspaces beyond the profile mounts, in create order. A gate VM on a
+   * linked worktree carries the main repo root here (`:ro`) so git resolves.
+   * `undefined` for every worker/scout/librarian/researcher VM.
+   */
+  extraWorkspaces?: string[];
   /** Egress rules actually added (empty ⇒ none were added). */
   networkHosts: string[];
+  /** Deny rules passed at create time (empty ⇒ none). */
+  denyNetworkHosts: string[];
+  /**
+   * false ⇒ the VM has NO workspace mount (the mountless researcher). `exec`
+   * then uses `SANDBOX_MOUNTLESS_WORKDIR` instead of the host worktree path,
+   * which does not exist inside a VM with no mounts.
+   */
+  hasWorkspace: boolean;
 }
 
 /** `PATH` or `PATH:ro` — sbx's workspace argument form. */
@@ -554,15 +789,48 @@ export function workspaceArg(hostPath: string, mode: "rw" | "ro"): string {
   return mode === "ro" ? hostPath + ":ro" : hostPath;
 }
 
-/** The workspace positionals for a profile, in declaration order. */
+/**
+ * Create the disposable read-write primary workspace a `scratch`-mount profile
+ * needs. sbx mounts a workspace by host path and refuses a read-only primary, so
+ * the adapter has to hand it an existing, empty, host-owned directory: a
+ * `mkdtemp` dir under the host temp root, labelled with the sandbox name so an
+ * operator can correlate it. Never inside the repo — that would be the write
+ * access the role is denied.
+ */
+export function createScratchWorkspace(label: string): string {
+  const safeLabel = label.toLowerCase().replace(/[^a-z0-9.-]+/g, "-").slice(0, 48) || "sandbox";
+  return fs.mkdtempSync(path.join(os.tmpdir(), SANDBOX_SCRATCH_PREFIX + safeLabel + "-"));
+}
+
+/**
+ * The workspace positionals for a profile, in declaration order.
+ *
+ * A profile with `mounts: []` (the mountless researcher) yields NO positionals
+ * at all: `sbx create AGENT|SANDBOX_KIT [PATH...]` accepts zero workspaces, and
+ * a mountless role must not be handed a path it would then be able to see.
+ *
+ * `scratchPath` is required for (and only used by) a `scratch` mount; a profile
+ * that declares one and gets no path is a programming error, not something to
+ * paper over with a fallback that could point at the repo.
+ */
 export function workspaceArgsFor(
   profile: SandboxProfile,
   worktreePath: string,
   vaultPath: string = SANDBOX_VAULT_PATH,
+  scratchPath?: string,
 ): string[] {
-  return profile.mounts.map((mount) =>
-    workspaceArg(mount.kind === "vault" ? vaultPath : worktreePath, mount.mode),
-  );
+  return profile.mounts.map((mount) => {
+    if (mount.kind === "vault") return workspaceArg(vaultPath, mount.mode);
+    if (mount.kind === "scratch") {
+      if (!scratchPath) {
+        throw new Error(
+          "profile '" + profile.role + "' declares a scratch workspace but no scratch path was provided",
+        );
+      }
+      return workspaceArg(scratchPath, mount.mode);
+    }
+    return workspaceArg(worktreePath, mount.mode);
+  });
 }
 
 /** `sbx create` argv for one profile (exported so tests can pin the shape). */
@@ -574,19 +842,45 @@ export function createSandboxArgs(opts: {
   template?: string;
   kitPath?: string;
   vaultPath?: string;
+  scratchPath?: string;
+  /** Extra workspace positionals appended after the profile mounts. */
+  extraWorkspaces?: { path: string; mode: "rw" | "ro" }[];
 }): string[] {
-  const args = ["create", "--name", opts.name, "--no-progress"];
+  // FAIL CLOSED: `--no-input` is a GLOBAL sbx flag (0.54.0 `sbx create --help`,
+  // Global Flags) and the host process is never interactive. Without it, an
+  // unmatched egress request — or any other prompt, e.g. a secret replacement or
+  // a permission confirmation — would HANG this spawn instead of failing, and a
+  // hung create is a worker that never starts and never gets a verdict.
+  const args = ["create", "--no-input", "--name", opts.name, "--no-progress"];
   args.push("--cpus", String(opts.profile.cpus), "--memory", opts.profile.memory);
+  // Create-time DENY rules come before any allow rule can exist for this
+  // sandbox: they are part of the create call, while the profile's allow list is
+  // a separate `sbx policy allow` afterwards. Nothing is denied today (every
+  // profile declares []); the plumbing is what closes the post-create window for
+  // a future role.
+  for (const host of profileDenyHosts(opts.profile)) args.push("--deny-network", host);
   if (opts.reference === "template") {
     args.push("-t", opts.template ?? SANDBOX_TEMPLATE_NAME);
-  } else if (opts.kitPath) {
-    args.push("--kit", opts.kitPath);
   }
+  // The first positional is the agent slot: a built-in agent name for a
+  // template create, or the sandbox-kit reference for a kit create
+  // (`sbx create AGENT|SANDBOX_KIT [PATH...]`). The kit path is NOT a `--kit`
+  // value — that flag is mixin-only, so a v3 workload passed there would be the
+  // wrong kind of kit. Everything after the first positional is a workspace
+  // path, in profile order — and a mountless profile contributes none.
+  const agentSlot =
+    opts.reference === "kit" && opts.kitPath ? opts.kitPath : SANDBOX_CREATE_AGENT;
   args.push(
-    SANDBOX_CREATE_AGENT,
-    ...workspaceArgsFor(opts.profile, opts.worktreePath, opts.vaultPath),
+    agentSlot,
+    ...workspaceArgsFor(opts.profile, opts.worktreePath, opts.vaultPath, opts.scratchPath),
+    ...(opts.extraWorkspaces ?? []).map((extra) => workspaceArg(extra.path, extra.mode)),
   );
   return args;
+}
+
+/** A profile's create-time deny hosts (absent ⇒ none, never an sbx default). */
+export function profileDenyHosts(profile: SandboxProfile): string[] {
+  return [...(profile.denyNetworkHosts ?? [])];
 }
 
 /** `sbx policy allow network` argv for one sandbox (exported for tests). */
@@ -610,10 +904,37 @@ export async function createWorkerSandbox(opts: CreateSandboxOptions): Promise<S
   const name = opts.name ?? generatedSandboxName(opts.role);
   const template = opts.template ?? SANDBOX_TEMPLATE_NAME;
   const kitPath = path.resolve(opts.cwd ?? process.cwd(), opts.kitPath ?? SANDBOX_KIT_FALLBACK_PATH);
+  // sbx requires a read/write PRIMARY workspace. A production role mounts the
+  // worktree rw and needs nothing else; a scratch-mount role (scout) must not
+  // write the repo, so it gets a throwaway host dir as the primary and the
+  // worktree as `:ro` second. Created before `sbx create` because sbx mounts an
+  // existing host directory.
+  const scratchPath = profile.mounts.some((mount) => mount.kind === "scratch")
+    ? createScratchWorkspace(name)
+    : undefined;
+  // Disposable by definition: a failed create must not leave a temp dir behind,
+  // and a failed cleanup must not mask the real create/policy error.
+  const discardScratch = (): void => {
+    if (!scratchPath) return;
+    try {
+      fs.rmSync(scratchPath, { recursive: true, force: true });
+    } catch {
+      /* host temp dir; the OS cleans it eventually */
+    }
+  };
 
   const create = async (reference: "template" | "kit"): Promise<SbxProcessResult> =>
     await runSbx(
-      createSandboxArgs({ name, profile, worktreePath: opts.worktreePath, reference, template, kitPath, vaultPath: opts.vaultPath }),
+      createSandboxArgs({
+        name,
+        profile,
+        worktreePath: opts.worktreePath,
+        reference,
+        template,
+        kitPath,
+        vaultPath: opts.vaultPath,
+        scratchPath,
+      }),
       { timeoutMs: SBX_CREATE_TIMEOUT_MS },
     );
 
@@ -624,6 +945,7 @@ export async function createWorkerSandbox(opts: CreateSandboxOptions): Promise<S
     // is a loud failure — there is no "just use the base agent image" path,
     // because that image would not know how to run pi at all.
     if (!getSbxProcessOps().exists(kitPath)) {
+      discardScratch();
       throw new Error(
         "sbx create from template '" + template + "' failed (" + describeFailure(created) +
         ") and the fallback kit is missing at " + kitPath,
@@ -632,12 +954,20 @@ export async function createWorkerSandbox(opts: CreateSandboxOptions): Promise<S
     created = await create("kit");
     used = "kit";
     if (!created.ok) {
+      discardScratch();
       throw new Error(
         "sbx create failed from both the '" + template + "' template and the kit at " + kitPath +
         ": " + describeFailure(created),
       );
     }
   }
+
+  // Contract with `exec`: a profile with no mounts produced a VM with no
+  // workspace, so `-w <host path>` would point at a directory that does not
+  // exist inside it (exec substitutes SANDBOX_MOUNTLESS_WORKDIR). Recorded from
+  // the profile actually used (not re-derived from the role) and dropped again
+  // by teardown.
+  sandboxHasWorkspace.set(name, profile.mounts.length > 0);
 
   if (profile.networkHosts.length > 0) {
     const allowed = await runSbx(policyAllowArgs(name, profile.networkHosts), {
@@ -647,6 +977,8 @@ export async function createWorkerSandbox(opts: CreateSandboxOptions): Promise<S
       // A VM without its declared egress is useless but not dangerous; a VM
       // with un-declared egress would be. Tear it down and fail loudly.
       await rmSandbox(name);
+      sandboxHasWorkspace.delete(name);
+      discardScratch();
       throw new Error(
         "sbx policy allow network failed for sandbox " + name + ": " + describeFailure(allowed),
       );
@@ -658,8 +990,11 @@ export async function createWorkerSandbox(opts: CreateSandboxOptions): Promise<S
     role: opts.role,
     profile,
     worktreePath: opts.worktreePath,
+    scratchPath,
     createdFrom: used,
     networkHosts: [...profile.networkHosts],
+    denyNetworkHosts: profileDenyHosts(profile),
+    hasWorkspace: profile.mounts.length > 0,
   };
 }
 
@@ -674,7 +1009,12 @@ function describeFailure(result: SbxProcessResult): string {
 }
 
 export interface ExecSandboxOptions {
-  /** `-w`: working directory inside the VM (the mounted worktree). */
+  /**
+   * `-w`: working directory inside the VM (the mounted worktree). For a
+   * MOUNTLESS sandbox this host path does not exist in the VM, so
+   * `sandboxWorkdir` substitutes `SANDBOX_MOUNTLESS_WORKDIR` (`/home/agent`, the
+   * one directory the image guarantees) — the host path is never passed.
+   */
   worktreePath: string;
   /** `-e K=V` pairs. Never a real secret value — see SANDBOX_SECRET_SENTINEL_ENVS. */
   env?: Record<string, string>;
@@ -691,17 +1031,52 @@ export interface SandboxExecResult extends SbxProcessResult {
   classification: SbxExitClassification;
 }
 
-/** `sbx exec` argv (exported so tests can pin the shape). */
+/**
+ * The working directory for a MOUNTLESS sandbox's `exec`.
+ *
+ * `-w <host worktree>` would point at a directory that does not exist in a VM
+ * with no mounts, and omitting `-w` would defer to a "primary workspace" a
+ * mountless sandbox does not have. The agent's home is the one absolute path the
+ * image guarantees (`PI_AGENT_HOME=/home/agent/.pi/agent`, owned by the agent),
+ * so exec gets an explicit, existing directory and pi writes any incidental
+ * state under its own home instead of failing on a missing cwd.
+ */
+export const SANDBOX_MOUNTLESS_WORKDIR = "/home/agent";
+
+/**
+ * `sbx exec` argv (exported so tests can pin the shape).
+ *
+ * `worktreePath === ""` OMITS `-w` entirely (a caller with no directory at all);
+ * a mountless sandbox gets `SANDBOX_MOUNTLESS_WORKDIR` from `sandboxWorkdir`
+ * below, never the host worktree path, which cannot exist inside the VM.
+ */
 export function execSandboxArgs(
   sandbox: string,
   worktreePath: string,
   env: Record<string, string>,
   argv: readonly string[],
 ): string[] {
-  const args = ["exec", "--no-input", "-w", worktreePath];
+  const args = ["exec", "--no-input"];
+  if (worktreePath !== "") args.push("-w", worktreePath);
   for (const [key, value] of Object.entries(env)) args.push("-e", key + "=" + value);
   args.push(sandbox, ...argv);
   return args;
+}
+
+/**
+ * Sandbox name → does its VM have a workspace mount?
+ *
+ * Proxy-creation state, not policy: `createWorkerSandbox` is the only creator
+ * and it records the answer from the profile it actually used, so `exec` can
+ * decide whether `-w` is meaningful without re-deriving the role's profile (and
+ * without a caller having to thread it through). Unknown names (an exec on a
+ * sandbox this process did not create) keep the `-w` they asked for.
+ */
+const sandboxHasWorkspace = new Map<string, boolean>();
+
+/** The `-w` value for an exec: the mounted worktree, or the agent home when mountless. */
+export function sandboxWorkdir(sandbox: string, worktreePath: string): string {
+  return sandboxHasWorkspace.get(sandbox) === false ? SANDBOX_MOUNTLESS_WORKDIR : worktreePath;
 }
 
 /**
@@ -715,12 +1090,15 @@ export async function execInSandbox(
   opts: ExecSandboxOptions,
 ): Promise<SandboxExecResult> {
   const env = opts.env ?? {};
-  const result = await runSbx(execSandboxArgs(sandbox, opts.worktreePath, env, argv), {
-    timeoutMs: opts.timeoutMs,
-    signal: opts.signal,
-    onStdout: opts.onStdout,
-    onStderr: opts.onStderr,
-  });
+  const result = await runSbx(
+    execSandboxArgs(sandbox, sandboxWorkdir(sandbox, opts.worktreePath), env, argv),
+    {
+      timeoutMs: opts.timeoutMs,
+      signal: opts.signal,
+      onStdout: opts.onStdout,
+      onStderr: opts.onStderr,
+    },
+  );
   return {
     ...result,
     sandbox,
@@ -755,9 +1133,10 @@ export interface TeardownResult {
  * THE teardown path: `sbx stop` then `sbx rm --force`, both best-effort, never
  * throwing. The stall watchdog / abort / normal-exit paths all end here, so no
  * sandbox can outlive its worker (there is no local TTL — the host owns
- * wall-clock).
+ * wall-clock). A scratch-mount profile's primary workspace is a host temp dir
+ * this adapter created, so it dies here too.
  */
-export async function teardownSandbox(name: string): Promise<TeardownResult> {
+export async function teardownSandbox(name: string, scratchPath?: string): Promise<TeardownResult> {
   const errors: string[] = [];
   let stopped = false;
   let removed = false;
@@ -775,5 +1154,255 @@ export async function teardownSandbox(name: string): Promise<TeardownResult> {
   } catch (error) {
     errors.push("sbx rm threw: " + (error instanceof Error ? error.message : String(error)));
   }
+  if (scratchPath) {
+    try {
+      fs.rmSync(scratchPath, { recursive: true, force: true });
+    } catch (error) {
+      errors.push("scratch cleanup: " + (error instanceof Error ? error.message : String(error)));
+    }
+  }
+  sandboxHasWorkspace.delete(name);
   return { name, stopped, removed, errors };
+}
+
+// ── Gate VM: mount plan ─────────────────────────────────────────────────────
+
+/** Timeout for the host-side `git rev-parse --git-common-dir` probe (ms). */
+export const GATE_GIT_PROBE_TIMEOUT_MS = 10_000;
+
+/** Result of the host-side git-common-dir probe. */
+export interface GateGitProbe {
+  ok: boolean;
+  /** Raw `--git-common-dir` output (absolute after resolution); "" on failure. */
+  commonDir: string;
+  /** Human reason when ok is false. */
+  reason: string;
+}
+
+/**
+ * HOST-SIDE probe: `git -C <worktree> rev-parse --git-common-dir`.
+ *
+ * This RUNS ON THE HOST and reads only git metadata; it is the pre-gate trust
+ * anchor (the host integrity check) that decides the gate VM's mount set. The
+ * worktree's gitdir pointer is then resolved IN THE VM from the preserved
+ * absolute paths. Failure is not fatal here: an unprobeable worktree gets the
+ * single worktree mount (see gateMountPlanFromCommonDir).
+ */
+export function gitCommonDirOf(worktreePath: string): GateGitProbe {
+  try {
+    const output = execFileSync("git", ["-C", worktreePath, "rev-parse", "--git-common-dir"], {
+      encoding: "utf8",
+      timeout: GATE_GIT_PROBE_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    if (!output) return { ok: false, commonDir: "", reason: "git rev-parse returned no common dir" };
+    return { ok: true, commonDir: output, reason: "" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, commonDir: "", reason: "git rev-parse --git-common-dir failed: " + message };
+  }
+}
+
+export interface GateMountPlan {
+  /** Absolute worktree path: the rw primary workspace. */
+  worktreePath: string;
+  /**
+   * Absolute main repo root mounted `:ro` as an EXTRA workspace, or null when
+   * the worktree is not linked (its own `.git` directory is the common dir).
+   */
+  repoRoot: string | null;
+  /** true ⇒ the common git dir lives elsewhere (a `git worktree add` worktree). */
+  linkedWorktree: boolean;
+}
+
+/**
+ * Pure decision behind the gate VM mount set.
+ *
+ * A linked worktree's `.git` is a FILE containing `gitdir: <main>/.git/worktrees/<id>`.
+ * A VM mounting only the worktree cannot resolve that pointer (the target is
+ * outside the mount), so git commands fail inside the gate VM. Mounting the
+ * MAIN REPO ROOT at its absolute path, read-only, makes the pointer resolve
+ * because the paths are preserved — a live probe confirmed git works in-VM on a
+ * repo-root mount. The extra mount is `:ro`: the gate VM may write the worktree
+ * (generated artifacts) but has no reason to write the main repo.
+ *
+ * An unprobeable worktree (commonDir empty/not ok) is treated as NOT linked:
+ * the single worktree mount is what we can prove, never a guessed extra mount.
+ */
+export function gateMountPlanFromCommonDir(worktreePath: string, commonDir: string): GateMountPlan {
+  const absolute = path.resolve(worktreePath);
+  const probed = commonDir.trim();
+  if (probed === "") return { worktreePath: absolute, repoRoot: null, linkedWorktree: false };
+  const resolvedCommon = path.resolve(absolute, probed);
+  const localGitDir = path.join(absolute, ".git");
+  if (resolvedCommon === localGitDir) {
+    return { worktreePath: absolute, repoRoot: null, linkedWorktree: false };
+  }
+  // The common dir is `<main repo>/.git` (or a bare-ish variant): its parent is
+  // the repo root to mount. Never point the extra mount at the worktree itself.
+  const repoRoot = path.dirname(resolvedCommon);
+  if (repoRoot === absolute) return { worktreePath: absolute, repoRoot: null, linkedWorktree: false };
+  return { worktreePath: absolute, repoRoot, linkedWorktree: true };
+}
+
+/** Resolve the mount plan with the real git probe (or an injected one). */
+export function resolveGateMountPlan(
+  worktreePath: string,
+  probe: (target: string) => GateGitProbe = gitCommonDirOf,
+): GateMountPlan {
+  const result = probe(worktreePath);
+  if (!result.ok) return gateMountPlanFromCommonDir(worktreePath, "");
+  return gateMountPlanFromCommonDir(worktreePath, result.commonDir);
+}
+
+// ── Gate VM: create ─────────────────────────────────────────────────────────
+
+export interface CreateGateSandboxOptions {
+  /** Override the generated `pi-gate-<stamp>` name (tests / retries). */
+  name?: string;
+  template?: string;
+  /** Test seam: inject the host-side git-common-dir probe. */
+  probe?: (target: string) => GateGitProbe;
+  /** Test seam: inject the whole mount plan (skips the probe). */
+  mountPlan?: GateMountPlan;
+}
+
+/**
+ * Create the session's gate VM for one worktree path.
+ *
+ * NO KIT FALLBACK: the worker-image fallback exists because the worker image
+ * may not be saved yet; the gate VM's whole point is its narrow surface, so a
+ * missing `pi-gate:v1` template is a loud infra failure, never a downgrade to
+ * the worker image. Egress is the declared Go-proxy set applied per sandbox;
+ * every other host is denied by the proxy.
+ */
+export async function createGateSandbox(
+  worktreePath: string,
+  opts: CreateGateSandboxOptions = {},
+): Promise<SandboxHandle> {
+  const plan = opts.mountPlan ?? resolveGateMountPlan(worktreePath, opts.probe);
+  const name = opts.name ?? generatedSandboxName(GATE_SANDBOX_ROLE);
+  const template = opts.template ?? GATE_SANDBOX_TEMPLATE_NAME;
+  const profile: SandboxProfile = { ...GATE_SANDBOX_PROFILE };
+  const extraWorkspaces = plan.repoRoot ? [{ path: plan.repoRoot, mode: "ro" as const }] : [];
+
+  const created = await runSbx(
+    createSandboxArgs({
+      name,
+      profile,
+      worktreePath: plan.worktreePath,
+      reference: "template",
+      template,
+      extraWorkspaces,
+    }),
+    { timeoutMs: SBX_CREATE_TIMEOUT_MS },
+  );
+  if (!created.ok) {
+    throw new Error(
+      "sbx create for the gate VM from template '" + template + "' failed (" +
+      describeFailure(created) + "); there is no fallback image for a gate VM",
+    );
+  }
+
+  sandboxHasWorkspace.set(name, true);
+
+  if (profile.networkHosts.length > 0) {
+    const allowed = await runSbx(policyAllowArgs(name, profile.networkHosts), {
+      timeoutMs: SBX_POLICY_TIMEOUT_MS,
+    });
+    if (!allowed.ok) {
+      await rmSandbox(name);
+      sandboxHasWorkspace.delete(name);
+      throw new Error(
+        "sbx policy allow network failed for gate sandbox " + name + ": " + describeFailure(allowed),
+      );
+    }
+  }
+
+  return {
+    name,
+    role: GATE_SANDBOX_ROLE,
+    profile,
+    worktreePath: plan.worktreePath,
+    createdFrom: "template",
+    ...(extraWorkspaces.length > 0 ? { extraWorkspaces: extraWorkspaces.map((extra) => extra.path) } : {}),
+    networkHosts: [...profile.networkHosts],
+    denyNetworkHosts: profileDenyHosts(profile),
+    hasWorkspace: true,
+  };
+}
+
+// ── Gate VM: session-scoped registry ────────────────────────────────────────
+
+/**
+ * Session-scoped reuse, KEYED BY WORKTREE PATH. The worktree mount is live, so
+ * every exec on the same path sees the current dirty tree — one VM is enough
+ * for a whole session's gate decisions. A background job's fresh worktree path
+ * is a different key and therefore a DIFFERENT VM (never a VM mounted at the
+ * previous path); all of them are torn down together at session end.
+ */
+const gateSandboxes = new Map<string, SandboxHandle>();
+const gateSandboxCreates = new Map<string, Promise<SandboxHandle>>();
+
+/** Registry key for a worktree path (absolute, so `./wt` and `/abs/wt` match). */
+export function gateSandboxKey(worktreePath: string): string {
+  return path.resolve(worktreePath);
+}
+
+/** The live gate VM for a worktree path, if one was created this session. */
+export function gateSandboxFor(worktreePath: string): SandboxHandle | undefined {
+  return gateSandboxes.get(gateSandboxKey(worktreePath));
+}
+
+/** Every live gate VM, in creation order. */
+export function listGateSandboxes(): SandboxHandle[] {
+  return [...gateSandboxes.values()];
+}
+
+/**
+ * Lazily create (once per worktree path) and return the session's gate VM.
+ * Concurrent gate decisions for the same path share one in-flight create, so
+ * two gates cannot race two VMs onto the same mount.
+ */
+export async function ensureGateSandbox(
+  worktreePath: string,
+  opts: CreateGateSandboxOptions = {},
+): Promise<SandboxHandle> {
+  const key = gateSandboxKey(worktreePath);
+  const existing = gateSandboxes.get(key);
+  if (existing) return existing;
+  const inFlight = gateSandboxCreates.get(key);
+  if (inFlight) return await inFlight;
+  const pending = createGateSandbox(worktreePath, opts)
+    .then((handle) => {
+      gateSandboxes.set(key, handle);
+      return handle;
+    })
+    .finally(() => {
+      gateSandboxCreates.delete(key);
+    });
+  gateSandboxCreates.set(key, pending);
+  return await pending;
+}
+
+/**
+ * Tear down EVERY gate VM this session created (session_shutdown). Best
+ * effort, never throws: a leaked VM is a host cleanup problem, not a reason to
+ * fail the session teardown.
+ */
+export async function teardownGateSandboxes(): Promise<TeardownResult[]> {
+  const handles = [...gateSandboxes.values()];
+  gateSandboxes.clear();
+  gateSandboxCreates.clear();
+  const results: TeardownResult[] = [];
+  for (const handle of handles) {
+    results.push(await teardownSandbox(handle.name, handle.scratchPath));
+  }
+  return results;
+}
+
+/** Test seam: forget the registry WITHOUT running sbx (the stub already did). */
+export function resetGateSandboxRegistryForTests(): void {
+  gateSandboxes.clear();
+  gateSandboxCreates.clear();
 }

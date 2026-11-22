@@ -54,10 +54,11 @@
  *     VERIFIED prove receipt (checkProveCoverage in ./gates.ts).
  *
  * Sandbox era (this file):
- *   - Every foreground worker except `researcher` runs inside a per-task Docker
- *     Sandbox micro-VM (./sbx.ts owns the whole CLI): the worktree is mounted
- *     per the role's profile, the pi invocation is exec'd foreground, and the
- *     stall watchdog owns teardown (`sbx stop`, then `rm --force`).
+ *   - Every foreground worker runs inside a per-task Docker Sandbox micro-VM
+ *     (./sbx.ts owns the whole CLI): the worktree is mounted per the role's
+ *     profile (`researcher` is mountless), the pi invocation is exec'd
+ *     foreground, and the stall watchdog owns teardown (`sbx stop`, then
+ *     `rm --force`).
  *   - The HOST session is the verifier plane: after a sandboxed exec exits it
  *     runs the integrity check FIRST (`checkWorktreeIntegrity`), refuses the
  *     gates on a dirty result, and otherwise runs the authoritative ladder and
@@ -73,6 +74,19 @@
  *     merge command when the job's recorded SPEC-SCOPE names rules without
  *     VERIFIED host-side prove receipts — independent of how the approval
  *     arrived.
+ *
+ * Gate-VM era (this file):
+ *   - The AUTHORITATIVE gate commands (declared in WORKFLOW.md) no longer run
+ *     on the host. They run in a second, locked-down `pi-gate:v1` VM
+ *     (./sbx.ts `createGateSandbox`): the host spawns `sbx exec` and nothing
+ *     else. A gate command typed into a host bash session is recognised and
+ *     REWRITTEN to the equivalent `sbx exec` line (after the host integrity
+ *     check and, for `make audit`/`make prove`, the Postgres pre-sequence); the
+ *     extension-driven ladder/settle/reconciliation paths call the gate VM
+ *     directly. The host keeps only the integrity check (`git`) and receipts.
+ *   - Gate VMs are session-scoped and keyed by worktree path (a background
+ *     job's fresh worktree gets its own VM); all are torn down at
+ *     `session_shutdown`.
  */
 
 import { spawn } from "node:child_process";
@@ -138,11 +152,13 @@ import {
   markPostWriteGateStart,
   parseSpecScope,
   planSettleGateAttempt,
+  prepareGateDbVm,
   receiptCommandsOf,
   recentSettleFailures,
   reconciliationGateRun,
   recordSettleGateAttempt,
   resetSettleGateAttempts,
+  resolveDeclaredGateCommand,
   runInVmAdvisoryGate,
   runReconciliation,
   runScopedGate,
@@ -152,17 +168,26 @@ import {
   shouldRunPostWriteGate,
   splitCommandLine,
   splitTopLevelSegments,
+  tailLines,
+  gateVmExecEnv,
+  gateVmShellCommand,
+  parseGateVmShellCommand,
+  appendGateDbOverride,
   writeReceipt,
 } from "./gates.ts";
 import {
   type SandboxExecResult,
   type SandboxHandle,
+  type SandboxMount,
   SANDBOX_ENV_FLAG,
   createWorkerSandbox,
+  ensureGateSandbox,
   execInSandbox,
+  gateSandboxFor,
   isHostPassthroughRole,
   isSandboxedChild,
   profileForRole,
+  teardownGateSandboxes,
   teardownSandbox,
 } from "./sbx.ts";
 import { formatStallReason, startStallWatchdog, workerStallTimeoutMs } from "./runtime.ts";
@@ -274,6 +299,7 @@ async function writeSettleReceipt(input: {
   commands: ReturnType<typeof receiptCommandsOf>;
   ok: boolean;
   note: string;
+  sandbox?: string;
 }): Promise<string | null> {
   try {
     return await writeReceipt({
@@ -283,6 +309,7 @@ async function writeSettleReceipt(input: {
       commands: input.commands,
       ok: input.ok,
       note: input.note,
+      ...(input.sandbox ? { sandbox: input.sandbox } : {}),
     });
   } catch (error) {
     console.error("[delegate] settle receipt failed:", error);
@@ -446,6 +473,35 @@ interface HostVerification {
   gatesRan: boolean;
 }
 
+/**
+ * Instance truth of the VM a run occupied, persisted in tool-result `details`
+ * (additive: resume/branching replays it) so the TUI can say WHERE the work
+ * ran. Policy half (role → profile) is derived at render time, never stored.
+ */
+export interface SandboxDetails {
+  /** The `sbx` VM name this run occupied (`pi-<role>-…`). */
+  name: string;
+  /** The role the profile was resolved for (the agent name actually spawned). */
+  role: string;
+  /**
+   * Which reference produced the VM — `template` or `kit` (SandboxHandle.
+   * createdFrom). Image provenance, not a host path: the mounted paths are
+   * deliberately NOT persisted (they are machine-local and the mounts line
+   * already says what the VM could see).
+   */
+  createdFrom: string;
+  /** Mounts as declared by the profile (what the VM could actually see). */
+  mounts: readonly SandboxMount[];
+  /** Egress hosts the profile allowed (default-deny proxy, empty ⇒ none). */
+  networkHosts: readonly string[];
+  /** Disposable rw primary workspace, when the profile needed one (scout). */
+  scratchPath?: string;
+  /** Set once teardown ran: `ok` clean, `errors` one or more failures, absent ⇒ live. */
+  teardown?: "ok" | "errors";
+  /** One line per teardown failure (TUI only — model text keeps its own block). */
+  teardownErrors?: string[];
+}
+
 interface SingleResult {
   agent: string;
   agentSource: "user" | "project" | "unknown";
@@ -466,6 +522,16 @@ interface SingleResult {
   sandboxName?: string;
   /** One line per teardown failure (empty/undefined ⇒ clean teardown). */
   sandboxTeardownErrors?: string[];
+  /**
+   * Which plane the spawn actually used, recorded at the routing decision.
+   * Absent on results that never started (unknown agent, pre-start abort) — a
+   * rendered badge then stays silent instead of guessing.
+   */
+  plane?: "host" | "sandbox";
+  /** Instance truth of the VM (sandboxed runs only). */
+  sandbox?: SandboxDetails;
+  /** Host-passthrough runs only: the cwd the child actually ran in. */
+  hostCwd?: string;
   /**
    * The `sbx` CLI itself could not run the command (exit 125/127, spawn error,
    * timeout, abort). Distinct from the child's own status and from a gate
@@ -490,6 +556,93 @@ interface BackgroundJobDetails {
   isError?: boolean;
 }
 type AnyToolDetails = SubagentDetails | BackgroundJobDetails;
+
+// ── Execution plane: pre-run POLICY badge, post-run INSTANCE truth ──────────
+// TUI-only surfaces (never model-facing): the pre-run badge is policy truth
+// from the role's profile and never invents a sandbox id; the post-run badge +
+// info line read the instance truth persisted in `details`. Pure helpers —
+// covered by smoke-ui.mjs.
+
+export type ExecutionPlane = "host" | "sandbox";
+
+export interface PlaneBadge {
+  plane: ExecutionPlane;
+  /** Badge text without color, e.g. `[host]`, `[sbx wt:rw]`, `[sbx <name>]`. */
+  label: string;
+  /** Theme color token: host = warning, sandbox = success. */
+  color: "warning" | "success";
+}
+
+/** Compact mount hint for the PRE-RUN badge: `wt:rw`, `wt:ro`, `vault`, `—`. */
+export function compactMountSummary(mounts: readonly SandboxMount[]): string {
+  if (mounts.some((mount) => mount.kind === "vault")) return "vault";
+  const worktree = mounts.filter((mount) => mount.kind === "worktree");
+  if (worktree.length === 0) return "\u2014";
+  return "wt:" + worktree.map((mount) => mount.mode).join("+");
+}
+
+/** Full mount list for the EXPANDED line: `worktree:rw`, `vault:rw+worktree:ro`, `none`. */
+export function formatMountsLong(mounts: readonly SandboxMount[]): string {
+  if (mounts.length === 0) return "none";
+  return mounts.map((mount) => mount.kind + ":" + mount.mode).join("+");
+}
+
+/** First few egress hosts plus a `+N` remainder; `none` when the VM had no egress. */
+export function summarizeEgress(hosts: readonly string[], max = 3): string {
+  if (hosts.length === 0) return "none";
+  const head = hosts.slice(0, max).join(",");
+  return hosts.length > max ? head + " +" + (hosts.length - max) : head;
+}
+
+/**
+ * PRE-RUN plane from the ROLE's profile (policy truth). `background` wins: a
+ * background single runs as a host-side ORCHESTRATOR (tmux pane) whatever the
+ * target agent's profile says — it spawns its own sandboxed workers and is
+ * never itself inside a VM.
+ */
+export function planeBadge(role: string, background = false): PlaneBadge {
+  if (background || isHostPassthroughRole(role)) {
+    return { plane: "host", label: "[host]", color: "warning" };
+  }
+  return {
+    plane: "sandbox",
+    label: "[sbx " + compactMountSummary(profileForRole(role).mounts) + "]",
+    color: "success",
+  };
+}
+
+/** POST-RUN header badge from the result's instance truth (undefined ⇒ nothing ran). */
+export function resultPlaneBadge(result: SingleResult): PlaneBadge | undefined {
+  if (result.sandbox) {
+    return { plane: "sandbox", label: "[sbx " + result.sandbox.name + "]", color: "success" };
+  }
+  // A sandboxed role whose create failed has no name: say `[sbx]`, not a fake id.
+  if (result.plane === "sandbox") return { plane: "sandbox", label: "[sbx]", color: "success" };
+  if (result.plane === "host") return { plane: "host", label: "[host]", color: "warning" };
+  return undefined;
+}
+
+/** EXPANDED one-liner: `sbx: …` for a VM run, `host: <cwd>` for a passthrough run. */
+export function planeInfoLineText(result: SingleResult): string | undefined {
+  if (result.sandbox) return formatSandboxInfoLine(result.sandbox);
+  if (result.plane === "host" && result.hostCwd) return formatHostPlaneLine(result.hostCwd);
+  return undefined;
+}
+
+export function formatSandboxInfoLine(sandbox: SandboxDetails): string {
+  return (
+    "sbx: " + sandbox.name +
+    " \u00b7 role=" + sandbox.role +
+    " \u00b7 from=" + sandbox.createdFrom +
+    " \u00b7 mounts=" + formatMountsLong(sandbox.mounts) +
+    " \u00b7 egress=" + summarizeEgress(sandbox.networkHosts) +
+    " \u00b7 teardown=" + (sandbox.teardown ?? "pending")
+  );
+}
+
+export function formatHostPlaneLine(cwd: string): string {
+  return "host: " + cwd;
+}
 
 function isFailedResult(result: SingleResult): boolean {
   return result.status === "failed" || result.status === "aborted";
@@ -729,6 +882,7 @@ async function safeHostReceipt(input: {
   commands: ReturnType<typeof receiptCommandsOf>;
   ok: boolean;
   note: string;
+  sandbox?: string;
 }): Promise<string | null> {
   try {
     return await writeReceipt({
@@ -738,6 +892,7 @@ async function safeHostReceipt(input: {
       commands: input.commands,
       ok: input.ok,
       note: input.note,
+      ...(input.sandbox ? { sandbox: input.sandbox } : {}),
     });
   } catch (error) {
     console.error("[delegate] host receipt failed:", error);
@@ -753,8 +908,9 @@ async function safeHostReceipt(input: {
  *      worktree + index). Dirty/unverifiable ⇒ REFUSE to run any gate, write a
  *      receipt saying so, and fail the result loudly (human review).
  *   2. otherwise, when the child exited normally, the authoritative ladder
- *      (`make audit/static` + the scoped spec check) IN THE WORKTREE, and its
- *      receipt — in the HOST's receipts dir, not the worktree's.
+ *      (`make audit/static` + the scoped spec check) IN THE GATE VM (mounted at
+ *      the worktree path; the host only spawns `sbx exec`), and its receipt —
+ *      in the HOST's receipts dir, not the worktree's.
  */
 async function verifySandboxedWorker(input: {
   hostRoot: string;
@@ -830,7 +986,8 @@ async function verifySandboxedWorker(input: {
     agent: input.agent,
     commands: receiptCommandsOf(gates),
     ok: gates.ok,
-    note: "host gate (authoritative, post-exit)",
+    note: "host gate (authoritative, post-exit; executed in the gate VM)",
+    sandbox: gates.steps.find((step) => step.gateSandbox)?.gateSandbox,
   });
   if (gateReceipt) receipts.push(gateReceipt);
   return { integrity, receipts, refused: false, gatesRan: true, gates };
@@ -891,6 +1048,9 @@ async function runSingleAgent(
   signal: AbortSignal | undefined,
   onUpdate: OnUpdateCallback | undefined,
   makeDetails: (results: SingleResult[]) => SubagentDetails,
+  // Ambient footer status lives on ctx.ui: the run counts itself in/out around
+  // the spawn so the footer shows live sandboxed vs host workers.
+  runCtx: Pick<ExtensionContext, "hasUI" | "ui">,
 ): Promise<SingleResult> {
   if (signal?.aborted) {
     return createUnstartedResult(agentName, task, step, "aborted", "Subagent was aborted before starting");
@@ -948,10 +1108,12 @@ async function runSingleAgent(
   };
 
   try {
-    // Sandbox routing. Every role except `researcher` (host passthrough — the
-    // documented residual whose profile is deferred) runs inside its own
-    // micro-VM. The pi invocation is otherwise the same one the local path
-    // uses; three deltas are forced by the mount boundary:
+    beginLiveRun(agent.name, runCtx);
+    // Sandbox routing. Every role today runs inside its own micro-VM (no role
+    // is host-passthrough — the mechanism is retained in sbx.ts for a future
+    // deliberate host role, and this branch is its only spawn seam). The pi
+    // invocation is otherwise the same one the local path uses; three deltas
+    // are forced by the mount boundary:
     //   - the system prompt goes INLINE: `--append-system-prompt` resolves its
     //     argument as a file only when that path exists, and a host temp path
     //     does not exist inside the VM;
@@ -968,6 +1130,10 @@ async function runSingleAgent(
     //     collected, so that spelling left skills ON).
     const sandboxProfile = profileForRole(agent.name);
     const useSandbox = !sandboxProfile.hostPassthrough;
+    // What we ATTEMPTED is instance truth: a VM that fails to create still
+    // reports `[sbx]` (no name invented), never a silent host run.
+    currentResult.plane = useSandbox ? "sandbox" : "host";
+    if (!useSandbox) currentResult.hostCwd = effectiveCwd;
     if (agent.systemPrompt.trim()) {
       if (useSandbox) {
         args.push("--append-system-prompt", agent.systemPrompt);
@@ -1021,9 +1187,11 @@ async function runSingleAgent(
     };
 
     /**
-     * The HOST-PASSTHROUGH spawn path (researcher today), unchanged in shape:
-     * `getPiInvocation` + a local child, its env scrubbed of pi's own session
-     * identity, and the caller's abort signal mapped to SIGTERM→SIGKILL.
+     * The HOST-PASSTHROUGH spawn path, unchanged in shape: `getPiInvocation` + a
+     * local child, its env scrubbed of pi's own session identity, and the
+     * caller's abort signal mapped to SIGTERM→SIGKILL. No role uses it today
+     * (the researcher is a mountless sandbox); it is the retained seam for a
+     * future deliberate host role.
      */
     const runLocalSpawn = async (): Promise<ProcessOutcome> => {
       return await new Promise<ProcessOutcome>((resolve) => {
@@ -1150,6 +1318,14 @@ async function runSingleAgent(
             cwd: resolvedAgent.hostRoot,
           });
           currentResult.sandboxName = sandbox.name;
+          currentResult.sandbox = {
+            name: sandbox.name,
+            role: sandbox.role,
+            createdFrom: sandbox.createdFrom,
+            mounts: sandbox.profile.mounts,
+            networkHosts: sandbox.networkHosts,
+            ...(sandbox.scratchPath ? { scratchPath: sandbox.scratchPath } : {}),
+          };
         } catch (error) {
           createError = error instanceof Error ? error.message : String(error);
         }
@@ -1196,7 +1372,7 @@ async function runSingleAgent(
       watchdog.stop();
       if (signal) signal.removeEventListener("abort", requestAbort);
       if (sandbox) {
-        sandboxTeardown = await teardownSandbox(sandbox.name);
+        sandboxTeardown = await teardownSandbox(sandbox.name, sandbox.scratchPath);
       }
     }
 
@@ -1251,6 +1427,11 @@ async function runSingleAgent(
 
     if (sandbox) {
       currentResult.sandboxName = sandbox.name;
+      if (currentResult.sandbox) {
+        const teardownErrors = sandboxTeardown?.errors ?? [];
+        currentResult.sandbox.teardown = teardownErrors.length > 0 ? "errors" : "ok";
+        if (teardownErrors.length > 0) currentResult.sandbox.teardownErrors = [...teardownErrors];
+      }
       if (sandboxTeardown && sandboxTeardown.errors.length > 0) {
         currentResult.sandboxTeardownErrors = sandboxTeardown.errors;
       }
@@ -1283,6 +1464,7 @@ async function runSingleAgent(
     }
     return currentResult;
   } finally {
+    endLiveRun(agent.name);
     if (tmpPromptPath) {
       try {
         fs.unlinkSync(tmpPromptPath);
@@ -1588,6 +1770,12 @@ let delegateApi: ExtensionAPI | undefined;
  */
 let settleGateTerminal = false;
 
+/**
+ * The plane a background child runs on: a HOST-side orchestrator (tmux pane /
+ * detached child), never a sandbox id. Its own worker spawns are sandboxed.
+ */
+const BACKGROUND_JOB_PLANE = "orchestrator (host)";
+
 /** Payload persisted on delegate-job entry cards (also used as message details). */
 interface JobCardData {
   id: string;
@@ -1596,6 +1784,12 @@ interface JobCardData {
   runner: RunnerKind;
   startedAt: string;
   finishedAt?: string;
+  /**
+   * Execution plane of the job, as persisted on the card: background children
+   * are HOST-side ORCHESTRATORS (a tmux pane on the host) — they are never a
+   * sandbox id; the workers they spawn are the sandboxed ones.
+   */
+  plane?: string;
 }
 
 interface JobResultDetails extends JobCardData {
@@ -1612,6 +1806,7 @@ function cardDataOf(
     status: entry.status,
     runner: entry.runner,
     startedAt: entry.startedAt,
+    plane: BACKGROUND_JOB_PLANE,
   };
   if (entry.finishedAt) data.finishedAt = entry.finishedAt;
   return data;
@@ -1731,6 +1926,57 @@ function sleepMs(ms: number): Promise<void> {
   });
 }
 
+// ── Ambient execution-plane status (footer) ────────────────────────────────
+// `sbx 2 · host 1`: how many subagents are LIVE right now and on which plane.
+// Counted by runSingleAgent itself (one process per session, so module scope is
+// exact), cleared at the settle boundary — no run outlives its turn.
+
+const RUN_STATUS_KEY = "delegate";
+
+const liveRuns = { sandbox: 0, host: 0 };
+/** ctx of the call that owns the live runs; captured at run start (hasUI-gated). */
+let liveRunCtx: Pick<ExtensionContext, "hasUI" | "ui"> | null = null;
+
+/** Footer text for the given live counts; undefined ⇒ nothing to show (clears). */
+export function formatRunStatus(sandbox: number, host: number): string | undefined {
+  const parts: string[] = [];
+  if (sandbox > 0) parts.push("sbx " + sandbox);
+  if (host > 0) parts.push("host " + host);
+  return parts.length > 0 ? parts.join(" \u00b7 ") : undefined;
+}
+
+function refreshRunStatus(): void {
+  const ctx = liveRunCtx;
+  if (!ctx || !ctx.hasUI) return;
+  try {
+    ctx.ui.setStatus(RUN_STATUS_KEY, formatRunStatus(liveRuns.sandbox, liveRuns.host));
+  } catch {
+    /* footer status is best effort */
+  }
+}
+
+/** Count a starting subagent on its plane (paired with endLiveRun). */
+function beginLiveRun(role: string, ctx: Pick<ExtensionContext, "hasUI" | "ui">): void {
+  liveRunCtx = ctx;
+  if (isHostPassthroughRole(role)) liveRuns.host += 1;
+  else liveRuns.sandbox += 1;
+  refreshRunStatus();
+}
+
+function endLiveRun(role: string): void {
+  if (isHostPassthroughRole(role)) liveRuns.host = Math.max(0, liveRuns.host - 1);
+  else liveRuns.sandbox = Math.max(0, liveRuns.sandbox - 1);
+  refreshRunStatus();
+}
+
+/** Settle boundary: nothing this session spawned is still live, so clear. */
+function clearLiveRuns(ctx?: Pick<ExtensionContext, "hasUI" | "ui">): void {
+  if (ctx) liveRunCtx = ctx;
+  liveRuns.sandbox = 0;
+  liveRuns.host = 0;
+  refreshRunStatus();
+}
+
 // ── UI surface (widget + /jobs + /agents + shortcut) ─────────────────────────
 
 const JOB_WIDGET_KEY = "delegate-jobs";
@@ -1771,7 +2017,10 @@ async function refreshJobWidget(ctx: ExtensionContext): Promise<void> {
     const entries = await listJobEntries(ctx.cwd);
     const lines: string[] = [];
     for (const entry of entries.slice(0, JOB_WIDGET_MAX_LINES)) {
-      lines.push(jobStatusIcon(entry.status) + " " + entry.id + " · " + entry.agent + " · " + jobAge(entry));
+      lines.push(
+        jobStatusIcon(entry.status) + " " + entry.id + " · " + entry.agent +
+          " · " + jobAge(entry) + " · " + BACKGROUND_JOB_PLANE,
+      );
     }
     if (entries.length > JOB_WIDGET_MAX_LINES) {
       lines.push("+ " + (entries.length - JOB_WIDGET_MAX_LINES) + " more");
@@ -2374,9 +2623,134 @@ export default function (pi: ExtensionAPI) {
         "requires a VERIFIED host-side prove receipt for EVERY scoped rule \u2014 no matter how the " +
         "approval arrived (typed in the pane or relayed via job_approve). Missing: " +
         coverage.missing.join(", ") + ". " +
-        "Run `make prove args='--rule <id>'` on the host once per scoped rule (the extension records " +
-        "the receipt in the host receipts dir), then retry the merge.\n" + coverage.report,
+        "Run `make prove args='--rule <id>'` once per scoped rule (the bash gate hook " +
+        "dispatches it into the gate VM; the extension records the receipt in the host receipts dir), " +
+        "then retry the merge.\n" + coverage.report,
     };
+  });
+
+  // GATE-VM EXECUTION (host shell → gate VM). The authoritative gates used to
+  // be typed into the host's bash tool, so the host shell executed the
+  // worktree's Makefile / cmd/spec directly. They now run in the locked-down
+  // gate VM instead: a declared gate command typed here is recognised
+  // (`resolveDeclaredGateCommand`), the host integrity check runs FIRST (the
+  // trust anchor — dirty gate files ⇒ refuse, never execute), the DB-backed
+  // gates get the Postgres pre-sequence, and the bash input is REWRITTEN to the
+  // equivalent `sbx exec` line. The host therefore executes only `sbx`; the
+  // gate argv is passed verbatim to the VM. A compound command (pipe, redirect,
+  // several segments) is not rewritten: it is not the declared invocation.
+  pi.on("tool_call", async (event, ctx) => {
+    if (isSandboxedChild()) return;
+    if (event.toolName !== "bash") return;
+    const input = event.input as { command?: unknown };
+    if (typeof input.command !== "string" || input.command.trim().length === 0) return;
+    const resolved = resolveDeclaredGateCommand(input.command, ctx.cwd);
+    if (!resolved) return;
+
+    // 1. Host-side integrity check — unchanged, and still BEFORE any gate
+    // execution: the four gate paths must match HEAD in this worktree.
+    let integrity: IntegrityCheckResult;
+    try {
+      integrity = await checkWorktreeIntegrity(resolved.cwd);
+    } catch (error) {
+      integrity = {
+        clean: false,
+        refused: true,
+        report:
+          "\u2500\u2500 INTEGRITY CHECK (host, pre-gate) \u2500\u2500\nintegrity check crashed: " +
+          (error instanceof Error ? error.message : String(error)),
+        steps: [],
+        paths: [],
+      };
+    }
+    if (integrity.refused || !integrity.clean) {
+      await safeHostReceipt({
+        cwd: ctx.cwd,
+        agent: process.env.PI_DELEGATE_ROLE ?? "agent",
+        commands: integrity.steps.map((step) => ({
+          command: step.command,
+          exitCode: step.exitCode,
+          timedOut: step.timedOut,
+          durationMs: step.durationMs,
+        })),
+        ok: false,
+        note: "integrity check (host, pre-gate VM): REFUSED \u2014 gate command not executed",
+      });
+      return {
+        block: true,
+        reason:
+          integrityRefusalReason(integrity) +
+          "\n\nThe gate command was NOT executed anywhere (no gate VM exec): " + resolved.segment,
+      };
+    }
+
+    // 2. DB-backed gates only: start Postgres, wait, reset the test DB. A
+    // failure here stops the gate with a named step instead of running it
+    // against a broken database.
+    try {
+      if (resolved.db) {
+        const prep = await prepareGateDbVm(resolved.cwd);
+        if (!prep.ok && prep.step) {
+          const failing = prep.step;
+          return {
+            block: true,
+            reason:
+              "GATE VM DB PRE-SEQUENCE FAILED \u2014 the gate command was not run (no verdict).\n" +
+              "- " + failing.command + " \u2014 " +
+              (failing.exitCode === null ? "no exit code" : "exit " + String(failing.exitCode)) +
+              " \u00b7 " + failing.reason + "\n" + tailLines(failing.stdout + failing.stderr, 20),
+          };
+        }
+      }
+
+      // 3. Lazily create/reuse the session's gate VM for this worktree path and
+      // rewrite the bash input to the equivalent `sbx exec` argv.
+      const sandbox = await ensureGateSandbox(resolved.cwd);
+      const rewritten = gateVmShellCommand(
+        sandbox.name,
+        resolved.cwd,
+        gateVmExecEnv(resolved.cwd, { db: resolved.db }),
+        appendGateDbOverride(resolved.argv, resolved.db),
+      );
+      (input as { command: string }).command = rewritten;
+      // The host-side watchdog for the bash-dispatched gate: sbx exec has no
+      // timeout flag, so bound the host command with the declared stall budget.
+      // The bash tool's `timeout` parameter is in SECONDS (pi schema), so the
+      // ms budget is converted up. A caller that already asked for MORE time
+      // keeps its value.
+      const stallMs = workerStallTimeoutMs(process.env, ctx.cwd);
+      if (stallMs > 0) {
+        const stallSeconds = Math.ceil(stallMs / 1000);
+        const requested = (input as { timeout?: number }).timeout;
+        (input as { timeout?: number }).timeout =
+          typeof requested === "number" && requested > stallSeconds ? requested : stallSeconds;
+      }
+      void logGateDebug(
+        ctx.cwd,
+        "gate command re-dispatched to gate VM " + sandbox.name + " (worktree " + resolved.cwd +
+          "): " + resolved.argv.join(" "),
+      );
+    } catch (error) {
+      return {
+        block: true,
+        reason:
+          "GATE VM UNAVAILABLE \u2014 the gate command was not run (no verdict): " +
+          (error instanceof Error ? error.message : String(error)) +
+          "\nThe gate set has no host fallback: a gate that cannot run in the gate VM FAILS.",
+      };
+    }
+  });
+
+  // Gate VM lifecycle: session-scoped reuse, all torn down at session end.
+  // `session_shutdown` is the clean session-end hook (RELOAD/NEW/RESUME/FORK and
+  // exit all emit it), so the VMs survive across turns and gate decisions and
+  // die with the session. There is no local TTL; the host owns wall-clock.
+  pi.on("session_shutdown", async () => {
+    try {
+      await teardownGateSandboxes();
+    } catch (error) {
+      console.error("[delegate] gate VM teardown failed:", error);
+    }
   });
 
   // PROVE receipt writer (merge-back evidence). The extension records every
@@ -2420,10 +2794,29 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     const proveTokens = splitCommandLine(loaded.policy.proveCmd);
-    if (!rest.some((segment) => isProveSegment(segment, proveTokens))) return;
+    // The command may already be the REWRITTEN `sbx exec` line (the gate-VM
+    // tool_call hook ran before this tool_result). Unwrap it: the in-VM argv is
+    // what identifies a prove run, and `-w` names the worktree whose gate VM
+    // executed it. A plain (unrewritten) command keeps the original matching.
+    const unwrapped = parseGateVmShellCommand(command);
+    const proves =
+      unwrapped !== null
+        ? isProveSegment(unwrapped.argv.join(" "), proveTokens)
+        : rest.some((segment) => isProveSegment(segment, proveTokens));
+    if (!proves) return;
 
     const exitCode = bashExitCodeOf(event);
     try {
+      // The prove command ran in the gate VM (the bash tool_call hook rewrites
+      // a declared gate command to `sbx exec`), so the receipt names the VM it
+      // executed in. A missing VM entry simply means the receipt predates the
+      // rewrite (or the command was identified after the fact) — no key.
+      const proveCwd =
+        unwrapped && unwrapped.worktree
+          ? unwrapped.worktree
+          : cdTarget !== null
+            ? path.resolve(ctx.cwd, cdTarget)
+            : ctx.cwd;
       await writeReceipt({
         cwd: receiptCwd,
         agent: process.env.PI_DELEGATE_ROLE ?? "worker",
@@ -2433,6 +2826,7 @@ export default function (pi: ExtensionAPI) {
         commands: [{ command, exitCode, timedOut: false, durationMs: 0 }],
         ok: exitCode === 0,
         note: "prove rules=" + ruleIds.join(","),
+        sandbox: gateSandboxFor(proveCwd)?.name,
       });
     } catch (error) {
       console.error("[delegate] prove receipt failed:", error);
@@ -2448,9 +2842,10 @@ export default function (pi: ExtensionAPI) {
     if (details?.isError) return { isError: true };
   });
 
-  // Batch 1: POST-WRITE scoped gate. Now that sandboxed workers are inert in-VM
-  // and verified by the HOST after exit, this hook serves only the
-  // HOST-PASSTHROUGH role (researcher today, whose sandbox profile is deferred):
+  // Batch 1: POST-WRITE scoped gate. Sandboxed workers are inert in-VM and
+  // verified by the HOST after exit (the gate VM executes), so this hook serves
+  // only a HOST-PASSTHROUGH child — a role no profile defines today, since the
+  // researcher is mountless; the seam stays for a future deliberate host role:
   // after a successful edit/write of a gate-relevant file (.go / .feature /
   // .yaml / docs/spec/**) the extension runs `make audit/static` + the scoped
   // spec check and appends a failure block to the tool result. Successes stay
@@ -2511,6 +2906,7 @@ export default function (pi: ExtensionAPI) {
         commands: receiptCommandsOf(run),
         ok: run.ok,
         note: "post-write gate after " + event.toolName + " " + input.path,
+        sandbox: run.steps.find((step) => step.gateSandbox)?.gateSandbox,
       });
     } catch (error) {
       console.error("[delegate] post-write receipt failed:", error);
@@ -2757,6 +3153,7 @@ export default function (pi: ExtensionAPI) {
             signal,
             chainUpdate,
             makeDetails("chain"),
+            ctx,
           );
           results.push(result);
 
@@ -2858,6 +3255,7 @@ export default function (pi: ExtensionAPI) {
                 }
               },
               makeDetails("parallel"),
+              ctx,
             );
           } catch (error) {
             // A thrown spawn must still release its claim (fail-open telemetry).
@@ -2957,6 +3355,7 @@ export default function (pi: ExtensionAPI) {
             signal,
             onUpdate,
             makeDetails("single"),
+            ctx,
           );
         } catch (error) {
           // A thrown spawn must still release its claim (fail-open telemetry).
@@ -3013,11 +3412,14 @@ export default function (pi: ExtensionAPI) {
           // Clean up {previous} placeholder for display
           const cleanTask = step.task.replace(/\{previous\}/g, "").trim();
           const preview = cleanTask.length > 40 ? `${cleanTask.slice(0, 40)}...` : cleanTask;
+          // PRE-RUN plane badge: policy truth for this step's role, no id.
+          const badge = planeBadge(step.agent);
           text +=
             "\n  " +
             theme.fg("muted", `${i + 1}.`) +
             " " +
             theme.fg("accent", step.agent) +
+            theme.fg(badge.color, ` ${badge.label}`) +
             theme.fg("dim", ` ${preview}`);
         }
         if (args.chain.length > 3) text += `\n  ${theme.fg("muted", `... +${args.chain.length - 3} more`)}`;
@@ -3030,7 +3432,11 @@ export default function (pi: ExtensionAPI) {
           theme.fg("muted", ` [${scope}]`);
         for (const t of args.tasks.slice(0, 3)) {
           const preview = t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task;
-          text += `\n  ${theme.fg("accent", t.agent)}${theme.fg("dim", ` ${preview}`)}`;
+          const badge = planeBadge(t.agent);
+          text +=
+            `\n  ${theme.fg("accent", t.agent)}` +
+            theme.fg(badge.color, ` ${badge.label}`) +
+            theme.fg("dim", ` ${preview}`);
         }
         if (args.tasks.length > 3) text += `\n  ${theme.fg("muted", `... +${args.tasks.length - 3} more`)}`;
         return new Text(text, 0, 0);
@@ -3043,6 +3449,12 @@ export default function (pi: ExtensionAPI) {
         theme.fg("muted", ` [${scope}]`);
       if (args.background === true) text += theme.fg("warning", " [background]");
       else if (args.background === false) text += theme.fg("muted", " [foreground]");
+      // PRE-RUN plane: a background single is a host-side orchestrator, a
+      // foreground single runs on its role's plane (sandbox unless passthrough).
+      const singleBadge = args.agent
+        ? planeBadge(agentName, args.background === true)
+        : undefined;
+      if (singleBadge) text += theme.fg(singleBadge.color, ` ${singleBadge.label}`);
       text += `\n  ${theme.fg("dim", preview)}`;
       return new Text(text, 0, 0);
     },
@@ -3061,7 +3473,7 @@ export default function (pi: ExtensionAPI) {
         const color = job.status === "done" ? "success" : job.status === "failed" || job.status === "aborted" ? "error" : job.status === "awaiting_approval" ? "warning" : "warning";
         let text = theme.fg(color, jobStatusIcon(job.status)) + " " + theme.fg("accent", job.id);
         text += theme.fg("muted", " · " + job.agent + " · ") + theme.fg(color, job.status);
-        text += theme.fg("dim", " · " + jobAge(job));
+        text += theme.fg("dim", " · " + jobAge(job) + " · " + BACKGROUND_JOB_PLANE);
         if (result.isError) text += "\n" + theme.fg("error", body);
         else text += "\n" + theme.fg("toolOutput", body);
         return new Text(text, 0, 0);
@@ -3110,7 +3522,11 @@ export default function (pi: ExtensionAPI) {
           let header = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
           if (isRunning) header += ` ${theme.fg("warning", `[${r.status}]`)}`;
           else if (isError) header += ` ${theme.fg("error", `[${r.stopReason ?? r.status}]`)}`;
+          const runBadge = resultPlaneBadge(r);
+          if (runBadge) header += ` ${theme.fg(runBadge.color, runBadge.label)}`;
           container.addChild(new Text(header, 0, 0));
+          const planeLine = planeInfoLineText(r);
+          if (planeLine) container.addChild(new Text(theme.fg("dim", planeLine), 0, 0));
           if (isError && r.errorMessage)
             container.addChild(new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0));
           if (r.terminationSignal)
@@ -3150,6 +3566,8 @@ export default function (pi: ExtensionAPI) {
         let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
         if (isRunning) text += ` ${theme.fg("warning", `[${r.status}]`)}`;
         else if (isError) text += ` ${theme.fg("error", `[${r.stopReason ?? r.status}]`)}`;
+        const runBadge = resultPlaneBadge(r);
+        if (runBadge) text += ` ${theme.fg(runBadge.color, runBadge.label)}`;
         if (isError && r.errorMessage) text += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
         else if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
         else {
@@ -3210,13 +3628,17 @@ export default function (pi: ExtensionAPI) {
             const finalOutput = getFinalOutput(r.messages);
 
             container.addChild(new Spacer(1));
+            const stepBadge = resultPlaneBadge(r);
             container.addChild(
               new Text(
-                `${theme.fg("muted", `─── Step ${r.step}: `) + theme.fg("accent", r.agent)} ${rIcon}`,
+                `${theme.fg("muted", `─── Step ${r.step}: `) + theme.fg("accent", r.agent)} ${rIcon}` +
+                  (stepBadge ? ` ${theme.fg(stepBadge.color, stepBadge.label)}` : ""),
                 0,
                 0,
               ),
             );
+            const stepPlane = planeInfoLineText(r);
+            if (stepPlane) container.addChild(new Text(theme.fg("dim", stepPlane), 0, 0));
             container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", r.task), 0, 0));
             if (isFailedResult(r) && r.errorMessage)
               container.addChild(new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0));
@@ -3266,6 +3688,8 @@ export default function (pi: ExtensionAPI) {
           const rIcon = resultIcon(r);
           const displayItems = getDisplayItems(r.messages);
           text += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${rIcon}`;
+          const stepBadge = resultPlaneBadge(r);
+          if (stepBadge) text += ` ${theme.fg(stepBadge.color, stepBadge.label)}`;
           if (displayItems.length === 0) {
             const failed = isFailedResult(r);
             const summary = failed ? getFailureSummary(r) : "(no output)";
@@ -3309,9 +3733,17 @@ export default function (pi: ExtensionAPI) {
             const finalOutput = getFinalOutput(r.messages);
 
             container.addChild(new Spacer(1));
+            const taskBadge = resultPlaneBadge(r);
             container.addChild(
-              new Text(`${theme.fg("muted", "─── ") + theme.fg("accent", r.agent)} ${rIcon}`, 0, 0),
+              new Text(
+                `${theme.fg("muted", "─── ") + theme.fg("accent", r.agent)} ${rIcon}` +
+                  (taskBadge ? ` ${theme.fg(taskBadge.color, taskBadge.label)}` : ""),
+                0,
+                0,
+              ),
             );
+            const taskPlane = planeInfoLineText(r);
+            if (taskPlane) container.addChild(new Text(theme.fg("dim", taskPlane), 0, 0));
             container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", r.task), 0, 0));
             if (isFailedResult(r) && r.errorMessage)
               container.addChild(new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0));
@@ -3357,6 +3789,8 @@ export default function (pi: ExtensionAPI) {
           const rIcon = resultIcon(r);
           const displayItems = getDisplayItems(r.messages);
           text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`;
+          const taskBadge = resultPlaneBadge(r);
+          if (taskBadge) text += ` ${theme.fg(taskBadge.color, taskBadge.label)}`;
           if (displayItems.length === 0) {
             const failed = isFailedResult(r);
             let summary = "(no output)";
@@ -3616,7 +4050,7 @@ export default function (pi: ExtensionAPI) {
     const color = data.status === "done" ? "success" : data.status === "failed" || data.status === "aborted" ? "error" : data.status === "awaiting_approval" ? "warning" : "warning";
     let line = theme.fg(color, jobStatusIcon(data.status)) + " " + theme.fg("accent", data.id);
     line += theme.fg("muted", " · " + data.agent + " · ") + theme.fg(color, data.status);
-    line += theme.fg("dim", " · " + jobAge(data));
+    line += theme.fg("dim", " · " + jobAge(data) + " · " + (data.plane ?? BACKGROUND_JOB_PLANE));
     return new Text(line, 0, 0);
   });
 
@@ -3633,7 +4067,7 @@ export default function (pi: ExtensionAPI) {
     const header =
       theme.fg(color, jobStatusIcon(details.status)) + " " + theme.fg("accent", details.id) +
       theme.fg("muted", " · " + details.agent + " · ") + theme.fg(color, details.status) +
-      theme.fg("dim", " · " + jobAge(details));
+      theme.fg("dim", " · " + jobAge(details) + " · " + (details.plane ?? BACKGROUND_JOB_PLANE));
     box.addChild(new Text(header, 0, 0));
     const bodyLines = details.text.split("\n");
     if (options.expanded || bodyLines.length <= JOB_RESULT_PREVIEW_LINES) {
@@ -3645,6 +4079,13 @@ export default function (pi: ExtensionAPI) {
       );
     }
     return box;
+  });
+
+  // Ambient footer: the settle boundary ends every subagent this session
+  // started, so the live-plane counter and its status line go quiet there.
+  pi.on("agent_before_settle", (_event, ctx) => {
+    if (process.env.PI_DELEGATE_CHILD) return;
+    clearLiveRuns(ctx);
   });
 
   // Phase 4: auto-surface finished background jobs at the settle boundary.
@@ -3783,6 +4224,7 @@ export default function (pi: ExtensionAPI) {
       commands: receiptCommandsOf(run),
       ok: run.ok,
       note: "settle gate attempt " + String(attempt) + "/" + String(maxAttempts),
+      sandbox: run.steps.find((step) => step.gateSandbox)?.gateSandbox,
     });
 
     let reconciliation: ReconciliationResult | undefined;
@@ -3817,6 +4259,7 @@ export default function (pi: ExtensionAPI) {
             commands: receiptCommandsOf({ ok: reconciliation.ok, steps: reconciliation.steps }),
             ok: false,
             note: "reconciliation attempt " + String(attempt) + "/" + String(maxAttempts),
+            sandbox: reconciliation.steps.find((step) => step.gateSandbox)?.gateSandbox,
           });
         }
       }

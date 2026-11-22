@@ -3,13 +3,21 @@
 // era: the worktree integrity check, the merge-command detector, and the
 // host-only receipt / PROVE-coverage readers in ./gates.ts.
 //
-// Imports the REAL modules (node's built-in type stripping runs the .ts files
-// directly — no pi, no build step). NOTHING here touches the real `sbx` CLI or
-// the network: every CLI call goes through the single injection point,
-// `setSbxProcessOps`, and every filesystem fixture is a temp dir.
+// Imports the REAL modules (Node 22.18+ strips the .ts types on import — no pi,
+// no build step). NOTHING here touches the real `sbx` CLI or the network: every
+// CLI call goes through the single injection point, `setSbxProcessOps`, and
+// every filesystem fixture is a temp dir.
 //
 // Run:  node .pi/extensions/delegate/smoke-sbx.mjs
-// (needs Node >= 22.18 for unflagged .ts type stripping)
+// Needs a Node built WITH TypeScript type stripping. Node 22.18+ release builds
+// have it; some distro builds do not (they fail with ERR_NO_TYPESCRIPT or
+// "Unknown file extension .ts"). There, load the suite through pi's bundled
+// jiti — this exact invocation is verified:
+//   node -e 'const {createJiti}=require("<pi-install>/node_modules/jiti/lib/jiti.cjs");\
+//     createJiti(process.cwd()+"/.pi/extensions/delegate/smoke-sbx.mjs",{interopDefault:true})\
+//       .import(process.cwd()+"/.pi/extensions/delegate/smoke-sbx.mjs")'
+// (<pi-install> = e.g. /usr/local/share/npm-global/lib/node_modules/@earendil-works/pi-coding-agent)
+
 import * as assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -17,11 +25,25 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  GATE_SANDBOX_CPUS,
+  GATE_SANDBOX_EGRESS_HOSTS,
+  GATE_SANDBOX_MEMORY,
+  GATE_SANDBOX_PROFILE,
+  GATE_SANDBOX_ROLE,
+  GATE_SANDBOX_TEMPLATE_NAME,
+  SANDBOX_CONTEXT7_SECRET_SENTINEL_ENV,
   SANDBOX_CREATE_AGENT,
   SANDBOX_DEFAULT_CPUS,
   SANDBOX_DEFAULT_MEMORY,
   SANDBOX_ENV_FLAG,
   SANDBOX_KIT_FALLBACK_PATH,
+  SANDBOX_LIGHT_CPUS,
+  SANDBOX_LIGHT_MEMORY,
+  SANDBOX_MOUNTLESS_WORKDIR,
+  SANDBOX_PROFILES,
+  SANDBOX_RELAY_EGRESS,
+  SANDBOX_RESEARCHER_EGRESS_HOSTS,
+  SANDBOX_SCRATCH_PREFIX,
   SANDBOX_TEMPLATE_NAME,
   SANDBOX_VAULT_PATH,
   SANDBOX_WORKER_EGRESS_HOSTS,
@@ -29,15 +51,27 @@ import {
   SBX_EXIT_COULD_NOT_RUN,
   SBX_EXIT_MISSING_EXECUTABLE,
   classifySbxExit,
+  createGateSandbox,
   createSandboxArgs,
   createWorkerSandbox,
+  ensureGateSandbox,
+  gateMountPlanFromCommonDir,
+  gateSandboxFor,
+  gateSandboxKey,
+  listGateSandboxes,
+  resetGateSandboxRegistryForTests,
+  resolveGateMountPlan,
+  teardownGateSandboxes,
   execInSandbox,
   execSandboxArgs,
   generatedSandboxName,
   getSbxProcessOps,
+  isHostPassthroughRole,
   isSandboxedChild,
   policyAllowArgs,
+  profileDenyHosts,
   profileForRole,
+  sandboxWorkdir,
   setSbxProcessOps,
   teardownSandbox,
   workspaceArgsFor,
@@ -186,19 +220,58 @@ await check("profileForRole: worker/general are RW worktree + the 4 egress hosts
       "storage.googleapis.com:443",
     ]);
     assert.deepEqual(profile.secretSentinelEnvs, ["OPENCODE_GO_API_KEY"]);
+    assert.deepEqual(profileDenyHosts(profile), [], "no create-time deny rules by default");
     assert.equal(profile.cpus, SANDBOX_DEFAULT_CPUS);
     assert.equal(profile.memory, SANDBOX_DEFAULT_MEMORY);
   }
 });
 
-await check("profileForRole: scout is :ro with NO task egress, librarian is vault RW + worktree :ro", async () => {
+await check("profileForRole: every role states explicit vCPUs/memory and an empty deny default", async () => {
+  // A profile must never fall through to an sbx default: `--cpus 0` means ALL
+  // host CPUs and an omitted memory means 50% of host RAM. Both are wrong for a
+  // task VM, so the table carries a concrete value for every role.
+  assert.deepEqual(Object.keys(SANDBOX_PROFILES).sort(), ["general", "librarian", "researcher", "scout", "worker"]);
+  for (const [role, profile] of Object.entries(SANDBOX_PROFILES)) {
+    assert.equal(profile.role, role, role);
+    assert.equal(Number.isInteger(profile.cpus) && profile.cpus > 0, true, role + " cpus");
+    assert.match(profile.memory, /^[0-9]+(m|g)$/, role + " memory");
+    assert.deepEqual(profileDenyHosts(profile), [], role + " deny default");
+  }
+  // Read-only/mountless roles are model-call-bound, not build-bound: 2 CPU / 4g.
+  assert.equal(SANDBOX_LIGHT_CPUS, 2);
+  assert.equal(SANDBOX_LIGHT_MEMORY, "4g");
+  for (const role of ["scout", "librarian", "researcher"]) {
+    assert.equal(profileForRole(role).cpus, SANDBOX_LIGHT_CPUS, role);
+    assert.equal(profileForRole(role).memory, SANDBOX_LIGHT_MEMORY, role);
+  }
+  for (const role of ["worker", "general"]) {
+    assert.equal(profileForRole(role).cpus, 4, role);
+    assert.equal(profileForRole(role).memory, "8g", role);
+  }
+  // No role is host passthrough any more (the researcher residual is closed).
+  assert.deepEqual(
+    Object.keys(SANDBOX_PROFILES).filter((role) => isHostPassthroughRole(role)),
+    [],
+  );
+});
+
+await check("profileForRole: scout is scratch RW + worktree :ro with NO task egress, librarian is vault RW + worktree :ro", async () => {
   const scout = profileForRole("scout");
   assert.equal(scout.hostPassthrough, false);
-  assert.deepEqual(scout.mounts, [{ kind: "worktree", mode: "ro" }]);
+  // sbx rejects a read-only PRIMARY workspace, so the rw scratch dir is first
+  // and the repo is the read-only second workspace: reads work, writes cannot
+  // reach the repo.
+  assert.deepEqual(scout.mounts, [
+    { kind: "scratch", mode: "rw" },
+    { kind: "worktree", mode: "ro" },
+  ]);
   // Model provider only: a "no network" role still has to reach the model it
   // thinks with (an empty allowlist makes the VM die on its first turn).
   assert.deepEqual(scout.networkHosts, [...SANDBOX_MODEL_EGRESS_HOSTS]);
   assert.deepEqual(scout.secretSentinelEnvs, []);
+  assert.deepEqual(profileDenyHosts(scout), []);
+  assert.equal(scout.cpus, SANDBOX_LIGHT_CPUS);
+  assert.equal(scout.memory, SANDBOX_LIGHT_MEMORY);
 
   const librarian = profileForRole("librarian");
   assert.equal(librarian.hostPassthrough, false);
@@ -208,13 +281,42 @@ await check("profileForRole: scout is :ro with NO task egress, librarian is vaul
   ]);
   assert.deepEqual(librarian.networkHosts, [...SANDBOX_MODEL_EGRESS_HOSTS]);
   assert.deepEqual(librarian.secretSentinelEnvs, []);
+  assert.deepEqual(profileDenyHosts(librarian), []);
+  assert.equal(librarian.cpus, SANDBOX_LIGHT_CPUS);
+  assert.equal(librarian.memory, SANDBOX_LIGHT_MEMORY);
 });
 
-await check("profileForRole: researcher is host passthrough; unknown roles inherit the worker profile", async () => {
+await check("profileForRole: researcher is a MOUNTLESS sandbox (provider + host relay + context7.com, CONTEXT7 sentinel only)", async () => {
   const researcher = profileForRole("researcher");
-  assert.equal(researcher.hostPassthrough, true);
-  assert.deepEqual(researcher.mounts, []);
-  assert.deepEqual(researcher.networkHosts, []);
+  // The one un-sandboxed role is gone: it now runs in a VM with no workspace.
+  assert.equal(researcher.hostPassthrough, false);
+  assert.equal(isHostPassthroughRole("researcher"), false);
+  assert.deepEqual(researcher.mounts, [], "genuinely mountless: no worktree, no vault, no scratch");
+  assert.deepEqual(researcher.networkHosts, [...SANDBOX_RESEARCHER_EGRESS_HOSTS]);
+  // Four egress hosts, one per capability the TOOLSET needs: the model
+  // provider (+ its wildcard), the HOST codex search relay (web search, no VM
+  // credential), and docs lookup (context7.com, @upstash/context7-pi).
+  assert.deepEqual(researcher.networkHosts, [
+    "opencode.ai:443",
+    "*.opencode.ai:443",
+    "localhost:8787",
+    "context7.com:443",
+  ]);
+  assert.equal(researcher.networkHosts.length, 4);
+  // The relay is pinned as a named constant: the profile and the README row
+  // both spell it from here, so a port change moves one place.
+  assert.equal(SANDBOX_RELAY_EGRESS, "localhost:8787");
+  assert.equal(researcher.networkHosts.includes(SANDBOX_RELAY_EGRESS), true);
+  // api.openai.com is GONE: web search spends the host codex subscription
+  // through the relay, so no pay-as-you-go key may be reachable from a VM.
+  assert.equal(researcher.networkHosts.includes("api.openai.com:443"), false);
+  // One sentinel only: context7. Web search has no credential in the VM — the
+  // relay holds it host-side and substitutes it upstream.
+  assert.deepEqual(researcher.secretSentinelEnvs, ["CONTEXT7_API_KEY"]);
+  assert.equal(SANDBOX_CONTEXT7_SECRET_SENTINEL_ENV, "CONTEXT7_API_KEY");
+  assert.deepEqual(profileDenyHosts(researcher), []);
+  assert.equal(researcher.cpus, SANDBOX_LIGHT_CPUS);
+  assert.equal(researcher.memory, SANDBOX_LIGHT_MEMORY);
 
   // A new agent name must never silently acquire host reach.
   const unknown = profileForRole("brand-new-agent");
@@ -226,11 +328,22 @@ await check("profileForRole: researcher is host passthrough; unknown roles inher
   assert.equal(profileForRole("worker").role, "worker");
 });
 
-await check("workspaceArgsFor: same absolute path, :ro suffix where the profile says so", async () => {
+await check("workspaceArgsFor: same absolute path, :ro suffix, scratch primary where the profile says so", async () => {
   const worktree = "/tmp/host/lt-api-wt-job-1";
   const vault = "/tmp/host/vault";
+  const scratch = "/tmp/host/" + SANDBOX_SCRATCH_PREFIX + "pi-scout-abc123-dead-XXXXXX";
   assert.deepEqual(workspaceArgsFor(profileForRole("worker"), worktree, vault), [worktree]);
-  assert.deepEqual(workspaceArgsFor(profileForRole("scout"), worktree, vault), [worktree + ":ro"]);
+  // scout: disposable scratch dir RW FIRST (sbx needs a writable primary), the
+  // worktree read-only second — never a rw repo workspace.
+  assert.deepEqual(workspaceArgsFor(profileForRole("scout"), worktree, vault, scratch), [
+    scratch,
+    worktree + ":ro",
+  ]);
+  assert.throws(
+    () => workspaceArgsFor(profileForRole("scout"), worktree, vault),
+    /declares a scratch workspace but no scratch path/,
+    "a scratch mount with no path must fail closed, not fall back to the worktree",
+  );
   assert.deepEqual(workspaceArgsFor(profileForRole("librarian"), worktree, vault), [vault, worktree + ":ro"]);
   assert.deepEqual(workspaceArgsFor(profileForRole("researcher"), worktree, vault), []);
   // The default vault path is the librarian's real mount.
@@ -239,7 +352,7 @@ await check("workspaceArgsFor: same absolute path, :ro suffix where the profile 
 
 // ── 3. Argv shapes (recorded-realistic fixtures) ────────────────────────────
 
-await check("createSandboxArgs: template create --cpus --memory, positional workspace", async () => {
+await check("createSandboxArgs: template create --no-input --cpus --memory, positional workspace", async () => {
   // NOTE: the adapter passes no `--pull` flag; the pinned shape below is what
   // sbx.ts actually emits (SBX_CLI_VERSION 0.54.0), asserted verbatim.
   const worktree = "/tmp/host/lt-api-wt-job-2";
@@ -252,6 +365,7 @@ await check("createSandboxArgs: template create --cpus --memory, positional work
     }),
     [
       "create",
+      "--no-input",
       "--name", "pi-worker-abc123-dead",
       "--no-progress",
       "--cpus", "4",
@@ -272,27 +386,127 @@ await check("createSandboxArgs: template create --cpus --memory, positional work
     }),
     [
       "create",
+      "--no-input",
       "--name", "pi-librarian-abc123-dead",
       "--no-progress",
-      "--cpus", "4",
-      "--memory", "8g",
+      "--cpus", "2",
+      "--memory", "4g",
       "-t", SANDBOX_TEMPLATE_NAME,
       "shell",
       "/tmp/host/vault",
       worktree + ":ro",
     ],
   );
-  // kit reference swaps -t <template> for --kit <path>, nothing else moves
+  // scout: the disposable scratch dir is the RW primary, the worktree :ro second
+  const scratch = "/tmp/host/" + SANDBOX_SCRATCH_PREFIX + "pi-scout-abc123-dead-XXXXXX";
+  assert.deepEqual(
+    createSandboxArgs({
+      name: "pi-scout-abc123-dead",
+      profile: profileForRole("scout"),
+      worktreePath: worktree,
+      reference: "template",
+      scratchPath: scratch,
+    }),
+    [
+      "create",
+      "--no-input",
+      "--name", "pi-scout-abc123-dead",
+      "--no-progress",
+      "--cpus", "2",
+      "--memory", "4g",
+      "-t", SANDBOX_TEMPLATE_NAME,
+      "shell",
+      scratch,
+      worktree + ":ro",
+    ],
+  );
+  // researcher: MOUNTLESS — no workspace positional after the agent slot, so
+  // the host worktree is never mounted into the VM. `--no-input` is a global
+  // sbx flag: an unmatched egress/prompt fails instead of hanging the spawn.
+  const researcher = createSandboxArgs({
+    name: "pi-researcher-abc123-dead",
+    profile: profileForRole("researcher"),
+    worktreePath: worktree,
+    reference: "template",
+  });
+  assert.deepEqual(researcher, [
+    "create",
+    "--no-input",
+    "--name", "pi-researcher-abc123-dead",
+    "--no-progress",
+    "--cpus", "2",
+    "--memory", "4g",
+    "-t", SANDBOX_TEMPLATE_NAME,
+    SANDBOX_CREATE_AGENT,
+  ]);
+  assert.equal(researcher.includes(worktree), false, "a mountless profile passes no workspace");
+  // kit reference swaps the `-t <template>` pair AND the `shell` agent token for
+  // the kit directory as the FIRST POSITIONAL (`sbx create AGENT|SANDBOX_KIT
+  // [PATH...]`); the workspaces still follow it, in profile order. `--kit` is a
+  // mixin-only flag and must not appear here.
   const kit = createSandboxArgs({
     name: "n",
     profile: profileForRole("worker"),
     worktreePath: worktree,
     reference: "kit",
-    kitPath: "/host/repo/.pi/sandbox/pi-worker-kit",
+    kitPath: "/host/repo/.pi/sandboxes/kit",
   });
-  assert.deepEqual(kit.slice(8, 10), ["--kit", "/host/repo/.pi/sandbox/pi-worker-kit"]);
+  const kitSlot = kit.indexOf("--memory") + 2;
+  assert.deepEqual(kit.slice(kitSlot, kitSlot + 1), ["/host/repo/.pi/sandboxes/kit"]);
+  assert.equal(kit.includes("--kit"), false, "a kit goes in the agent slot, not --kit");
+  assert.equal(kit.includes("shell"), false, "the kit dir replaces the agent token");
   assert.equal(kit.includes("-t"), false, "the kit reference is not a template reference");
   assert.equal(kit[kit.length - 1], worktree);
+  // A mountless kit create has the kit dir as its ONLY positional.
+  const kitResearcher = createSandboxArgs({
+    name: "n",
+    profile: profileForRole("researcher"),
+    worktreePath: worktree,
+    reference: "kit",
+    kitPath: "/host/repo/.pi/sandboxes/kit",
+  });
+  assert.deepEqual(kitResearcher.slice(kitResearcher.indexOf("--memory") + 2), [
+    "/host/repo/.pi/sandboxes/kit",
+  ]);
+  // The fallback is the checked-in kit DIRECTORY (pi-worker.yaml + its
+  // stem-paired recipe). dist/ is gitignored and only exists on a host that
+  // already ran build.sh (i.e. that has the template), so a packed artifact
+  // would be absent exactly when the fallback is needed — and the v3 flow packs
+  // nothing: the directory is the artifact.
+  assert.equal(SANDBOX_KIT_FALLBACK_PATH, ".pi/sandboxes/kit");
+});
+
+await check("createSandboxArgs: denyNetworkHosts becomes repeated --deny-network before any allow rule", async () => {
+  const worktree = "/tmp/host/lt-api-wt-job-deny";
+  const denied = {
+    ...profileForRole("worker"),
+    role: "worker-denied",
+    denyNetworkHosts: ["example.com", "ads.example.com"],
+  };
+  const argv = createSandboxArgs({
+    name: "pi-worker-deny",
+    profile: denied,
+    worktreePath: worktree,
+    reference: "template",
+  });
+  // sbx 0.54.0 `create --help`: `--deny-network strings` — one HOST per flag,
+  // repeatable. Emitted on the create call itself, i.e. before the profile's
+  // `sbx policy allow network` (which is a separate, later CLI call).
+  const denyAt = argv.indexOf("--deny-network");
+  assert.notEqual(denyAt, -1);
+  assert.deepEqual(argv.slice(denyAt, denyAt + 4), [
+    "--deny-network", "example.com",
+    "--deny-network", "ads.example.com",
+  ]);
+  assert.equal(argv.filter((token) => token === "--deny-network").length, 2, "one flag per host");
+  assert.ok(denyAt < argv.indexOf("-t"), "denies precede the template reference");
+  assert.ok(denyAt < argv.indexOf(worktree), "denies precede the workspace positionals");
+  // A profile with no list emits no flag at all (nb: `--no-input` still there).
+  assert.equal(
+    createSandboxArgs({ name: "n", profile: profileForRole("worker"), worktreePath: worktree, reference: "template" })
+      .includes("--deny-network"),
+    false,
+  );
 });
 
 await check("execSandboxArgs: --no-input -w, one -e per env var, sandbox then the child argv", async () => {
@@ -318,12 +532,35 @@ await check("execSandboxArgs: --no-input -w, one -e per env var, sandbox then th
   ]);
   // Exactly one -e per env var; the sandbox name is positional, right before argv.
   assert.equal(argv.filter((token) => token === "-e").length, Object.keys(env).length);
+  // `--no-input` is emitted exactly once (it is a global flag; duplicating it is
+  // a sign the subcommand and global spellings both crept in).
+  assert.equal(argv.filter((token) => token === "--no-input").length, 1);
   const sandboxAt = argv.indexOf("pi-worker-abc123-dead");
   assert.equal(argv[sandboxAt + 1], "pi");
   // The in-VM pi invocation ends with the REAL skills switch (pi 1.5.2 has no
   // --skills=off: unknown --key=value flags are collected and skills stay on).
   assert.equal(argv[argv.length - 1], "--no-skills");
   assert.equal(argv.includes("--skills=off"), false, "--skills=off does not exist in pi 1.5.2");
+
+  // A MOUNTLESS sandbox (researcher) has no copy of the host path, so `-w` is
+  // the agent's home inside the image instead — an explicit directory that
+  // exists, never the host worktree and never an sbx "primary workspace" the
+  // VM does not have.
+  const mountless = execSandboxArgs("pi-researcher-abc123-dead", SANDBOX_MOUNTLESS_WORKDIR, { PI_DELEGATE_SANDBOX: "1" }, ["pi"]);
+  assert.equal(SANDBOX_MOUNTLESS_WORKDIR, "/home/agent");
+  assert.deepEqual(mountless, [
+    "exec",
+    "--no-input",
+    "-w", "/home/agent",
+    "-e", "PI_DELEGATE_SANDBOX=1",
+    "pi-researcher-abc123-dead",
+    "pi",
+  ]);
+  // An empty workdir omits the flag altogether (no directory known at all).
+  assert.equal(execSandboxArgs("s", "", {}, ["pi"]).includes("-w"), false);
+  // The workdir decision is per-sandbox state, not a guess: an unknown sandbox
+  // keeps the caller's path, a created mountless one gets the agent home.
+  assert.equal(sandboxWorkdir("pi-worker-abc123-dead", worktree), worktree);
 });
 
 await check("policyAllowArgs: policy allow network --sandbox '<name>' 'host:port,…'", async () => {
@@ -354,6 +591,14 @@ await check("createWorkerSandbox: template create + per-sandbox egress, argv fro
   assert.equal(handle.worktreePath, worktree);
   assert.deepEqual(handle.networkHosts, [...SANDBOX_WORKER_EGRESS_HOSTS]);
   assert.deepEqual(handle.profile.mounts, [{ kind: "worktree", mode: "rw" }]);
+  assert.equal(handle.hasWorkspace, true, "a worktree profile has a workspace");
+  assert.deepEqual(handle.denyNetworkHosts, []);
+  assert.notEqual(stub.calls[0].indexOf("--no-input"), -1, "create is non-interactive");
+  assert.equal(
+    stub.calls[0].filter((token) => token === "--no-input").length,
+    1,
+    "created non-interactively exactly once",
+  );
 
   assert.equal(stub.calls.length, 2, "create + one policy allow");
   assert.deepEqual(
@@ -377,10 +622,118 @@ await check("createWorkerSandbox: scout adds only the model-provider egress rule
   const stub = installStub();
   const handle = await createWorkerSandbox({ role: "scout", worktreePath: repo, cwd: repo, name: "pi-scout-fixed-1" });
   assert.equal(handle.createdFrom, "template");
+  assert.equal(handle.hasWorkspace, true);
   assert.deepEqual(handle.networkHosts, [...SANDBOX_MODEL_EGRESS_HOSTS]);
   assert.equal(stub.calls.length, 2, "create + the one model-provider egress rule");
   assert.deepEqual(stub.calls[1], policyAllowArgs("pi-scout-fixed-1", SANDBOX_MODEL_EGRESS_HOSTS));
-  assert.equal(stub.calls[0][stub.calls[0].length - 1], repo + ":ro", "scout mounts the worktree read-only");
+  // The primary workspace must be rw, so it is a host temp dir the adapter made;
+  // the worktree stays the read-only second workspace.
+  const create = stub.calls[0];
+  assert.equal(create[create.length - 1], repo + ":ro", "scout mounts the worktree read-only");
+  const scratch = create[create.length - 2];
+  assert.equal(scratch, handle.scratchPath, "the handle records the scratch dir it created");
+  assert.equal(path.dirname(scratch), path.resolve(os.tmpdir()));
+  assert.equal(path.basename(scratch).startsWith(SANDBOX_SCRATCH_PREFIX), true);
+  assert.equal(fs.statSync(scratch).isDirectory(), true, "the scratch dir exists before sbx mounts it");
+  assert.equal(create.includes(repo), false, "the repo is never a read-write workspace");
+  // Scout teardown removes the scratch dir with the VM (same stub: no real CLI).
+  assert.deepEqual(await teardownSandbox("pi-scout-fixed-1", handle.scratchPath), {
+    name: "pi-scout-fixed-1",
+    stopped: true,
+    removed: true,
+    errors: [],
+  });
+  assert.equal(fs.existsSync(scratch), false, "teardown disposes of the scratch workspace");
+  setSbxProcessOps(null);
+});
+
+await check("createWorkerSandbox: researcher is created MOUNTLESS with provider + relay + context7 egress", async () => {
+  const repo = path.join(tmp, "create-researcher");
+  fs.mkdirSync(repo, { recursive: true });
+  const stub = installStub();
+  const handle = await createWorkerSandbox({ role: "researcher", worktreePath: repo, cwd: repo, name: "pi-researcher-fixed-1" });
+  assert.equal(handle.createdFrom, "template");
+  assert.equal(handle.hasWorkspace, false, "no workspace mount at all");
+  assert.equal(handle.scratchPath, undefined, "a mountless profile needs no scratch primary");
+  assert.equal(handle.networkHosts.includes("localhost:8787"), true);
+  assert.equal(handle.networkHosts.includes("api.openai.com:443"), false);
+  assert.equal(handle.networkHosts.includes("context7.com:443"), true);
+  assert.equal(stub.calls.length, 2, "create + one policy allow");
+  // No workspace positional anywhere in the create argv: the repo path the
+  // caller passed is used for nothing (there is nothing to mount).
+  assert.deepEqual(
+    stub.calls[0],
+    createSandboxArgs({
+      name: "pi-researcher-fixed-1",
+      profile: profileForRole("researcher"),
+      worktreePath: repo,
+      reference: "template",
+      kitPath: path.resolve(repo, SANDBOX_KIT_FALLBACK_PATH),
+    }),
+  );
+  assert.equal(stub.calls[0].includes(repo), false, "the host worktree never reaches a mountless create");
+  assert.equal(stub.calls[0].includes(SANDBOX_SCRATCH_PREFIX), false);
+  assert.deepEqual(
+    stub.calls[1],
+    policyAllowArgs("pi-researcher-fixed-1", SANDBOX_RESEARCHER_EGRESS_HOSTS),
+  );
+  setSbxProcessOps(null);
+});
+
+await check("createWorkerSandbox: denyNetworkHosts ride the create call; a mountless exec omits -w", async () => {
+  const repo = path.join(tmp, "create-deny");
+  fs.mkdirSync(repo, { recursive: true });
+  const stub = installStub();
+  // Exercise the plumbing end to end: temporary deny entries on the researcher
+  // profile, restored in the finally below (the table itself stays empty).
+  const restore = profileForRole("researcher").denyNetworkHosts;
+  profileForRole("researcher").denyNetworkHosts = ["blocked.example.com"];
+  let handle;
+  try {
+    handle = await createWorkerSandbox({ role: "researcher", worktreePath: repo, cwd: repo, name: "pi-researcher-deny-1" });
+  } finally {
+    profileForRole("researcher").denyNetworkHosts = restore;
+  }
+  assert.deepEqual(handle.denyNetworkHosts, ["blocked.example.com"]);
+  // create argv carries the deny; the allow rule is the LATER call, so the deny
+  // is in force before any allow can be added.
+  const create = stub.calls[0];
+  const denyAt = create.indexOf("--deny-network");
+  assert.notEqual(denyAt, -1);
+  assert.deepEqual(create.slice(denyAt, denyAt + 2), ["--deny-network", "blocked.example.com"]);
+  assert.deepEqual(stub.calls[1], policyAllowArgs("pi-researcher-deny-1", SANDBOX_RESEARCHER_EGRESS_HOSTS));
+  assert.deepEqual(profileForRole("researcher").denyNetworkHosts, [], "the table still defaults to empty");
+
+  // exec on the mountless VM: no -w, and the host path is nowhere in the argv.
+  const execRun = await execInSandbox(handle.name, ["pi", "--no-skills"], {
+    worktreePath: repo,
+    env: { PI_DELEGATE_SANDBOX: "1" },
+  });
+  const execArgv = stub.calls[stub.calls.length - 1];
+  assert.deepEqual(execArgv, [
+    "exec",
+    "--no-input",
+    "-w", "/home/agent",
+    "-e", "PI_DELEGATE_SANDBOX=1",
+    "pi-researcher-deny-1",
+    "pi",
+    "--no-skills",
+  ]);
+  assert.equal(execArgv.includes(repo), false, "a mountless exec never hands the VM a host path");
+  assert.equal(sandboxWorkdir(handle.name, repo), SANDBOX_MOUNTLESS_WORKDIR);
+  assert.equal(execRun.sandbox, handle.name);
+
+  // Teardown drops the recorded workspace shape: the name is unknown again.
+  await teardownSandbox(handle.name);
+  assert.equal(sandboxWorkdir(handle.name, repo), repo);
+
+  // A workspaced role still gets `-w`, so the omission is profile-specific.
+  const worker = await createWorkerSandbox({ role: "worker", worktreePath: repo, cwd: repo, name: "pi-worker-wd-1" });
+  assert.equal(sandboxWorkdir(worker.name, repo), repo);
+  await execInSandbox(worker.name, ["pi"], { worktreePath: repo, env: {} });
+  assert.deepEqual(stub.calls[stub.calls.length - 1], [
+    "exec", "--no-input", "-w", repo, worker.name, "pi",
+  ]);
   setSbxProcessOps(null);
 });
 
@@ -396,8 +749,13 @@ await check("createWorkerSandbox: template 125 falls back to the kit exactly onc
   assert.equal(stub.calls.length, 3, "template attempt + kit attempt + egress rule");
   assert.deepEqual(stub.calls[2], policyAllowArgs("pi-worker-kit-1", SANDBOX_WORKER_EGRESS_HOSTS));
   assert.equal(stub.calls[0].includes("-t"), true);
-  assert.equal(stub.calls[1][8], "--kit");
-  assert.equal(stub.calls[1][9], path.resolve(repo, SANDBOX_KIT_FALLBACK_PATH));
+  // fallback argv: kit dir in the agent slot, workspace after it, no --kit
+  assert.deepEqual(
+    stub.calls[1].slice(stub.calls[1].indexOf("--memory") + 2),
+    [path.resolve(repo, SANDBOX_KIT_FALLBACK_PATH), repo],
+  );
+  assert.equal(stub.calls[1].includes("--kit"), false);
+  assert.equal(stub.calls[1].includes("shell"), false);
   assert.equal(stub.existsCalls.length, 1, "the kit is probed before the fallback");
   setSbxProcessOps(null);
 });
@@ -889,6 +1247,188 @@ await check("checkProveCoverage: prove note + exit 0 VERIFIES, ordinary green do
   assert.equal(refused.ok, false);
   assert.deepEqual(refused.missing, [rule]);
   assert.match(refused.report, /REFUSED/);
+});
+
+
+// ── 7. Gate VM: template, mounts, lifecycle, reuse ──────────────────────────
+
+await check("gate VM: template/sizing/egress constants are the locked-down gate profile", async () => {
+  assert.equal(GATE_SANDBOX_TEMPLATE_NAME, "docker.io/library/pi-gate:v1");
+  assert.equal(GATE_SANDBOX_ROLE, "gate");
+  assert.equal(GATE_SANDBOX_CPUS, 4);
+  assert.equal(GATE_SANDBOX_MEMORY, "8g");
+  assert.deepEqual([...GATE_SANDBOX_EGRESS_HOSTS], [
+    "proxy.golang.org:443",
+    "sum.golang.org:443",
+    "storage.googleapis.com:443",
+  ]);
+  // No model, no secret sentinel: a gate VM never calls a model and carries no
+  // credential. Egress is the Go proxy fallback only.
+  assert.deepEqual(GATE_SANDBOX_PROFILE.secretSentinelEnvs, []);
+  assert.equal(GATE_SANDBOX_PROFILE.networkHosts.includes("opencode.ai:443"), false);
+  assert.deepEqual(GATE_SANDBOX_PROFILE.mounts, [{ kind: "worktree", mode: "rw" }]);
+  assert.deepEqual(profileDenyHosts(GATE_SANDBOX_PROFILE), []);
+  // The gate profile is NOT in the role table: an agent named "gate" must not
+  // silently become the verifier plane (it gets the worker profile instead).
+  assert.equal(GATE_SANDBOX_PROFILE.role, "gate");
+  assert.notEqual(profileForRole("gate"), GATE_SANDBOX_PROFILE);
+});
+
+await check("gate VM: linked-worktree mount plan adds the main repo root :ro, otherwise one mount", async () => {
+  const worktree = "/host/repo/.worktrees/job-1";
+  // Own .git directory: not linked, no extra mount.
+  assert.deepEqual(gateMountPlanFromCommonDir(worktree, ".git"), {
+    worktreePath: worktree,
+    repoRoot: null,
+    linkedWorktree: false,
+  });
+  assert.deepEqual(gateMountPlanFromCommonDir(worktree, "/host/repo/.worktrees/job-1/.git"), {
+    worktreePath: worktree,
+    repoRoot: null,
+    linkedWorktree: false,
+  });
+  // Linked: the common dir is the MAIN repo's .git ⇒ mount its parent :ro.
+  assert.deepEqual(gateMountPlanFromCommonDir(worktree, "/host/repo/.git"), {
+    worktreePath: worktree,
+    repoRoot: "/host/repo",
+    linkedWorktree: true,
+  });
+  // Unprobeable (git failed) keeps the provable single mount.
+  const plan = resolveGateMountPlan(worktree, () => ({ ok: false, commonDir: "", reason: "no git" }));
+  assert.equal(plan.repoRoot, null);
+  assert.equal(plan.linkedWorktree, false);
+  const probed = resolveGateMountPlan(worktree, () => ({ ok: true, commonDir: "/host/repo/.git", reason: "" }));
+  assert.equal(probed.repoRoot, "/host/repo");
+});
+
+await check("createGateSandbox: pi-gate template, worktree rw primary, per-sandbox Go egress only", async () => {
+  resetGateSandboxRegistryForTests();
+  const worktree = path.join(tmp, "gate-wt-plain");
+  fs.mkdirSync(worktree, { recursive: true });
+  const stub = installStub();
+  const handle = await createGateSandbox(worktree, {
+    name: "pi-gate-fixed-1",
+    mountPlan: gateMountPlanFromCommonDir(worktree, ""),
+  });
+  assert.equal(handle.name, "pi-gate-fixed-1");
+  assert.equal(handle.role, "gate");
+  assert.equal(handle.createdFrom, "template");
+  assert.equal(handle.hasWorkspace, true);
+  assert.deepEqual(handle.networkHosts, [...GATE_SANDBOX_EGRESS_HOSTS]);
+  assert.equal(handle.extraWorkspaces, undefined, "a plain worktree needs no extra mount");
+  assert.equal(stub.calls.length, 2, "create + one policy allow");
+  assert.deepEqual(
+    stub.calls[0],
+    createSandboxArgs({
+      name: "pi-gate-fixed-1",
+      profile: GATE_SANDBOX_PROFILE,
+      worktreePath: path.resolve(worktree),
+      reference: "template",
+      template: GATE_SANDBOX_TEMPLATE_NAME,
+    }),
+  );
+  assert.equal(stub.calls[0].includes("docker.io/library/pi-gate:v1"), true);
+  assert.equal(stub.calls[0].includes("docker.io/library/pi-worker:v1"), false);
+  assert.equal(stub.calls[0][stub.calls[0].indexOf("--cpus") + 1], "4");
+  assert.equal(stub.calls[0][stub.calls[0].indexOf("--memory") + 1], "8g");
+  assert.deepEqual(stub.calls[1], policyAllowArgs("pi-gate-fixed-1", GATE_SANDBOX_EGRESS_HOSTS));
+  assert.equal(stub.calls[1].join(" ").includes("opencode.ai"), false, "no model egress for a gate VM");
+  setSbxProcessOps(null);
+  resetGateSandboxRegistryForTests();
+});
+
+await check("createGateSandbox: a linked worktree mounts the main repo root :ro so gitdir resolves", async () => {
+  resetGateSandboxRegistryForTests();
+  const worktree = path.join(tmp, "gate-linked", ".worktrees", "job-2");
+  fs.mkdirSync(worktree, { recursive: true });
+  const repoRoot = path.join(tmp, "gate-linked");
+  const stub = installStub();
+  const handle = await createGateSandbox(worktree, {
+    name: "pi-gate-linked-1",
+    mountPlan: gateMountPlanFromCommonDir(worktree, path.join(repoRoot, ".git")),
+  });
+  assert.deepEqual(handle.extraWorkspaces, [repoRoot]);
+  const create = stub.calls[0];
+  // Worktree RW first (primary), main repo root :ro second (pointer target).
+  assert.equal(create[create.length - 1], repoRoot + ":ro");
+  assert.equal(create[create.length - 2], path.resolve(worktree));
+  setSbxProcessOps(null);
+  resetGateSandboxRegistryForTests();
+});
+
+await check("createGateSandbox: a missing template is a loud infra failure (no worker-image fallback)", async () => {
+  resetGateSandboxRegistryForTests();
+  const worktree = path.join(tmp, "gate-wt-missing");
+  fs.mkdirSync(worktree, { recursive: true });
+  const stub = installStub((args) => (args[0] === "create" ? { exitCode: 1, stderr: "template not found" } : {}));
+  await assert.rejects(
+    createGateSandbox(worktree, { name: "pi-gate-missing-1", mountPlan: gateMountPlanFromCommonDir(worktree, "") }),
+    /gate VM from template 'docker\.io\/library\/pi-gate:v1' failed/,
+  );
+  assert.equal(stub.calls.length, 1, "one create attempt, no kit retry");
+  assert.equal(stub.calls[0].includes("shell"), true, "a template create never swaps the agent slot for a kit");
+  assert.equal(stub.existsCalls.length, 0, "no kit probe for a gate VM");
+  setSbxProcessOps(null);
+  resetGateSandboxRegistryForTests();
+});
+
+await check("ensureGateSandbox: session reuse keyed by worktree path; a new path gets a new VM", async () => {
+  resetGateSandboxRegistryForTests();
+  const first = path.join(tmp, "gate-reuse-a");
+  const second = path.join(tmp, "gate-reuse-b");
+  fs.mkdirSync(first, { recursive: true });
+  fs.mkdirSync(second, { recursive: true });
+  const stub = installStub();
+  const a1 = await ensureGateSandbox(first, { mountPlan: gateMountPlanFromCommonDir(first, "") });
+  const a2 = await ensureGateSandbox(first, { mountPlan: gateMountPlanFromCommonDir(first, "") });
+  assert.equal(a1.name, a2.name, "the SAME worktree path reuses the VM");
+  assert.equal(stub.calls.filter((args) => args[0] === "create").length, 1, "one create for the reused path");
+  assert.equal(gateSandboxKey(first), path.resolve(first));
+  assert.equal(gateSandboxFor(first).name, a1.name);
+
+  const b = await ensureGateSandbox(second, { mountPlan: gateMountPlanFromCommonDir(second, "") });
+  assert.notEqual(b.name, a1.name, "a different worktree path NEVER reuses the old mount");
+  assert.equal(stub.calls.filter((args) => args[0] === "create").length, 2);
+  assert.deepEqual(listGateSandboxes().map((handle) => handle.name).sort(), [a1.name, b.name].sort());
+
+  // Concurrent decisions on one path share the in-flight create.
+  const raced = path.join(tmp, "gate-reuse-c");
+  fs.mkdirSync(raced, { recursive: true });
+  const before = stub.calls.filter((args) => args[0] === "create").length;
+  const [r1, r2] = await Promise.all([
+    ensureGateSandbox(raced, { mountPlan: gateMountPlanFromCommonDir(raced, "") }),
+    ensureGateSandbox(raced, { mountPlan: gateMountPlanFromCommonDir(raced, "") }),
+  ]);
+  assert.equal(r1.name, r2.name);
+  assert.equal(stub.calls.filter((args) => args[0] === "create").length, before + 1, "one create under a race");
+
+  // Session end: every gate VM is stopped and removed.
+  const results = await teardownGateSandboxes();
+  assert.equal(results.length, 3);
+  assert.equal(results.every((entry) => entry.stopped && entry.removed), true);
+  assert.deepEqual(listGateSandboxes(), [], "registry is empty after teardown");
+  const rmCalls = stub.calls.filter((args) => args[0] === "rm").map((args) => args[2]).sort();
+  assert.deepEqual(rmCalls, [a1.name, b.name, r1.name].sort());
+  setSbxProcessOps(null);
+  resetGateSandboxRegistryForTests();
+});
+
+await check("gate VM: resolveGateMountPlan uses the host git probe for a real linked worktree", async () => {
+  resetGateSandboxRegistryForTests();
+  const main = path.join(tmp, "gate-real-link");
+  fs.mkdirSync(main, { recursive: true });
+  git(main, ["init", "-q"]);
+  fs.writeFileSync(path.join(main, "README.md"), "# linked\n");
+  git(main, ["add", "."]);
+  git(main, ["commit", "-q", "-m", "fixture"]);
+  const worktree = path.join(tmp, "gate-real-link-wt");
+  git(main, ["worktree", "add", "-q", worktree, "-b", "gate-linked-branch"]);
+  // createGateSandbox calls the real probe: this is the host-side trust anchor
+  // reading git metadata (never worktree code).
+  const plan = resolveGateMountPlan(worktree);
+  assert.equal(plan.linkedWorktree, true, "a git worktree add path is linked");
+  assert.equal(plan.repoRoot, fs.realpathSync(main), "the main repo root is the :ro extra mount");
+  resetGateSandboxRegistryForTests();
 });
 
 // ── Teardown of the harness ─────────────────────────────────────────────────

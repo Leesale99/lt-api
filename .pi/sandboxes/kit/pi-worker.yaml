@@ -1,0 +1,69 @@
+# syntax=docker/sandbox-kit:3
+#
+# pi-worker — a v3 (idiomatic) workload kit. Everything reusable is baked into
+# the image by the paired recipe (./pi-worker.dockerfile): Go, the pi coding
+# agent, and pi's provider/model config. Nothing is installed per sandbox, so
+# there is no install phase at runtime and no install-phase egress to grant at
+# create time.
+#
+# .pi/sandboxes/build.sh turns this kit into the reusable `pi-worker:v1`
+# template (`sbx create <this dir> …` → warm the Go module cache →
+# `sbx template save pi-worker:v1`).
+#
+# Descriptor rules that bite (strict decode — an unknown key is a hard error):
+#   * `schemaVersion: "3"` is required and `kind: workload` is the only spelling
+#     (`kind: sandbox` is the v2 name for a different thing).
+#   * there is NO `name` field in v3; the identity is `displayName`. The
+#     directory/recipe stem (`pi-worker`) is what the CLI reports.
+#   * exactly one of `build` | `dockerfile` | `kits` — this kit uses `dockerfile`
+#     with the stem-paired recipe next to it.
+schemaVersion: "3"
+kind: workload
+displayName: pi-worker
+version: "1.0.0"
+description: >-
+  Go toolchain, the pi coding agent, and pi's provider/model configuration baked
+  into one image, snapshotted as the `pi-worker:v1` sandbox template that
+  delegate worker VMs boot from.
+dockerfile: pi-worker.dockerfile
+
+capabilities:
+  # The sbx runtime contract for a host-launched workload: workspace mount
+  # plumbing plus WORKSPACE_DIR / SANDBOX_ID / IS_SANDBOX in the workload's
+  # environment. Without it a workload created directly from this kit is not
+  # managed by the host daemon the way `sbx create` expects.
+  - type: com.docker.sandbox/sbx@1
+
+  # Egress is declared per phase (v3). Both phases are default-deny; an entry in
+  # `runtime` does NOT grant access during a build, and vice versa.
+  #
+  #   install — only what the recipe's build fetches:
+  #     registry.npmjs.org      npm (pi-coding-agent)
+  #     go.dev                  the Go tarball URL
+  #     dl.google.com           go.dev's download redirect
+  #     storage.googleapis.com  where the tarball bytes actually live
+  #   runtime — the v2 `permissions.network.allow` list, carried over verbatim
+  #     so nothing silently narrows: model calls (opencode.ai + its wildcard),
+  #     module/checksum fetches (proxy.golang.org, sum.golang.org), toolchain
+  #     artefacts (storage.googleapis.com, go.dev, dl.google.com) and npm
+  #     (registry.npmjs.org). Task sandboxes created from the saved template
+  #     inherit none of this: the delegate extension applies a narrower
+  #     per-sandbox policy at create time.
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      install:
+        allow:
+          - registry.npmjs.org:443
+          - go.dev:443
+          - dl.google.com:443
+          - storage.googleapis.com:443
+      runtime:
+        allow:
+          - registry.npmjs.org:443
+          - opencode.ai:443
+          - "*.opencode.ai:443"
+          - go.dev:443
+          - dl.google.com:443
+          - storage.googleapis.com:443
+          - proxy.golang.org:443
+          - sum.golang.org:443
