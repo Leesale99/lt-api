@@ -154,6 +154,7 @@ audit: audit/static
 smoke:
 	node .pi/extensions/delegate/smoke-gates.mjs
 	node .pi/extensions/delegate/smoke-sbx.mjs
+	node .pi/extensions/delegate/smoke-ui.mjs
 
 # ============================================================================================================================ #
 # SPEC CATALOG
