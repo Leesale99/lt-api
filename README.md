@@ -67,7 +67,10 @@ internal/game/        Hexagonal module: facade game.go + internal/core/{domain,
 internal/identity/    Layered module: facade identity.go + internal/{model,
                       repository, service, handler}.
 internal/ledger/      Thin module: ledger.go + postgres.go.
-docs/                 Learning-oriented implementation plan (phases 0–8)
+docs/                 Developer hub (docs/README.md: the four planes, the
+                      one-change flow, where each gate lives), the executable
+                      specification (docs/spec/) and the learning-oriented
+                      implementation plan (phases 0–8)
 ```
 
 Bounded contexts sit behind facades: the module root is the only package
