@@ -26,6 +26,11 @@
  * that is PRESENT and well-typed overrides both the default and the env knob.
  * Only `version` (and the file itself) is hard-required.
  *
+ * One deliberate exception: `gate_file_paths` is a LIST field that REFUSES on a
+ * malformed value instead of falling back. The integrity check it configures is
+ * the merge-boundary net, so an empty or unsafe declaration must not silently
+ * degrade to (or widen) the default coverage.
+ *
  * Deletions (sandbox era): `protected_paths`, `pi_editable_paths`,
  * `allowlist_path` and `bash_write_patterns` are GONE from this schema, together
  * with the child-side deny paths, the bash write-channel scanner and the gate
@@ -82,6 +87,17 @@ export const DEFAULT_SETTLE_BACKOFF_MAX_DOUBLINGS = 5;
 export const DEFAULT_WORKER_STALL_TIMEOUT_MS = 600_000;
 /** Cap on tasks[] in one subagent call (MAX_PARALLEL_TASKS). */
 export const DEFAULT_MAX_CONCURRENT_WORKERS = 8;
+/**
+ * Paths whose content DEFINES green — the coverage of the host-side integrity
+ * check. Declared as `gate_file_paths` in the policy file; a worker that
+ * changes any of them has voided its own verdict.
+ */
+export const DEFAULT_GATE_FILE_PATHS: readonly string[] = [
+  "Makefile",
+  "cmd/spec",
+  ".github",
+  WORKFLOW_FILE_REL_PATH,
+];
 
 // ── Resolved policy ─────────────────────────────────────────────────────────
 
@@ -99,6 +115,8 @@ export interface WorkflowPolicy {
   settleBackoffMaxDoublings: number;
   workerStallTimeoutMs: number;
   maxConcurrentWorkers: number;
+  /** Repo-relative paths the host integrity check covers (never empty). */
+  gateFilePaths: string[];
   approvalBinding: string;
   redApprovalMarker: string;
   redApprovalHeadShaLine: string;
@@ -249,7 +267,7 @@ export function parseWorkflowFrontMatter(raw: string): FrontMatterParseResult {
 
 // ── Field table + typed resolution ──────────────────────────────────────────
 
-type FieldKind = "string" | "integer" | "string-list" | "repo-relative-path";
+type FieldKind = "string" | "integer" | "string-list" | "repo-relative-path" | "repo-relative-path-list";
 
 const FIELD_KINDS: Record<string, FieldKind> = {
   version: "integer",
@@ -265,6 +283,7 @@ const FIELD_KINDS: Record<string, FieldKind> = {
   settle_backoff_max_doublings: "integer",
   worker_stall_timeout_ms: "integer",
   max_concurrent_workers: "integer",
+  gate_file_paths: "repo-relative-path-list",
   approval_binding: "string",
   red_approval_marker: "string",
   red_approval_head_sha_line: "string",
@@ -330,6 +349,63 @@ function takePath(
   }
   declared.add(key);
   return raw.trim();
+}
+
+/**
+ * Repo-relative POSIX path for one `gate_file_paths` entry: non-empty, relative
+ * (no leading `/`, no absolute host path), no `..`/`.` segment, no empty
+ * segment and no whitespace — exactly what `git diff -- <path>` can be handed
+ * without escaping the worktree.
+ */
+function isSafeGateFilePath(value: string): boolean {
+  if (value === "" || /\s/.test(value)) return false;
+  if (value.startsWith("/") || path.isAbsolute(value)) return false;
+  return value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+/**
+ * The `gate_file_paths` field (repo-relative-path LIST). Unlike every other
+ * list field this one REFUSES on a bad value instead of falling back to the
+ * default: the integrity check is the merge-boundary net, so a malformed
+ * declaration must not silently degrade to (or widen) its coverage. Absent ⇒
+ * the batch-3 defaults (`DEFAULT_GATE_FILE_PATHS`), declared ⇒ exactly the
+ * declared paths; an empty list, an empty entry, an absolute path, a `..`
+ * segment or whitespace inside an entry is a policy refusal.
+ */
+function takeGateFilePaths(
+  values: Record<string, PolicyValue>,
+  declared: Set<string>,
+): { paths: string[] } | { reason: string } {
+  const raw = values.gate_file_paths;
+  if (raw === undefined) return { paths: [...DEFAULT_GATE_FILE_PATHS] };
+  // Two accepted spellings: the file's `- item` list style, or one
+  // comma-separated scalar. Both normalize to the same entry list.
+  const entries = (Array.isArray(raw) ? raw : raw.split(",")).map((item) => item.trim());
+  if (entries.every((entry) => entry === "")) {
+    return {
+      reason:
+        "field `gate_file_paths` must declare at least one repo-relative path \u2014 the integrity check " +
+        "always needs coverage, so an empty list refuses rather than widening the trust surface",
+    };
+  }
+  for (const entry of entries) {
+    if (entry === "") {
+      return {
+        reason:
+          "field `gate_file_paths` carries an empty entry \u2014 every entry must be a repo-relative path",
+      };
+    }
+    if (!isSafeGateFilePath(entry)) {
+      return {
+        reason:
+          "field `gate_file_paths` entry \"" + entry + "\" is not a repo-relative POSIX path " +
+          "(no leading `/`, no absolute host path, no `..` segment, no whitespace) \u2014 refusing rather " +
+          "than running the integrity check over unsafe coverage",
+      };
+    }
+  }
+  declared.add("gate_file_paths");
+  return { paths: entries };
 }
 
 function takeList(
@@ -416,6 +492,10 @@ export function loadWorkflowPolicy(cwd: string = process.cwd()): PolicyResult {
   }
 
   const declared = new Set<string>();
+  const gateFilePaths = takeGateFilePaths(values, declared);
+  if ("reason" in gateFilePaths) {
+    return { ok: false, path: filePath, reason: gateFilePaths.reason };
+  }
   const policy: WorkflowPolicy = {
     version,
     auditStaticCmd: takeString(values, "audit_static_cmd", DEFAULT_AUDIT_STATIC_CMD, declared),
@@ -445,6 +525,7 @@ export function loadWorkflowPolicy(cwd: string = process.cwd()): PolicyResult {
       DEFAULT_MAX_CONCURRENT_WORKERS,
       declared,
     ),
+    gateFilePaths: gateFilePaths.paths,
     approvalBinding: takeString(values, "approval_binding", APPROVAL_BINDING, declared),
     redApprovalMarker: takeString(values, "red_approval_marker", APPROVAL_MARKER, declared),
     redApprovalHeadShaLine: takeString(values, "red_approval_head_sha_line", APPROVAL_HEAD_SHA_PREFIX, declared),

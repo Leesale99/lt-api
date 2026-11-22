@@ -73,8 +73,8 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+  DEFAULT_GATE_FILE_PATHS,
   DEFAULT_RECEIPTS_DIR,
-  WORKFLOW_FILE_REL_PATH,
   loadWorkflowPolicy,
   workflowPolicyRefusal,
 } from "./policy.ts";
@@ -1452,11 +1452,17 @@ export function isGateRelevantWrite(repoRoot: string, inputPath: string): boolea
 // ── Host-side integrity check (the merge-boundary detector) ──
 
 /**
- * The paths whose content DEFINES green. A worker that changes any of them has
- * voided its own verdict: the host must never execute a Makefile, cmd/spec
- * binary, CI workflow or WORKFLOW.md that differs from HEAD.
+ * The paths the integrity check covers: the `gate_file_paths` DECLARED in the
+ * worktree's WORKFLOW.md front matter, or `DEFAULT_GATE_FILE_PATHS` when the
+ * field is absent. An unreadable policy also yields the defaults — the gate
+ * path refuses on the policy itself in that case, and the check must keep
+ * covering the canonical gate files rather than trust a broken policy file.
  */
-export const GATE_FILE_PATHS: readonly string[] = ["Makefile", "cmd/spec", ".github", WORKFLOW_FILE_REL_PATH];
+export function gateFilePathsFor(worktreePath: string): string[] {
+  const loaded = loadWorkflowPolicy(worktreePath);
+  if (!loaded.ok) return [...DEFAULT_GATE_FILE_PATHS];
+  return [...loaded.policy.gateFilePaths];
+}
 
 /** Exit code `git diff --exit-code` uses for "there is a diff". */
 export const GIT_DIFF_DIRTY_EXIT = 1;
@@ -1470,19 +1476,21 @@ export interface IntegrityCheckResult {
   report: string;
   /** The executed checks, so a receipt can record them verbatim. */
   steps: GateStep[];
-  /** Paths covered by the check (the four gate paths). */
+  /** Paths covered by the check (the declared `gate_file_paths`). */
   paths: string[];
 }
 
 /**
  * HOST-SIDE integrity check, run in the worktree BEFORE any gate command.
  *
- *   git diff --exit-code HEAD -- Makefile cmd/spec .github WORKFLOW.md
- *   git diff --cached --exit-code HEAD -- Makefile cmd/spec .github WORKFLOW.md
+ *   git diff --exit-code HEAD -- <gate_file_paths…>
+ *   git diff --cached --exit-code HEAD -- <gate_file_paths…>
  *
- * The index variant matters for the same reason: workers are git-less, so only
- * the host moves HEAD, and any working-tree OR index deviation from HEAD in
- * these paths is worker-introduced poison.
+ * The paths are the ones the policy DECLARES (`gate_file_paths` in WORKFLOW.md),
+ * with the four canonical gate files (Makefile, cmd/spec, .github, WORKFLOW.md)
+ * as the default when the field is absent: a worker that changes any of them has
+ * voided its own verdict, because the host must never execute a Makefile,
+ * cmd/spec binary, CI workflow or WORKFLOW.md that differs from HEAD.
  *
  * FAIL CLOSED: exit 1 = dirty (refuse the gates and route to human review).
  * Anything else that is not a clean exit 0 — a missing git, a broken HEAD, a
@@ -1493,7 +1501,7 @@ export async function checkWorktreeIntegrity(
   worktreePath: string,
   opts: { timeoutMs?: number } = {},
 ): Promise<IntegrityCheckResult> {
-  const paths = [...GATE_FILE_PATHS];
+  const paths = gateFilePathsFor(worktreePath);
   const timeoutMs = opts.timeoutMs ?? GIT_TIMEOUT_MS;
   const commands: string[][] = [
     ["diff", "--exit-code", "HEAD", "--", ...paths],

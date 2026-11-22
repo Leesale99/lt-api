@@ -8,6 +8,11 @@ scoped_check_cmd: "go run ./cmd/spec check --strict"
 
 receipts_dir: .pi/receipts
 claims_dir: .pi/jobs
+gate_file_paths:
+  - Makefile
+  - cmd/spec
+  - .github
+  - WORKFLOW.md
 
 settle_max_attempts: 5
 settle_immediate_attempts: 3
@@ -71,7 +76,9 @@ One host-side check runs in the worktree BEFORE any gate:
 
 (the index variant runs too, so a staged deviation counts). Dirty → the host refuses to run the gates and
 routes the batch to human review. The gate files ARE the definition of green, so a worker that touches them
-has invalidated its own verdict, and we stop rather than reason about it.
+has invalidated its own verdict, and we stop rather than reason about it. Those four paths are the declared
+`gate_file_paths` list in this file's front matter; the check derives its `git diff` arguments from that field
+(an omitted field defaults to exactly these four).
 
 The shape of that trade, honestly: it is a *detector at the merge boundary*, not a write barrier inside the
 VM. A worker can still write a non-gate file in its read-write mount; the full audit at merge plus the

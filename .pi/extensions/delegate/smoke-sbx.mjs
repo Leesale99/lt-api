@@ -77,9 +77,9 @@ import {
   workspaceArgsFor,
 } from "./sbx.ts";
 import {
-  GATE_FILE_PATHS,
   checkWorktreeIntegrity,
   detectMergeBackCommands,
+  gateFilePathsFor,
   integrityRefusalReason,
   policyRefusalGateRun,
   receiptsDirFor,
@@ -87,6 +87,7 @@ import {
   runGate,
   splitTopLevelSegments,
 } from "./gates.ts";
+import { DEFAULT_GATE_FILE_PATHS } from "./policy.ts";
 import { checkProveCoverage } from "./mergegate.ts";
 
 let failures = 0;
@@ -966,12 +967,50 @@ await check("checkWorktreeIntegrity: a clean repo is clean and gates may run", a
   const result = await checkWorktreeIntegrity(repo);
   assert.equal(result.clean, true);
   assert.equal(result.refused, false);
-  assert.deepEqual(result.paths, [...GATE_FILE_PATHS]);
+  assert.deepEqual(result.paths, [...DEFAULT_GATE_FILE_PATHS]);
   assert.equal(result.steps.length, 2, "worktree check + index check");
   assert.equal(result.steps.every((step) => step.ok), true);
   assert.match(result.report, /status: clean/);
   assert.match(result.report, /git diff --exit-code HEAD -- Makefile cmd\/spec \.github WORKFLOW\.md/);
   assert.match(result.report, /git diff --cached --exit-code HEAD/);
+});
+
+await check("checkWorktreeIntegrity: a DECLARED gate_file_paths list drives the git paths", async () => {
+  const dir = path.join(tmp, "integrity-declared-paths");
+  fs.mkdirSync(path.join(dir, "scripts"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "cmd", "spec"), { recursive: true });
+  git(dir, ["init", "-q"]);
+  fs.writeFileSync(path.join(dir, "Makefile"), "audit:\n\t@echo ok\n");
+  fs.writeFileSync(path.join(dir, "scripts", "audit.sh"), "#!/bin/sh\nexit 0\n");
+  fs.writeFileSync(path.join(dir, "cmd", "spec", "gate.go"), "package main\n");
+  fs.writeFileSync(
+    path.join(dir, "WORKFLOW.md"),
+    "---\nversion: 1\ngate_file_paths:\n  - Makefile\n  - scripts/audit.sh\n  - WORKFLOW.md\n---\n\n# policy\n",
+  );
+  git(dir, ["add", "."]);
+  git(dir, ["commit", "-q", "-m", "fixture"]);
+
+  const declared = ["Makefile", "scripts/audit.sh", "WORKFLOW.md"];
+  const clean = await checkWorktreeIntegrity(dir);
+  assert.deepEqual(clean.paths, declared, "the declared list is the coverage");
+  assert.equal(clean.clean, true);
+  assert.match(clean.report, /git diff --exit-code HEAD -- Makefile scripts\/audit\.sh WORKFLOW\.md/);
+  assert.equal(clean.report.includes("cmd/spec"), false, "an undeclared path is not in the check");
+
+  // A change under a FORMER gate path that the policy no longer declares is not
+  // a gate-file change anymore: the declared list is the whole coverage.
+  fs.appendFileSync(path.join(dir, "cmd", "spec", "gate.go"), "\n// touched\n");
+  const uncovered = await checkWorktreeIntegrity(dir);
+  assert.equal(uncovered.clean, true, "cmd/spec is not declared here");
+
+  // A dirty DECLARED path is still refused, and the report names the list.
+  fs.appendFileSync(path.join(dir, "scripts", "audit.sh"), "\n# poisoned\n");
+  const dirty = await checkWorktreeIntegrity(dir);
+  assert.equal(dirty.refused, true);
+  assert.match(dirty.report, /DIRTY/);
+  assert.match(dirty.report, /paths: Makefile scripts\/audit\.sh WORKFLOW\.md/);
+  assert.match(integrityRefusalReason(dirty), /scripts\/audit\.sh/);
+  assert.equal(gateFilePathsFor(dir).join(" "), declared.join(" "));
 });
 
 await check("checkWorktreeIntegrity: a dirty Makefile is refused and the report names it", async () => {
@@ -1043,7 +1082,7 @@ await check("integrityRefusalReason: formats loudly and names the gate paths", a
   assert.match(reason, /INTEGRITY CHECK FAILED/);
   assert.match(reason, /HANDOFF_BLOCKED/);
   assert.match(reason, /human review/);
-  for (const gatePath of GATE_FILE_PATHS) assert.ok(reason.includes(gatePath), "names " + gatePath);
+  for (const gatePath of DEFAULT_GATE_FILE_PATHS) assert.ok(reason.includes(gatePath), "names " + gatePath);
   assert.match(reason, /git diff --exit-code HEAD/);
   assert.match(reason, /exited with code 1/);
   assert.match(reason, /No gate command was run/);

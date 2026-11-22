@@ -39,6 +39,7 @@ import {
   formatSettleEscalation,
   formatSettleTrail,
   gateDbPresteps,
+  gateFilePathsFor,
   gateVmExecEnv,
   gateVmShellCommand,
   isGateRelevantWrite,
@@ -100,6 +101,7 @@ import { execSandboxArgs } from "./sbx.ts";import {
 import { resetGateSandboxRegistryForTests, setSbxProcessOps } from "./sbx.ts";
 import {
   DEFAULT_AUDIT_STATIC_CMD,
+  DEFAULT_GATE_FILE_PATHS,
   DEFAULT_MAX_CONCURRENT_WORKERS,
   DEFAULT_SETTLE_BACKOFF_BASE_MS,
   DEFAULT_SETTLE_MAX_ATTEMPTS,
@@ -1336,6 +1338,11 @@ const FULL_POLICY_BODY = fieldsPolicy([
   "settle_backoff_max_doublings: 5",
   "worker_stall_timeout_ms: 600000",
   "max_concurrent_workers: 8",
+  "gate_file_paths:",
+  "  - Makefile",
+  "  - cmd/spec",
+  "  - .github",
+  "  - WORKFLOW.md",
   "approval_binding: head-sha",
   "red_approval_marker: AWAITING_APPROVAL",
   'red_approval_head_sha_line: "HEAD SHA:"',
@@ -1367,7 +1374,10 @@ await check("policy: full front matter loads and every field reads back", async 
   assert.equal(p.redApprovalMarker, "AWAITING_APPROVAL");
   assert.equal(p.redApprovalHeadShaLine, "HEAD SHA:");
   assert.deepEqual(p.handoffTerminalTokens, ["HANDOFF_COMPLETE", "HANDOFF_BLOCKED"]);
-  assert.equal(loaded.declared.size, 16, "every declared field is marked present");
+  assert.deepEqual(p.gateFilePaths, ["Makefile", "cmd/spec", ".github", "WORKFLOW.md"]);
+  assert.deepEqual(p.gateFilePaths, [...DEFAULT_GATE_FILE_PATHS]);
+  assert.equal(loaded.declared.has("gate_file_paths"), true, "the declared list is marked present");
+  assert.equal(loaded.declared.size, 17, "every declared field is marked present");
 });
 
 await check("policy: parser handles quotes, comments, lists and the command splitter", async () => {
@@ -1444,6 +1454,54 @@ await check("policy: missing version and unknown version refuse", async () => {
   assert.match(newer.reason, /unsupported policy version 2/);
   writeWorkflow(dir, "---\nversion: one\n---\n");
   assert.equal(loadWorkflowPolicy(dir).ok, false);
+});
+
+await check("policy: gate_file_paths defaults to the four canonical paths and feeds the integrity check", async () => {
+  const dir = path.join(tmp, "policy-gate-paths-default");
+  writeWorkflow(dir);
+  const loaded = loadWorkflowPolicy(dir);
+  assert.equal(loaded.ok, true, loaded.ok ? "" : loaded.reason);
+  assert.deepEqual(loaded.policy.gateFilePaths, ["Makefile", "cmd/spec", ".github", "WORKFLOW.md"]);
+  assert.equal(loaded.declared.has("gate_file_paths"), false, "an absent field is not declared");
+  // The integrity check derives its git paths from the policy, so the undeclared
+  // field must reproduce today's four paths exactly.
+  assert.deepEqual(gateFilePathsFor(dir), [...DEFAULT_GATE_FILE_PATHS]);
+});
+
+await check("policy: a declared gate_file_paths list is what the integrity check covers", async () => {
+  const dir = path.join(tmp, "policy-gate-paths-custom");
+  writeWorkflow(dir, fieldsPolicy(["gate_file_paths:", "  - Makefile", "  - scripts/audit.sh", "  - WORKFLOW.md"]));
+  const loaded = loadWorkflowPolicy(dir);
+  assert.equal(loaded.ok, true, loaded.ok ? "" : loaded.reason);
+  assert.deepEqual(loaded.policy.gateFilePaths, ["Makefile", "scripts/audit.sh", "WORKFLOW.md"]);
+  assert.equal(loaded.declared.has("gate_file_paths"), true);
+  assert.deepEqual(gateFilePathsFor(dir), ["Makefile", "scripts/audit.sh", "WORKFLOW.md"]);
+  // The scalar spelling (comma separated) normalizes to the same entry list.
+  writeWorkflow(dir, fieldsPolicy(["gate_file_paths: Makefile, scripts/audit.sh ,WORKFLOW.md"]));
+  const scalar = loadWorkflowPolicy(dir);
+  assert.equal(scalar.ok, true, scalar.ok ? "" : scalar.reason);
+  assert.deepEqual(scalar.policy.gateFilePaths, ["Makefile", "scripts/audit.sh", "WORKFLOW.md"]);
+});
+
+await check("policy: an unsafe or empty gate_file_paths REFUSES (no silent fallback)", async () => {
+  const dir = path.join(tmp, "policy-gate-paths-bad");
+  const cases = [
+    ["absolute", fieldsPolicy(["gate_file_paths:", "  - /etc/passwd"]), /not a repo-relative POSIX path/],
+    ["absolute macos", fieldsPolicy(["gate_file_paths:", "  - /Users/me/repo/Makefile"]), /not a repo-relative POSIX path/],
+    ["traversal", fieldsPolicy(["gate_file_paths:", "  - ../outside"]), /not a repo-relative POSIX path/],
+    ["traversal segment", fieldsPolicy(["gate_file_paths:", "  - cmd/../../etc"]), /not a repo-relative POSIX path/],
+    ["whitespace", fieldsPolicy(["gate_file_paths:", "  - cmd/spec dir"]), /not a repo-relative POSIX path/],
+    ["empty entry", fieldsPolicy(["gate_file_paths:", "  - Makefile", "  -"]), /empty entry/],
+    ["empty list", fieldsPolicy(["gate_file_paths:"]), /at least one repo-relative path/],
+    ["empty scalar", fieldsPolicy(["gate_file_paths: \"\""]), /at least one repo-relative path/],
+  ];
+  for (const [name, body, pattern] of cases) {
+    writeWorkflow(dir, body);
+    const loaded = loadWorkflowPolicy(dir);
+    assert.equal(loaded.ok, false, name + " must refuse");
+    assert.match(loaded.reason, /gate_file_paths/);
+    assert.match(loaded.reason, pattern);
+  }
 });
 
 await check("policy: unknown field refuses (typo protection)", async () => {
