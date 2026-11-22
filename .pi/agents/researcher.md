@@ -25,7 +25,19 @@ There is no worktree, no vault, no `~/.pi` config to inspect, and no `read` tool
   not a workaround: say exactly which path/content you needed, and stop. Do not
   try to reconstruct a file from memory, and do not ask the parent to paste large
   file trees — the parent decides whether the task belongs to another role.
-- Egress is an allowlist: the model provider plus `api.openai.com` (web search /
-  fetch). A `fetch_content` call to any other non-allowlisted host fails at the
-  proxy — that is the sandbox policy, not a transient error. Report the blocked
-  URL instead of retrying it or substituting a source you could not read.
+- Egress is an allowlist: the model provider, `api.openai.com` (web search /
+  fetch), and `context7.com` (library docs). A `fetch_content` call to any other
+  non-allowlisted host fails at the proxy — that is the sandbox policy, not a
+  transient error. Report the blocked URL instead of retrying it or substituting
+  a source you could not read.
+- Which tools actually work here:
+  - `resolve-library-id` and `query-docs` work: `context7.com` is on the egress
+    allowlist and the `CONTEXT7_API_KEY` sentinel is injected into the VM by the
+    sbx host proxy.
+  - `web_search` and `fetch_content` of allowlisted hosts depend on the
+    **host-side** web-search secret being configured (`OPENAI_API_KEY` for the
+    baked `{"provider":"openai"}` web-search config). Until that secret exists
+    on the host, they fail closed: the proxy has no key to inject. In that state
+    report the tool as **blocked** — say what you needed and stop; retrying the
+    same call only burns turns, and no local workaround exists (there is no
+    filesystem, and no other web path is on the allowlist).

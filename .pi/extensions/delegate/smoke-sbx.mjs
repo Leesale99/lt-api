@@ -25,6 +25,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  SANDBOX_CONTEXT7_SECRET_SENTINEL_ENV,
   SANDBOX_CREATE_AGENT,
   SANDBOX_DEFAULT_CPUS,
   SANDBOX_DEFAULT_MEMORY,
@@ -270,18 +271,28 @@ await check("profileForRole: scout is scratch RW + worktree :ro with NO task egr
   assert.equal(librarian.memory, SANDBOX_LIGHT_MEMORY);
 });
 
-await check("profileForRole: researcher is a MOUNTLESS sandbox (provider + api.openai.com, OPENAI_API_KEY sentinel)", async () => {
+await check("profileForRole: researcher is a MOUNTLESS sandbox (provider + api.openai.com + context7.com, OPENAI/CONTEXT7 sentinels)", async () => {
   const researcher = profileForRole("researcher");
   // The one un-sandboxed role is gone: it now runs in a VM with no workspace.
   assert.equal(researcher.hostPassthrough, false);
   assert.equal(isHostPassthroughRole("researcher"), false);
   assert.deepEqual(researcher.mounts, [], "genuinely mountless: no worktree, no vault, no scratch");
   assert.deepEqual(researcher.networkHosts, [...SANDBOX_RESEARCHER_EGRESS_HOSTS]);
-  assert.deepEqual(researcher.networkHosts, ["opencode.ai:443", "*.opencode.ai:443", "api.openai.com:443"]);
-  // Web search = openai provider; the key rides the custom-secret sentinel
-  // (the VM only ever sees the sbx-cs- placeholder), never an -e value.
-  assert.deepEqual(researcher.secretSentinelEnvs, ["OPENAI_API_KEY"]);
+  // Four egress hosts, one per capability the TOOLSET needs: the model
+  // provider (+ its wildcard), web search (api.openai.com, pi-web-access), and
+  // docs lookup (context7.com, @upstash/context7-pi).
+  assert.deepEqual(researcher.networkHosts, [
+    "opencode.ai:443",
+    "*.opencode.ai:443",
+    "api.openai.com:443",
+    "context7.com:443",
+  ]);
+  assert.equal(researcher.networkHosts.length, 4);
+  // Each backend key rides the custom-secret sentinel (the VM only ever sees the
+  // sbx-cs- placeholder), never an -e value.
+  assert.deepEqual(researcher.secretSentinelEnvs, ["OPENAI_API_KEY", "CONTEXT7_API_KEY"]);
   assert.equal(SANDBOX_OPENAI_SECRET_SENTINEL_ENV, "OPENAI_API_KEY");
+  assert.equal(SANDBOX_CONTEXT7_SECRET_SENTINEL_ENV, "CONTEXT7_API_KEY");
   assert.deepEqual(profileDenyHosts(researcher), []);
   assert.equal(researcher.cpus, SANDBOX_LIGHT_CPUS);
   assert.equal(researcher.memory, SANDBOX_LIGHT_MEMORY);
@@ -624,6 +635,7 @@ await check("createWorkerSandbox: researcher is created MOUNTLESS with provider 
   assert.equal(handle.hasWorkspace, false, "no workspace mount at all");
   assert.equal(handle.scratchPath, undefined, "a mountless profile needs no scratch primary");
   assert.equal(handle.networkHosts.includes("api.openai.com:443"), true);
+  assert.equal(handle.networkHosts.includes("context7.com:443"), true);
   assert.equal(stub.calls.length, 2, "create + one policy allow");
   // No workspace positional anywhere in the create argv: the repo path the
   // caller passed is used for nothing (there is nothing to mount).

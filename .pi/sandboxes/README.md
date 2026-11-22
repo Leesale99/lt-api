@@ -24,7 +24,7 @@ worktree mount, egress rules, the model key — is attached when a sandbox is
 │   ├── pi-worker.dockerfile   the recipe: FROM shell-docker, ENV, RUN go/npm, COPY pi config
 │   └── files/
 │       ├── models.json        opencode-go provider catalog (COPY'd into the image)
-│       ├── settings.json      pi defaults (COPY'd into the image)
+│       ├── settings.json      pi defaults + the npm extension packages pi loads (COPY'd)
 │       └── web-search.json    web-search provider for the researcher (COPY'd into the image)
 ├── build.sh                   the build pipeline (validate → build → warm → snapshot → prove → clean)
 ├── README.md                  this file
@@ -39,7 +39,8 @@ worktree mount, egress rules, the model key — is attached when a sandbox is
 | Go | `1.27.1` at `/usr/local/go`, symlinked to `/usr/local/bin/go` and `gofmt` (`ARG GO_VERSION`) |
 | pi | `@earendil-works/pi-coding-agent@1.6.0`, global npm install (`ARG PI_VERSION`) |
 | image env | `GOTOOLCHAIN=local`, `GOPROXY=https://proxy.golang.org`, `GOSUMDB=sum.golang.org`, `PI_AGENT_HOME=/home/agent/.pi/agent` (`ENV`) — plus the same three Go values in `/home/agent/.config/go/env` |
-| pi config | `/home/agent/.pi/agent/models.json` (opencode-go provider catalog) + `settings.json` (default `opencode-go` / `glm-5.3` / thinking `high`) + `web-search.json` (`{"provider":"openai"}`, the mountless researcher's web-search backend), all `COPY --chown=1000:1000` |
+| pi config | `/home/agent/.pi/agent/models.json` (opencode-go provider catalog) + `settings.json` (default `opencode-go` / `glm-5.3` / thinking `high`, plus the `packages` list below) + `web-search.json` (`{"provider":"openai"}`, the mountless researcher's web-search backend), all `COPY --chown=1000:1000` |
+| pi extension packages | `/home/agent/.pi/agent/npm/` — an npm project (`{"name":"pi-extensions","private":true,"dependencies":{…}}`, **exact** pins) with `node_modules` pre-installed at build time: `pi-web-access@0.48.0` (`web_search`, `fetch_content`, `source_check`, `get_search_content`) and `@upstash/context7-pi@0.1.3` (`resolve-library-id`, `query-docs`). `settings.json` declares them as `npm:pi-web-access` / `npm:@upstash/context7-pi` (name only — the image owns the version), so pi loads the baked copy instead of reinstalling: pi only reinstalls a package whose installed version fails the configured range, and an unversioned entry accepts any installed version. |
 | Go module cache | `/home/agent/go/pkg/mod`, ~132 MB / 45 module zips (this repo's `go.mod` graph) |
 | template tag | `pi-worker:v1` |
 
@@ -62,7 +63,7 @@ VM).
 | `general` | worktree `rw` | same four as `worker` | `OPENCODE_GO_API_KEY` | 4 | 8g |
 | `scout` | scratch `rw` + worktree `ro` | `opencode.ai` (model only) | — | 2 | 4g |
 | `librarian` | vault `rw` + worktree `ro` | `opencode.ai` (model only) | — | 2 | 4g |
-| `researcher` | **none (mountless)** | `opencode.ai`, `*.opencode.ai`, `api.openai.com` (:443) | `OPENAI_API_KEY` | 2 | 4g |
+| `researcher` | **none (mountless)** | `opencode.ai`, `*.opencode.ai`, `api.openai.com`, `context7.com` (:443) | `OPENAI_API_KEY`, `CONTEXT7_API_KEY` | 2 | 4g |
 
 Read-only/mountless roles (scout, librarian, researcher) are model-call-bound,
 not build-bound, hence 2 CPU / 4g; worker and general are the roles that run Go
@@ -70,11 +71,20 @@ builds and gates and keep 4 CPU / 8g.
 
 The **researcher is sandboxed and genuinely mountless**: `sbx create` gets zero
 workspace positionals, so the VM has no copy of the repo, the vault, or the
-host. Its whole work surface is the network — the model provider plus pi's
-web-search backend — which is why its agent frontmatter drops `read` and its
+host. Its whole work surface is the network — the model provider, pi's
+web-search backend (`api.openai.com`) and the docs-lookup backend
+(`context7.com`) — which is why its agent frontmatter drops `read` and its
 prompt says a task needing repo/local access is a blocked report. Anything a
 `fetch_content` call reaches for outside that allowlist is denied by the
 default-deny proxy.
+
+Its **toolset comes from the image, not from pi's core binary**: `web_search`,
+`fetch_content`, `source_check` and `get_search_content` are `pi-web-access`
+resources, and `resolve-library-id`/`query-docs` are `@upstash/context7-pi`
+resources (see “pi extension packages” above). A kit that ships pi without those
+two packages gives the researcher a frontmatter naming tools that do not exist —
+the host only has them because its own `settings.json` declares the same npm
+packages.
 
 Two fail-closed details of the spawn path:
 
@@ -90,10 +100,11 @@ Two fail-closed details of the spawn path:
 
 ### Host-side secret setup (once per host)
 
-Both keys are **custom secrets**: the value stays in the host secret store, the
-VM only ever sees a `sbx-cs-` placeholder in the env var, and the sbx proxy
-substitutes the real value in the HTTP header on requests to the allowed hosts.
-Never pass a real key through `-e`, an image `COPY`, or a file in the VM.
+Both keys that need setup are **custom secrets**: the value stays in the host
+secret store, the VM only ever sees a `sbx-cs-` placeholder in the env var, and
+the sbx proxy substitutes the real value in the HTTP header on requests to the
+allowed hosts. Never pass a real key through `-e`, an image `COPY`, or a file in
+the VM.
 
 ```sh
 # 1. model key — every role that runs pi (worker/general/scout/librarian/researcher)
@@ -101,11 +112,28 @@ printf '%s' "$OPENCODE_GO_API_KEY" | sbx secret set-custom \
     --host opencode.ai --host '**.opencode.ai' \
     --env OPENCODE_GO_API_KEY --value-stdin
 
-# 2. web-search key — researcher only (web-search.json → {"provider":"openai"})
+# 2. web-search key — researcher only (web-search.json → {"provider":"openai"}).
+#    PENDING a human decision: which key/provider to standardise on. Until it
+#    exists, web_search fails closed (see below).
 printf '%s' "$OPENAI_API_KEY" | sbx secret set-custom \
     --host api.openai.com \
     --env OPENAI_API_KEY --value-stdin
 ```
+
+**`CONTEXT7_API_KEY` needs NO setup.** A *global* custom secret targeting
+`context7.com` already exists on this host (verified live: the placeholder env
+auto-injects into every VM), so `resolve-library-id` / `query-docs` work as soon
+as the sandbox gets its `context7.com:443` egress rule. Do not re-create it, and
+do not pass a real key with `-e`.
+
+**The web-search key is a PENDING human decision.** Which secret backs
+`pi-web-access` has not been settled: an OpenAI platform key (matching the baked
+`web-search.json` → `{"provider":"openai"}`) or a different pi-web-access
+provider entirely (which would also mean changing `web-search.json` and this
+profile's egress row). Until that choice lands and the secret is set,
+`web_search` **fails closed**: the proxy has no key to substitute for
+`api.openai.com`, so the tool errors instead of returning results. A researcher
+that needs the open web reports the block — it does not retry.
 
 The model key is the `opencode-go` key from the host's pi auth
 (`~/.pi/agent/auth.json`). `models.json` stores
@@ -115,13 +143,14 @@ key works the same way with `OPENAI_API_KEY`; `sbx secret set openai` is the
 built-in equivalent (same env var, same `api.openai.com` targets) if you prefer
 the non-experimental command.
 
-Both are **global** secrets (no `--sandbox`), so every sandbox receives the
+All are **global** secrets (no `--sandbox`), so every sandbox receives the
 placeholder. That is safe because the placeholder is useless without an allow
-rule: a role whose egress list lacks `api.openai.com` cannot send it anywhere.
-Check the injection without printing the value:
+rule: a role whose egress list lacks `api.openai.com` or `context7.com` cannot
+send it anywhere. Check the injection without printing the value:
 
 ```sh
-sbx exec <sandbox> printenv OPENAI_API_KEY | head -c 8   # sbx-cs-
+sbx exec <sandbox> printenv OPENAI_API_KEY | head -c 8    # sbx-cs-
+sbx exec <sandbox> printenv CONTEXT7_API_KEY | head -c 8  # sbx-cs-
 ```
 
 ## Rebuild
@@ -362,10 +391,10 @@ capabilities:
    `sum.golang.org`), and Go tooling artefacts (`storage.googleapis.com`). The
    other roles get narrower or different lists from that same table (scout and
    librarian: model provider only; researcher: model provider plus
-   `api.openai.com`) — the table is authoritative, this snippet is one row. If
-   the policy fails to apply, the extension tears the VM down and fails loudly —
-   a VM without its declared egress is useless, a VM with undeclared egress is
-   dangerous.
+   `api.openai.com` and `context7.com`) — the table is authoritative, this
+   snippet is one row. If the policy fails to apply, the extension tears the VM
+   down and fails loudly — a VM without its declared egress is useless, a VM
+   with undeclared egress is dangerous.
 
 The reason for the split: baking the runtime list into every task VM would grant
 each of them npm and toolchain-download reach they never need. Per-sandbox

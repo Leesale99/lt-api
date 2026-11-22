@@ -80,6 +80,50 @@ RUN set -eu; \
     npm cache clean --force >/dev/null 2>&1 || true; \
     pi --version
 
+# pi EXTENSION packages, baked. The mountless researcher is the only role whose
+# tools live outside the pi core binary: `web_search`/`fetch_content`/
+# `source_check`/`get_search_content` come from `pi-web-access`, and
+# `resolve-library-id`/`query-docs` from `@upstash/context7-pi`. Without them the
+# sandboxed researcher starts with no web tools at all — the host only has them
+# because its own settings.json declares the same two npm packages.
+#
+# pi's own layout is reproduced exactly: `pi install npm:<pkg>` writes into
+# `<agent dir>/npm/` (`PI_AGENT_HOME=/home/agent/.pi/agent`) using an
+# npm project whose package.json is `{"name":"pi-extensions","private":true}`
+# plus a `dependencies` map, and records the declaration in settings.json (the
+# COPY below carries it). A pre-populated `node_modules` is what makes startup
+# offline-safe: pi only reinstalls a package whose installed version fails the
+# configured range, and an UNVERSIONED settings entry (`npm:pi-web-access`)
+# accepts any installed version, so a baked install is simply loaded.
+#
+# EXACT pins, no carets: the image — not the registry — decides the version, so
+# a rebuild is reproducible and this is the only place a version can move.
+# `--legacy-peer-deps --no-audit --no-fund` mirrors pi's own install argv (pi
+# supplies `@earendil-works/pi-*` as loader aliases, so resolving peers would
+# pull a physical duplicate of the host's API packages).
+#
+# Root here, then `chown -R 1000:1000`: the agent must own its own config tree,
+# and npm's cache is dropped so the image does not carry it into every snapshot.
+RUN set -eu; \
+    echo "pi-worker: baking pi extensions (pi-web-access, @upstash/context7-pi)"; \
+    mkdir -p /home/agent/.pi/agent/npm; \
+    printf '%s\n' \
+      '{' \
+      '  "name": "pi-extensions",' \
+      '  "private": true,' \
+      '  "dependencies": {' \
+      '    "@upstash/context7-pi": "0.1.3",' \
+      '    "pi-web-access": "0.48.0"' \
+      '  }' \
+      '}' > /home/agent/.pi/agent/npm/package.json; \
+    HOME=/home/agent npm install --prefix /home/agent/.pi/agent/npm \
+      --legacy-peer-deps --no-audit --no-fund; \
+    rm -rf /home/agent/.npm; \
+    chown -R 1000:1000 /home/agent/.pi; \
+    test -d /home/agent/.pi/agent/npm/node_modules/pi-web-access; \
+    test -d /home/agent/.pi/agent/npm/node_modules/@upstash/context7-pi; \
+    ls -l /home/agent/.pi/agent/npm/package.json
+
 USER agent
 
 # Write the same values into the agent's own `go env` file (/home/agent/
@@ -98,7 +142,9 @@ RUN set -eu; \
 # The agent's pi configuration, baked into the image. No secret is stored here:
 # models.json's apiKey is the `$OPENCODE_GO_API_KEY` sentinel, and the sbx host
 # proxy substitutes the real key (or a proxy placeholder) on requests to
-# opencode.ai only.
+# opencode.ai only. settings.json's `packages` list is what makes pi LOAD the
+# extension packages installed above; it names them WITHOUT a version, because
+# the image pins the version in the npm project's package.json.
 COPY --chown=1000:1000 files/models.json files/settings.json /home/agent/.pi/agent/
 
 # Web search, baked for the MOUNTLESS researcher role (the only agent whose
@@ -117,4 +163,10 @@ RUN set -eu; \
     grep -q 'glm-5.3' /home/agent/.pi/agent/settings.json; \
     grep -q 'OPENCODE_GO_API_KEY' /home/agent/.pi/agent/models.json; \
     grep -q '"provider":"openai"' /home/agent/.pi/agent/web-search.json; \
-    echo "pi-worker: baked agent config ok"
+    grep -q 'npm:pi-web-access' /home/agent/.pi/agent/settings.json; \
+    grep -q 'npm:@upstash/context7-pi' /home/agent/.pi/agent/settings.json; \
+    ls -ld /home/agent/.pi/agent/npm/node_modules/pi-web-access \
+           /home/agent/.pi/agent/npm/node_modules/@upstash/context7-pi; \
+    test -f /home/agent/.pi/agent/npm/node_modules/pi-web-access/package.json; \
+    test -f /home/agent/.pi/agent/npm/node_modules/@upstash/context7-pi/package.json; \
+    echo "pi-worker: baked agent config + extension packages ok"
