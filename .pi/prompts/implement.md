@@ -7,7 +7,7 @@ Use the subagent tool with the chain parameter to execute this workflow:
 1. First, use the "scout" agent to find all code relevant to: $@
 2. Then, use the "go-worker" agent to implement "$@" using the recon context from the previous step (use {previous} placeholder). go-worker applies changes directly and works a GREEN-first loop: RED already exists (host-authored), PROVE is not its step, and it iterates against the in-VM advisory scoped check + audit/static before reporting.
 
-Both steps run inside per-task sandboxes (worktree mounted at the same absolute path, git-less, no DSN, no host reach). RED already exists and is host-committed before this prompt runs; the worker never authors it. The host plane — not the worker — runs the authoritative gates and writes the receipts.
+Both steps run inside per-task sandboxes (worktree mounted at the same absolute path, git-less, no DSN, no host reach). RED already exists and is host-committed before this prompt runs; the worker never authors it. The host plane — the main session (persona: `.pi/agents/main.md`) and its child orchestrators, not the worker — runs the authoritative gates and writes the receipts. `WORKFLOW.md` is the policy doc: the write boundary, the gate planes, the integrity check, receipts and claims, and the RED/GREEN/PROVE ladder; sandbox profiles (mounts, egress, resources) are declared in `.pi/extensions/delegate/sbx.ts`.
 
 Fill the go-worker task text as a contract — every part, unless it truly does not apply:
 
