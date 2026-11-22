@@ -1,6 +1,15 @@
-// Standalone smoke test for the delegate extension's EXECUTION-PLANE surfaces
-// (.pi/extensions/delegate/index.ts): the pre-run policy badge, the post-run
-// instance badges / info line, and the ambient footer status text.
+// Standalone smoke test for the delegate extension's EXECUTION-PLANE surfaces:
+// the pre-run policy badge, the post-run instance badges / info line, the
+// ambient footer status text, and the transcript renderers.
+//
+// The seams (pure helpers, NOT an API) now live in the modules that own them:
+//   - ./tui/badges.ts   planeBadge, compactMountSummary, formatMountsLong,
+//                       summarizeEgress, resultPlaneBadge, planeInfoLineText
+//   - ./surfacing.ts    formatRunStatus (ambient footer text)
+//   - ./persona.ts      loadOrchestratorPrompt (driven through index.ts's real
+//                       before_agent_start registration below)
+// index.ts stays the entry point for `default` (the register function) — the
+// renderers under test are the ones it registers.
 //
 // Nothing here renders a TUI and nothing spawns a subagent: the surface under
 // test is the PURE half (badge derivation, mount/egress compaction, info-line
@@ -111,7 +120,8 @@ function piAliases(piRoot) {
   };
 }
 
-/** Load a module of this extension dir (index.ts by default; agents.ts for discovery). */
+/** Load a module of this extension dir (index.ts by default; agents.ts for discovery;
+ * "tui/badges.ts" and "surfacing.ts" for the seams above). */
 async function loadModule(entryName) {
   const entry = path.join(HERE, entryName);
   try {
@@ -143,6 +153,10 @@ async function loadModule(entryName) {
 
 const ui = await loadModule("index.ts");
 const agents = await loadModule("agents.ts");
+// The seams smoke pins, imported from the modules that own them (they are test
+// seams, not an API): badges from the TUI layer, the footer text from surfacing.
+const badges = await loadModule(path.join("tui", "badges.ts"));
+const surfacing = await loadModule("surfacing.ts");
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -162,41 +176,41 @@ const sandboxDetail = (overrides = {}) => ({
 console.log("pre-run policy badges (planeBadge)");
 
 check("worker → sandbox with a rw worktree mount", () => {
-  const badge = ui.planeBadge("worker");
+  const badge = badges.planeBadge("worker");
   assert.equal(badge.plane, "sandbox");
   assert.equal(badge.label, "[sbx wt:rw]");
   assert.equal(badge.color, "success");
 });
 
 check("general → sandbox with a rw worktree mount", () => {
-  assert.equal(ui.planeBadge("general").label, "[sbx wt:rw]");
+  assert.equal(badges.planeBadge("general").label, "[sbx wt:rw]");
 });
 
 check("scout → sandbox, read-only worktree (scratch is not advertised)", () => {
-  const badge = ui.planeBadge("scout");
+  const badge = badges.planeBadge("scout");
   assert.equal(badge.plane, "sandbox");
   assert.equal(badge.label, "[sbx wt:ro]");
 });
 
 check("librarian → sandbox, vault workspace", () => {
-  assert.equal(ui.planeBadge("librarian").label, "[sbx vault]");
+  assert.equal(badges.planeBadge("librarian").label, "[sbx vault]");
 });
 
 check("researcher → sandbox (mountless profile), not a host passthrough", () => {
-  const badge = ui.planeBadge("researcher");
+  const badge = badges.planeBadge("researcher");
   assert.equal(badge.plane, "sandbox");
   assert.equal(badge.label, "[sbx —]");
 });
 
 check("unknown role falls back to the worker profile — never host", () => {
-  const badge = ui.planeBadge("total-unknown-role");
+  const badge = badges.planeBadge("total-unknown-role");
   assert.equal(badge.plane, "sandbox");
   assert.equal(badge.label, "[sbx wt:rw]");
 });
 
 check("background single is a host-side orchestrator whatever the role", () => {
   for (const role of ["worker", "scout", "librarian", "researcher"]) {
-    const badge = ui.planeBadge(role, true);
+    const badge = badges.planeBadge(role, true);
     assert.equal(badge.plane, "host", role);
     assert.equal(badge.label, "[host]", role);
     assert.equal(badge.color, "warning", role);
@@ -205,87 +219,87 @@ check("background single is a host-side orchestrator whatever the role", () => {
 
 check("pre-run badges never synthesize a sandbox id", () => {
   for (const role of ["worker", "general", "scout", "librarian", "researcher", "mystery"]) {
-    assert.ok(!ui.planeBadge(role).label.includes("pi-"), role);
+    assert.ok(!badges.planeBadge(role).label.includes("pi-"), role);
   }
 });
 
 console.log("mount / egress compaction");
 
 check("compactMountSummary: worker/general/scout/vault/mountless", () => {
-  assert.equal(ui.compactMountSummary([mount("worktree", "rw")]), "wt:rw");
-  assert.equal(ui.compactMountSummary([mount("scratch", "rw"), mount("worktree", "ro")]), "wt:ro");
-  assert.equal(ui.compactMountSummary([mount("vault", "rw"), mount("worktree", "ro")]), "vault");
-  assert.equal(ui.compactMountSummary([]), "—");
+  assert.equal(badges.compactMountSummary([mount("worktree", "rw")]), "wt:rw");
+  assert.equal(badges.compactMountSummary([mount("scratch", "rw"), mount("worktree", "ro")]), "wt:ro");
+  assert.equal(badges.compactMountSummary([mount("vault", "rw"), mount("worktree", "ro")]), "vault");
+  assert.equal(badges.compactMountSummary([]), "—");
 });
 
 check("formatMountsLong: full list, profile order preserved", () => {
-  assert.equal(ui.formatMountsLong([]), "none");
-  assert.equal(ui.formatMountsLong([mount("worktree", "rw")]), "worktree:rw");
+  assert.equal(badges.formatMountsLong([]), "none");
+  assert.equal(badges.formatMountsLong([mount("worktree", "rw")]), "worktree:rw");
   assert.equal(
-    ui.formatMountsLong([mount("vault", "rw"), mount("worktree", "ro")]),
+    badges.formatMountsLong([mount("vault", "rw"), mount("worktree", "ro")]),
     "vault:rw+worktree:ro",
   );
   assert.equal(
-    ui.formatMountsLong([mount("scratch", "rw"), mount("worktree", "ro")]),
+    badges.formatMountsLong([mount("scratch", "rw"), mount("worktree", "ro")]),
     "scratch:rw+worktree:ro",
   );
 });
 
 check("summarizeEgress: none / short list / truncated tail count", () => {
-  assert.equal(ui.summarizeEgress([]), "none");
-  assert.equal(ui.summarizeEgress(["a:443", "b:443"]), "a:443,b:443");
-  assert.equal(ui.summarizeEgress(["a:443", "b:443", "c:443"]), "a:443,b:443,c:443");
-  assert.equal(ui.summarizeEgress(["a:443", "b:443", "c:443", "d:443"]), "a:443,b:443,c:443 +1");
-  assert.equal(ui.summarizeEgress(["a:443", "b:443", "c:443", "d:443", "e:443"]), "a:443,b:443,c:443 +2");
+  assert.equal(badges.summarizeEgress([]), "none");
+  assert.equal(badges.summarizeEgress(["a:443", "b:443"]), "a:443,b:443");
+  assert.equal(badges.summarizeEgress(["a:443", "b:443", "c:443"]), "a:443,b:443,c:443");
+  assert.equal(badges.summarizeEgress(["a:443", "b:443", "c:443", "d:443"]), "a:443,b:443,c:443 +1");
+  assert.equal(badges.summarizeEgress(["a:443", "b:443", "c:443", "d:443", "e:443"]), "a:443,b:443,c:443 +2");
 });
 
 console.log("post-run instance badges (resultPlaneBadge)");
 
 check("named sandbox → [sbx <name>] in success", () => {
-  const badge = ui.resultPlaneBadge({ sandbox: sandboxDetail() });
+  const badge = badges.resultPlaneBadge({ sandbox: sandboxDetail() });
   assert.equal(badge.plane, "sandbox");
   assert.equal(badge.label, "[sbx pi-worker-abc123-00ab]");
   assert.equal(badge.color, "success");
 });
 
 check("sandboxed role whose create failed → bare [sbx], no invented id", () => {
-  assert.equal(ui.resultPlaneBadge({ plane: "sandbox" }).label, "[sbx]");
+  assert.equal(badges.resultPlaneBadge({ plane: "sandbox" }).label, "[sbx]");
 });
 
 check("host-passthrough run → [host] in warning", () => {
-  const badge = ui.resultPlaneBadge({ plane: "host", hostCwd: "/work/tree" });
+  const badge = badges.resultPlaneBadge({ plane: "host", hostCwd: "/work/tree" });
   assert.equal(badge.plane, "host");
   assert.equal(badge.label, "[host]");
   assert.equal(badge.color, "warning");
 });
 
 check("a run that never started → no badge (no guessing)", () => {
-  assert.equal(ui.resultPlaneBadge({}), undefined);
+  assert.equal(badges.resultPlaneBadge({}), undefined);
 });
 
 console.log("expanded info line (planeInfoLineText / formatSandboxInfoLine)");
 
 check("sandbox line carries name · role · from · mounts · egress · teardown", () => {
   assert.equal(
-    ui.planeInfoLineText({ sandbox: sandboxDetail() }),
+    badges.planeInfoLineText({ sandbox: sandboxDetail() }),
     "sbx: pi-worker-abc123-00ab · role=worker · from=template · mounts=worktree:rw · egress=github.com:443,registry.npmjs.org:443,opencode.ai:443 +1 · teardown=ok",
   );
 });
 
 check("teardown=errors is surfaced; absent teardown reads pending (still live)", () => {
-  assert.match(ui.planeInfoLineText({ sandbox: sandboxDetail({ teardown: "errors" }) }), /· teardown=errors$/);
-  assert.match(ui.planeInfoLineText({ sandbox: sandboxDetail({ teardown: undefined }) }), /· teardown=pending$/);
+  assert.match(badges.planeInfoLineText({ sandbox: sandboxDetail({ teardown: "errors" }) }), /· teardown=errors$/);
+  assert.match(badges.planeInfoLineText({ sandbox: sandboxDetail({ teardown: undefined }) }), /· teardown=pending$/);
 });
 
 check("mountless sandbox reads mounts=none, egress=none", () => {
-  const line = ui.planeInfoLineText({
+  const line = badges.planeInfoLineText({
     sandbox: sandboxDetail({ role: "researcher", mounts: [], networkHosts: [] }),
   });
   assert.match(line, /role=researcher · from=template · mounts=none · egress=none · teardown=ok$/);
 });
 
 check("vault+worktree profile renders both mounts", () => {
-  const line = ui.planeInfoLineText({
+  const line = badges.planeInfoLineText({
     sandbox: sandboxDetail({
       role: "librarian",
       mounts: [mount("vault", "rw"), mount("worktree", "ro")],
@@ -295,23 +309,23 @@ check("vault+worktree profile renders both mounts", () => {
 });
 
 check("host-passthrough run renders `host: <cwd>` instead of a sandbox line", () => {
-  assert.equal(ui.planeInfoLineText({ plane: "host", hostCwd: "/work/tree" }), "host: /work/tree");
+  assert.equal(badges.planeInfoLineText({ plane: "host", hostCwd: "/work/tree" }), "host: /work/tree");
 });
 
 check("never-started run renders no info line", () => {
-  assert.equal(ui.planeInfoLineText({}), undefined);
+  assert.equal(badges.planeInfoLineText({}), undefined);
 });
 
 console.log("ambient footer status (formatRunStatus)");
 
 check("live counts render as `sbx N · host M`", () => {
-  assert.equal(ui.formatRunStatus(2, 1), "sbx 2 · host 1");
-  assert.equal(ui.formatRunStatus(1, 0), "sbx 1");
-  assert.equal(ui.formatRunStatus(0, 3), "host 3");
+  assert.equal(surfacing.formatRunStatus(2, 1), "sbx 2 · host 1");
+  assert.equal(surfacing.formatRunStatus(1, 0), "sbx 1");
+  assert.equal(surfacing.formatRunStatus(0, 3), "host 3");
 });
 
 check("no live runs clears the status (undefined)", () => {
-  assert.equal(ui.formatRunStatus(0, 0), undefined);
+  assert.equal(surfacing.formatRunStatus(0, 0), undefined);
 });
 
 console.log("renderers (real components, fake theme, no TUI)");
