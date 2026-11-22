@@ -92,7 +92,7 @@ The profile is the policy. Each role gets exactly this, and nothing else:
 | `go-worker`, `general` | worktree, RW, same absolute path | model provider endpoint + `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com` | model API key via the `sbx` sentinel |
 | `scout` | disposable scratch (rw, host temp dir) + project worktree, read-only | model provider only (opencode.ai:443, per-sandbox allow) | none |
 | `librarian` | vault `~/Projects/vaults/lt-api` RW + project repo read-only | model provider only (opencode.ai:443, per-sandbox allow) | none |
-| `researcher` | none (mountless) | model provider + `api.openai.com:443` (web search) | model key + `OPENAI_API_KEY` via the `sbx` sentinel |
+| `researcher` | none (mountless) | model provider + `context7.com:443` + the host codex-search relay (`localhost:8787`) | model key + `CONTEXT7_API_KEY` via the `sbx` sentinel |
 
 No DB: no `LT_API_TEST_DSN` is exported into any sandbox, so `make audit` and `make prove` cannot run there
 even if someone types them. A worker that needs a host, a dependency outside its egress allowlist, or the
@@ -157,12 +157,12 @@ are hard fails and cannot be waived; UNVALIDATABLE is reported and stops for hum
 
 These are documented limitations, not hidden ones:
 
-- **The researcher is sandboxed but key-gated.** Its mountless profile is built: no repo or host
-  filesystem view, egress to the model provider and `api.openai.com` only, and the web-search key reaches
-  the proxy through the `sbx` custom-secret placeholder (never the VM). Until the host-side
-  `sbx secret set-custom --host api.openai.com --env OPENAI_API_KEY` secret exists, web search fails closed
-  at the proxy — a blocked report, not host reach. No role uses host passthrough today; the mechanism
-  remains for future roles.
+- **The researcher is sandboxed; web search rides a host relay.** Its mountless profile gives no repo or
+  host filesystem view; egress is the model provider, `context7.com`, and the host codex-search relay
+  (`localhost:8787`) — the only thing allowed to talk to `chatgpt.com`. The ChatGPT/codex OAuth stays
+  host-side in the relay; no OpenAI credential ever enters a VM. While the relay is down or the codex token
+  is expired, web search fails closed (503) — a blocked report, not host reach. No role uses host passthrough
+  today; the mechanism remains for future roles.
 - **The librarian has the vault read-write.** The vault is not a git repo under this policy, so no integrity
   check covers it; a librarian mistake in the vault is caught by the human, not by a gate.
 - **Hard links can cross out of a mount** on the same filesystem. A link created inside the worktree can
