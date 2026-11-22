@@ -1,0 +1,176 @@
+# cmd/spec/testdata/legacy-rules.yaml — a synthetic OLD-format catalog
+# (docs/spec/rules.yaml: one flat sequence, `scope:`, prose markers inside a
+# folded `notes:` block) for the `spec migrate` round-trip tests.
+#
+# It is deliberately NOT a valid catalog for `spec check`: it exists to pin the
+# old→new transformation and the new file format's strictness, and it never has
+# to satisfy the policies (no site, pointer or feature file is created for it).
+# Between them these five rules cover: a Tie marker mid-prose, a stale-pointer
+# marker, both markers in one rule (with the marker inside a parenthetical), a
+# rule whose whole notes prose is a stale-pointer (empty body), a rule with no
+# notes at all, null and set `scope:`, scalar and list `constraint:`, a refusal
+# with `http:`, `pinned_by` on a defense-in-depth copy, a non-nil empty
+# verification list, and every `status:` value.
+
+- id: R-KERNEL-001
+  title: A command carries one usable key
+  statement: |
+    Every command that promises retry safety arrives with exactly one key, and a
+    request without one is refused as a malformed request.
+  module: kernel
+  entity: idempotency_key
+  category: interface
+  status: implemented
+  authority: handler
+  mechanism: null
+  scope: row-local
+  enforcement:
+    - site: internal/kernel/thing/thing.go::Do
+      layer: validator
+      role: authoritative
+      pinned_by: null
+    - site: internal/kernel/thing/other.go::Other
+      layer: repository
+      role: defense-in-depth
+      pinned_by: tieFixture
+  refusal:
+    code: synthetic
+    constraint: idempotency_keys_key_check
+    sentinel: null
+    http: 422
+  fixture: null
+  verification:
+    unit:
+      - internal/kernel/thing/thing_test.go::TestDo
+    e2e: []
+    gherkin: []
+  expert-ref: null
+  knowledge-ref: docs/league-tokens-learning-phases/phase-03.md
+  notes: >
+    The validator is the authority and the table's CHECK is its path-independent
+    backstop. Tie: the copy fails loudly — a key the validator accepts but the
+    table refuses makes the command's transaction fail. Coverage gap: nothing
+    asserts the 255-byte bound through a direct write.
+
+- id: R-KERNEL-002
+  title: A retired pointer names a symbol that no longer exists
+  statement: |
+    A change-detector comment must name a symbol the tree still has, so a reader
+    who follows it lands on code rather than a tombstone.
+  module: kernel
+  entity: comment
+  category: persistence-fact
+  status: specified-only
+  authority: repository
+  mechanism: null
+  scope: null
+  enforcement: []
+  refusal:
+    code: "23514"
+    constraint:
+      - rides_money_state_coupling
+      - idempotency_keys_key_check
+    sentinel: ErrInvalidTransition
+    http: 409
+  fixture: null
+  verification:
+    unit: []
+    e2e: []
+    gherkin: []
+  expert-ref: docs/league-tokens-learning-phases/phase-04-concurrency-and-idempotency.md
+  knowledge-ref: null
+  notes: >
+    stale-pointer: the comment names a symbol that no longer exists. Second
+    finding: the same comment names a path the refactor deleted.
+
+- id: R-GAME-001
+  title: An arrival claims the ride before it settles it
+  statement: |
+    An arrival claims the ride's from-state before settling it, so two deliveries
+    cannot both settle the same ride.
+  module: game
+  entity: ride
+  category: orchestration
+  status: drifted
+  authority: service
+  mechanism: null
+  scope: cross-row
+  enforcement:
+    - site: internal/game/internal/core/service/settlement.go::settle
+      layer: service
+      role: authoritative
+      pinned_by: null
+  refusal:
+    code: synthetic
+    constraint: null
+    sentinel: ErrEditConflict
+    http: 409
+  fixture: null
+  verification:
+    unit:
+      - internal/kernel/thing/thing_test.go::TestDo
+    e2e: null
+    gherkin: null
+  expert-ref: null
+  knowledge-ref: null
+  notes: >
+    Authority is the service, deviating from the invariant default: the verdict
+    belongs to the use case. (Tie: the copies fail loudly — TestGameGate pins a
+    refused arrival), and the gate cannot vanish. stale-pointer: the migration
+    header still names the handler the refactor deleted.
+
+- id: R-GAME-002
+  title: The domain is the only writer of the ride state
+  statement: |
+    Only the domain writes the ride state; every other site is a copy that fails
+    loudly rather than drifting silently.
+  module: game
+  entity: ride
+  category: invariant
+  status: implemented
+  authority: domain
+  mechanism: null
+  scope: null
+  enforcement: []
+  refusal: null
+  fixture: null
+  verification:
+    unit: []
+    e2e: []
+    gherkin: []
+  expert-ref: null
+  knowledge-ref: null
+  notes: >
+    The domain is the only writer. Tie: dropping the guard lets a stale claim
+    through. The read path is advisory. Tie: the read's refusal keeps the field
+    shape, so a client never sees an existence bit.
+
+- id: R-IDENTITY-001
+  title: A token is stored as a digest, never as plaintext
+  statement: |
+    A token is stored as the digest of what was handed out, so a reader of the
+    table cannot turn a row back into a usable credential.
+  module: identity
+  entity: user_token
+  category: invariant
+  status: implemented
+  authority: database
+  mechanism: constraint
+  scope: row-local
+  enforcement:
+    - site: migrations/000002_create_identity.up.sql
+      layer: db-constraint
+      role: authoritative
+      pinned_by: null
+  refusal:
+    code: "23505"
+    constraint: user_tokens_pkey
+    sentinel: null
+    http: 409
+  fixture: null
+  verification:
+    unit: []
+    e2e: []
+    gherkin: []
+  expert-ref: null
+  knowledge-ref: null
