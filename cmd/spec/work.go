@@ -2,10 +2,8 @@ package main
 
 // work.go is the one work command: `spec work` prints the work queue, `spec
 // work <ID>` the per-rule work order (the overlay), and `spec work --module <m>`
-// the queue narrowed to one module. It merges the retired `spec queue` and
-// `spec brief` (phase 05.7 B2.3, plan decision 10): one command, one reading
-// aid, so an agent never has to know which of two near-identical views to ask
-// for.
+// the queue narrowed to one module. One command, one reading aid, so an agent
+// never has to know which of two near-identical views to ask for.
 //
 // The queue answers "what should an agent pick up next?" without running the
 // checker. It reads the catalog and the feature tree only — the same pointers

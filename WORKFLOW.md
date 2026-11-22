@@ -114,7 +114,7 @@ the tool result. The normalized valid scope is exported to the worker as `PI_DEL
 
 ## The worker loop: RED is host-authored, GREEN is the loop, PROVE is at merge-back
 
-RED is authored on the host plane BEFORE a task begins: the catalog entry and its `@rule:` scenario are
+RED is authored on the host plane BEFORE a task begins: the rule file under `docs/spec/rules/` and its `@rule:` scenario are
 written and committed on the delegate branch, and the batch is shown red for the right reason there. The
 worker never authors RED. Its loop is GREEN-first: implement to green, iterate against the advisory in-VM
 scoped check and `make audit/static` (`make spec/gen` first when the catalog changed, since the freshness diff

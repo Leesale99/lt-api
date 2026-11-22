@@ -81,3 +81,4 @@ The earlier note (kept for the record): a session started before B3 runs the old
 - `docs/league-tokens-learning-phases/phase-06-ledger-and-accounting.md:171` still names `rules.yaml` — update when Phase 06 starts so R-LEDGER-001..007 land in the per-file format guidance.
 - Cosmetic carryover into B2: `brief.go` labels the write-scope row `| scope |` — fix during the `spec work` rewrite.
 - Expected one-time noise (decision 12): next reconciliation pass reports today's v1 receipts as superseded. Do not "fix" it.
+- Flagged at C landing (2026-11-22): `make audit/static`'s gofmt step passes vacuously in a git-less worktree (`git ls-files` fails → empty substitution). Worth a Makefile guard; deferred deliberately — `Makefile` is a gate path, so it is a policy-owner change, not a drive-by.
