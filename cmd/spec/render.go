@@ -5,7 +5,7 @@ package main
 // pointer display form (displayPath), the quote-line escape and its list-marker
 // pattern, the one-trailing-newline finish (finishMarkdown), and the catalog
 // orderings plus the frozen module enumeration (moduleEnum, catalogModules).
-// gen, brief, queue and check all render from here, so an artifact stays
+// gen, work and check all render from here, so an artifact stays
 // byte-identical whichever command wrote it.
 
 import (

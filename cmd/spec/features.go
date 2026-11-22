@@ -3,7 +3,7 @@ package main
 // features.go owns the ONE parse of the executable specification's feature tree:
 // the scenario references, the per-file and per-rule index, and the pointer
 // forms the catalog addresses scenarios by. gherkin.go keeps the gherkin policies
-// (10-gherkin, 12-features) that consume this index; check, brief, queue, prove
+// (10-gherkin, 12-features) that consume this index; check, work, prove
 // and oracle all read the same parse through it, so two commands can never
 // disagree about which scenario exists.
 

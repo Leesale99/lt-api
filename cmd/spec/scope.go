@@ -102,8 +102,8 @@ func ParseEnv(value string) (Scope, bool) {
 
 // ParseCLI parses the --module/--rule flag pair every scoped command accepts.
 // The error text is the message after the command's "spec <cmd>: " prefix; each
-// command keeps its own exit status for a bad flag (check and queue use 2, brief
-// 1). Nothing catalog-dependent is resolved here: see Resolve.
+// command keeps its own exit status for a bad flag (check and work use 2).
+// Nothing catalog-dependent is resolved here: see Resolve.
 func ParseCLI(module, ruleID string) (Scope, error) {
 	switch {
 	case module != "" && ruleID != "":
@@ -185,7 +185,7 @@ func (s Scope) Empty() bool {
 }
 
 // Select returns the rules the scope contains, preserving the input order — the
-// callers hand it sortedRules, so a module brief or queue stays id-ordered.
+// callers hand it sortedRules, so a module-scoped work queue stays id-ordered.
 func (s Scope) Select(rules []Rule) []Rule {
 	selected := make([]Rule, 0, len(rules))
 	for _, rule := range rules {

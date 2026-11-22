@@ -8,4 +8,4 @@
 - Rule-change protocol: see `docs/spec/README.md` §2 — change the rule's file and its scenario first, audit red, implement, `make spec/gen`, audit green. Nothing lands without the gate.
 - `make audit` is the single source of truth: a stale `business-rules.md` fails it, and `spec/check` runs `--strict`, so any policy error fails it too.
 - `make audit` (the full gate) needs `LT_API_TEST_DSN` — `make db/up` starts Postgres; `make audit/static` is the DB-free half.
-- Rule → `spec brief` → gates flow for delegated work: `docs/spec/README.md` §5.
+- Rule → `spec work` → gates flow for delegated work: `docs/spec/README.md` §5.

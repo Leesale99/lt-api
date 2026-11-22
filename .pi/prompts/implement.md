@@ -11,7 +11,7 @@ Both steps run inside per-task sandboxes (worktree mounted at the same absolute 
 
 Fill the go-worker task text as a contract — every part, unless it truly does not apply:
 
-1. **Brief** — paste the output of `go run ./cmd/spec brief R-XXX-NNN` (or `--module <m>`) for the rule(s): statement, sites, refusal map, verification pointers, linked scenarios.
+1. **Work order** — paste the output of `go run ./cmd/spec work R-XXX-NNN` for the rule(s): sites with a resolution column, refusal map, verification pointers, linked scenarios, gate. (`go run ./cmd/spec work` alone is the work queue; `--module <m>` narrows it.) The statement and notes live in the rule file — point the worker at `docs/spec/rules/<module>/<ID>.md`.
 2. **Rule IDs + scope line** — the ids, plus exactly one machine-readable line, verbatim in the task text:
    `SPEC-SCOPE: rules=R-XXX-NNN,R-YYY-NNN` and/or `SPEC-SCOPE: module=<m>`
    The delegate extension parses that line out of the task text and scopes the worker's in-VM advisory gates to it; a worker without it gates on the full spec check.

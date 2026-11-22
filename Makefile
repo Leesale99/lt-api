@@ -171,15 +171,13 @@ spec/gen:
 spec/check:
 	go run ./cmd/spec check --strict
 
-## spec/brief args=R-XXX-NNN: print a Markdown work order for one rule (or args='--module game')
-.PHONY: spec/brief
-spec/brief:
-	go run ./cmd/spec brief $(args)
-
-## spec/queue: print the read-only work queue (drifted → specified-only → broken pointer); args='--json' or args='--module game'
-.PHONY: spec/queue
-spec/queue:
-	go run ./cmd/spec queue $(args)
+## spec/work: print the work queue in priority order (drifted → specified-only → broken pointer).
+## args='R-XXX-NNN' prints one rule's work order instead (the overlay: resolved sites and
+## verification pointers, refusal map, linked scenarios, gate); args='--module game' scopes it.
+## It is a reading aid, never a verdict: the rules and their scenarios are the source of truth.
+.PHONY: spec/work
+spec/work:
+	go run ./cmd/spec work $(args)
 
 ## spec/diff: fail if the generated dashboard is stale (wired into `make audit`)
 .PHONY: spec/diff

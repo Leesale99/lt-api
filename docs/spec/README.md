@@ -125,9 +125,9 @@ Every `cmd/spec` subcommand takes `--rules`, which defaults to `docs/spec/rules`
 catalog directory); the targets below are thin `go run ./cmd/spec …` wrappers, so
 `go run ./cmd/spec gen --rules docs/spec/rules --out docs/spec/business-rules.md` and
 `make spec/gen` are the same run. Scoping: `check` takes `--module <m>` and
-`--rule <id>`; `brief` takes one rule id as a positional argument or `--module <m>`;
-`queue` takes `--module <m>` and `--json`; `prove` takes `--rule <id>`, `--all` and
-`--base <git-ref>`.
+`--rule <id>`; `work` takes an optional rule id as a positional argument (one rule's
+work order) or `--module <m>` (the queue narrowed to one module); `prove` takes
+`--rule <id>`, `--all` and `--base <git-ref>`.
 
 | target | what it does |
 |---|---|
@@ -135,8 +135,8 @@ catalog directory); the targets below are thin `go run ./cmd/spec …` wrappers,
 | `make spec/check` | validate schema policies + catalog/feature traceability; runs `--strict`, so any check error fails the target (and therefore `make audit`) |
 | `make spec/diff` | fail if the generated dashboard is stale (wired into `make audit`) |
 | `make prove args='--rule R-GAME-001'` | run the DB-backed mutant registry for the rules a change touches (or `args='--all'`, the default with no args) — not part of `make audit`; needs `LT_API_TEST_DSN` |
-| `make spec/brief args='R-GAME-001'` | print a Markdown work order for one rule — statement, sites, refusal map, fixture, resolved verification pointers, linked scenarios, gate — or `args='--module game'` for every rule of one module |
-| `make spec/queue` | print the read-only work queue in priority order — drifted, specified-only, then implemented rules with an enforcement site or verification pointer that does not resolve today — as Markdown, or `args='--json'` for task packets; `args='--module game'` scopes it |
+| `make spec/work` | print the work queue in priority order — drifted, specified-only, then implemented rules with an enforcement site or verification pointer that does not resolve today; `args='--module game'` narrows it to one module |
+| `make spec/work args='R-GAME-001'` | print one rule's work order — the overlay only, since the statement and the notes body live in `docs/spec/rules/<module>/<ID>.md`: field table, sites with a resolution column, refusal map, fixture, resolved verification pointers, linked scenarios, gate |
 | `make db/up` | start the compose test database (CI's postgres:18 service container) and wait until its healthcheck passes |
 | `make db/down` | stop it; the named volume survives; `docker compose down -v` drops the base database too |
 | `make test/spec` | run the godog scenarios against real Postgres; fails without LT_API_TEST_DSN (bring it up with make db/up); AUDIT_SKIP_DB=1 turns that into a loud skip |
@@ -163,10 +163,10 @@ them directly (the writer's parse/render fidelity is pinned by
 
 ## 4. Agent quickstart
 
-**Turn-start ritual.** Before picking anything up, run `make spec/queue` and take the
+**Turn-start ritual.** Before picking anything up, run `make spec/work` and take the
 top row — drifted rules first, then specified-only ones, then implemented rules whose
-enforcement site or verification pointer does not resolve today. Run that row's
-`brief_cmd` (`make spec/brief args='<id>'`) and use the brief as the task packet; add
+enforcement site or verification pointer does not resolve today. Run
+`make spec/work args='<id>'` and use that work order as the task packet; add
 the matching `SPEC-SCOPE:` line from §5 so the worker's gates stay scoped. The queue
 is a cheap triage view, not a verdict: policies 13, 15 and 18 still only run in
 `make spec/check`.
@@ -245,7 +245,7 @@ these runs is **advisory** — it shortens the loop, it does not certify it. Bud
 3 attempts per phase, then a stop and a report; never a silent retry.
 
 Handoff mechanics that still apply, from `.pi/prompts/implement.md`: paste
-`make spec/brief args='<id>'` output as the task packet (statement, sites, refusal
+`make spec/work args='<id>'` output as the task packet (sites, refusal
 map, verification pointers, linked scenarios); carry exactly one machine-readable
 `SPEC-SCOPE: module=<m>` or `SPEC-SCOPE: rules=R-...,R-...` line — the host
 extension parses it to scope the worker's advisory gates, and without it they fall

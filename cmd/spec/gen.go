@@ -143,7 +143,7 @@ func writeDashboard(b *strings.Builder, rules []Rule, rulesPath, outPath string)
 	}
 
 	fmt.Fprintf(b, "## Dashboard\n\n**%d rules** across %d modules — %s.\n\n",
-		len(rules), len(modules), briefStatusCounts(rules))
+		len(rules), len(modules), ruleStatusCounts(rules))
 	writeCountTable(b, "By status", "Status", statuses, len(rules))
 	writeCountTable(b, "By module", "Module", modules, len(rules))
 
@@ -179,15 +179,9 @@ func writeCountTable(b *strings.Builder, heading, column string, counts map[stri
 	fmt.Fprintf(b, "| **total** | **%d** |\n\n", total)
 }
 
-// writeNotes renders a rule's notes as a block quote.
-func writeNotes(b *strings.Builder, notes string) {
-	writeLabeledNote(b, "Notes", notes)
-}
-
 // writeStructuredNotes renders the two note fields that were in-prose markers in
-// the retired catalog. A caller that already rendered the Notes body (a brief's
-// authority-deviation reason, for one) calls this alone, so nothing is lost and
-// nothing is printed twice.
+// the retired catalog. The free-form Notes body is not printed: it lives in the
+// rule file, and `spec work <ID>` links there instead of copying it.
 func writeStructuredNotes(b *strings.Builder, rule Rule) {
 	if rule.StalePointer != nil {
 		writeLabeledNote(b, "Stale pointer", *rule.StalePointer)

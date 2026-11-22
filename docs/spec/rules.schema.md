@@ -157,7 +157,8 @@ comment pointing at a deleted test, enforcement that moved away from where the d
 claim it lives — does NOT make a rule `drifted`: its content still holds. Keep `status:
 implemented` and record the rot in the rule's `stale_pointer` field (§2) — policy 5
 refuses that field on any other status. Both `drifted` rules and every `stale_pointer`
-MUST be surfaced by `spec/check` (and `spec queue`).
+MUST be surfaced by `spec/check`, which owns the verdict — `spec work` surfaces drifted
+rules as its first queue priority, but it never evaluates `stale_pointer`.
 
 Applied migrations are immutable history; when rot is caused by stale prose in an
 applied migration, the fix is the catalog (and a comment at the current site), not a
@@ -251,7 +252,7 @@ exactly **one** YAML document.
 |---|---|---|---|
 | `id` | string | yes | `R-<MODULE>-NNN`, flat per module, stable once assigned. Must equal the file's stem. Never renumber. A retired rule's file is deleted from the catalog and recorded in `rules/README.md`'s retired-ids note; its id is never reused (gate B5 — supersedes "retired rules are marked, not deleted"). |
 | `title` | string | yes | Short imperative name ("Rides are born locked"). |
-| `statement` | string (block) | yes | 1–3 sentences of business language. What the business demands, no code-speak. It is a **front-matter** field, not body prose (ADR-030: the statement stays machine-readable, so the generator and `spec brief` can print it). |
+| `statement` | string (block) | yes | 1–3 sentences of business language. What the business demands, no code-speak. It is a **front-matter** field, not body prose (ADR-030: the statement stays machine-readable — greppable and carried by the one strict-decoded document — rather than swallowed into body prose, so no generated view has to parse it back out). |
 | `module` | enum | yes | Owner context of the *rule*, not of every enforcement site. Must equal the name of the directory the file sits in (§2 loader strictness). |
 | `entity` | string | yes | Table or aggregate the rule is about (`ride`, `balance`, `journal_entry`). **Descriptive only** — no policy reads it; it exists for the work-order field table. |
 | `category` | enum | yes | §1. |
@@ -286,9 +287,9 @@ heading; `notes:` in the front matter is a hard decoding error (see below).
 Everything after the closing `---` fence is authored prose — Markdown, at the author's
 discretion. What the loader reads out of it is exactly one thing: the prose under the
 single `## Notes` heading, which becomes the rule's notes. That is the section policies
-5 and 8 look at (`drifted` ⇒ notes; `authority` ≠ category default ⇒ notes), and the
-one `spec brief` prints. Policy 7's tie is **not** read from here: it is the `tie`
-front-matter field.
+5 and 8 look at (`drifted` ⇒ notes; `authority` ≠ category default ⇒ notes); `spec work
+<ID>` points at this section rather than reprinting it. Policy 7's tie is **not** read
+from here: it is the `tie` front-matter field.
 
 - A body may carry further `##` sections; they are documentation, not machine state,
   and the loader ignores them. Notes end at the next level-2 heading.
