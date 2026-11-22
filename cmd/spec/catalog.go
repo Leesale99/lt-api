@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -14,7 +16,9 @@ import (
 
 // catalog.go owns the live catalog: one Markdown file per rule at
 // docs/spec/rules/<module>/<ID>.md, the ONE front-matter + body parser that
-// reads such a file, and the directory loader that assembles them.
+// reads such a file, the canonical writer that emits one (renderRuleFile, at the
+// end of this file — its exact inverse), and the directory loader that
+// assembles them.
 //
 // # The file format
 //
@@ -69,8 +73,8 @@ type Catalog []Rule
 // WriteScope is the former `scope:` field renamed (`write_scope:`) so it can
 // never be confused with run scoping; its values are unchanged
 // (row-local/cross-row/cross-table). StalePointer and Tie were prose notes with
-// `stale-pointer:`/`Tie:` markers in the single-file catalog and are first-class
-// fields now. Notes is not a front-matter field at all: it is the prose under the
+// `stale-pointer:`/`Tie:` markers in the retired single-file catalog and are
+// first-class fields now. Notes is not a front-matter field at all: it is the prose under the
 // body's `## Notes` heading, so its yaml tag is "-" and a `notes:` key in the
 // front matter is a strict-decoding error.
 type Rule struct {
@@ -303,9 +307,8 @@ func parseRuleFile(data []byte, name string) (Rule, error) {
 	if err := decoder.Decode(&rule); err != nil {
 		return Rule{}, fmt.Errorf("parse rule file %s: front matter: %w", name, err)
 	}
-	// The front matter is exactly one YAML document, for the same reason the
-	// retired single-file catalog was: a second `---` document would be dropped
-	// silently.
+	// The front matter is exactly one YAML document: a second `---` document
+	// would be dropped silently.
 	var extra yaml.Node
 	switch err := decoder.Decode(&extra); {
 	case errors.Is(err, io.EOF):
@@ -353,9 +356,9 @@ func notesFromBody(lines []string) (string, error) {
 }
 
 // repoRoot resolves the tree that catalog paths are relative to. The catalog
-// lives at <root>/docs/spec/rules (or the retired <root>/docs/spec/rules.yaml),
-// so its parent's parent is the root. Any other location falls back to the
-// working directory (tests exercise the docs/spec layout).
+// lives at <root>/docs/spec/rules, so its parent's parent is the root. Any other
+// location falls back to the working directory (tests exercise the docs/spec
+// layout).
 func repoRoot(rulesPath string) (string, error) {
 	abs, err := filepath.Abs(rulesPath)
 	if err != nil {
@@ -385,6 +388,188 @@ func splitPointer(pointer string) (path, symbol string, ok bool) {
 		return "", "", false
 	}
 	return path, symbol, true
+}
+
+// # The canonical writer
+//
+// renderRuleFile is the live format's ONE writer and the exact inverse of
+// parseRuleFile; it lives here because the file format is this file's subject and
+// nothing else reads or writes a rule file's bytes. No subcommand calls it (the
+// catalog is hand-authored, and the one-shot `spec migrate` command that used it
+// to write the tree is gone): its consumers are the tests — every fixture rule
+// file is written by it, and rulefile_test.go pins parse∘render fidelity over the
+// canonical catalog so the two halves can never drift.
+
+// renderRuleFile renders one rule file: the front-matter fences, the machine
+// fields, and — only when there is residual prose — a `## Notes` body. The result
+// always has exactly one trailing newline (render.go's finishMarkdown), and a rule
+// with no residual prose is front matter only.
+func renderRuleFile(rule Rule) ([]byte, error) {
+	front, err := ruleFrontMatter(rule)
+	if err != nil {
+		return nil, err
+	}
+	var b strings.Builder
+	b.WriteString(ruleFileFence)
+	b.WriteString("\n")
+	b.Write(front)
+	if !bytes.HasSuffix(front, []byte("\n")) {
+		b.WriteString("\n")
+	}
+	b.WriteString(ruleFileFence)
+	b.WriteString("\n")
+	if rule.Notes != "" {
+		b.WriteString("\n")
+		b.WriteString(ruleNotesHeading)
+		b.WriteString("\n\n")
+		b.WriteString(rule.Notes)
+		b.WriteString("\n")
+	}
+	return finishMarkdown(&b), nil
+}
+
+// ruleFrontMatter encodes the machine fields as the YAML document inside the
+// fences. Field order is fixed and every field is always emitted (null when
+// absent), so a rule file is greppable and its bytes never depend on which part
+// of the catalog the rule came from. The renderer works on yaml.Node values so
+// the emitter cannot reflow a value: prose fields are literal blocks, and null /
+// `[]` stay distinguishable (a nil slice and an empty slice are different values
+// to reflect.DeepEqual and therefore to the round-trip test).
+func ruleFrontMatter(rule Rule) ([]byte, error) {
+	root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	add := func(key string, value *yaml.Node) {
+		root.Content = append(root.Content, yamlString(key), value)
+	}
+	add("id", yamlString(rule.ID))
+	add("title", yamlString(rule.Title))
+	add("statement", yamlProse(rule.Statement))
+	add("module", yamlString(rule.Module))
+	add("entity", yamlString(rule.Entity))
+	add("category", yamlString(rule.Category))
+	add("status", yamlString(rule.Status))
+	add("authority", yamlString(rule.Authority))
+	add("mechanism", yamlStringPtr(rule.Mechanism))
+	add("write_scope", yamlStringPtr(rule.WriteScope))
+	add("enforcement", yamlEnforcementList(rule.Enforcement))
+	add("refusal", yamlRefusal(rule.Refusal))
+	add("fixture", yamlStringPtr(rule.Fixture))
+	add("verification", yamlVerification(rule.Verification))
+	add("expert-ref", yamlStringPtr(rule.ExpertRef))
+	add("knowledge-ref", yamlStringPtr(rule.KnowledgeRef))
+	add("stale_pointer", yamlProsePtr(rule.StalePointer))
+	add("tie", yamlProsePtr(rule.Tie))
+
+	var buf bytes.Buffer
+	encoder := yaml.NewEncoder(&buf)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(root); err != nil {
+		return nil, fmt.Errorf("encode front matter: %w", err)
+	}
+	if err := encoder.Close(); err != nil {
+		return nil, fmt.Errorf("close front-matter encoder: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// yamlString is a string scalar; the emitter quotes it when the value could be
+// read as another type or would change the surrounding structure.
+func yamlString(s string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s}
+}
+
+// yamlProse is a prose scalar: a literal block, so the emitter never reflows a
+// sentence across lines and the file stays byte-stable.
+func yamlProse(s string) *yaml.Node {
+	node := yamlString(s)
+	if s != "" {
+		node.Style = yaml.LiteralStyle
+	}
+	return node
+}
+
+// yamlNull is the explicit null every absent field renders as.
+func yamlNull() *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
+}
+
+func yamlStringPtr(p *string) *yaml.Node {
+	if p == nil {
+		return yamlNull()
+	}
+	return yamlString(*p)
+}
+
+func yamlProsePtr(p *string) *yaml.Node {
+	if p == nil {
+		return yamlNull()
+	}
+	return yamlProse(*p)
+}
+
+// yamlStrings renders a string list: nil is null (absent), a non-nil empty slice
+// is `[]`. The two are distinct Go values, so the round-trip test needs both.
+func yamlStrings(list []string) *yaml.Node {
+	if list == nil {
+		return yamlNull()
+	}
+	items := make([]*yaml.Node, 0, len(list))
+	for _, s := range list {
+		items = append(items, yamlString(s))
+	}
+	return &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: items}
+}
+
+func yamlEnforcementList(sites []Enforcement) *yaml.Node {
+	if sites == nil {
+		return yamlNull()
+	}
+	items := make([]*yaml.Node, 0, len(sites))
+	for _, site := range sites {
+		items = append(items, yamlMapping(
+			"site", yamlString(site.Site),
+			"layer", yamlString(site.Layer),
+			"role", yamlString(site.Role),
+			"pinned_by", yamlStringPtr(site.PinnedBy),
+		))
+	}
+	return &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: items}
+}
+
+func yamlRefusal(refusal *Refusal) *yaml.Node {
+	if refusal == nil {
+		return yamlNull()
+	}
+	var http *yaml.Node
+	if refusal.HTTP == nil {
+		http = yamlNull()
+	} else {
+		http = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.Itoa(*refusal.HTTP)}
+	}
+	return yamlMapping(
+		"code", yamlString(refusal.Code),
+		"constraint", yamlStrings(refusal.Constraint),
+		"sentinel", yamlStringPtr(refusal.Sentinel),
+		"http", http,
+	)
+}
+
+func yamlVerification(verification Verification) *yaml.Node {
+	return yamlMapping(
+		"unit", yamlStrings(verification.Unit),
+		"e2e", yamlStrings(verification.E2E),
+		"gherkin", yamlStrings(verification.Gherkin),
+	)
+}
+
+// yamlMapping builds a mapping node from alternating key/value nodes.
+func yamlMapping(pairs ...any) *yaml.Node {
+	node := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	for i := 0; i+1 < len(pairs); i += 2 {
+		key, _ := pairs[i].(string)
+		value, _ := pairs[i+1].(*yaml.Node)
+		node.Content = append(node.Content, yamlString(key), value)
+	}
+	return node
 }
 
 // sortedKeys returns map keys in ascending order for deterministic output.

@@ -10,8 +10,8 @@ The layout, the strict decoding and the ordering (module enum order, then id) ar
 documented in `cmd/spec/catalog.go`; the field schema, enums and policies live in
 `../rules.schema.md`, and the workflow in `../README.md` §2.
 
-`../business-rules.md` and `../views/*.md` are GENERATED from these files — never
-edit them. Regenerate with `go run ./cmd/spec gen` (or `make spec/gen`).
+`../business-rules.md` is GENERATED from these files — never edit it. Regenerate with
+`go run ./cmd/spec gen` (or `make spec/gen`).
 
 The retired single-file catalog grouped rules under banner comments; the module
 directories carry that grouping now:

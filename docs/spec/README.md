@@ -154,10 +154,11 @@ enforcement half; the other `go test` targets (`make test`, `make test/unit`,
 → `make test/spec` (the first run applies migrations 000001–000022 to a database it
 creates and drops itself) → `make db/down` when done.
 
-`cmd/spec` still carries the one-shot `migrate` subcommand, which converted the retired
-single-file `rules.yaml` into `rules/<module>/<ID>.md`; it is a migration artifact with
-no `make` target and no place in this workflow, and it is scheduled for removal. Author
-and edit rule files directly.
+`cmd/spec` no longer has a `migrate` subcommand: the retired single-file `rules.yaml`
+was converted once into `rules/<module>/<ID>.md`, and that one-shot converter is gone
+the way the old catalog is. The rule files are the authored format — author and edit
+them directly (the writer's parse/render fidelity is pinned by
+`cmd/spec/rulefile_test.go` against the live catalog).
 
 ## 4. Agent quickstart
 

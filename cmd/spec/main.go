@@ -19,7 +19,6 @@ Commands:
   brief  print a Markdown work order for one rule (R-XXX-NNN) or one module
   queue  print the read-only work queue: drifted, specified-only, broken-pointer rules
   prove  run the DB-backed mutant registry for the rules a change touches
-  migrate  convert the retired single-file catalog into one file per rule (docs/spec/rules/<module>/<ID>.md)
 
 Run "spec <command> -h" for the command's flags.
 `
@@ -41,8 +40,6 @@ func main() {
 		os.Exit(runQueue(os.Args[2:], os.Stdout, os.Stderr))
 	case "prove":
 		os.Exit(runProve(os.Args[2:], os.Stdout, os.Stderr))
-	case "migrate":
-		os.Exit(runMigrate(os.Args[2:], os.Stdout, os.Stderr))
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
 	default:

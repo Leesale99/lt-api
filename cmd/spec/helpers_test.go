@@ -55,8 +55,9 @@ func (r *testRepo) addFile(t *testing.T, rel, content string) {
 }
 
 // writeCatalog writes the rules as a per-rule-file catalog: one file per rule at
-// docs/spec/rules/<module>/<ID>.md, rendered by the same writer the migration
-// proved its round trip with (renderRuleFile). Fixtures are therefore
+// docs/spec/rules/<module>/<ID>.md, rendered by the canonical writer
+// (catalog.go renderRuleFile — the writer rulefile_test.go round-trips over the
+// live catalog). Fixtures are therefore
 // minimal-valid front matter plus a `## Notes` body when the rule carries one,
 // and a test that mutates a Rule writes the new format, never legacy YAML.
 func (r *testRepo) writeCatalog(t *testing.T, catalog Catalog) {

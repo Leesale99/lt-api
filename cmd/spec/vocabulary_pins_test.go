@@ -834,7 +834,7 @@ func sabotagePinnedRepo(t *testing.T, glossary, feature string) *testRepo {
 // it exists in no rule and no migration. The reality gate makes the exemption
 // conditional: an underscore-joined name is exempt from the phrase only when it
 // is REAL — a value of some rule's `refusal.constraint`, a `refusal.sentinel`
-// value in docs/spec/rules.yaml, or a literal substring of a migrations/*.sql
+// value in the rule catalog, or a literal substring of a migrations/*.sql
 // file. A fabricated name falls back to the normal phrase pass (`step uses
 // "status code"`), while the SQL half of the §8 exemption (raw SQL words in
 // sabotage steps) and the absolute transport half are unchanged.
