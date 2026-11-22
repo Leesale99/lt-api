@@ -70,9 +70,11 @@ Order: A → B1 → B2 → B3 → C. B1 deliberately precedes Phase 06 so R-LEDG
 
 All three recon defects are closed. Receipts are schema v2 (catalogHash); v1 receipts superseded — expected reconciliation noise, do not "fix".
 
-## Session restart required before further spawns
+## Session restart completed; branch strategy added (2026-11-22, user decision)
 
-A session started before B3 runs the old extension code in memory, while the checkout's WORKFLOW.md now declares `gate_file_paths` — the old `policy.ts` refuses to run gates (fail-closed, exactly as designed). Restart the session so the new extension loads, then run Phase C.
+The session was restarted after B3 (new extension code live). The whole 05.7 effort now ships as **one PR**: branch `workflow/05.7-meta-refactor` carries A+B (and later C) at the original SHAs; `main` was reset to the pre-effort baseline `8a4e35e` (back in sync with `origin/main`). After Phase C lands on the branch: push + open the PR. Phase C's merge-back target is the current checkout branch — never `main`.
+
+The earlier note (kept for the record): a session started before B3 runs the old extension code in memory, while the checkout's WORKFLOW.md declares `gate_file_paths` — the old `policy.ts` refuses to run gates (fail-closed, exactly as designed). That is why the restart was required before Phase C.
 
 ## Follow-ups flagged at B1 landing (2026-11-22, merged at `34ce993`)
 
