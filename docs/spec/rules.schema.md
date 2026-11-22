@@ -253,7 +253,7 @@ exactly **one** YAML document.
 | `title` | string | yes | Short imperative name ("Rides are born locked"). |
 | `statement` | string (block) | yes | 1–3 sentences of business language. What the business demands, no code-speak. It is a **front-matter** field, not body prose (ADR-030: the statement stays machine-readable, so the generator and `spec brief` can print it). |
 | `module` | enum | yes | Owner context of the *rule*, not of every enforcement site. Must equal the name of the directory the file sits in (§2 loader strictness). |
-| `entity` | string | yes | Table or aggregate the rule is about (`ride`, `balance`, `journal_entry`). |
+| `entity` | string | yes | Table or aggregate the rule is about (`ride`, `balance`, `journal_entry`). **Descriptive only** — no policy reads it; it exists for the work-order field table. |
 | `category` | enum | yes | §1. |
 | `status` | enum | yes | §1. |
 | `authority` | enum | yes | Exactly one. |
@@ -342,7 +342,7 @@ list is the frequency.
 ## 3. Policies (the catalog's own invariants)
 
 `cmd/spec check` verifies all of these mechanically — the policy ids below match
-`cmd/spec/check.go`.
+`cmd/spec/policies.go`.
 
 1. `id` matches `^R-[A-Z]+-\d{3}$` and is unique; per-module numbering is flat.
 2. Every rule has exactly one `category`, one `status`, one `authority`.
@@ -503,7 +503,11 @@ list is the frequency.
     (checker id `16-knowledge-ref`). It records the knowledge-base note behind the
     rule; `expert-ref` is unchanged by it, so `specified-only` rules keep their
     `expert-ref` and may add `knowledge-ref` beside it.
-
+17. `refusal`, when present, is sane (checker id `17-refusal`): `refusal.code` is
+    either the reserved word `synthetic` or a 5-character SQLSTATE, and
+    `refusal.http`, when set, is a real status (100–599). A SQLSTATE outside the
+    illustrative set above is a WARN — the mapping is the rule, the code list is
+    the frequency — so it never fails `--strict`.
 18. Scenarios must assert something an observer can see, and the assertion must
     match the rule's category (checker id `18-oracle`). It is a cross-cutting
     collector over the parsed feature tree, like policy 13:

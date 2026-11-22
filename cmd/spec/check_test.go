@@ -311,19 +311,19 @@ func TestCheckPolicyViolations(t *testing.T) {
 		{
 			name:       "refusal code not a SQLSTATE",
 			mutate:     func(r *Rule) { r.Refusal = &Refusal{Code: "nope"} },
-			wantPolicy: "refusal", wantErrors: 1,
+			wantPolicy: "17-refusal", wantErrors: 1,
 			wantMessage: "neither 'synthetic' nor a 5-character SQLSTATE",
 		},
 		{
 			name:       "refusal without code",
 			mutate:     func(r *Rule) { r.Refusal = &Refusal{} },
-			wantPolicy: "refusal", wantErrors: 1,
+			wantPolicy: "17-refusal", wantErrors: 1,
 			wantMessage: "has no code",
 		},
 		{
 			name:         "refusal outside the illustrative set warns",
 			mutate:       func(r *Rule) { r.Refusal = &Refusal{Code: "23505"} },
-			wantPolicy:   "refusal",
+			wantPolicy:   "17-refusal",
 			wantWarnings: 1,
 			wantMessage:  "outside the illustrative set",
 		},
@@ -495,7 +495,7 @@ func TestCheckRefusalWarnings(t *testing.T) {
 					errorsFound, warnings, tt.wantErrors, tt.wantWarns, describeFindings(findings))
 			}
 			if tt.wantMessage != "" {
-				group := findingsFor(findings, "refusal")
+				group := findingsFor(findings, "17-refusal")
 				if len(group) == 0 || !strings.Contains(group[0].Message, tt.wantMessage) {
 					t.Fatalf("expected a refusal finding containing %q:\n%s",
 						tt.wantMessage, describeFindings(findings))
@@ -569,7 +569,7 @@ func TestCheckExitCodes(t *testing.T) {
 		if !strings.Contains(output, "WARN **R-KERNEL-001**") {
 			t.Errorf("WARN line missing:\n%s", output)
 		}
-		if !strings.Contains(output, "| `refusal` | 0 | 1 |") {
+		if !strings.Contains(output, "| `17-refusal` | 0 | 1 |") {
 			t.Errorf("warning count missing from the summary:\n%s", output)
 		}
 	})

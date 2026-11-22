@@ -45,7 +45,8 @@ docs/spec/
   exists, in both catalog → tree and tree → catalog directions. The policies are
   `rules.schema.md` §3: enums and pointers (1–12), the step vocabulary (13), the
   category's verification/refusal binding (14), the `//rule:` annotations on Go
-  enforcement sites (15), `knowledge-ref` (16) and the scenario oracle (18). `--strict`
+  enforcement sites (15), `knowledge-ref` (16), refusal-code sanity (17) and the
+  scenario oracle (18). `--strict`
   makes any check error fatal.
 - **Enforcement suite.** `internal/spec` is a godog suite run as a plain `go test`
   against real Postgres — real migrations, role-restricted pools, the product's own

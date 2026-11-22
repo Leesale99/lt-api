@@ -38,7 +38,16 @@ const (
 func collectGherkin(catalog Catalog, root string) ([]Finding, *featureIndex) {
 	c := &checker{root: root, fixtures: map[string]bool{}}
 	index := c.indexFeatures()
+	c.checkGherkinCatalog(catalog, index)
+	sortFindings(c.findings)
+	return c.findings, index
+}
 
+// checkGherkinCatalog is the catalog-side half of the cross-validation: every
+// @rule tag resolves to a catalog rule, every scenario names exactly one, and
+// every verification.gherkin pointer resolves to a real scenario. The feature
+// tree itself (parse errors, missing tags) is indexed by indexFeatures.
+func (c *checker) checkGherkinCatalog(catalog Catalog, index *featureIndex) {
 	// (1) every @rule tag resolves to a catalog rule, and every scenario names
 	// exactly one.
 	known := make(map[string]bool, len(catalog))
@@ -87,21 +96,12 @@ func collectGherkin(catalog Catalog, root string) ([]Finding, *featureIndex) {
 			}
 		}
 	}
-
-	sortFindings(c.findings)
-	return c.findings, index
 }
 
 // printGherkinSection prints the cross-validation: the file-level coverage, the
-// per-rule scenario counts, and the findings the feature tree produced.
-func printGherkinSection(w io.Writer, index *featureIndex, findings []Finding) {
-	sectionFindings := make([]Finding, 0, len(findings))
-	for _, f := range findings {
-		if f.Policy == policyGherkinPointer || f.Policy == policyGherkinFeature {
-			sectionFindings = append(sectionFindings, f)
-		}
-	}
-
+// per-rule scenario counts, and the feature-level findings the caller selected
+// by Level. It is one report home, not a second dispatch list.
+func printGherkinSection(w io.Writer, index *featureIndex, sectionFindings []Finding) {
 	errorsFound, warnings := countFindings(sectionFindings)
 	fmt.Fprintf(w, "## gherkin — feature cross-validation (%d errors, %d warnings)\n\n",
 		errorsFound, warnings)

@@ -22,47 +22,14 @@ const (
 	// pointer honest.
 	policyCategory     = "14-category"
 	policyKnowledgeRef = "16-knowledge-ref"
+	// policyRefusal is the refusal-code sanity policy; it closes the numbered
+	// gap between 16 and 18.
+	policyRefusal = "17-refusal"
 
 	// knowledgeRefRoot is the only tree a knowledge-ref may point into: the
 	// expert documents that are the source of truth for what to build.
 	knowledgeRefRoot = "docs/league-tokens-learning-phases"
 )
-
-// policy is one numbered invariant from docs/spec/rules.schema.md §3. The
-// refusal policy carries WARN lines (the SQLSTATE set is illustrative).
-type policy struct {
-	ID    string
-	Title string
-}
-
-var policies = []policy{
-	{"1-id", "id format, uniqueness, flat per module"},
-	{"2-enums", "frozen enum membership"},
-	{"3-implemented", "implemented ⇒ sites and verification that resolve today"},
-	{"4-specified-only", "specified-only ⇒ expert-ref, no sites, no verification, no refusal"},
-	{"5-drifted", "drifted ⇒ notes; stale-pointer only on implemented rules"},
-	{"6-authority", "database ⇒ mechanism + scope; any other authority ⇒ no mechanism"},
-	{"7-copy-policy", "non-authoritative sites tied by pinned_by or a tie note"},
-	{"8-authority-default", "authority ≠ category default ⇒ notes"},
-	{"9-site-ref", "path::Symbol, never a bare path or a line number"},
-	{"10-gherkin", "verification.gherkin resolves to a real scenario"},
-	{"11-fixture", "pinned_by names a declared fixture"},
-	{"12-features", "feature files parse; every scenario names exactly one known rule"},
-	{policyVocabulary, "step text: denylisted transport tokens, SQL adjacency, and the seeded glossary"},
-	{policyCategory, "category ⇒ verification and refusal binding"},
-	{policyAnnotations, "Go enforcement sites carry //rule: annotations, and every annotation resolves"},
-	{policyKnowledgeRef, "knowledge-ref is a real path under the learning phases"},
-	{policyOracle, "scenarios assert an observable outcome, bound to their category"},
-	{"refusal", "refusal code sanity"},
-}
-
-var policyIndex = func() map[string]int {
-	m := make(map[string]int, len(policies))
-	for i, p := range policies {
-		m[p.ID] = i
-	}
-	return m
-}()
 
 // Frozen enums, docs/spec/rules.schema.md §1.
 var (
@@ -175,12 +142,11 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	findings := collectFindings(catalog, root)
-	gherkinFindings, index := collectGherkin(catalog, root)
-	findings = append(findings, gherkinFindings...)
-	findings = append(findings, collectVocabulary(catalog, root)...)
-	findings = append(findings, collectAnnotationsAgainst(catalog, root, *rulesPath)...)
-	findings = append(findings, collectOracle(catalog, root)...)
+	env := &policyEnv{catalog: catalog, root: root, rulesPath: *rulesPath}
+	var findings []Finding
+	for _, p := range policies {
+		findings = append(findings, p.Run(env)...)
+	}
 	sortFindings(findings)
 
 	if !scope.Empty() {
@@ -195,7 +161,7 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		findings = inScope
 	}
 
-	printFindings(stdout, *rulesPath, catalog, findings, index, scope.String())
+	printFindings(stdout, *rulesPath, catalog, findings, env.featureIndex(), scope.String())
 
 	errorsFound, _ := countFindings(findings)
 	if *strict && errorsFound > 0 {
@@ -204,35 +170,21 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// collectFindings runs every policy over the catalog. It is pure apart from
+// collectFindings runs the rule-level policies over the catalog. It is the
+// catalog-only half of a check (no feature, vocabulary, annotation or oracle
+// pass); runCheck dispatches the whole registry instead. It is pure apart from
 // reading the repo (files referenced by sites, tests and expert refs).
 func collectFindings(catalog Catalog, root string) []Finding {
-	c := &checker{root: root, fixtures: map[string]bool{}}
-	for _, rule := range catalog {
-		if rule.Fixture != nil && *rule.Fixture != "" {
-			c.fixtures[*rule.Fixture] = true
+	env := &policyEnv{catalog: catalog, root: root, rulesPath: filepath.Join("docs", "spec", "rules")}
+	var findings []Finding
+	for _, p := range policies {
+		if p.Level != LevelRule {
+			continue
 		}
+		findings = append(findings, p.Run(env)...)
 	}
-
-	seenIDs := map[string]bool{}
-	for _, rule := range catalog {
-		c.checkID(rule, seenIDs)
-		c.checkEnums(rule)
-		c.checkImplemented(rule)
-		c.checkSpecifiedOnly(rule)
-		c.checkDrifted(rule)
-		c.checkAuthority(rule)
-		c.checkCopyPolicy(rule)
-		c.checkAuthorityDefault(rule)
-		c.checkSiteReferences(rule)
-		c.checkCategory(rule)
-		c.checkKnowledgeRef(rule)
-		c.checkFixtureRefs(rule)
-		c.checkRefusal(rule)
-	}
-
-	sortFindings(c.findings)
-	return c.findings
+	sortFindings(findings)
+	return findings
 }
 
 // policy 1: id matches ^R-[A-Z]+-\d{3}$ and is unique (flat per module).
@@ -553,23 +505,23 @@ func (c *checker) checkRefusal(rule Rule) {
 	// independently of the code, because `synthetic` refusals (Go-only, no
 	// SQLSTATE) still name the status the caller sees.
 	if http := rule.Refusal.HTTP; http != nil && (*http < 100 || *http > 599) {
-		c.errorf("refusal", rule.ID,
+		c.errorf(policyRefusal, rule.ID,
 			"refusal http %d is outside the HTTP status range 100–599", *http)
 	}
 	code := rule.Refusal.Code
 	if code == "" {
-		c.errorf("refusal", rule.ID, "refusal has no code")
+		c.errorf(policyRefusal, rule.ID, "refusal has no code")
 		return
 	}
 	if code == syntheticCode {
 		return
 	}
 	if !sqlstatePattern.MatchString(code) {
-		c.errorf("refusal", rule.ID, "refusal code %q is neither 'synthetic' nor a 5-character SQLSTATE", code)
+		c.errorf(policyRefusal, rule.ID, "refusal code %q is neither 'synthetic' nor a 5-character SQLSTATE", code)
 		return
 	}
 	if !illustrativeSQLSTATEs[code] {
-		c.warnf("refusal", rule.ID,
+		c.warnf(policyRefusal, rule.ID,
 			"refusal code %q is outside the illustrative set {P0001, 23514, 23503, 23001}", code)
 	}
 }
@@ -706,7 +658,7 @@ func bareTypeName(ref string) string {
 
 func sortFindings(findings []Finding) {
 	sort.SliceStable(findings, func(i, j int) bool {
-		pi, pj := policyIndex[findings[i].Policy], policyIndex[findings[j].Policy]
+		pi, pj := policyOrder[findings[i].Policy], policyOrder[findings[j].Policy]
 		if pi != pj {
 			return pi < pj
 		}
@@ -750,12 +702,18 @@ func printFindings(w io.Writer, rulesPath string, catalog Catalog, findings []Fi
 	for _, f := range findings {
 		grouped[f.Policy] = append(grouped[f.Policy], f)
 	}
+	printedFeatures := false
 
 	for _, p := range policies {
-		// The feature tree's findings are printed by the gherkin section
-		// below (one place for the feature cross-validation); the summary
-		// table still counts them by policy.
-		if p.ID == policyGherkinPointer || p.ID == policyGherkinFeature {
+		// A policy's Level chooses its report home: the feature-level
+		// policies print once in the gherkin section below, everything else
+		// prints as its own policy section. The summary table still counts
+		// every policy.
+		if p.Level == LevelFeature {
+			if !printedFeatures {
+				printGherkinSection(w, index, featureLevelFindings(grouped))
+				printedFeatures = true
+			}
 			continue
 		}
 		group := grouped[p.ID]
@@ -763,7 +721,7 @@ func printFindings(w io.Writer, rulesPath string, catalog Catalog, findings []Fi
 			continue
 		}
 		errorsFound, warnings := countFindings(group)
-		fmt.Fprintf(w, "## %s — %s (%d errors, %d warnings)\n\n", p.ID, p.Title, errorsFound, warnings)
+		fmt.Fprintf(w, "## %s — %s (%d errors, %d warnings)\n\n", p.ID, p.Name, errorsFound, warnings)
 		for _, f := range group {
 			prefix := ""
 			if f.Severity == severityWarn {
@@ -777,8 +735,6 @@ func printFindings(w io.Writer, rulesPath string, catalog Catalog, findings []Fi
 		}
 		fmt.Fprint(w, "\n")
 	}
-
-	printGherkinSection(w, index, findings)
 
 	if len(findings) == 0 {
 		fmt.Fprint(w, "No findings — the catalog satisfies docs/spec/rules.schema.md §3.\n\n")
