@@ -157,6 +157,7 @@ import {
 import {
   type SandboxExecResult,
   type SandboxHandle,
+  type SandboxMount,
   SANDBOX_ENV_FLAG,
   createWorkerSandbox,
   execInSandbox,
@@ -446,6 +447,35 @@ interface HostVerification {
   gatesRan: boolean;
 }
 
+/**
+ * Instance truth of the VM a run occupied, persisted in tool-result `details`
+ * (additive: resume/branching replays it) so the TUI can say WHERE the work
+ * ran. Policy half (role → profile) is derived at render time, never stored.
+ */
+export interface SandboxDetails {
+  /** The `sbx` VM name this run occupied (`pi-<role>-…`). */
+  name: string;
+  /** The role the profile was resolved for (the agent name actually spawned). */
+  role: string;
+  /**
+   * Which reference produced the VM — `template` or `kit` (SandboxHandle.
+   * createdFrom). Image provenance, not a host path: the mounted paths are
+   * deliberately NOT persisted (they are machine-local and the mounts line
+   * already says what the VM could see).
+   */
+  createdFrom: string;
+  /** Mounts as declared by the profile (what the VM could actually see). */
+  mounts: readonly SandboxMount[];
+  /** Egress hosts the profile allowed (default-deny proxy, empty ⇒ none). */
+  networkHosts: readonly string[];
+  /** Disposable rw primary workspace, when the profile needed one (scout). */
+  scratchPath?: string;
+  /** Set once teardown ran: `ok` clean, `errors` one or more failures, absent ⇒ live. */
+  teardown?: "ok" | "errors";
+  /** One line per teardown failure (TUI only — model text keeps its own block). */
+  teardownErrors?: string[];
+}
+
 interface SingleResult {
   agent: string;
   agentSource: "user" | "project" | "unknown";
@@ -466,6 +496,16 @@ interface SingleResult {
   sandboxName?: string;
   /** One line per teardown failure (empty/undefined ⇒ clean teardown). */
   sandboxTeardownErrors?: string[];
+  /**
+   * Which plane the spawn actually used, recorded at the routing decision.
+   * Absent on results that never started (unknown agent, pre-start abort) — a
+   * rendered badge then stays silent instead of guessing.
+   */
+  plane?: "host" | "sandbox";
+  /** Instance truth of the VM (sandboxed runs only). */
+  sandbox?: SandboxDetails;
+  /** Host-passthrough runs only: the cwd the child actually ran in. */
+  hostCwd?: string;
   /**
    * The `sbx` CLI itself could not run the command (exit 125/127, spawn error,
    * timeout, abort). Distinct from the child's own status and from a gate
@@ -490,6 +530,93 @@ interface BackgroundJobDetails {
   isError?: boolean;
 }
 type AnyToolDetails = SubagentDetails | BackgroundJobDetails;
+
+// ── Execution plane: pre-run POLICY badge, post-run INSTANCE truth ──────────
+// TUI-only surfaces (never model-facing): the pre-run badge is policy truth
+// from the role's profile and never invents a sandbox id; the post-run badge +
+// info line read the instance truth persisted in `details`. Pure helpers —
+// covered by smoke-ui.mjs.
+
+export type ExecutionPlane = "host" | "sandbox";
+
+export interface PlaneBadge {
+  plane: ExecutionPlane;
+  /** Badge text without color, e.g. `[host]`, `[sbx wt:rw]`, `[sbx <name>]`. */
+  label: string;
+  /** Theme color token: host = warning, sandbox = success. */
+  color: "warning" | "success";
+}
+
+/** Compact mount hint for the PRE-RUN badge: `wt:rw`, `wt:ro`, `vault`, `—`. */
+export function compactMountSummary(mounts: readonly SandboxMount[]): string {
+  if (mounts.some((mount) => mount.kind === "vault")) return "vault";
+  const worktree = mounts.filter((mount) => mount.kind === "worktree");
+  if (worktree.length === 0) return "\u2014";
+  return "wt:" + worktree.map((mount) => mount.mode).join("+");
+}
+
+/** Full mount list for the EXPANDED line: `worktree:rw`, `vault:rw+worktree:ro`, `none`. */
+export function formatMountsLong(mounts: readonly SandboxMount[]): string {
+  if (mounts.length === 0) return "none";
+  return mounts.map((mount) => mount.kind + ":" + mount.mode).join("+");
+}
+
+/** First few egress hosts plus a `+N` remainder; `none` when the VM had no egress. */
+export function summarizeEgress(hosts: readonly string[], max = 3): string {
+  if (hosts.length === 0) return "none";
+  const head = hosts.slice(0, max).join(",");
+  return hosts.length > max ? head + " +" + (hosts.length - max) : head;
+}
+
+/**
+ * PRE-RUN plane from the ROLE's profile (policy truth). `background` wins: a
+ * background single runs as a host-side ORCHESTRATOR (tmux pane) whatever the
+ * target agent's profile says — it spawns its own sandboxed workers and is
+ * never itself inside a VM.
+ */
+export function planeBadge(role: string, background = false): PlaneBadge {
+  if (background || isHostPassthroughRole(role)) {
+    return { plane: "host", label: "[host]", color: "warning" };
+  }
+  return {
+    plane: "sandbox",
+    label: "[sbx " + compactMountSummary(profileForRole(role).mounts) + "]",
+    color: "success",
+  };
+}
+
+/** POST-RUN header badge from the result's instance truth (undefined ⇒ nothing ran). */
+export function resultPlaneBadge(result: SingleResult): PlaneBadge | undefined {
+  if (result.sandbox) {
+    return { plane: "sandbox", label: "[sbx " + result.sandbox.name + "]", color: "success" };
+  }
+  // A sandboxed role whose create failed has no name: say `[sbx]`, not a fake id.
+  if (result.plane === "sandbox") return { plane: "sandbox", label: "[sbx]", color: "success" };
+  if (result.plane === "host") return { plane: "host", label: "[host]", color: "warning" };
+  return undefined;
+}
+
+/** EXPANDED one-liner: `sbx: …` for a VM run, `host: <cwd>` for a passthrough run. */
+export function planeInfoLineText(result: SingleResult): string | undefined {
+  if (result.sandbox) return formatSandboxInfoLine(result.sandbox);
+  if (result.plane === "host" && result.hostCwd) return formatHostPlaneLine(result.hostCwd);
+  return undefined;
+}
+
+export function formatSandboxInfoLine(sandbox: SandboxDetails): string {
+  return (
+    "sbx: " + sandbox.name +
+    " \u00b7 role=" + sandbox.role +
+    " \u00b7 from=" + sandbox.createdFrom +
+    " \u00b7 mounts=" + formatMountsLong(sandbox.mounts) +
+    " \u00b7 egress=" + summarizeEgress(sandbox.networkHosts) +
+    " \u00b7 teardown=" + (sandbox.teardown ?? "pending")
+  );
+}
+
+export function formatHostPlaneLine(cwd: string): string {
+  return "host: " + cwd;
+}
 
 function isFailedResult(result: SingleResult): boolean {
   return result.status === "failed" || result.status === "aborted";
@@ -891,6 +1018,9 @@ async function runSingleAgent(
   signal: AbortSignal | undefined,
   onUpdate: OnUpdateCallback | undefined,
   makeDetails: (results: SingleResult[]) => SubagentDetails,
+  // Ambient footer status lives on ctx.ui: the run counts itself in/out around
+  // the spawn so the footer shows live sandboxed vs host workers.
+  runCtx: Pick<ExtensionContext, "hasUI" | "ui">,
 ): Promise<SingleResult> {
   if (signal?.aborted) {
     return createUnstartedResult(agentName, task, step, "aborted", "Subagent was aborted before starting");
@@ -948,10 +1078,12 @@ async function runSingleAgent(
   };
 
   try {
-    // Sandbox routing. Every role except `researcher` (host passthrough — the
-    // documented residual whose profile is deferred) runs inside its own
-    // micro-VM. The pi invocation is otherwise the same one the local path
-    // uses; three deltas are forced by the mount boundary:
+    beginLiveRun(agent.name, runCtx);
+    // Sandbox routing. Every role today runs inside its own micro-VM (no role
+    // is host-passthrough — the mechanism is retained in sbx.ts for a future
+    // deliberate host role, and this branch is its only spawn seam). The pi
+    // invocation is otherwise the same one the local path uses; three deltas
+    // are forced by the mount boundary:
     //   - the system prompt goes INLINE: `--append-system-prompt` resolves its
     //     argument as a file only when that path exists, and a host temp path
     //     does not exist inside the VM;
@@ -968,6 +1100,10 @@ async function runSingleAgent(
     //     collected, so that spelling left skills ON).
     const sandboxProfile = profileForRole(agent.name);
     const useSandbox = !sandboxProfile.hostPassthrough;
+    // What we ATTEMPTED is instance truth: a VM that fails to create still
+    // reports `[sbx]` (no name invented), never a silent host run.
+    currentResult.plane = useSandbox ? "sandbox" : "host";
+    if (!useSandbox) currentResult.hostCwd = effectiveCwd;
     if (agent.systemPrompt.trim()) {
       if (useSandbox) {
         args.push("--append-system-prompt", agent.systemPrompt);
@@ -1150,6 +1286,14 @@ async function runSingleAgent(
             cwd: resolvedAgent.hostRoot,
           });
           currentResult.sandboxName = sandbox.name;
+          currentResult.sandbox = {
+            name: sandbox.name,
+            role: sandbox.role,
+            createdFrom: sandbox.createdFrom,
+            mounts: sandbox.profile.mounts,
+            networkHosts: sandbox.networkHosts,
+            ...(sandbox.scratchPath ? { scratchPath: sandbox.scratchPath } : {}),
+          };
         } catch (error) {
           createError = error instanceof Error ? error.message : String(error);
         }
@@ -1251,6 +1395,11 @@ async function runSingleAgent(
 
     if (sandbox) {
       currentResult.sandboxName = sandbox.name;
+      if (currentResult.sandbox) {
+        const teardownErrors = sandboxTeardown?.errors ?? [];
+        currentResult.sandbox.teardown = teardownErrors.length > 0 ? "errors" : "ok";
+        if (teardownErrors.length > 0) currentResult.sandbox.teardownErrors = [...teardownErrors];
+      }
       if (sandboxTeardown && sandboxTeardown.errors.length > 0) {
         currentResult.sandboxTeardownErrors = sandboxTeardown.errors;
       }
@@ -1283,6 +1432,7 @@ async function runSingleAgent(
     }
     return currentResult;
   } finally {
+    endLiveRun(agent.name);
     if (tmpPromptPath) {
       try {
         fs.unlinkSync(tmpPromptPath);
@@ -1588,6 +1738,12 @@ let delegateApi: ExtensionAPI | undefined;
  */
 let settleGateTerminal = false;
 
+/**
+ * The plane a background child runs on: a HOST-side orchestrator (tmux pane /
+ * detached child), never a sandbox id. Its own worker spawns are sandboxed.
+ */
+const BACKGROUND_JOB_PLANE = "orchestrator (host)";
+
 /** Payload persisted on delegate-job entry cards (also used as message details). */
 interface JobCardData {
   id: string;
@@ -1596,6 +1752,12 @@ interface JobCardData {
   runner: RunnerKind;
   startedAt: string;
   finishedAt?: string;
+  /**
+   * Execution plane of the job, as persisted on the card: background children
+   * are HOST-side ORCHESTRATORS (a tmux pane on the host) — they are never a
+   * sandbox id; the workers they spawn are the sandboxed ones.
+   */
+  plane?: string;
 }
 
 interface JobResultDetails extends JobCardData {
@@ -1612,6 +1774,7 @@ function cardDataOf(
     status: entry.status,
     runner: entry.runner,
     startedAt: entry.startedAt,
+    plane: BACKGROUND_JOB_PLANE,
   };
   if (entry.finishedAt) data.finishedAt = entry.finishedAt;
   return data;
@@ -1731,6 +1894,57 @@ function sleepMs(ms: number): Promise<void> {
   });
 }
 
+// ── Ambient execution-plane status (footer) ────────────────────────────────
+// `sbx 2 · host 1`: how many subagents are LIVE right now and on which plane.
+// Counted by runSingleAgent itself (one process per session, so module scope is
+// exact), cleared at the settle boundary — no run outlives its turn.
+
+const RUN_STATUS_KEY = "delegate";
+
+const liveRuns = { sandbox: 0, host: 0 };
+/** ctx of the call that owns the live runs; captured at run start (hasUI-gated). */
+let liveRunCtx: Pick<ExtensionContext, "hasUI" | "ui"> | null = null;
+
+/** Footer text for the given live counts; undefined ⇒ nothing to show (clears). */
+export function formatRunStatus(sandbox: number, host: number): string | undefined {
+  const parts: string[] = [];
+  if (sandbox > 0) parts.push("sbx " + sandbox);
+  if (host > 0) parts.push("host " + host);
+  return parts.length > 0 ? parts.join(" \u00b7 ") : undefined;
+}
+
+function refreshRunStatus(): void {
+  const ctx = liveRunCtx;
+  if (!ctx || !ctx.hasUI) return;
+  try {
+    ctx.ui.setStatus(RUN_STATUS_KEY, formatRunStatus(liveRuns.sandbox, liveRuns.host));
+  } catch {
+    /* footer status is best effort */
+  }
+}
+
+/** Count a starting subagent on its plane (paired with endLiveRun). */
+function beginLiveRun(role: string, ctx: Pick<ExtensionContext, "hasUI" | "ui">): void {
+  liveRunCtx = ctx;
+  if (isHostPassthroughRole(role)) liveRuns.host += 1;
+  else liveRuns.sandbox += 1;
+  refreshRunStatus();
+}
+
+function endLiveRun(role: string): void {
+  if (isHostPassthroughRole(role)) liveRuns.host = Math.max(0, liveRuns.host - 1);
+  else liveRuns.sandbox = Math.max(0, liveRuns.sandbox - 1);
+  refreshRunStatus();
+}
+
+/** Settle boundary: nothing this session spawned is still live, so clear. */
+function clearLiveRuns(ctx?: Pick<ExtensionContext, "hasUI" | "ui">): void {
+  if (ctx) liveRunCtx = ctx;
+  liveRuns.sandbox = 0;
+  liveRuns.host = 0;
+  refreshRunStatus();
+}
+
 // ── UI surface (widget + /jobs + /agents + shortcut) ─────────────────────────
 
 const JOB_WIDGET_KEY = "delegate-jobs";
@@ -1771,7 +1985,10 @@ async function refreshJobWidget(ctx: ExtensionContext): Promise<void> {
     const entries = await listJobEntries(ctx.cwd);
     const lines: string[] = [];
     for (const entry of entries.slice(0, JOB_WIDGET_MAX_LINES)) {
-      lines.push(jobStatusIcon(entry.status) + " " + entry.id + " · " + entry.agent + " · " + jobAge(entry));
+      lines.push(
+        jobStatusIcon(entry.status) + " " + entry.id + " · " + entry.agent +
+          " · " + jobAge(entry) + " · " + BACKGROUND_JOB_PLANE,
+      );
     }
     if (entries.length > JOB_WIDGET_MAX_LINES) {
       lines.push("+ " + (entries.length - JOB_WIDGET_MAX_LINES) + " more");
@@ -2757,6 +2974,7 @@ export default function (pi: ExtensionAPI) {
             signal,
             chainUpdate,
             makeDetails("chain"),
+            ctx,
           );
           results.push(result);
 
@@ -2858,6 +3076,7 @@ export default function (pi: ExtensionAPI) {
                 }
               },
               makeDetails("parallel"),
+              ctx,
             );
           } catch (error) {
             // A thrown spawn must still release its claim (fail-open telemetry).
@@ -2957,6 +3176,7 @@ export default function (pi: ExtensionAPI) {
             signal,
             onUpdate,
             makeDetails("single"),
+            ctx,
           );
         } catch (error) {
           // A thrown spawn must still release its claim (fail-open telemetry).
@@ -3013,11 +3233,14 @@ export default function (pi: ExtensionAPI) {
           // Clean up {previous} placeholder for display
           const cleanTask = step.task.replace(/\{previous\}/g, "").trim();
           const preview = cleanTask.length > 40 ? `${cleanTask.slice(0, 40)}...` : cleanTask;
+          // PRE-RUN plane badge: policy truth for this step's role, no id.
+          const badge = planeBadge(step.agent);
           text +=
             "\n  " +
             theme.fg("muted", `${i + 1}.`) +
             " " +
             theme.fg("accent", step.agent) +
+            theme.fg(badge.color, ` ${badge.label}`) +
             theme.fg("dim", ` ${preview}`);
         }
         if (args.chain.length > 3) text += `\n  ${theme.fg("muted", `... +${args.chain.length - 3} more`)}`;
@@ -3030,7 +3253,11 @@ export default function (pi: ExtensionAPI) {
           theme.fg("muted", ` [${scope}]`);
         for (const t of args.tasks.slice(0, 3)) {
           const preview = t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task;
-          text += `\n  ${theme.fg("accent", t.agent)}${theme.fg("dim", ` ${preview}`)}`;
+          const badge = planeBadge(t.agent);
+          text +=
+            `\n  ${theme.fg("accent", t.agent)}` +
+            theme.fg(badge.color, ` ${badge.label}`) +
+            theme.fg("dim", ` ${preview}`);
         }
         if (args.tasks.length > 3) text += `\n  ${theme.fg("muted", `... +${args.tasks.length - 3} more`)}`;
         return new Text(text, 0, 0);
@@ -3043,6 +3270,12 @@ export default function (pi: ExtensionAPI) {
         theme.fg("muted", ` [${scope}]`);
       if (args.background === true) text += theme.fg("warning", " [background]");
       else if (args.background === false) text += theme.fg("muted", " [foreground]");
+      // PRE-RUN plane: a background single is a host-side orchestrator, a
+      // foreground single runs on its role's plane (sandbox unless passthrough).
+      const singleBadge = args.agent
+        ? planeBadge(agentName, args.background === true)
+        : undefined;
+      if (singleBadge) text += theme.fg(singleBadge.color, ` ${singleBadge.label}`);
       text += `\n  ${theme.fg("dim", preview)}`;
       return new Text(text, 0, 0);
     },
@@ -3061,7 +3294,7 @@ export default function (pi: ExtensionAPI) {
         const color = job.status === "done" ? "success" : job.status === "failed" || job.status === "aborted" ? "error" : job.status === "awaiting_approval" ? "warning" : "warning";
         let text = theme.fg(color, jobStatusIcon(job.status)) + " " + theme.fg("accent", job.id);
         text += theme.fg("muted", " · " + job.agent + " · ") + theme.fg(color, job.status);
-        text += theme.fg("dim", " · " + jobAge(job));
+        text += theme.fg("dim", " · " + jobAge(job) + " · " + BACKGROUND_JOB_PLANE);
         if (result.isError) text += "\n" + theme.fg("error", body);
         else text += "\n" + theme.fg("toolOutput", body);
         return new Text(text, 0, 0);
@@ -3110,7 +3343,11 @@ export default function (pi: ExtensionAPI) {
           let header = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
           if (isRunning) header += ` ${theme.fg("warning", `[${r.status}]`)}`;
           else if (isError) header += ` ${theme.fg("error", `[${r.stopReason ?? r.status}]`)}`;
+          const runBadge = resultPlaneBadge(r);
+          if (runBadge) header += ` ${theme.fg(runBadge.color, runBadge.label)}`;
           container.addChild(new Text(header, 0, 0));
+          const planeLine = planeInfoLineText(r);
+          if (planeLine) container.addChild(new Text(theme.fg("dim", planeLine), 0, 0));
           if (isError && r.errorMessage)
             container.addChild(new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0));
           if (r.terminationSignal)
@@ -3150,6 +3387,8 @@ export default function (pi: ExtensionAPI) {
         let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
         if (isRunning) text += ` ${theme.fg("warning", `[${r.status}]`)}`;
         else if (isError) text += ` ${theme.fg("error", `[${r.stopReason ?? r.status}]`)}`;
+        const runBadge = resultPlaneBadge(r);
+        if (runBadge) text += ` ${theme.fg(runBadge.color, runBadge.label)}`;
         if (isError && r.errorMessage) text += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
         else if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
         else {
@@ -3210,13 +3449,17 @@ export default function (pi: ExtensionAPI) {
             const finalOutput = getFinalOutput(r.messages);
 
             container.addChild(new Spacer(1));
+            const stepBadge = resultPlaneBadge(r);
             container.addChild(
               new Text(
-                `${theme.fg("muted", `─── Step ${r.step}: `) + theme.fg("accent", r.agent)} ${rIcon}`,
+                `${theme.fg("muted", `─── Step ${r.step}: `) + theme.fg("accent", r.agent)} ${rIcon}` +
+                  (stepBadge ? ` ${theme.fg(stepBadge.color, stepBadge.label)}` : ""),
                 0,
                 0,
               ),
             );
+            const stepPlane = planeInfoLineText(r);
+            if (stepPlane) container.addChild(new Text(theme.fg("dim", stepPlane), 0, 0));
             container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", r.task), 0, 0));
             if (isFailedResult(r) && r.errorMessage)
               container.addChild(new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0));
@@ -3266,6 +3509,8 @@ export default function (pi: ExtensionAPI) {
           const rIcon = resultIcon(r);
           const displayItems = getDisplayItems(r.messages);
           text += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${rIcon}`;
+          const stepBadge = resultPlaneBadge(r);
+          if (stepBadge) text += ` ${theme.fg(stepBadge.color, stepBadge.label)}`;
           if (displayItems.length === 0) {
             const failed = isFailedResult(r);
             const summary = failed ? getFailureSummary(r) : "(no output)";
@@ -3309,9 +3554,17 @@ export default function (pi: ExtensionAPI) {
             const finalOutput = getFinalOutput(r.messages);
 
             container.addChild(new Spacer(1));
+            const taskBadge = resultPlaneBadge(r);
             container.addChild(
-              new Text(`${theme.fg("muted", "─── ") + theme.fg("accent", r.agent)} ${rIcon}`, 0, 0),
+              new Text(
+                `${theme.fg("muted", "─── ") + theme.fg("accent", r.agent)} ${rIcon}` +
+                  (taskBadge ? ` ${theme.fg(taskBadge.color, taskBadge.label)}` : ""),
+                0,
+                0,
+              ),
             );
+            const taskPlane = planeInfoLineText(r);
+            if (taskPlane) container.addChild(new Text(theme.fg("dim", taskPlane), 0, 0));
             container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", r.task), 0, 0));
             if (isFailedResult(r) && r.errorMessage)
               container.addChild(new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0));
@@ -3357,6 +3610,8 @@ export default function (pi: ExtensionAPI) {
           const rIcon = resultIcon(r);
           const displayItems = getDisplayItems(r.messages);
           text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`;
+          const taskBadge = resultPlaneBadge(r);
+          if (taskBadge) text += ` ${theme.fg(taskBadge.color, taskBadge.label)}`;
           if (displayItems.length === 0) {
             const failed = isFailedResult(r);
             let summary = "(no output)";
@@ -3616,7 +3871,7 @@ export default function (pi: ExtensionAPI) {
     const color = data.status === "done" ? "success" : data.status === "failed" || data.status === "aborted" ? "error" : data.status === "awaiting_approval" ? "warning" : "warning";
     let line = theme.fg(color, jobStatusIcon(data.status)) + " " + theme.fg("accent", data.id);
     line += theme.fg("muted", " · " + data.agent + " · ") + theme.fg(color, data.status);
-    line += theme.fg("dim", " · " + jobAge(data));
+    line += theme.fg("dim", " · " + jobAge(data) + " · " + (data.plane ?? BACKGROUND_JOB_PLANE));
     return new Text(line, 0, 0);
   });
 
@@ -3633,7 +3888,7 @@ export default function (pi: ExtensionAPI) {
     const header =
       theme.fg(color, jobStatusIcon(details.status)) + " " + theme.fg("accent", details.id) +
       theme.fg("muted", " · " + details.agent + " · ") + theme.fg(color, details.status) +
-      theme.fg("dim", " · " + jobAge(details));
+      theme.fg("dim", " · " + jobAge(details) + " · " + (details.plane ?? BACKGROUND_JOB_PLANE));
     box.addChild(new Text(header, 0, 0));
     const bodyLines = details.text.split("\n");
     if (options.expanded || bodyLines.length <= JOB_RESULT_PREVIEW_LINES) {
@@ -3645,6 +3900,13 @@ export default function (pi: ExtensionAPI) {
       );
     }
     return box;
+  });
+
+  // Ambient footer: the settle boundary ends every subagent this session
+  // started, so the live-plane counter and its status line go quiet there.
+  pi.on("agent_before_settle", (_event, ctx) => {
+    if (process.env.PI_DELEGATE_CHILD) return;
+    clearLiveRuns(ctx);
   });
 
   // Phase 4: auto-surface finished background jobs at the settle boundary.
