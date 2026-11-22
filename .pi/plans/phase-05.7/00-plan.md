@@ -53,3 +53,8 @@ Order: A → B1 → B2 → B3 → C. B1 deliberately precedes Phase 06 so R-LEDG
 - Every phase exits `make audit/static` green; phases touching `cmd/spec`/`internal/spec` or the catalog run the full `make audit` where feasible (`make db/up` for the DSN).
 - Phases touching extension code run `make smoke` (all three harnesses).
 - Phase A deletes `.pi/plans/delegate/` and `.pi/plans/refactor/`; keep `.pi/plans/phase-05.7/`.
+
+## Parked calls from Phase A (resolved at landing, 2026-11-22)
+
+- **Blocked-report norm** ("a blocked, well-explained report beats a green-looking summary"): retained in WORKFLOW.md judgment rules (~L113). `main.md` stays lean and does not duplicate it.
+- **Host-passthrough retention for future roles**: the doc-of-record is the code — `sbx.ts` comments (~L672/682: "NO role is passthrough today"). No WORKFLOW.md prose needed; consistent with the one-owner thesis.
