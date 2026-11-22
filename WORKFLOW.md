@@ -90,9 +90,9 @@ The profile is the policy. Each role gets exactly this, and nothing else:
 | Role | Mounts | Network egress (default-deny) | Secrets |
 |---|---|---|---|
 | `go-worker`, `general` | worktree, RW, same absolute path | model provider endpoint + `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com` | model API key via the `sbx` sentinel |
-| `scout` | project worktree, read-only | model provider only (opencode.ai:443, per-sandbox allow) | none |
+| `scout` | disposable scratch (rw, host temp dir) + project worktree, read-only | model provider only (opencode.ai:443, per-sandbox allow) | none |
 | `librarian` | vault `~/Projects/vaults/lt-api` RW + project repo read-only | model provider only (opencode.ai:443, per-sandbox allow) | none |
-| `researcher` | — (still host-side this batch; profile deferred) | — | — |
+| `researcher` | none (mountless) | model provider + `api.openai.com:443` (web search) | model key + `OPENAI_API_KEY` via the `sbx` sentinel |
 
 No DB: no `LT_API_TEST_DSN` is exported into any sandbox, so `make audit` and `make prove` cannot run there
 even if someone types them. A worker that needs a host, a dependency outside its egress allowlist, or the
@@ -157,8 +157,12 @@ are hard fails and cannot be waived; UNVALIDATABLE is reported and stops for hum
 
 These are documented limitations, not hidden ones:
 
-- **The researcher is still host-side.** Its sandbox profile is deferred and not built in this batch, so it
-  runs with host reach and host network. Treat its items as the one un-sandboxed role.
+- **The researcher is sandboxed but key-gated.** Its mountless profile is built: no repo or host
+  filesystem view, egress to the model provider and `api.openai.com` only, and the web-search key reaches
+  the proxy through the `sbx` custom-secret placeholder (never the VM). Until the host-side
+  `sbx secret set-custom --host api.openai.com --env OPENAI_API_KEY` secret exists, web search fails closed
+  at the proxy — a blocked report, not host reach. No role uses host passthrough today; the mechanism
+  remains for future roles.
 - **The librarian has the vault read-write.** The vault is not a git repo under this policy, so no integrity
   check covers it; a librarian mistake in the vault is caught by the human, not by a gate.
 - **Hard links can cross out of a mount** on the same filesystem. A link created inside the worktree can
@@ -174,7 +178,6 @@ These are documented limitations, not hidden ones:
   the host is trusted and the gates inherit that trust.
 - **Sealed fleet mode**: one mountless sandbox for everything, with no worktree handed to workers at all.
   Deferred by the user for POC use.
-- **Researcher sandbox profile**: until it exists, web/doc research stays on the host plane.
 
 Everything below is judgment, not policy. Delegate when the work is separable and the context you would
 burn is larger than the context you would spend explaining it; do the task yourself when it is one edit, one
