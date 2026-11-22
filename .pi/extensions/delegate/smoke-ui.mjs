@@ -111,8 +111,9 @@ function piAliases(piRoot) {
   };
 }
 
-async function loadExtension() {
-  const entry = path.join(HERE, "index.ts");
+/** Load a module of this extension dir (index.ts by default; agents.ts for discovery). */
+async function loadModule(entryName) {
+  const entry = path.join(HERE, entryName);
   try {
     return await import(entry);
   } catch (error) {
@@ -140,7 +141,8 @@ async function loadExtension() {
   return await jiti.import(entry);
 }
 
-const ui = await loadExtension();
+const ui = await loadModule("index.ts");
+const agents = await loadModule("agents.ts");
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -324,6 +326,9 @@ function makeFakePi() {
   const tools = new Map();
   const entryRenderers = new Map();
   const messageRenderers = new Map();
+  // Lifecycle handlers are recorded (not dropped) so the main-session persona
+  // injection can be driven through its REAL before_agent_start registration.
+  const handlers = new Map();
   const api = {
     registerTool: (def) => tools.set(def.name, def),
     registerEntryRenderer: (type, fn) => entryRenderers.set(type, fn),
@@ -331,12 +336,16 @@ function makeFakePi() {
     registerCommand: () => {},
     registerShortcut: () => {},
     registerAutocompleteProvider: () => {},
-    on: () => () => {},
+    on: (event, fn) => {
+      if (!handlers.has(event)) handlers.set(event, []);
+      handlers.get(event).push(fn);
+      return () => {};
+    },
     sendMessage: () => {},
     appendEntry: () => {},
     setActiveTools: () => {},
   };
-  return { api, tools, entryRenderers, messageRenderers };
+  return { api, tools, entryRenderers, messageRenderers, handlers };
 }
 
 const plainTheme = {
@@ -379,6 +388,72 @@ for (const [key, value] of savedEnv) {
 }
 const subagent = fake.tools.get("subagent");
 assert.ok(subagent, "subagent tool registered");
+
+console.log("main-session persona (.pi/agents/main.md)");
+
+const REPO_ROOT = path.resolve(HERE, "..", "..", "..");
+const PERSONA_PATH = path.join(REPO_ROOT, ".pi", "agents", "main.md");
+
+/**
+ * Drive the REAL `before_agent_start` registration with a fake event/ctx and
+ * return every systemPrompt it produced. Child markers are dropped for the
+ * duration (the injection is main-session-only), and async handlers — the
+ * round-start job surfacer — are kicked off but not awaited: they contribute no
+ * systemPrompt and must not produce unhandled rejections here.
+ */
+function mainSystemPrompts(cwd) {
+  const prompts = [];
+  const saved = new Map(childEnvKeys.map((key) => [key, process.env[key]]));
+  for (const key of childEnvKeys) delete process.env[key];
+  try {
+    for (const fn of fake.handlers.get("before_agent_start") ?? []) {
+      const result = fn({ systemPrompt: "BASE", messageType: "user" }, { cwd });
+      if (result && typeof result.then === "function") {
+        result.catch(() => {});
+        continue;
+      }
+      if (result && typeof result.systemPrompt === "string") prompts.push(result.systemPrompt);
+    }
+  } finally {
+    for (const [key, value] of saved) {
+      if (value !== undefined) process.env[key] = value;
+      else delete process.env[key];
+    }
+  }
+  return prompts;
+}
+
+check(".pi/agents/main.md exists and carries no agent frontmatter", () => {
+  assert.ok(fs.existsSync(PERSONA_PATH), "missing persona file: .pi/agents/main.md");
+  const content = fs.readFileSync(PERSONA_PATH, "utf-8");
+  assert.ok(content.trim().length > 0, "persona file is empty");
+  assert.ok(!/^---\n/.test(content), "persona must NOT start with agent frontmatter (it is not a spawnable agent)");
+});
+
+check("main session injects the persona file through loadOrchestratorPrompt", () => {
+  const content = fs.readFileSync(PERSONA_PATH, "utf-8");
+  const prompts = mainSystemPrompts(REPO_ROOT);
+  assert.ok(prompts.length > 0, "no before_agent_start handler returned a systemPrompt");
+  const injected = prompts.find((p) => p.includes(content.trim()));
+  assert.ok(injected, "persona body was not appended to the system prompt");
+  assert.ok(injected.startsWith("BASE"), "the persona is APPENDED, never replaces the base prompt");
+  assert.doesNotMatch(injected, /persona file missing/, "the fail-loud fallback was used although the file exists");
+});
+
+check("missing persona → fail-loud stub, not silent generic rules", () => {
+  const prompts = mainSystemPrompts(path.join(REPO_ROOT, ".pi", "agents", "definitely-absent"));
+  assert.ok(prompts.length > 0, "no before_agent_start handler returned a systemPrompt");
+  assert.match(prompts[0], /persona file missing: \.pi\/agents\/main\.md/);
+  assert.match(prompts[0], /\/WORKFLOW\.md/);
+});
+
+check("discovery skips the persona file (no frontmatter → never a worker)", () => {
+  const found = agents.discoverAgents(REPO_ROOT, "project");
+  assert.equal(found.projectAgentsDir, path.join(REPO_ROOT, ".pi", "agents"));
+  assert.ok(found.agents.length > 0, "discovery found no project agents at all (vacuous check)");
+  assert.ok(!found.agents.some((a) => a.filePath === PERSONA_PATH), ".pi/agents/main.md was registered as a spawnable agent");
+  assert.ok(found.agents.every((a) => a.name !== "main"), "a `main` agent name leaked into the roster");
+});
 
 check("renderCall single foreground → [foreground] + policy badge", () => {
   const out = renderComponent(subagent.renderCall({ agent: "worker", task: "t", background: false }, plainTheme, {}));

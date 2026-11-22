@@ -107,7 +107,7 @@ export interface JobEntry {
   /**
    * The worktree the orchestrator does its work in: the conventional sibling
    * `../lt-api-wt-<id>` of the cwd that launched the job (the worktree handoff
-   * in .pi/delegate/orchestrator.md). Recorded ONCE at creation, for both
+   * in .pi/agents/orchestrator.md). Recorded ONCE at creation, for both
    * runner variants, instead of reconstructed at every probe: the registry does
    * not persist the job's cwd, and a relay derives the path from ITS OWN cwd,
    * so a caller in another checkout would otherwise probe the wrong tree. The
@@ -390,7 +390,7 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
   const runnerPath = base + ".sh";
   const tmuxSession = "pi-" + id;
   // The orchestrator's worktree, by convention a sibling of the launching
-  // checkout: .pi/delegate/orchestrator.md has the child create
+  // checkout: .pi/agents/orchestrator.md has the child create
   // `../lt-api-wt-<job-id>` on branch `delegate/<job-id>`. Recorded here (not
   // derived later) so the approval probe and the prove-coverage check read the
   // tree this job was launched for — see JobEntry.worktreePath.
