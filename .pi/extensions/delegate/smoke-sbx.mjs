@@ -78,7 +78,6 @@ import {
 } from "./sbx.ts";
 import {
   GATE_FILE_PATHS,
-  checkProveCoverage,
   checkWorktreeIntegrity,
   detectMergeBackCommands,
   integrityRefusalReason,
@@ -88,6 +87,7 @@ import {
   runGate,
   splitTopLevelSegments,
 } from "./gates.ts";
+import { checkProveCoverage } from "./mergegate.ts";
 
 let failures = 0;
 let checks = 0;

@@ -52,9 +52,11 @@
  *     normalized form is exported as PI_DELEGATE_SPEC_SCOPE into the sandbox's
  *     `-e` env (no line = no env var = full spec check).
  *   - job_approve binds the relayed decision to the `HEAD SHA:` recorded in the
- *     job's approval block and refuses when the worktree HEAD moved; for a task
- *     whose SPEC-SCOPE names rules it also refuses while any scoped rule lacks a
- *     VERIFIED prove receipt (checkProveCoverage in ./gates.ts).
+ *     job's approval block and refuses when the worktree HEAD moved; for a job
+ *     whose recorded scope names rules it also refuses while any scoped rule
+ *     lacks a VERIFIED prove receipt (./mergegate.ts `checkProveCoverage`, fed
+ *     by the single job-scope resolver there — the same call the merge-path
+ *     block makes).
  *
  * Sandbox era (this file):
  *   - Every foreground worker runs inside a per-task Docker Sandbox micro-VM
@@ -140,7 +142,6 @@ import {
   type IntegrityCheckResult,
   type ReconciliationResult,
   bumpSettleGateAttempts,
-  checkProveCoverage,
   checkWorktreeIntegrity,
   detectMergeBackCommands,
   formatGateReport,
@@ -178,9 +179,14 @@ import {
 import {
   type TaskPacket,
   formatTaskPacketRefusal,
-  parseSpecScope,
   parseTaskPacket,
 } from "./protocol.ts";
+import {
+  checkProveCoverage,
+  isProveSegment,
+  proveRuleIdsIn,
+  resolveJobRuleIds,
+} from "./mergegate.ts";
 import {
   type SandboxExecResult,
   type SandboxHandle,
@@ -2269,17 +2275,12 @@ const DELEGATE_REASON =
   "Orchestrator does not implement. Delegate this to a subagent (go-worker for Go, general for anything else) via the subagent tool";
 
 // ── PROVE receipts (the extension writes them, never the worker) ────────────
-
-/** `--rule <id>` / `--rule=<id>` occurrences in a command line (deduped, order kept). */
-function proveRuleIdsIn(command: string): string[] {
-  const ids: string[] = [];
-  const pattern = /--rule(?:=|\s+)([A-Za-z0-9_-]+)/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(command)) !== null) {
-    if (!ids.includes(match[1])) ids.push(match[1]);
-  }
-  return ids;
-}
+//
+// The receipt POLICY (which rule ids a prove argv names, what "this command is
+// the declared prove command" means, and how a receipt is read back as MERGE-BACK
+// evidence) lives in ./mergegate.ts, one copy. This section keeps only what the
+// RECEIPT WRITER needs: identifying the command's leading `cd` and the exit code
+// of the bash tool result it records.
 
 /**
  * The directory of a leading `cd <dir>` segment, or null. Only the FIRST
@@ -2295,21 +2296,6 @@ function leadingCdTarget(segment: string): string | null {
   const words = splitCommandLine(segment);
   if (words.length !== 2 || words[0] !== "cd") return null;
   return words[1];
-}
-
-/**
- * Does this segment's command word sequence begin with the declared prove
- * tokens (`make prove`)? Word-exact: `make proven` and `echo make prove` are
- * not prove runs, so a receipt cannot be minted by mentioning the command.
- */
-function isProveSegment(segment: string, proveTokens: string[]): boolean {
-  if (proveTokens.length === 0) return false;
-  const words = splitCommandLine(segment);
-  if (words.length < proveTokens.length) return false;
-  for (let index = 0; index < proveTokens.length; index++) {
-    if (words[index] !== proveTokens[index]) return false;
-  }
-  return true;
 }
 
 /** Non-negative integer or null for anything else (never assume a code). */
@@ -2337,44 +2323,6 @@ function bashExitCodeOf(event: ToolResultEvent): number | null {
     if (match) return Number(match[1]);
   }
   return null;
-}
-
-/**
- * The rule ids the JOB recorded at spawn. The claims log is the spawn-time
- * record (`prepareSpawnClaims` writes `ruleIds` from each worker's SPEC-SCOPE
- * line); the job registry's task text is the fallback for an entry whose claims
- * log is gone. An empty result means "this job has no recorded spec scope" —
- * exactly what a non-rule-change batch looks like, and such a job merges freely.
- *
- * Read from the HOST root only: claims are host-written artifacts, and a
- * worktree's claims path belongs to the sandbox, not the verifier.
- */
-async function recordedScopedRules(hostRoot: string, jobId: string): Promise<string[]> {
-  const rules: string[] = [];
-  const add = (value: unknown) => {
-    if (typeof value !== "string") return;
-    const rule = value.trim();
-    if (rule.length === 0 || rules.includes(rule)) return;
-    rules.push(rule);
-  };
-  try {
-    const records = await readClaims(hostRoot, jobId);
-    for (const record of records) {
-      if (record.type !== "claim") continue;
-      for (const rule of record.ruleIds) add(rule);
-    }
-  } catch (error) {
-    console.error("[delegate] claims read failed for merge-path PROVE check:", error);
-  }
-  if (rules.length === 0) {
-    try {
-      const entry = await peekJobEntry(hostRoot, jobId);
-      for (const rule of parseSpecScope(entry?.task ?? "")?.rules ?? []) add(rule);
-    } catch {
-      /* registry read is best-effort; an empty result merges freely by design */
-    }
-  }
-  return rules;
 }
 
 /**
@@ -2567,6 +2515,11 @@ export default function (pi: ExtensionAPI) {
   // scope names rules that lack VERIFIED prove receipts host-side. A job with no
   // recorded SPEC-SCOPE merges freely. Host-side only — an in-VM instance never
   // registers this (the inert-mode early return above).
+  //
+  // The scope is `./mergegate.ts` `resolveJobRuleIds` — THE resolver (claims
+  // first, registry task text second), the same call the approval relay in
+  // jobs.ts makes, so this block and a relay approval can never disagree about
+  // the job's scope (defect 2).
   pi.on("tool_call", async (event, ctx) => {
     if (process.env.PI_DELEGATE_ROLE !== "orchestrator") return;
     if (isSandboxedChild()) return;
@@ -2577,7 +2530,7 @@ export default function (pi: ExtensionAPI) {
     if (merges.length === 0) return;
 
     const jobId = jobIdForEnv();
-    const rules = await recordedScopedRules(ctx.cwd, jobId);
+    const rules = await resolveJobRuleIds(ctx.cwd, jobId);
     if (rules.length === 0) return;
 
     let coverage: Awaited<ReturnType<typeof checkProveCoverage>>;
@@ -2735,8 +2688,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   // PROVE receipt writer (merge-back evidence). The extension records every
-  // scoped prove run, because the merge-back gates (jobs.ts \u2192
-  // checkProveCoverage, and the merge-path hook above) trust host receipts and
+  // scoped prove run, because the merge-back gates (./mergegate.ts
+  // checkProveCoverage, called by the jobs.ts approval relay and the
+  // merge-path hook above) trust host receipts and
   // nothing else \u2014 and no worker ever writes one. Active in CHILD sessions
   // only (orchestrators): prove is the orchestrator's merge-back step, and a
   // main session has no job to prove for. HOST-ONLY resolution: the receipt

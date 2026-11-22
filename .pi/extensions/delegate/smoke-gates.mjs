@@ -33,7 +33,6 @@ import {
   GATE_PG_READY_ATTEMPTS,
   bumpSettleGateAttempts,
   catalogHash,
-  checkProveCoverage,
   describeWaitMs,
   diffReceiptAgainst,
   formatGateReport,
@@ -74,6 +73,15 @@ import {
   markPostWriteGateStart,
   writeReceipt,
 } from "./gates.ts";
+import {
+  isProveReceipt,
+  isProveSegment,
+  proveRuleIdsIn,
+  resolveJobRuleIds,
+  resolveJobScope,
+  ruleFlagPattern,
+  checkProveCoverage,
+} from "./mergegate.ts";
 import {
   formatSpecScope,
   formatTaskPacketRefusal,
@@ -1716,6 +1724,171 @@ await check("checkProveCoverage: an ordinary green receipt is not prove evidence
   assert.match(result.report, /no prove receipt at all/);
 });
 
+
+// ── mergegate.ts: ONE job-scope resolver + ONE prove policy (defect 2) ──────
+// Both merge-back consumers — the approval relay (jobs.ts
+// `relayApprovalDecision`) and the merge-path prove block (index.ts) — call
+// `resolveJobRuleIds`. Before this, the relay parsed the job's TASK TEXT while
+// the merge path read the CLAIMS LOG, so "claim names rules, task text names
+// none" could be relay-approved and merge-blocked on the identical merge-back.
+// These cases pin the resolver's precedence, the identity of the two consumer
+// answers, and the one-copy wiring (source-level, like the packet-boundary case
+// above — index.ts cannot be imported headless).
+const DELEGATE_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+/** A repo with a loadable policy, a job registry entry and an optional claim. */
+async function mergeGateFixture(name, opts) {
+  const repo = path.join(tmp, name);
+  writeWorkflow(repo);
+  const jobId = opts.jobId || "job-scope-1";
+  // The registry entry: its `task` is the FALLBACK scope source only.
+  const jobsDir = path.join(repo, ".pi", "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(jobsDir, jobId + ".json"),
+    JSON.stringify({ id: jobId, agent: "orchestrator", task: opts.task, startedAt: "2026-01-01T00:00:00.000Z", runner: "tmux", status: "awaiting_approval" }),
+  );
+  // The spawn claim: the CLAIMS-FIRST scope source.
+  if (opts.claim) {
+    await prepareSpawnClaims({
+      cwd: repo,
+      jobId,
+      sessionId: "s-scope",
+      requests: [{ worker: "w-scope", task: opts.claim }],
+      baseline: [],
+    });
+  }
+  return { repo, jobId };
+}
+
+await check("(b) resolveJobRuleIds: claim rules win when the TASK TEXT carries no SPEC-SCOPE", async () => {
+  const { repo, jobId } = await mergeGateFixture("mergegate-claim-only", {
+    task: "Do the thing. No machine line in this task text at all.",
+    claim: "Implement it.\nSPEC-SCOPE: rules=R-CLAIM-001,R-CLAIM-002",
+  });
+  const rules = await resolveJobRuleIds(repo, jobId);
+  assert.deepEqual(rules, ["R-CLAIM-001", "R-CLAIM-002"], "the claim is the scope");
+  assert.equal((await resolveJobScope(repo, jobId)).source, "claim");
+
+  // BOTH consumers resolve the SAME scope: the relay passes the entry it read
+  // (`{ id }`), the merge path passes the env job id (a bare string).
+  const relayScope = await resolveJobRuleIds(repo, { id: jobId });
+  const mergePathScope = await resolveJobRuleIds(repo, jobId);
+  assert.deepEqual(relayScope, mergePathScope, "relay and merge path see one scope");
+  assert.deepEqual(relayScope, rules);
+
+  // …and therefore reach the SAME verdict: no prove receipt yet ⇒ both refuse
+  // and name the identical missing ids (relay: "PROVE receipts missing for this
+  // merge-back"; merge path: "MERGE BLOCKED").
+  const relayCoverage = await checkProveCoverage(repo, relayScope, { expectedHeadSha: PROVE_HEAD });
+  const mergeCoverage = await checkProveCoverage(repo, mergePathScope, { expectedHeadSha: PROVE_HEAD });
+  assert.equal(relayCoverage.ok, false);
+  assert.deepEqual(relayCoverage.missing, mergeCoverage.missing);
+  assert.deepEqual(relayCoverage.missing, ["R-CLAIM-001", "R-CLAIM-002"]);
+  assert.ok(relayCoverage.report === mergeCoverage.report, "identical coverage report");
+
+  // One scoped receipt covers its own rule only — the other stays missing.
+  writeProveReceipt(repo, { note: "prove rules=R-CLAIM-001", commands: [proveCommand("R-CLAIM-001")] });
+  const partial = await checkProveCoverage(repo, await resolveJobRuleIds(repo, jobId), { expectedHeadSha: PROVE_HEAD });
+  assert.deepEqual(partial.covered, ["R-CLAIM-001"]);
+  assert.deepEqual(partial.missing, ["R-CLAIM-002"]);
+  writeProveReceipt(repo, { note: "prove rules=R-CLAIM-002", commands: [proveCommand("R-CLAIM-002")] });
+  const full = await checkProveCoverage(repo, await resolveJobRuleIds(repo, jobId), { expectedHeadSha: PROVE_HEAD });
+  assert.equal(full.ok, true, full.report);
+  assert.deepEqual(full.covered, ["R-CLAIM-001", "R-CLAIM-002"]);
+});
+
+await check("resolveJobRuleIds: claims-first wins over a DISAGREEING task text", async () => {
+  const { repo, jobId } = await mergeGateFixture("mergegate-disagree", {
+    task: "Do the thing.\nSPEC-SCOPE: rules=R-TASK-009",
+    claim: "SPEC-SCOPE: rules=R-CLAIM-003",
+  });
+  const scope = await resolveJobScope(repo, jobId);
+  assert.equal(scope.source, "claim");
+  assert.deepEqual(scope.ruleIds, ["R-CLAIM-003"], "the claim wins; the task text is not merged in");
+  assert.deepEqual(await resolveJobRuleIds(repo, { id: jobId }), ["R-CLAIM-003"]);
+});
+
+await check("resolveJobRuleIds: registry task text is the fallback when the claim carries no scope", async () => {
+  const { repo, jobId } = await mergeGateFixture("mergegate-task-fallback", {
+    task: "Do the thing.\nSPEC-SCOPE: rules=R-TASK-001",
+    claim: "No machine line in this claim's task.",
+  });
+  const scope = await resolveJobScope(repo, jobId);
+  assert.equal(scope.source, "task");
+  assert.deepEqual(scope.ruleIds, ["R-TASK-001"]);
+  assert.deepEqual(await resolveJobRuleIds(repo, jobId), ["R-TASK-001"]);
+});
+
+await check("resolveJobRuleIds: no claim + no scope ⇒ no rules ⇒ no prove requirement", async () => {
+  const { repo, jobId } = await mergeGateFixture("mergegate-no-scope", {
+    task: "Do the thing. No machine line anywhere.",
+  });
+  const scope = await resolveJobScope(repo, jobId);
+  assert.deepEqual(scope.ruleIds, []);
+  assert.equal(scope.source, "none");
+  // Both consumers early-return on an empty scope: nothing to prove.
+  assert.deepEqual(await resolveJobRuleIds(repo, { id: jobId }), []);
+  // And an unknown job id is the same answer, never a throw (fail-open-empty).
+  assert.deepEqual(await resolveJobRuleIds(repo, "no-such-job"), []);
+  assert.deepEqual(await resolveJobRuleIds(repo, ""), []);
+  assert.deepEqual(await resolveJobRuleIds(repo, "../escape"), []);
+  const none = await checkProveCoverage(repo, [], {});
+  assert.equal(none.ok, true);
+  assert.match(none.report, /needs no prove receipts/);
+});
+
+await check("mergegate: prove-receipt matching is ONE regex (argv scan, per-rule matcher, prove segment, prove note)", async () => {
+  // The scanner and the per-rule matcher come from one source string.
+  assert.deepEqual(proveRuleIdsIn("make prove args='--rule R-A-1'"), ["R-A-1"]);
+  assert.deepEqual(proveRuleIdsIn("make prove args='--rule=R-A-1 --rule R-A-2'"), ["R-A-1", "R-A-2"]);
+  assert.deepEqual(proveRuleIdsIn("make prove args='--rule=R-A-1 --rule=R-A-1'"), ["R-A-1"], "deduped");
+  assert.deepEqual(proveRuleIdsIn("make audit/static"), []);
+  // Token boundary, both directions, exactly as the coverage check enforces it.
+  assert.equal(ruleFlagPattern("R-A-1").test("make prove args='--rule R-A-11'"), false);
+  assert.equal(ruleFlagPattern("R-A-11").test("make prove args='--rule R-A-1'"), false);
+  assert.equal(ruleFlagPattern("R-A-1").test("make prove args='--rule R-A-1'"), true);
+  assert.equal(ruleFlagPattern("R-A-1").test("make prove args='--rule=R-A-1'"), true);
+  // Prove-segment detection is word-exact on the DECLARED tokens.
+  assert.equal(isProveSegment("make prove args='--rule R-A-1'", ["make", "prove"]), true);
+  assert.equal(isProveSegment("make proven", ["make", "prove"]), false);
+  assert.equal(isProveSegment("echo make prove", ["make", "prove"]), false);
+  assert.equal(isProveSegment("make prove", []), false, "no declared prove command ⇒ never prove");
+  // Only an extension-written "prove …" note is prove evidence.
+  assert.equal(isProveReceipt({ note: "prove rules=R-A-1" }), true);
+  assert.equal(isProveReceipt({ note: "settle gate attempt 1/5" }), false);
+  assert.equal(isProveReceipt({ note: "  PROVE rules=R-A-1" }), true);
+  // Source-level: exactly ONE place builds the `--rule` regex.
+  const tsFiles = fs.readdirSync(DELEGATE_DIR).filter((name) => name.endsWith(".ts"));
+  const offenders = [];
+  for (const name of tsFiles) {
+    const source = fs.readFileSync(path.join(DELEGATE_DIR, name), "utf8");
+    const hits = [...source.matchAll(/--rule\(\?:=/g)].length;
+    if (hits > 0) offenders.push(name + ":" + String(hits));
+  }
+  assert.deepEqual(offenders, ["mergegate.ts:1"], "the `--rule` matcher lives in one place");
+});
+
+await check("mergegate: both merge-back consumers call the ONE resolver (source-level wiring)", async () => {
+  const indexSource = fs.readFileSync(path.join(DELEGATE_DIR, "index.ts"), "utf8");
+  const jobsSource = fs.readFileSync(path.join(DELEGATE_DIR, "jobs.ts"), "utf8");
+  const gatesSource = fs.readFileSync(path.join(DELEGATE_DIR, "gates.ts"), "utf8");
+  const mergegateSource = fs.readFileSync(path.join(DELEGATE_DIR, "mergegate.ts"), "utf8");
+
+  // Consumer B (merge execution path).
+  assert.match(indexSource, /const rules = await resolveJobRuleIds\(ctx\.cwd, jobId\);/, "the merge hook resolves via mergegate");
+  // Consumer A (approval relay).
+  assert.match(jobsSource, /const scopedRules = await resolveJobRuleIds\(cwd, entry\.id\);/, "the relay resolves via mergegate");
+  // No private scope derivation left in either consumer.
+  assert.equal([...indexSource.matchAll(/parseSpecScope\(/g)].length, 0, "index.ts derives no scope of its own");
+  assert.equal([...jobsSource.matchAll(/parseSpecScope\(/g)].length, 0, "jobs.ts derives no scope of its own");
+  assert.doesNotMatch(indexSource, /recordedScopedRules/, "the old merge-path scope reader is gone");
+  // The prove policy has no second home.
+  assert.equal([...gatesSource.matchAll(/function checkProveCoverage/g)].length, 0, "gates.ts owns no prove policy");
+  assert.equal([...indexSource.matchAll(/function proveRuleIdsIn|function isProveSegment/g)].length, 0, "index.ts owns no prove matcher");
+  assert.match(mergegateSource, /export async function resolveJobRuleIds/, "mergegate exports the resolver");
+  assert.match(mergegateSource, /export async function checkProveCoverage/, "mergegate exports the coverage check");
+});
 
 // ── Gate VM execution backend ───────────────────────────────────────────────
 // The authoritative gates no longer spawn on the host: they run via

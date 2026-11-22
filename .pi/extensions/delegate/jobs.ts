@@ -63,8 +63,8 @@ import {
   APPROVAL_MARKER,
   HANDOFF_TERMINAL_TOKENS,
 } from "./contracts.ts";
-import { parseSpecScope } from "./protocol.ts";
-import { runReconciliation, checkProveCoverage } from "./gates.ts";
+import { runReconciliation } from "./gates.ts";
+import { checkProveCoverage, resolveJobRuleIds } from "./mergegate.ts";
 import { getFinalOutput, parseChildJsonl, truncateParallelOutput } from "./output.ts";
 
 const execFileP = promisify(execFile);
@@ -770,9 +770,12 @@ export interface ApprovalRelayOutcome {
  *
  * This relay is also the extension's merge-back choke point, so it carries both
  * content bindings: the reviewed HEAD SHA (the worktree must not have moved)
- * and, for a task whose SPEC-SCOPE names rules, VERIFIED prove receipts for
- * EVERY named rule (checkProveCoverage). A refusal names the rule ids and
- * tells the caller to relay `rejected:` so the orchestrator runs prove and
+ * and, for a job whose RECORDED scope names rules, VERIFIED prove receipts for
+ * EVERY named rule. Both the scope (`resolveJobRuleIds`) and the receipt policy
+ * (`checkProveCoverage`) come from ./mergegate.ts — the same resolver and
+ * policy the merge execution path in index.ts uses, so the relay and the merge
+ * block can never disagree about a job's scope. A refusal names the rule ids
+ * and tells the caller to relay `rejected:` so the orchestrator runs prove and
  * re-emits a fresh approval request — never approve over missing evidence.
  */
 export async function relayApprovalDecision(cwd: string, id: string, message: string): Promise<ApprovalRelayOutcome> {
@@ -840,14 +843,21 @@ export async function relayApprovalDecision(cwd: string, id: string, message: st
     }
   }
 
-  // PROVE at merge-back: a task whose SPEC-SCOPE names rules must have VERIFIED
-  // prove receipts covering EVERY named rule before its approval is relayed —
-  // this relay IS a merge-back choke point (the merge execution path enforces
-  // the same precondition independently, so a decision typed straight into the
-  // pane cannot bypass it). Fail closed: missing/stale/failed evidence refuses
-  // with the rule ids named, because a green static check does not mean the
-  // behavior was exercised. Rejections and every other message pass through
+  // PROVE at merge-back: a job whose RECORDED scope names rules must have
+  // VERIFIED prove receipts covering EVERY named rule before its approval is
+  // relayed — this relay IS a merge-back choke point (the merge execution path
+  // enforces the same precondition independently, so a decision typed straight
+  // into the pane cannot bypass it). Fail closed: missing/stale/failed evidence
+  // refuses with the rule ids named, because a green static check does not mean
+  // the behavior was exercised. Rejections and every other message pass through
   // untouched (only an approval claims the merge-back).
+  //
+  // The scope comes from ./mergegate.ts `resolveJobRuleIds` — THE resolver, the
+  // same call the merge-path block makes. It used to be parsed here from
+  // `entry.task` while the merge path read the claims log, so a job whose claim
+  // named rules and whose task text named none could be relay-approved and then
+  // merge-blocked on the identical merge-back (defect 2). One resolver, one
+  // answer.
   //
   // Receipts are HOST-ONLY: `cwd` (the calling host session's own repo root) is
   // the receipts root, never the worktree — a worker's mount could otherwise
@@ -855,7 +865,7 @@ export async function relayApprovalDecision(cwd: string, id: string, message: st
   // the approval decision itself (above, `awaitingApprovalHeadSha`), not to the
   // coverage read: prove receipts are written by the orchestrator host session
   // and name the verifier plane's HEAD, not the worktree's.
-  const scopedRules = parseSpecScope(entry.task)?.rules ?? [];
+  const scopedRules = await resolveJobRuleIds(cwd, entry.id);
   const isApproval = /^approved\b/i.test(message.trim());
   if (isApproval && scopedRules.length > 0) {
     let coverage: Awaited<ReturnType<typeof checkProveCoverage>>;
