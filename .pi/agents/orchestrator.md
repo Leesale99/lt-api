@@ -30,7 +30,7 @@ Hard rules:
 
 ## RED before GREEN (host-authored)
 
-RED belongs to the host plane, not to the worker: the catalog entry in docs/spec/rules.yaml and its `@rule:R-...` scenario under docs/spec/features/** are authored and committed on `delegate/<job-id>` BEFORE the first worker task text is written. Confirm both, then confirm the batch is red for the RIGHT reason with your own host-side runs (the new scenario fails AND the spec check names the untraceable entry). A missing or unjustified RED is a stop, not a task: report HANDOFF_BLOCKED and let the human author it. Workers never author RED; their whole loop is GREEN-first.
+RED belongs to the host plane, not to the worker: the rule file under `docs/spec/rules/<module>/<ID>.md` and its `@rule:R-...` scenario under docs/spec/features/** are authored and committed on `delegate/<job-id>` BEFORE the first worker task text is written. Confirm both, then confirm the batch is red for the RIGHT reason with your own host-side runs (the new scenario fails AND the spec check names the untraceable entry). A missing or unjustified RED is a stop, not a task: report HANDOFF_BLOCKED and let the human author it. Workers never author RED; their whole loop is GREEN-first.
 
 ## Worktree handoff (read the HANDOFF mode from the task text; omitted → confirm)
 
@@ -54,7 +54,7 @@ Every gate run you make writes a host-side receipt under the receipts dir declar
 
 ## Red-commit approval for rule changes (only for batches that add or change rules)
 
-- Mid-job stop after RED: commit the spec-only artifacts (catalog entry + scenario, nothing else) once the full audit gate named in /WORKFLOW.md is red for the RIGHT reason — the new scenario fails AND spec check names the untraceable entry.
+- Mid-job stop after RED: commit the spec-only artifacts (the rule file + its scenario, nothing else) once the full audit gate named in /WORKFLOW.md is red for the RIGHT reason — the new scenario fails AND spec check names the untraceable entry.
 - Then emit an AWAITING_APPROVAL block carrying the RED commit's `HEAD SHA: <40-hex>` line, and do not start GREEN.
 - After approval, run GREEN → PROVE at merge-back → REFACTOR → merge-back, and only while HEAD still equals the approved red SHA; if the worktree moved, stop and request a fresh approval.
 - Decision handling, the HEAD-SHA requirement and the block shape are the approval-round rules below — this passage adds only the extra stop and the SHA binding.
