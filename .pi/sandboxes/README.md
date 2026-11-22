@@ -24,7 +24,8 @@ worktree mount, egress rules, the model key — is attached when a sandbox is
 │   ├── pi-worker.dockerfile   the recipe: FROM shell-docker, ENV, RUN go/npm, COPY pi config
 │   └── files/
 │       ├── models.json        opencode-go provider catalog (COPY'd into the image)
-│       └── settings.json      pi defaults (COPY'd into the image)
+│       ├── settings.json      pi defaults (COPY'd into the image)
+│       └── web-search.json    web-search provider for the researcher (COPY'd into the image)
 ├── build.sh                   the build pipeline (validate → build → warm → snapshot → prove → clean)
 ├── README.md                  this file
 └── dist/                      artifacts, gitignored: timings.tsv, timings-*.md, logs/
@@ -38,13 +39,90 @@ worktree mount, egress rules, the model key — is attached when a sandbox is
 | Go | `1.27.1` at `/usr/local/go`, symlinked to `/usr/local/bin/go` and `gofmt` (`ARG GO_VERSION`) |
 | pi | `@earendil-works/pi-coding-agent@1.6.0`, global npm install (`ARG PI_VERSION`) |
 | image env | `GOTOOLCHAIN=local`, `GOPROXY=https://proxy.golang.org`, `GOSUMDB=sum.golang.org`, `PI_AGENT_HOME=/home/agent/.pi/agent` (`ENV`) — plus the same three Go values in `/home/agent/.config/go/env` |
-| pi config | `/home/agent/.pi/agent/models.json` (opencode-go provider catalog) + `settings.json` (default `opencode-go` / `glm-5.3` / thinking `high`), `COPY --chown=1000:1000` |
+| pi config | `/home/agent/.pi/agent/models.json` (opencode-go provider catalog) + `settings.json` (default `opencode-go` / `glm-5.3` / thinking `high`) + `web-search.json` (`{"provider":"openai"}`, the mountless researcher's web-search backend), all `COPY --chown=1000:1000` |
 | Go module cache | `/home/agent/go/pkg/mod`, ~132 MB / 45 module zips (this repo's `go.mod` graph) |
 | template tag | `pi-worker:v1` |
 
 Nothing auto-runs on boot: the recipe sets no entrypoint (the base image's
 shell-compatible launcher keeps the sandbox alive), so the delegate extension
 starts `pi` itself through `sbx exec`.
+
+## Sandbox profiles: what a task VM actually gets
+
+One profile table (`.pi/extensions/delegate/sbx.ts`, `SANDBOX_PROFILES`) is the
+policy. A role gets exactly what its row lists — no mount it does not name, no
+egress it does not name, no secret it does not name. The profile also states the
+VM's resources; **no role relies on an sbx default** (`--cpus 0` means *all* host
+CPUs, and an omitted `--memory` means 50% of host RAM — both wrong for a task
+VM).
+
+| role | workspace mounts | egress allowlist (`sbx policy allow network`) | secret sentinels | vCPUs | memory |
+|---|---|---|---|---|---|
+| `worker` | worktree `rw` | `opencode.ai`, `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com` (:443) | `OPENCODE_GO_API_KEY` | 4 | 8g |
+| `general` | worktree `rw` | same four as `worker` | `OPENCODE_GO_API_KEY` | 4 | 8g |
+| `scout` | scratch `rw` + worktree `ro` | `opencode.ai` (model only) | — | 2 | 4g |
+| `librarian` | vault `rw` + worktree `ro` | `opencode.ai` (model only) | — | 2 | 4g |
+| `researcher` | **none (mountless)** | `opencode.ai`, `*.opencode.ai`, `api.openai.com` (:443) | `OPENAI_API_KEY` | 2 | 4g |
+
+Read-only/mountless roles (scout, librarian, researcher) are model-call-bound,
+not build-bound, hence 2 CPU / 4g; worker and general are the roles that run Go
+builds and gates and keep 4 CPU / 8g.
+
+The **researcher is sandboxed and genuinely mountless**: `sbx create` gets zero
+workspace positionals, so the VM has no copy of the repo, the vault, or the
+host. Its whole work surface is the network — the model provider plus pi's
+web-search backend — which is why its agent frontmatter drops `read` and its
+prompt says a task needing repo/local access is a blocked report. Anything a
+`fetch_content` call reaches for outside that allowlist is denied by the
+default-deny proxy.
+
+Two fail-closed details of the spawn path:
+
+- `sbx create --no-input` (a global sbx flag, like `sbx exec --no-input`). The
+  host process is never interactive, so an unmatched egress request or any other
+  prompt must ERROR instead of hanging a spawn that would never produce a
+  verdict.
+- `--deny-network <host>` at create time, from an optional per-profile
+  `denyNetworkHosts` list. Create-time denies are in force *before* the
+  per-sandbox allow rule (a separate, later `sbx policy allow` call), which
+  closes the post-create window. Every profile's list is currently empty; the
+  mechanism is the deliverable, not an invented deny.
+
+### Host-side secret setup (once per host)
+
+Both keys are **custom secrets**: the value stays in the host secret store, the
+VM only ever sees a `sbx-cs-` placeholder in the env var, and the sbx proxy
+substitutes the real value in the HTTP header on requests to the allowed hosts.
+Never pass a real key through `-e`, an image `COPY`, or a file in the VM.
+
+```sh
+# 1. model key — every role that runs pi (worker/general/scout/librarian/researcher)
+printf '%s' "$OPENCODE_GO_API_KEY" | sbx secret set-custom \
+    --host opencode.ai --host '**.opencode.ai' \
+    --env OPENCODE_GO_API_KEY --value-stdin
+
+# 2. web-search key — researcher only (web-search.json → {"provider":"openai"})
+printf '%s' "$OPENAI_API_KEY" | sbx secret set-custom \
+    --host api.openai.com \
+    --env OPENAI_API_KEY --value-stdin
+```
+
+The model key is the `opencode-go` key from the host's pi auth
+(`~/.pi/agent/auth.json`). `models.json` stores
+`"apiKey": "$OPENCODE_GO_API_KEY"`, so pi inside the VM resolves that env var
+and the proxy turns the placeholder into the real key on the wire. The web-search
+key works the same way with `OPENAI_API_KEY`; `sbx secret set openai` is the
+built-in equivalent (same env var, same `api.openai.com` targets) if you prefer
+the non-experimental command.
+
+Both are **global** secrets (no `--sandbox`), so every sandbox receives the
+placeholder. That is safe because the placeholder is useless without an allow
+rule: a role whose egress list lacks `api.openai.com` cannot send it anywhere.
+Check the injection without printing the value:
+
+```sh
+sbx exec <sandbox> printenv OPENAI_API_KEY | head -c 8   # sbx-cs-
+```
 
 ## Rebuild
 
@@ -221,6 +299,9 @@ The snapshot is a long-lived, shared artifact, so no credential may enter it.
 
 - `kit/files/models.json` stores `"apiKey": "$OPENCODE_GO_API_KEY"` — a
   *sentinel*, not a key.
+- `kit/files/web-search.json` stores no key at all (only `provider: openai`); pi
+  reads `OPENAI_API_KEY` from the environment, which is the second sentinel
+  (researcher only).
 - The key itself is injected **per sandbox** by the sbx host proxy at create
   time, as a placeholder env var whose value is a proxy token, not the real
   credential. The VM's environment shows a value with the `sbx-cs-` prefix; the
@@ -276,11 +357,15 @@ capabilities:
        opencode.ai:443,proxy.golang.org:443,sum.golang.org:443,storage.googleapis.com:443
    ```
 
-   Those four are all a task needs: model calls (`opencode.ai`), module and
-   checksum fetches (`proxy.golang.org`, `sum.golang.org`), and Go tooling
-   artefacts (`storage.googleapis.com`). If the policy fails to apply, the
-   extension tears the VM down and fails loudly — a VM without its declared
-   egress is useless, a VM with undeclared egress is dangerous.
+   Those four are the `worker`/`general` row of the profile table above: model
+   calls (`opencode.ai`), module and checksum fetches (`proxy.golang.org`,
+   `sum.golang.org`), and Go tooling artefacts (`storage.googleapis.com`). The
+   other roles get narrower or different lists from that same table (scout and
+   librarian: model provider only; researcher: model provider plus
+   `api.openai.com`) — the table is authoritative, this snippet is one row. If
+   the policy fails to apply, the extension tears the VM down and fails loudly —
+   a VM without its declared egress is useless, a VM with undeclared egress is
+   dangerous.
 
 The reason for the split: baking the runtime list into every task VM would grant
 each of them npm and toolchain-download reach they never need. Per-sandbox

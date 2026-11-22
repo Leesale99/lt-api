@@ -101,10 +101,20 @@ RUN set -eu; \
 # opencode.ai only.
 COPY --chown=1000:1000 files/models.json files/settings.json /home/agent/.pi/agent/
 
+# Web search, baked for the MOUNTLESS researcher role (the only agent whose
+# frontmatter grants web_search). `{"provider":"openai"}` makes pi call
+# api.openai.com/v1, whose credential is the OPENAI_API_KEY sentinel — same
+# custom-secret mechanism as the model key (the VM only ever holds the
+# `sbx-cs-` placeholder; the host substitutes the real key in the header). A
+# role without web tools never reads this file, so it changes nothing for them.
+COPY --chown=1000:1000 files/web-search.json /home/agent/.pi/agent/web-search.json
+
 # Baked-config assertion: the files are present, owned by the agent, and the
 # default model the template will start with resolves in the catalog.
 RUN set -eu; \
-    ls -l /home/agent/.pi/agent/settings.json /home/agent/.pi/agent/models.json; \
+    ls -l /home/agent/.pi/agent/settings.json /home/agent/.pi/agent/models.json \
+          /home/agent/.pi/agent/web-search.json; \
     grep -q 'glm-5.3' /home/agent/.pi/agent/settings.json; \
     grep -q 'OPENCODE_GO_API_KEY' /home/agent/.pi/agent/models.json; \
+    grep -q '"provider":"openai"' /home/agent/.pi/agent/web-search.json; \
     echo "pi-worker: baked agent config ok"

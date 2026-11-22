@@ -85,6 +85,16 @@ export const SANDBOX_DEFAULT_CPUS = 4;
 /** Memory per VM (binary units). `sbx create` defaults to 50% of host RAM. */
 export const SANDBOX_DEFAULT_MEMORY = "8g";
 /**
+ * CPU allocation for the read-only / mountless roles (scout, librarian,
+ * researcher). Those roles never run a build or a gate in the VM: they are
+ * model-call-bound (read, write prose, fetch pages), so half the worker's CPUs
+ * is the right shape. `sbx create --cpus 0` means ALL host CPUs, so every role
+ * states an explicit number — the table never relies on an sbx default.
+ */
+export const SANDBOX_LIGHT_CPUS = 2;
+/** Memory for the read-only / mountless roles. Explicit for the same reason. */
+export const SANDBOX_LIGHT_MEMORY = "4g";
+/**
  * Agent positional for a TEMPLATE create: the image comes from the template, so
  * the slot only names a built-in agent. On the kit fallback this token is
  * replaced by the kit directory itself (`sbx create AGENT|SANDBOX_KIT
@@ -113,6 +123,27 @@ export const SANDBOX_WORKER_EGRESS_HOSTS: readonly string[] = [
  */
 export const SANDBOX_MODEL_EGRESS_HOSTS: readonly string[] = ["opencode.ai:443"];
 
+/**
+ * The researcher's egress: the model provider (it has to think) plus the
+ * web-search backend. The role is MOUNTLESS, so its only work surface is the
+ * network, and the whole surface is these three rules:
+ *
+ *   opencode.ai:443      the model call (same provider as every other role)
+ *   *.opencode.ai:443    provider subdomains (the proxy matches the wildcard)
+ *   api.openai.com:443   pi's web-search provider — the baked
+ *                        `~/.pi/agent/web-search.json` is `{"provider":"openai"}`,
+ *                        which calls `api.openai.com/v1` with `OPENAI_API_KEY`
+ *
+ * Anything else a `fetch_content` call reaches for is denied by the default-deny
+ * proxy. That is the profile, not an accident: a research task that needs some
+ * other host is a blocked report, not a reason to widen the list.
+ */
+export const SANDBOX_RESEARCHER_EGRESS_HOSTS: readonly string[] = [
+  "opencode.ai:443",
+  "*.opencode.ai:443",
+  "api.openai.com:443",
+];
+
 /** The librarian's read-write vault. Not a git repo: no integrity check covers it. */
 export const SANDBOX_VAULT_PATH = "/Users/aleksrdvn/Projects/vaults/lt-api";
 
@@ -124,6 +155,19 @@ export const SANDBOX_VAULT_PATH = "/Users/aleksrdvn/Projects/vaults/lt-api";
  * table. Documented here so the profile table can name its secret surface.
  */
 export const SANDBOX_SECRET_SENTINEL_ENVS: readonly string[] = ["OPENCODE_GO_API_KEY"];
+
+/**
+ * The researcher's second credential surface. pi's web-search provider
+ * (`~/.pi/agent/web-search.json` → `{"provider": "openai"}`) authenticates its
+ * `api.openai.com/v1` calls with `OPENAI_API_KEY`, and that env var reaches the
+ * VM through the SAME sentinel mechanism as the model key: the host stores the
+ * real value with `sbx secret set-custom --host api.openai.com --env
+ * OPENAI_API_KEY --value-stdin`, every sandbox then sees a `sbx-cs-<rand>`
+ * placeholder, and the host proxy substitutes the real key in the HTTP header
+ * on requests to that host. The real key is never in the VM, the image, or an
+ * `-e` pair — exactly like `OPENCODE_GO_API_KEY` above.
+ */
+export const SANDBOX_OPENAI_SECRET_SENTINEL_ENV = "OPENAI_API_KEY";
 
 /** Exit code: `sbx` could not run the command (missing sandbox, not runnable). */
 export const SBX_EXIT_COULD_NOT_RUN = 125;
@@ -414,7 +458,12 @@ export interface SandboxMount {
 export interface SandboxProfile {
   /** Agent/role name this profile applies to. */
   role: string;
-  /** true ⇒ spawn on the host (no VM). Documented residual, not a policy escape. */
+  /**
+   * true ⇒ spawn on the host (no VM). A mechanism, not a policy escape: NO role
+   * uses it today (researcher used to, and is now a mountless sandbox). Kept so
+   * a future role can be declared host-side deliberately, and so `false` here
+   * is an explicit statement rather than an absence.
+   */
   hostPassthrough: boolean;
   /**
    * Mounts in `sbx create` positional order. The FIRST entry is the primary
@@ -428,7 +477,20 @@ export interface SandboxProfile {
   networkHosts: string[];
   /** Secret sentinel env NAMES the proxy injects (never values, never `-e`). */
   secretSentinelEnvs: string[];
+  /**
+   * Per-sandbox network DENY rules passed at create time as repeated
+   * `--deny-network <host>` (sbx 0.54.0: `--deny-network strings`, repeatable).
+   * They are applied by `sbx create` itself, i.e. BEFORE the per-sandbox allow
+   * policy below runs, which closes the post-create egress window for anything
+   * a role must never reach. Deny beats allow (a local deny can only narrow).
+   *
+   * Default is EMPTY for every role: this is the mechanism, and no role has a
+   * justified deny yet. Omit or list [] rather than inventing one.
+   */
+  denyNetworkHosts?: string[];
+  /** vCPUs for the VM. Always explicit — `--cpus 0` means all host CPUs. */
   cpus: number;
+  /** Memory (binary units). Always explicit — sbx defaults to 50% of host RAM. */
   memory: string;
 }
 
@@ -471,8 +533,9 @@ export const SANDBOX_PROFILES: Record<string, SandboxProfile> = {
     // Model provider only: the agent has to be able to think. No task egress.
     networkHosts: [...SANDBOX_MODEL_EGRESS_HOSTS],
     secretSentinelEnvs: [],
-    cpus: SANDBOX_DEFAULT_CPUS,
-    memory: SANDBOX_DEFAULT_MEMORY,
+    denyNetworkHosts: [],
+    cpus: SANDBOX_LIGHT_CPUS,
+    memory: SANDBOX_LIGHT_MEMORY,
   },
   librarian: {
     role: "librarian",
@@ -485,20 +548,27 @@ export const SANDBOX_PROFILES: Record<string, SandboxProfile> = {
     // Model provider only — the vault is the work surface, not the network.
     networkHosts: [...SANDBOX_MODEL_EGRESS_HOSTS],
     secretSentinelEnvs: [],
-    cpus: SANDBOX_DEFAULT_CPUS,
-    memory: SANDBOX_DEFAULT_MEMORY,
+    denyNetworkHosts: [],
+    cpus: SANDBOX_LIGHT_CPUS,
+    memory: SANDBOX_LIGHT_MEMORY,
   },
   researcher: {
-    // NOT sandboxed this batch: the profile is deferred and documented as the
-    // one un-sandboxed role. `hostPassthrough` is a marker, not an escape hatch
-    // for other roles — see profileForRole.
+    // SANDBOXED, MOUNTLESS. There is no worktree in the VM at all: the role's
+    // whole product is prose about the web, so a repo mount would be reach it
+    // does not need. `mounts: []` emits NO workspace positionals on `sbx
+    // create` (verified supported: the workspace list is `[PATH...]`, and a
+    // create with none leaves the VM with its default (unmounted) root). Egress
+    // is the model provider plus pi's web-search backend — see
+    // SANDBOX_RESEARCHER_EGRESS_HOSTS — and the web-search key rides the same
+    // custom-secret sentinel as the model key.
     role: "researcher",
-    hostPassthrough: true,
+    hostPassthrough: false,
     mounts: [],
-    networkHosts: [],
-    secretSentinelEnvs: [],
-    cpus: SANDBOX_DEFAULT_CPUS,
-    memory: SANDBOX_DEFAULT_MEMORY,
+    networkHosts: [...SANDBOX_RESEARCHER_EGRESS_HOSTS],
+    secretSentinelEnvs: [SANDBOX_OPENAI_SECRET_SENTINEL_ENV],
+    denyNetworkHosts: [],
+    cpus: SANDBOX_LIGHT_CPUS,
+    memory: SANDBOX_LIGHT_MEMORY,
   },
 };
 
@@ -513,7 +583,11 @@ export function profileForRole(role: string): SandboxProfile {
   return { ...SANDBOX_PROFILES.worker, role };
 }
 
-/** true ⇒ this role spawns on the host (only `researcher` today). */
+/**
+ * true ⇒ this role spawns on the host. NO role is passthrough today (researcher
+ * became a mountless sandbox); the predicate is retained because the spawn seam
+ * branches on it and an unknown role must never be one (it gets `worker`).
+ */
 export function isHostPassthroughRole(role: string): boolean {
   return profileForRole(role).hostPassthrough === true;
 }
@@ -568,7 +642,11 @@ export function generatedSandboxName(
 export interface CreateSandboxOptions {
   /** Role name from the agent frontmatter (`go-worker`, `scout`, …). */
   role: string;
-  /** Absolute host path of the worktree to mount at the same path in the VM. */
+  /**
+   * Absolute host path of the worktree to mount at the same path in the VM.
+   * IGNORED by a mountless profile (researcher), which emits no workspace
+   * positionals at all rather than mounting a path it has no business seeing.
+   */
   worktreePath: string;
   /** Repo root, for resolving the fallback kit path. */
   cwd?: string;
@@ -596,6 +674,14 @@ export interface SandboxHandle {
   createdFrom: "template" | "kit";
   /** Egress rules actually added (empty ⇒ none were added). */
   networkHosts: string[];
+  /** Deny rules passed at create time (empty ⇒ none). */
+  denyNetworkHosts: string[];
+  /**
+   * false ⇒ the VM has NO workspace mount (the mountless researcher). `exec`
+   * then uses `SANDBOX_MOUNTLESS_WORKDIR` instead of the host worktree path,
+   * which does not exist inside a VM with no mounts.
+   */
+  hasWorkspace: boolean;
 }
 
 /** `PATH` or `PATH:ro` — sbx's workspace argument form. */
@@ -618,6 +704,10 @@ export function createScratchWorkspace(label: string): string {
 
 /**
  * The workspace positionals for a profile, in declaration order.
+ *
+ * A profile with `mounts: []` (the mountless researcher) yields NO positionals
+ * at all: `sbx create AGENT|SANDBOX_KIT [PATH...]` accepts zero workspaces, and
+ * a mountless role must not be handed a path it would then be able to see.
  *
  * `scratchPath` is required for (and only used by) a `scratch` mount; a profile
  * that declares one and gets no path is a programming error, not something to
@@ -654,8 +744,19 @@ export function createSandboxArgs(opts: {
   vaultPath?: string;
   scratchPath?: string;
 }): string[] {
-  const args = ["create", "--name", opts.name, "--no-progress"];
+  // FAIL CLOSED: `--no-input` is a GLOBAL sbx flag (0.54.0 `sbx create --help`,
+  // Global Flags) and the host process is never interactive. Without it, an
+  // unmatched egress request — or any other prompt, e.g. a secret replacement or
+  // a permission confirmation — would HANG this spawn instead of failing, and a
+  // hung create is a worker that never starts and never gets a verdict.
+  const args = ["create", "--no-input", "--name", opts.name, "--no-progress"];
   args.push("--cpus", String(opts.profile.cpus), "--memory", opts.profile.memory);
+  // Create-time DENY rules come before any allow rule can exist for this
+  // sandbox: they are part of the create call, while the profile's allow list is
+  // a separate `sbx policy allow` afterwards. Nothing is denied today (every
+  // profile declares []); the plumbing is what closes the post-create window for
+  // a future role.
+  for (const host of profileDenyHosts(opts.profile)) args.push("--deny-network", host);
   if (opts.reference === "template") {
     args.push("-t", opts.template ?? SANDBOX_TEMPLATE_NAME);
   }
@@ -664,7 +765,7 @@ export function createSandboxArgs(opts: {
   // (`sbx create AGENT|SANDBOX_KIT [PATH...]`). The kit path is NOT a `--kit`
   // value — that flag is mixin-only, so a v3 workload passed there would be the
   // wrong kind of kit. Everything after the first positional is a workspace
-  // path, in profile order.
+  // path, in profile order — and a mountless profile contributes none.
   const agentSlot =
     opts.reference === "kit" && opts.kitPath ? opts.kitPath : SANDBOX_CREATE_AGENT;
   args.push(
@@ -672,6 +773,11 @@ export function createSandboxArgs(opts: {
     ...workspaceArgsFor(opts.profile, opts.worktreePath, opts.vaultPath, opts.scratchPath),
   );
   return args;
+}
+
+/** A profile's create-time deny hosts (absent ⇒ none, never an sbx default). */
+export function profileDenyHosts(profile: SandboxProfile): string[] {
+  return [...(profile.denyNetworkHosts ?? [])];
 }
 
 /** `sbx policy allow network` argv for one sandbox (exported for tests). */
@@ -753,6 +859,13 @@ export async function createWorkerSandbox(opts: CreateSandboxOptions): Promise<S
     }
   }
 
+  // Contract with `exec`: a profile with no mounts produced a VM with no
+  // workspace, so `-w <host path>` would point at a directory that does not
+  // exist inside it (exec substitutes SANDBOX_MOUNTLESS_WORKDIR). Recorded from
+  // the profile actually used (not re-derived from the role) and dropped again
+  // by teardown.
+  sandboxHasWorkspace.set(name, profile.mounts.length > 0);
+
   if (profile.networkHosts.length > 0) {
     const allowed = await runSbx(policyAllowArgs(name, profile.networkHosts), {
       timeoutMs: SBX_POLICY_TIMEOUT_MS,
@@ -761,6 +874,7 @@ export async function createWorkerSandbox(opts: CreateSandboxOptions): Promise<S
       // A VM without its declared egress is useless but not dangerous; a VM
       // with un-declared egress would be. Tear it down and fail loudly.
       await rmSandbox(name);
+      sandboxHasWorkspace.delete(name);
       discardScratch();
       throw new Error(
         "sbx policy allow network failed for sandbox " + name + ": " + describeFailure(allowed),
@@ -776,6 +890,8 @@ export async function createWorkerSandbox(opts: CreateSandboxOptions): Promise<S
     scratchPath,
     createdFrom: used,
     networkHosts: [...profile.networkHosts],
+    denyNetworkHosts: profileDenyHosts(profile),
+    hasWorkspace: profile.mounts.length > 0,
   };
 }
 
@@ -790,7 +906,12 @@ function describeFailure(result: SbxProcessResult): string {
 }
 
 export interface ExecSandboxOptions {
-  /** `-w`: working directory inside the VM (the mounted worktree). */
+  /**
+   * `-w`: working directory inside the VM (the mounted worktree). For a
+   * MOUNTLESS sandbox this host path does not exist in the VM, so
+   * `sandboxWorkdir` substitutes `SANDBOX_MOUNTLESS_WORKDIR` (`/home/agent`, the
+   * one directory the image guarantees) — the host path is never passed.
+   */
   worktreePath: string;
   /** `-e K=V` pairs. Never a real secret value — see SANDBOX_SECRET_SENTINEL_ENVS. */
   env?: Record<string, string>;
@@ -807,17 +928,52 @@ export interface SandboxExecResult extends SbxProcessResult {
   classification: SbxExitClassification;
 }
 
-/** `sbx exec` argv (exported so tests can pin the shape). */
+/**
+ * The working directory for a MOUNTLESS sandbox's `exec`.
+ *
+ * `-w <host worktree>` would point at a directory that does not exist in a VM
+ * with no mounts, and omitting `-w` would defer to a "primary workspace" a
+ * mountless sandbox does not have. The agent's home is the one absolute path the
+ * image guarantees (`PI_AGENT_HOME=/home/agent/.pi/agent`, owned by the agent),
+ * so exec gets an explicit, existing directory and pi writes any incidental
+ * state under its own home instead of failing on a missing cwd.
+ */
+export const SANDBOX_MOUNTLESS_WORKDIR = "/home/agent";
+
+/**
+ * `sbx exec` argv (exported so tests can pin the shape).
+ *
+ * `worktreePath === ""` OMITS `-w` entirely (a caller with no directory at all);
+ * a mountless sandbox gets `SANDBOX_MOUNTLESS_WORKDIR` from `sandboxWorkdir`
+ * below, never the host worktree path, which cannot exist inside the VM.
+ */
 export function execSandboxArgs(
   sandbox: string,
   worktreePath: string,
   env: Record<string, string>,
   argv: readonly string[],
 ): string[] {
-  const args = ["exec", "--no-input", "-w", worktreePath];
+  const args = ["exec", "--no-input"];
+  if (worktreePath !== "") args.push("-w", worktreePath);
   for (const [key, value] of Object.entries(env)) args.push("-e", key + "=" + value);
   args.push(sandbox, ...argv);
   return args;
+}
+
+/**
+ * Sandbox name → does its VM have a workspace mount?
+ *
+ * Proxy-creation state, not policy: `createWorkerSandbox` is the only creator
+ * and it records the answer from the profile it actually used, so `exec` can
+ * decide whether `-w` is meaningful without re-deriving the role's profile (and
+ * without a caller having to thread it through). Unknown names (an exec on a
+ * sandbox this process did not create) keep the `-w` they asked for.
+ */
+const sandboxHasWorkspace = new Map<string, boolean>();
+
+/** The `-w` value for an exec: the mounted worktree, or the agent home when mountless. */
+export function sandboxWorkdir(sandbox: string, worktreePath: string): string {
+  return sandboxHasWorkspace.get(sandbox) === false ? SANDBOX_MOUNTLESS_WORKDIR : worktreePath;
 }
 
 /**
@@ -831,12 +987,15 @@ export async function execInSandbox(
   opts: ExecSandboxOptions,
 ): Promise<SandboxExecResult> {
   const env = opts.env ?? {};
-  const result = await runSbx(execSandboxArgs(sandbox, opts.worktreePath, env, argv), {
-    timeoutMs: opts.timeoutMs,
-    signal: opts.signal,
-    onStdout: opts.onStdout,
-    onStderr: opts.onStderr,
-  });
+  const result = await runSbx(
+    execSandboxArgs(sandbox, sandboxWorkdir(sandbox, opts.worktreePath), env, argv),
+    {
+      timeoutMs: opts.timeoutMs,
+      signal: opts.signal,
+      onStdout: opts.onStdout,
+      onStderr: opts.onStderr,
+    },
+  );
   return {
     ...result,
     sandbox,
@@ -899,5 +1058,6 @@ export async function teardownSandbox(name: string, scratchPath?: string): Promi
       errors.push("scratch cleanup: " + (error instanceof Error ? error.message : String(error)));
     }
   }
+  sandboxHasWorkspace.delete(name);
   return { name, stopped, removed, errors };
 }
