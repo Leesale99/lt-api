@@ -306,7 +306,14 @@ export const GATE_DB_PASSWORD = "test";
  * image configures `listen_addresses = '127.0.0.1'` with `auth-host=trust`.
  */
 export const GATE_DB_HOST = "127.0.0.1";
-export const GATE_DB_PORT = 5432;
+/**
+ * 5433 on purpose: `internal/testdb.DefaultTestDSN` and the (gitignored)
+ * `.envrc` both pin the test database to localhost:5433, and the Makefile
+ * `-include .envrc` re-exports it — overriding any env-passed DSN. The gate
+ * image's Postgres therefore LISTENS on 5433, so the repo's documented DSN is
+ * literally true inside the gate VM.
+ */
+export const GATE_DB_PORT = 5433;
 /**
  * The pi-gate image bakes an agent-owned cluster (PGDATA=/home/agent/pgdata)
  * because `sbx template save` snapshots the filesystem, not /var/lib/docker. It
@@ -316,10 +323,13 @@ export const GATE_DB_PORT = 5432;
  */
 export const GATE_DB_SOCKET_DIR = "/home/agent/pgsock";
 /**
- * The DSN handed to a DB-backed gate via `-e`. Mirrors the shape the Makefile
- * and internal/testdb expect (`<dsn-db>_<suite>` databases are created by the
- * suites themselves), but points at the gate VM's own localhost Postgres on
- * the default port — never the host's 5433 compose container.
+ * The DSN a DB-backed gate receives, mirroring the shape the Makefile and
+ * internal/testdb expect (`<dsn-db>_<suite>` databases are created by the
+ * suites themselves). It is delivered as a make COMMAND-LINE variable
+ * (`make audit LT_API_TEST_DSN=…`), NOT via `-e`: the Makefile's
+ * `-include .envrc` re-exports the repo DSN, and a makefile assignment beats
+ * the process environment — only a command-line variable beats it, and fresh
+ * worktrees (where the gitignored `.envrc` does not exist) still need one.
  */
 export const GATE_DB_DSN =
   "postgres://" + GATE_DB_USER + ":" + GATE_DB_PASSWORD + "@" + GATE_DB_HOST + ":" +
@@ -341,9 +351,9 @@ export const GATE_DB_STEP_TIMEOUT_MS = 60_000;
  * `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` is the env-only way to set it, so no
  * in-VM git config has to be written.
  *
- * A DB-backed gate additionally gets `LT_API_TEST_DSN`, a throwaway credential
- * for the VM-local Postgres. Static gates get NO DSN: they cannot need it, and
- * not exporting it keeps the DB surface off by default.
+ * A DB-backed gate gets `LT_API_TEST_DSN` as a make command-line variable
+ * (see GATE_DB_DSN) — never via this env, which `-include .envrc` would
+ * override. Static gates get nothing DB-related at all.
  */
 export function gateVmExecEnv(worktreePath: string, opts: { db?: boolean } = {}): Record<string, string> {
   const env: Record<string, string> = {
@@ -352,7 +362,7 @@ export function gateVmExecEnv(worktreePath: string, opts: { db?: boolean } = {})
     GIT_CONFIG_KEY_0: "safe.directory",
     GIT_CONFIG_VALUE_0: "*",
   };
-  if (opts.db) env.LT_API_TEST_DSN = GATE_DB_DSN;
+  void opts;
   return env;
 }
 
@@ -543,8 +553,10 @@ export async function runDeclaredGateStep(
   opts: { cwd: string; db?: boolean; timeoutMs?: number; extraArgs?: string[]; note?: string },
 ): Promise<GateStep> {
   const argv = [...splitCommandLine(command), ...(opts.extraArgs ?? [])];
+  // The DB DSN rides the make command line — see appendGateDbOverride.
+  const withDb = appendGateDbOverride(argv, opts.db === true);
   return await runStepInGateVm(
-    argv,
+    withDb,
     opts.cwd,
     opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     opts.note,
@@ -598,6 +610,18 @@ export async function runProveGate(opts: {
 export function shellQuote(token: string): string {
   if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(token)) return token;
   return "'" + token.replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * The DB DSN as a make COMMAND-LINE variable, for both delivery paths
+ * (`runDeclaredGateStep` and the bash-rewrite in index.ts). See GATE_DB_DSN
+ * for why command-line and not env: the Makefile's `-include .envrc` re-exports
+ * the repo DSN and a makefile assignment beats the process environment.
+ */
+export function appendGateDbOverride(argv: readonly string[], db: boolean): string[] {
+  if (!db) return [...argv];
+  if (!(argv[0] === "make" || argv[0] === "/usr/bin/make")) return [...argv];
+  return [...argv, "LT_API_TEST_DSN=" + GATE_DB_DSN];
 }
 
 /**

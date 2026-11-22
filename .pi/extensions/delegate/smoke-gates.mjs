@@ -1472,19 +1472,21 @@ await check("gate VM: DB gate pre-sequence order is start → pg_isready → dro
     assert.deepEqual(execs.map((argv) => argv[0]), ["pg-up", "pg_isready", "dropdb", "createdb", "make"]);
     assert.deepEqual(execs[0], ["pg-up"]);
     assert.deepEqual(execs[1], [
-      "pg_isready", "-h", "/home/agent/pgsock", "-p", "5432", "-U", "lt_test", "-d", "lt_api_test",
+      "pg_isready", "-h", "/home/agent/pgsock", "-p", "5433", "-U", "lt_test", "-d", "lt_api_test",
     ]);
     assert.deepEqual(execs[2], [
-      "dropdb", "--if-exists", "-h", "/home/agent/pgsock", "-p", "5432", "-U", "lt_test", "lt_api_test",
+      "dropdb", "--if-exists", "-h", "/home/agent/pgsock", "-p", "5433", "-U", "lt_test", "lt_api_test",
     ]);
     assert.deepEqual(execs[3], [
-      "createdb", "-h", "/home/agent/pgsock", "-p", "5432", "-U", "lt_test", "-O", "lt_test", "lt_api_test",
+      "createdb", "-h", "/home/agent/pgsock", "-p", "5433", "-U", "lt_test", "-O", "lt_test", "lt_api_test",
     ]);
-    assert.deepEqual(execs[4], ["make", "audit"]);
-    // The gate exec (not the setup) carries the throwaway in-VM DSN.
+    assert.deepEqual(execs[4], ["make", "audit", "LT_API_TEST_DSN=" + GATE_DB_DSN]);
+    // The DSN rides the make COMMAND LINE (beats `-include .envrc`'s makefile
+    // re-export); the -e env pairs carry no DSN at all.
     const gateArgv = gateVmExecCalls(stub)[4];
-    assert.ok(gateArgv.includes("-e"), "env is passed with -e");
-    assert.ok(gateArgv.includes("LT_API_TEST_DSN=" + GATE_DB_DSN), "DSN constructed for localhost Postgres");
+    const eValues = gateArgv.filter((_, i) => gateArgv[i - 1] === "-e");
+    assert.ok(!eValues.some((v) => String(v).startsWith("LT_API_TEST_DSN=")), "no DSN via -e env");
+    assert.ok(execs[4].includes("LT_API_TEST_DSN=" + GATE_DB_DSN), "DSN is a make command-line override");
     // Setup clients authenticate with PGPASSWORD; the gate itself does not.
     const dropArgv = gateVmExecCalls(stub)[2];
     assert.ok(dropArgv.includes("PGPASSWORD=test"));
@@ -1557,11 +1559,11 @@ await check("gate VM: audit_cmd / prove_cmd helpers use the DB-backed plane", as
   try {
     const audit = await runAuditGate({ cwd: dir, timeoutMs: 10_000 });
     assert.equal(audit.ok, true);
-    assert.equal(audit.steps[0].command, "make audit");
+    assert.equal(audit.steps[0].command, "make audit LT_API_TEST_DSN=" + GATE_DB_DSN);
     assert.equal(audit.steps[0].gateSandbox !== undefined, true);
     const prove = await runProveGate({ cwd: dir, args: "--rule R-GAME-001", timeoutMs: 10_000 });
     assert.equal(prove.ok, true);
-    assert.equal(prove.steps[0].command, "make prove args=--rule R-GAME-001");
+    assert.equal(prove.steps[0].command, "make prove args=--rule R-GAME-001 LT_API_TEST_DSN=" + GATE_DB_DSN);
     // Both reused the ONE gate VM, and both ran the DB pre-sequence.
     assert.equal(stub.calls.filter((call) => call.args[0] === "create").length, 1);
     const execs = gateVmExecCalls(stub).map((argv) => argv.slice(argv.indexOf(audit.steps[0].gateSandbox) + 1));
@@ -1569,7 +1571,7 @@ await check("gate VM: audit_cmd / prove_cmd helpers use the DB-backed plane", as
       "pg-up", "pg_isready", "dropdb", "createdb", "make",
       "pg-up", "pg_isready", "dropdb", "createdb", "make",
     ]);
-    assert.deepEqual(execs[9], ["make", "prove", "args=--rule R-GAME-001"]);
+    assert.deepEqual(execs[9], ["make", "prove", "args=--rule R-GAME-001", "LT_API_TEST_DSN=" + GATE_DB_DSN]);
   } finally {
     resetGateVmStub();
   }
@@ -1629,7 +1631,7 @@ await check("gate VM: the rewritten shell line is an argv-safe sbx exec", async 
 });
 
 await check("gate VM: DSN / db constants mirror the Makefile's test database", async () => {
-  assert.equal(GATE_DB_DSN, "postgres://lt_test:test@127.0.0.1:5432/lt_api_test?sslmode=disable");
+  assert.equal(GATE_DB_DSN, "postgres://lt_test:test@127.0.0.1:5433/lt_api_test?sslmode=disable");
   assert.equal(GATE_DB_NAME, "lt_api_test");
   assert.equal(GATE_DB_USER, "lt_test");
   const steps = gateDbPresteps();

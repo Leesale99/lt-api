@@ -171,6 +171,7 @@ import {
   gateVmExecEnv,
   gateVmShellCommand,
   parseGateVmShellCommand,
+  appendGateDbOverride,
   writeReceipt,
 } from "./gates.ts";
 import {
@@ -2706,7 +2707,7 @@ export default function (pi: ExtensionAPI) {
         sandbox.name,
         resolved.cwd,
         gateVmExecEnv(resolved.cwd, { db: resolved.db }),
-        resolved.argv,
+        appendGateDbOverride(resolved.argv, resolved.db),
       );
       (input as { command: string }).command = rewritten;
       // The host-side watchdog for the bash-dispatched gate: sbx exec has no

@@ -42,7 +42,7 @@ ENV GOTOOLCHAIN=local \
     GOSUMDB=sum.golang.org \
     PGDATA=/home/agent/pgdata \
     PGHOST=/home/agent/pgsock \
-    PGPORT=5432 \
+    PGPORT=5433 \
     PGUSER=lt_test \
     PGDATABASE=lt_api_test
 
