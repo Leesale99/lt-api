@@ -34,15 +34,17 @@ func vocabularyRepo(t *testing.T, features ...string) *testRepo {
 
 // vocabularyFindings runs policy 13 over a synthetic checkout and returns the
 // findings plus their messages in order. The catalog is the one the fixture repo
-// declares (none in most fixtures, matching the old reality-set read).
+// declares (none in most fixtures, matching the old reality-set read). The
+// message prefix is the finding's POINTER (`file::scenario`), not its subject:
+// the subject is the rule id a scope matches, the pointer is where the step is.
 func vocabularyFindings(t *testing.T, repo *testRepo) ([]Finding, []string) {
 	t.Helper()
 
 	catalog, _ := loadCatalog(repo.rulesPath)
-	findings := collectVocabulary(catalog, repo.root)
+	findings := collectVocabulary(&policyEnv{catalog: catalog, root: repo.root})
 	messages := make([]string, 0, len(findings))
 	for _, f := range findings {
-		messages = append(messages, f.Subject+" :: "+f.Message)
+		messages = append(messages, f.Pointer+" :: "+f.Message)
 	}
 	sort.Strings(messages)
 	return findings, messages
@@ -123,9 +125,11 @@ func TestVocabularyReportsDeniedAndUndeclaredTokens(t *testing.T) {
 		}
 	}
 
-	// Attribution: every finding names the scenario the way a
-	// verification.gherkin pointer does. A denied token is reported once (the
-	// denylist finding), not twice (it is also undeclared).
+	// Attribution: every finding points at the scenario the way a
+	// verification.gherkin pointer does, and its SUBJECT is the rule that
+	// scenario is tagged with (the id --module/--rule narrows). A denied token
+	// is reported once (the denylist finding), not twice (it is also
+	// undeclared).
 	for _, f := range findings {
 		if f.Policy != policyVocabulary {
 			t.Errorf("finding carries policy %q, want %q", f.Policy, policyVocabulary)
@@ -133,8 +137,11 @@ func TestVocabularyReportsDeniedAndUndeclaredTokens(t *testing.T) {
 		if f.Severity != severityError {
 			t.Errorf("finding %q is not an error", f.Message)
 		}
-		if !strings.Contains(f.Subject, "docs/spec/features/game/vocabulary-denied.feature::") {
-			t.Errorf("finding %q does not name file::scenario (got %q)", f.Message, f.Subject)
+		if !strings.Contains(f.Pointer, "docs/spec/features/game/vocabulary-denied.feature::") {
+			t.Errorf("finding %q does not point at file::scenario (got %q)", f.Message, f.Pointer)
+		}
+		if f.Subject != "R-KERNEL-001" && f.Subject != "R-KERNEL-002" {
+			t.Errorf("finding %q has subject %q, want the scenario's @rule id", f.Message, f.Subject)
 		}
 	}
 }
@@ -249,7 +256,7 @@ func TestVocabularyRealTreePassesSeededGlossary(t *testing.T) {
 		t.Fatalf("load the seeded catalog: %v", err)
 	}
 
-	findings := collectVocabulary(catalog, root)
+	findings := collectVocabulary(&policyEnv{catalog: catalog, root: root})
 	if len(findings) != 0 {
 		t.Fatalf("the seeded glossary does not cover the real feature tree:\n%s",
 			describeFindings(findings))
@@ -292,7 +299,7 @@ func TestPrintFindingsReportsVocabularyPolicy(t *testing.T) {
 	repo := vocabularyRepo(t, "features/game/vocabulary-denied.feature")
 	catalog := Catalog{gherkinRule("R-KERNEL-001")}
 
-	findings := collectVocabulary(catalog, repo.root)
+	findings := collectVocabulary(&policyEnv{catalog: catalog, root: repo.root})
 	var report bytes.Buffer
 	printFindings(&report, repo.rulesPath, catalog, findings, nil)
 	rendered := report.String()

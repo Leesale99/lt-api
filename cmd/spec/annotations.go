@@ -17,10 +17,13 @@ package main
 //     specified-only target stays legal there because a test names its rule
 //     through `verification`.
 //
-// The reverse direction's two non-rule conditions render distinctly, so a reader
-// never mistakes either for a catalog id: a malformed id is reported under the
-// `(malformed id)` subject, and a well-formed unknown id under
-// `(unknown id R-X-NNN)`, naming the catalog it failed to resolve against.
+// The reverse direction's two non-rule conditions render distinctly in the
+// message, so a reader never mistakes either for a catalog id: a malformed id is
+// labeled `(malformed id)`, and a well-formed unknown id is labeled
+// `(unknown id R-X-NNN)` and names the catalog it failed to resolve against. The
+// finding's SUBJECT is the rule the same comment group annotates (so a scoped
+// run over that rule fails on the typo), or the catalog when the group names no
+// known rule.
 //
 // # The convention (pinned)
 //
@@ -339,13 +342,34 @@ func commentAnnotationIDs(text string) []string {
 	return nil
 }
 
-// Finding subjects for the reverse direction's two non-rule conditions. They
-// are deliberately not rule ids: a reader must never mistake a typo or an
-// unissued id for a catalog entry.
+// Finding subjects for the reverse direction. A malformed or unknown id is
+// attributed to the RULE the same comment group annotates — an extra typo beside
+// a site's real `//rule:` belongs to that site's rule, so a scoped run over the
+// rule still fails on it. A group that names no known rule attributes to the
+// catalog (empty subject): the typo belongs to no rule a scope could match. The
+// labels stay in the message so a reader never mistakes either condition for a
+// catalog id.
 const (
 	malformedAnnotationID     = "(malformed id)"
 	unknownAnnotationIDFormat = "(unknown id %s)"
 )
+
+// groupRuleID returns the rule id a comment group really annotates: the smallest
+// known, well-formed id in it. The id a typo is reported against is the site's
+// real annotation, not the typo itself (a malformed id can never equal a catalog
+// id, and an unknown id is by definition not in ruleIDs).
+func groupRuleID(ids []string, ruleIDs map[string]bool) string {
+	subject := ""
+	for _, id := range ids {
+		if !ruleAnnotationPattern.MatchString(id) || !ruleIDs[id] {
+			continue
+		}
+		if subject == "" || id < subject {
+			subject = id
+		}
+	}
+	return subject
+}
 
 // checkAnnotationsResolve is the tree → catalog direction: every annotation
 // names a catalog rule, every annotation's id is well-formed, and — in non-test
@@ -362,18 +386,22 @@ func (c *checker) checkAnnotationsResolve(files map[string]goSource, ruleIDs map
 		source := files[path]
 		isTest := strings.HasSuffix(path, "_test.go")
 		for _, group := range source.file.Comments {
-			for _, id := range annotationIDsOf(group) {
+			ids := annotationIDsOf(group)
+			// The subject a typo in this block is attributed to: the rule the
+			// block's real annotation names, or the catalog when it names none.
+			subject := groupRuleID(ids, ruleIDs)
+			for _, id := range ids {
 				line := source.fset.Position(group.Pos()).Line
 				if !ruleAnnotationPattern.MatchString(id) {
-					c.errorf(policyAnnotations, malformedAnnotationID,
-						"%s:%d carries //rule:%s, which is not an id; an annotation is exactly //rule:R-<MODULE>-<NNN>",
-						path, line, id)
+					c.errorf(policyAnnotations, subject,
+						"%s %s:%d carries //rule:%s, which is not an id; an annotation is exactly //rule:R-<MODULE>-<NNN>",
+						malformedAnnotationID, path, line, id)
 					continue
 				}
 				if !ruleIDs[id] {
-					c.errorf(policyAnnotations, fmt.Sprintf(unknownAnnotationIDFormat, id),
-						"%s:%d carries //rule:%s, which names no rule in the catalog %s",
-						path, line, id, displayPath(rulesPath))
+					c.errorf(policyAnnotations, subject,
+						"%s %s:%d carries //rule:%s, which names no rule in the catalog %s",
+						fmt.Sprintf(unknownAnnotationIDFormat, id), path, line, id, displayPath(rulesPath))
 					continue
 				}
 				// A specified-only rule has no enforcement site yet, so an

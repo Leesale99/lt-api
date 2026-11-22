@@ -103,6 +103,18 @@ func (c *checker) errorf(policyID, subject, format string, args ...any) {
 	c.add(policyID, subject, severityError, format, args...)
 }
 
+// errorCatalog reports a catalog-level finding: the violation belongs to the
+// repository (a file, a tree-wide fact), not to a rule, so it carries no subject
+// and scoping can never narrow it. pointer is the human address the reader opens.
+func (c *checker) errorCatalog(policyID, pointer, format string, args ...any) {
+	c.findings = append(c.findings, Finding{
+		Policy:   policyID,
+		Pointer:  pointer,
+		Severity: severityError,
+		Message:  fmt.Sprintf(format, args...),
+	})
+}
+
 func (c *checker) warnf(policyID, subject, format string, args ...any) {
 	c.add(policyID, subject, severityWarn, format, args...)
 }
@@ -112,8 +124,8 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	rulesPath := fs.String("rules", "docs/spec/rules", "path to the per-rule-file catalog directory")
 	strict := fs.Bool("strict", false, "exit 1 when any ERROR finding exists (warnings never fail)")
-	module := fs.String("module", "", "report only findings for one module; catalog-level findings (empty rule id) are hidden while scoped")
-	ruleID := fs.String("rule", "", "report only findings for one rule id; catalog-level findings (empty rule id) are hidden while scoped")
+	module := fs.String("module", "", "report only findings for one module; catalog-level findings are still reported, as warnings")
+	ruleID := fs.String("rule", "", "report only findings for one rule id; catalog-level findings are still reported, as warnings")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -150,15 +162,7 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	sortFindings(findings)
 
 	if !scope.Empty() {
-		inScope := findings[:0]
-		for _, f := range findings {
-			// Catalog-level findings carry no subject, so no --rule or --module
-			// can implicate them: they are reported only unscoped.
-			if scope.Contains(f.Subject) {
-				inScope = append(inScope, f)
-			}
-		}
-		findings = inScope
+		findings = narrowToScope(findings, scope)
 	}
 
 	printFindings(stdout, *rulesPath, catalog, findings, env.featureIndex(), scope.String())
@@ -168,6 +172,42 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// narrowToScope is the one scoped-reporting rule, driven by a finding's subject
+// and its policy's Level:
+//
+//   - a rule-attributed finding (a non-empty subject) is kept when the rule is in
+//     scope, so --module/--rule narrows exactly the rules the worker owns;
+//   - a catalog-level finding (an empty subject) names no rule, so no scope can
+//     implicate it: it is always reported, downgraded to WARN so global rot stays
+//     visible without failing a scoped --strict gate on someone else's problem.
+//     An untagged scenario's finding is the feature-level case of this: it names
+//     no rule either, so it warns rather than fails;
+//   - a feature-level policy's rule-attributed finding (a broken gherkin pointer,
+//     a scenario tagged with an unknown id) is reported even when the rule is out
+//     of scope, at its natural severity, because the feature tree is one artifact
+//     and a half-printed cross-validation would read as if the rest of the tree
+//     were verified.
+func narrowToScope(findings []Finding, scope Scope) []Finding {
+	level := make(map[string]Level, len(policies))
+	for _, p := range policies {
+		level[p.ID] = p.Level
+	}
+
+	inScope := make([]Finding, 0, len(findings))
+	for _, f := range findings {
+		switch {
+		case f.Subject == "":
+			f.Severity = severityWarn
+			inScope = append(inScope, f)
+		case scope.Contains(f.Subject):
+			inScope = append(inScope, f)
+		case level[f.Policy] == LevelFeature:
+			inScope = append(inScope, f)
+		}
+	}
+	return inScope
 }
 
 // collectFindings runs the rule-level policies over the catalog. It is the
@@ -731,7 +771,13 @@ func printFindings(w io.Writer, rulesPath string, catalog Catalog, findings []Fi
 			if subject == "" {
 				subject = "(catalog)"
 			}
-			fmt.Fprintf(w, "- %s**%s** %s\n", prefix, subject, f.Message)
+			message := f.Message
+			if f.Pointer != "" {
+				// The subject is the scope key (the rule), the pointer is where
+				// the reader opens: a step finding needs both.
+				message = f.Pointer + ": " + message
+			}
+			fmt.Fprintf(w, "- %s**%s** %s\n", prefix, subject, message)
 		}
 		fmt.Fprint(w, "\n")
 	}

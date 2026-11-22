@@ -163,9 +163,10 @@ func (s Scope) IDs() []string {
 	return ids
 }
 
-// Contains reports whether a finding subject (a rule id, a feature pointer or an
-// annotation site) is in scope. A catalog-level finding carries no subject, so it
-// is never in scope: those are reported only unscoped.
+// Contains reports whether a finding subject (the rule id a finding is
+// attributed to) is in scope. A catalog-level finding carries no subject, so it
+// is never in scope: runCheck reports those as WARN whatever the scope (see
+// narrowToScope in check.go).
 func (s Scope) Contains(subject string) bool {
 	if subject == "" {
 		return false

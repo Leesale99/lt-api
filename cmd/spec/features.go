@@ -34,6 +34,26 @@ type scenarioRef struct {
 	Line int
 	Rule string // the one @rule id this scenario proves ("" when untagged)
 	Tags []string
+	// Steps is the scenario's step text, so a policy that reads the sentence
+	// (13-vocabulary) uses this parse instead of reading the tree again. An
+	// outline's rows that share one name contribute each row's steps once.
+	Steps []scenarioStep
+}
+
+// scenarioStep is one step as a vocabulary policy reads it: the line's text plus
+// the literal argument blocks the step carries (a docstring body, or the cells
+// of a data table). Both halves are part of the step, so both are scanned.
+type scenarioStep struct {
+	Text      string
+	DocString string   // "" when the step carries no docstring
+	Cells     []string // data-table cell values, row-major
+}
+
+// signature is the identity a step is deduplicated by: two steps with the same
+// text and the same argument are one statement, so an outline whose rows differ
+// only in a placeholder scanned the same way reports once.
+func (s scenarioStep) signature() string {
+	return s.Text + "\x00" + s.DocString + "\x00" + strings.Join(s.Cells, "\x01")
 }
 
 // pointer is the catalog's addressing form for a scenario.
@@ -48,8 +68,11 @@ type featureFile struct {
 
 // featureIndex is the parsed feature tree.
 type featureIndex struct {
-	byPointer   map[string]scenarioRef
-	byRule      map[string][]scenarioRef
+	byPointer map[string]scenarioRef
+	byRule    map[string][]scenarioRef
+	// scenarios is every scenario in parse order: the deterministic walk order
+	// for a policy that visits the tree (a map iteration is not one).
+	scenarios   []scenarioRef
 	files       []featureFile
 	fileScenes  map[string]int
 	unparseable map[string]bool
@@ -103,19 +126,19 @@ func (c *checker) indexFeatures() *featureIndex {
 			continue
 		}
 
-		// name groups the executable scenarios by the AST node they came from:
-		// an outline's rows share one node and (without placeholders) one name.
-		names := map[string][]string{}
-		nodeName := map[string]string{}
+		// pickles groups the executable scenarios by the AST node they came
+		// from: an outline's rows share one node and (without placeholders)
+		// one name, and each pickle carries the steps its row substituted.
+		pickles := map[string][]pickleScenario{}
 		for _, pickle := range gherkin.Pickles(*doc, rel, ids.NewId) {
 			if len(pickle.AstNodeIds) == 0 {
 				continue
 			}
 			node := pickle.AstNodeIds[0]
-			if _, seen := names[node]; !seen {
-				nodeName[node] = pickle.Name
-			}
-			names[node] = append(names[node], pickle.Name)
+			pickles[node] = append(pickles[node], pickleScenario{
+				name:  pickle.Name,
+				steps: indexedSteps(pickle.Steps),
+			})
 		}
 
 		file_ := featureFile{Path: rel}
@@ -138,20 +161,23 @@ func (c *checker) indexFeatures() *featureIndex {
 					"scenario %q in %s carries no @rule tag", scenario.Name, rel)
 			}
 
-			refs := names[scenario.Id]
+			refs := pickles[scenario.Id]
 			if len(refs) == 0 {
 				return
 			}
 			// An outline's rows share one node; distinct names (placeholders)
-			// are distinct pointers, repeated names are one pointer.
-			seenName := map[string]bool{}
-			for _, name := range refs {
-				if seenName[name] {
-					continue
+			// are distinct pointers, repeated names are one pointer whose steps
+			// are the union of the rows' steps.
+			byName := map[string][]scenarioStep{}
+			order := make([]string, 0, len(refs))
+			for _, pickle := range refs {
+				if _, seen := byName[pickle.name]; !seen {
+					order = append(order, pickle.name)
 				}
-				seenName[name] = true
-
-				ref := scenarioRef{Path: rel, Name: name, Line: line, Rule: effective}
+				byName[pickle.name] = appendUniqueSteps(byName[pickle.name], pickle.steps)
+			}
+			for _, name := range order {
+				ref := scenarioRef{Path: rel, Name: name, Line: line, Rule: effective, Steps: byName[name]}
 				if previous, dup := seenPointers[rel+"::"+name]; dup {
 					c.errorf(policyGherkinFeature, effective,
 						"scenario name %q appears more than once in %s (path::name is the catalog's pointer)",
@@ -162,6 +188,7 @@ func (c *checker) indexFeatures() *featureIndex {
 				seenPointers[rel+"::"+name] = scenario.Id
 
 				index.byPointer[ref.pointer()] = ref
+				index.scenarios = append(index.scenarios, ref)
 				index.fileScenes[rel]++
 				file_.Scenarios++
 				if ref.Rule != "" {
@@ -203,6 +230,56 @@ func (c *checker) indexFeatures() *featureIndex {
 
 	sort.Slice(index.files, func(i, j int) bool { return index.files[i].Path < index.files[j].Path })
 	return index
+}
+
+// pickleScenario is one compiled pickle of an AST node: the executable name
+// (outline rows interpolated) and the steps it substituted.
+type pickleScenario struct {
+	name  string
+	steps []scenarioStep
+}
+
+// indexedSteps projects a pickle's steps onto the shape a vocabulary policy
+// reads: the line plus its argument blocks.
+func indexedSteps(steps []*messages.PickleStep) []scenarioStep {
+	indexed := make([]scenarioStep, 0, len(steps))
+	for _, step := range steps {
+		indexed = append(indexed, scenarioStep{Text: step.Text})
+		argument := step.Argument
+		if argument == nil {
+			continue
+		}
+		if argument.DocString != nil {
+			indexed[len(indexed)-1].DocString = argument.DocString.Content
+		}
+		if argument.DataTable != nil {
+			cells := make([]string, 0, len(argument.DataTable.Rows))
+			for _, row := range argument.DataTable.Rows {
+				for _, cell := range row.Cells {
+					cells = append(cells, cell.Value)
+				}
+			}
+			indexed[len(indexed)-1].Cells = cells
+		}
+	}
+	return indexed
+}
+
+// appendUniqueSteps adds src's steps to dst, skipping a step dst already holds:
+// repeated outline rows whose substitution is identical are one statement.
+func appendUniqueSteps(dst, src []scenarioStep) []scenarioStep {
+	seen := make(map[string]bool, len(dst))
+	for _, step := range dst {
+		seen[step.signature()] = true
+	}
+	for _, step := range src {
+		if seen[step.signature()] {
+			continue
+		}
+		seen[step.signature()] = true
+		dst = append(dst, step)
+	}
+	return dst
 }
 
 // ruleTag returns the rule id a tag list carries, when it carries one.

@@ -15,8 +15,12 @@ package main
 //     vocabulary the features already use; a new word is a deliberate edit to
 //     the glossary, not an accident that slips through review.
 //
-// Attribution walks the parsed feature tree (gherkin.go), so every finding
-// names `file::scenario` exactly as a `verification.gherkin` pointer does.
+// Attribution walks the shared feature index (features.go), so a finding names
+// the rule the scenario proves — the id --module/--rule can narrow — and keeps
+// `file::scenario` as its pointer, exactly the address a `verification.gherkin`
+// entry uses. A scenario with no `@rule` tag attributes to the catalog (empty
+// subject): the untagged scenario is policy 12's finding, and its step text is
+// still nobody's rule.
 //
 // # Sabotage steps and the SQL half of the denylist (pinned V1 clarification)
 //
@@ -46,8 +50,6 @@ import (
 	"sort"
 	"strings"
 
-	gherkin "github.com/cucumber/gherkin/go/v42"
-	messages "github.com/cucumber/messages/go/v34"
 	"gopkg.in/yaml.v3"
 )
 
@@ -455,20 +457,22 @@ func section(module string) string {
 // plus one section per module enum value, each term a single lowercase token.
 // A missing or malformed file is an ERROR and yields an empty glossary, so the
 // vocabulary binding then names every undeclared token instead of quietly
-// passing.
+// passing. Every finding here is CATALOG-level (no subject): the glossary is one
+// file no rule owns, so a scoped run reports these as warnings rather than
+// hiding them.
 func (c *checker) loadGlossary() *glossary {
 	g := &glossary{sections: map[string]map[string]bool{}}
 
 	rel := glossaryFile
 	data, err := os.ReadFile(filepath.Join(c.root, filepath.FromSlash(rel)))
 	if err != nil {
-		c.errorf(policyVocabulary, rel,
+		c.errorCatalog(policyVocabulary, rel,
 			"glossary %q cannot be read: %v — the step vocabulary has no allowlist", rel, err)
 		return g
 	}
 	var raw map[string][]string
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		c.errorf(policyVocabulary, rel, "glossary %q does not parse: %v", rel, err)
+		c.errorCatalog(policyVocabulary, rel, "glossary %q does not parse: %v", rel, err)
 		return g
 	}
 
@@ -483,19 +487,19 @@ func (c *checker) loadGlossary() *glossary {
 		case name == glossaryCommonSection:
 		case moduleEnum[name]:
 		default:
-			c.errorf(policyVocabulary, rel,
+			c.errorCatalog(policyVocabulary, rel,
 				"glossary section %q is neither %q nor a module enum value", name, glossaryCommonSection)
 			continue
 		}
 		terms := map[string]bool{}
 		for _, term := range raw[name] {
 			if !glossaryTermPattern.MatchString(term) {
-				c.errorf(policyVocabulary, rel,
+				c.errorCatalog(policyVocabulary, rel,
 					"glossary term %q in section %q is not a single lowercase token", term, name)
 				continue
 			}
 			if reason := disguiseReason(term); reason != "" {
-				c.errorf(policyVocabulary, rel,
+				c.errorCatalog(policyVocabulary, rel,
 					"glossary term %q in section %q is not a legitimate step word: %s", term, name, reason)
 				continue
 			}
@@ -509,12 +513,12 @@ func (c *checker) loadGlossary() *glossary {
 	// that nothing has been standardized there.
 	for _, module := range sortedEnumValues(moduleEnum) {
 		if _, ok := raw[module]; !ok {
-			c.errorf(policyVocabulary, rel,
+			c.errorCatalog(policyVocabulary, rel,
 				"glossary has no %q section (one section per module enum value)", module)
 		}
 	}
 	if _, ok := raw[glossaryCommonSection]; !ok {
-		c.errorf(policyVocabulary, rel, "glossary has no %q section", glossaryCommonSection)
+		c.errorCatalog(policyVocabulary, rel, "glossary has no %q section", glossaryCommonSection)
 	}
 	return g
 }
@@ -668,11 +672,14 @@ func fragmentOwners(tokens []string) []int {
 }
 
 // collectVocabulary runs policy 13 over the feature tree. The catalog is the one
-// runCheck already loaded: the §8 reality gate reads its refusal names.
-func collectVocabulary(catalog Catalog, root string) []Finding {
-	c := &checker{root: root, realObjects: loadRealObjectNames(catalog, root)}
+// runCheck already loaded: the §8 reality gate reads its refusal names. The walk
+// reads the shared feature index (features.go) instead of parsing the tree a
+// second time, so a name in this policy and in the catalog can never disagree
+// about which scenario exists.
+func collectVocabulary(env *policyEnv) []Finding {
+	c := &checker{root: env.root, realObjects: loadRealObjectNames(env.catalog, env.root)}
 	g := c.loadGlossary()
-	c.checkStepVocabulary(g)
+	c.checkStepVocabulary(g, env.featureIndex())
 	sortFindings(c.findings)
 	return c.findings
 }
@@ -681,8 +688,21 @@ func collectVocabulary(catalog Catalog, root string) []Finding {
 // and the glossary binding to every step. Findings are deduplicated per
 // `file::scenario` + message, so a Scenario Outline's rows report one finding
 // for one undeclared word.
-func (c *checker) checkStepVocabulary(g *glossary) {
-	root := filepath.Join(c.root, filepath.FromSlash(featuresRoot))
+//
+// A finding's SUBJECT is the rule the scenario is tagged with, which is what
+// --module/--rule narrows; its POINTER stays the `file::scenario` address the
+// author jumps to. Untagged scenarios and files that sit outside a module
+// attribute to the catalog (empty subject), because no rule owns them.
+func (c *checker) checkStepVocabulary(g *glossary, index *featureIndex) {
+	// ruleOf answers the subject for a pointer. A file outside a module has no
+	// scenario, hence no rule: it stays catalog-level.
+	ruleOf := make(map[string]string, len(index.scenarios))
+	for _, ref := range index.scenarios {
+		if _, seen := ruleOf[ref.pointer()]; !seen {
+			ruleOf[ref.pointer()] = ref.Rule
+		}
+	}
+
 	seen := map[string]bool{}
 	report := func(pointer, msg string) {
 		key := pointer + "\x00" + msg
@@ -690,44 +710,33 @@ func (c *checker) checkStepVocabulary(g *glossary) {
 			return
 		}
 		seen[key] = true
-		// The scenario pointer is the finding's subject: it is the same
-		// `file::scenario` address a verification.gherkin pointer uses, so the
-		// author can jump straight to the step.
-		c.errorf(policyVocabulary, pointer, "%s", msg)
+		c.findings = append(c.findings, Finding{
+			Policy:   policyVocabulary,
+			Subject:  ruleOf[pointer],
+			Pointer:  pointer,
+			Severity: severityError,
+			Message:  msg,
+		})
 	}
 
-	for _, full := range walkingFeatureFiles(root) {
-		rel, err := filepath.Rel(c.root, full)
-		if err != nil {
-			rel = full
-		}
-		rel = filepath.ToSlash(rel)
-
-		// An unreadable or unparseable feature is policy 12's finding; policy
-		// 13 has no steps to read.
-		file, err := os.Open(full)
-		if err != nil {
+	// A file that is not under docs/spec/features/<module>/ has no glossary
+	// section to bind against, so its steps are not scanned either: one
+	// catalog-level finding names the file the author has to move.
+	for _, file := range index.files {
+		if _, ok := moduleOfFeature(file.Path); ok {
 			continue
 		}
-		ids := &messages.Incrementing{}
-		doc, parseErr := gherkin.ParseGherkinDocument(file, ids.NewId)
-		_ = file.Close()
-		if parseErr != nil || doc.Feature == nil {
-			continue
-		}
+		report(file.Path, fmt.Sprintf("feature file %q is not under %s/<module>/",
+			file.Path, featuresRoot))
+	}
 
-		module, moduleOK := moduleOfFeature(rel)
-		if !moduleOK {
-			report(rel, fmt.Sprintf("feature file %q is not under %s/<module>/",
-				rel, featuresRoot))
-			continue
+	for _, ref := range index.scenarios {
+		module, ok := moduleOfFeature(ref.Path)
+		if !ok {
+			continue // reported above, once per file
 		}
-
-		for _, pickle := range gherkin.Pickles(*doc, rel, ids.NewId) {
-			pointer := rel + "::" + pickle.Name
-			for _, step := range pickle.Steps {
-				c.checkStep(report, g, module, pointer, step.Text, step.Argument)
-			}
+		for _, step := range ref.Steps {
+			c.checkStep(report, g, module, ref.pointer(), step)
 		}
 	}
 }
@@ -739,24 +748,17 @@ func (c *checker) checkStepVocabulary(g *glossary) {
 // The sabotage exemption is decided once, by the step's own text, and covers
 // the whole step including its argument (the §8 family's docstring is a raw
 // write too).
-func (c *checker) checkStep(report func(pointer, msg string), g *glossary, module, pointer, text string, argument *messages.PickleStepArgument) {
-	sabotage := isSabotageStep(text)
-	c.scanVocabulary(report, g, module, pointer, tokenizeStep(text), sabotage)
+func (c *checker) checkStep(report func(pointer, msg string), g *glossary, module, pointer string, step scenarioStep) {
+	sabotage := isSabotageStep(step.Text)
+	c.scanVocabulary(report, g, module, pointer, tokenizeStep(step.Text), sabotage)
 
-	if argument == nil {
-		return
+	if step.DocString != "" {
+		c.scanVocabulary(report, g, module, pointer, tokenizeDocString(step.DocString), sabotage)
 	}
-	if docString := argument.DocString; docString != nil {
-		c.scanVocabulary(report, g, module, pointer, tokenizeDocString(docString.Content), sabotage)
-	}
-	if table := argument.DataTable; table != nil {
-		for _, row := range table.Rows {
-			for _, cell := range row.Cells {
-				// A cell is a value: the quoted-literal exemption still applies
-				// (`"Team A"` in a cell is data, as on the step line).
-				c.scanVocabulary(report, g, module, pointer, tokenizeStep(cell.Value), sabotage)
-			}
-		}
+	for _, cell := range step.Cells {
+		// A cell is a value: the quoted-literal exemption still applies
+		// (`"Team A"` in a cell is data, as on the step line).
+		c.scanVocabulary(report, g, module, pointer, tokenizeStep(cell), sabotage)
 	}
 }
 

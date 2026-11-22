@@ -6,12 +6,14 @@ package main
 // feature/gherkin section and the summary table all derive from it — so adding
 // a policy means adding one row, never editing a second list.
 //
-// A policy's Level classifies where its findings live. Presentation follows it
-// (feature-level findings print in the gherkin section), and from B2.2 scoped
-// reporting follows it too: rule-level findings are narrowed by
-// --module/--rule while catalog-level and feature-level findings are always
-// reported. Scopeable says separately whether a finding's subject is a rule id
-// a scope can match, which the cross-cutting collectors do not all provide yet.
+// A policy's Level classifies where its findings live and how a scoped report
+// treats them. Presentation follows it (feature-level findings print in the
+// gherkin section), and scoped reporting follows the subject: a rule-attributed
+// finding (a non-empty Subject) is narrowed by --module/--rule, a catalog-level
+// finding (an empty Subject) is always reported as a warning, and a
+// feature-level policy's findings are never narrowed. Scopeable records, per
+// policy, whether its findings CAN name a rule id a scope matches — it is the
+// table's own statement of what the collectors above provide.
 
 // Level is where a policy's findings live.
 type Level int
@@ -41,37 +43,50 @@ type Policy struct {
 	Run func(env *policyEnv) []Finding
 }
 
-// policyEnv carries the inputs every policy Run needs, plus the shared
-// feature-tree parse the two feature-level policies would otherwise repeat.
+// policyEnv carries the inputs every policy Run needs, plus the one feature-tree
+// parse the policies that read the tree (13-vocabulary, 10-gherkin, 12-features)
+// share instead of repeating.
 type policyEnv struct {
 	catalog   Catalog
 	root      string
 	rulesPath string
 
 	features    *featureIndex
+	featureTree []Finding // the findings indexFeatures produced (policy 12)
 	gherkin     []Finding
 	gherkinDone bool
 }
 
-// featureIndex returns the parsed feature tree, building it if no feature-level
-// policy has run yet.
+// featureIndex returns the parsed feature tree, building it on first use. Every
+// policy that reads the tree goes through here, so a check run parses it once.
 func (e *policyEnv) featureIndex() *featureIndex {
 	if e.features == nil {
-		e.features = (&checker{root: e.root}).indexFeatures()
+		c := newChecker(e)
+		e.features = c.indexFeatures()
+		// indexFeatures owns the feature-tree findings (parse errors, a
+		// scenario with no @rule tag, a duplicate scenario name): they are
+		// policy 12's, so they are kept for gherkinFor instead of dying with
+		// the throwaway checker.
+		e.featureTree = c.findings
 	}
 	return e.features
 }
 
 // gherkinFor runs the feature cross-validation once and returns one policy's
-// share of it. Both feature-level policies read the same parse: the tree is
-// indexed once, and its findings are filtered by the policy that owns them.
+// share of it. Both feature-level policies read the same parse: the index the
+// env already holds (built by featureIndex, shared with policy 13) is reused, so
+// a check run parses the feature tree once.
 func (e *policyEnv) gherkinFor(policyID string) []Finding {
 	if !e.gherkinDone {
+		index := e.featureIndex()
 		c := newChecker(e)
-		index := c.indexFeatures()
 		c.checkGherkinCatalog(e.catalog, index)
+		merged := make([]Finding, 0, len(e.featureTree)+len(c.findings))
+		merged = append(merged, e.featureTree...)
+		merged = append(merged, c.findings...)
+		c.findings = merged
 		sortFindings(c.findings)
-		e.features, e.gherkin, e.gherkinDone = index, c.findings, true
+		e.gherkin, e.gherkinDone = c.findings, true
 	}
 	return policyFindings(e.gherkin, policyID)
 }
@@ -201,9 +216,9 @@ var policies = []Policy{
 	},
 	{
 		ID: policyVocabulary, Name: "step text: denylisted transport tokens, SQL adjacency, and the seeded glossary",
-		Level: LevelCatalog, Scopeable: false,
+		Level: LevelCatalog, Scopeable: true,
 		Run: func(env *policyEnv) []Finding {
-			return collectVocabulary(env.catalog, env.root)
+			return collectVocabulary(env)
 		},
 	},
 	{
@@ -215,7 +230,7 @@ var policies = []Policy{
 	},
 	{
 		ID: policyAnnotations, Name: "Go enforcement sites carry //rule: annotations, and every annotation resolves",
-		Level: LevelCatalog, Scopeable: false,
+		Level: LevelCatalog, Scopeable: true,
 		Run: func(env *policyEnv) []Finding {
 			return collectAnnotationsAgainst(env.catalog, env.root, env.rulesPath)
 		},
