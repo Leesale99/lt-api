@@ -11,21 +11,27 @@ Where things live:
 ```
 docs/spec/
 ├── README.md — this workflow (the front door)
-├── rules.yaml — canonical, hand-edited catalog; header is a pointer block, the entries are the law
-├── rules.schema.md — format authority (enums §1, fields §2, policies §3)
+├── rules/ — the canonical, hand-edited catalog: one authored Markdown file per rule at
+│            rules/<module>/<ID>.md (YAML front matter = machine fields, body = notes prose);
+│            rules/README.md is the directory's own map
+├── rules.schema.md — format authority (enums §1, the rule file §2, policies §3)
 ├── gherkin-style.md — Gherkin authoring style
 ├── glossary.yaml — hand-edited per-module step-vocabulary allowlist (policy 13)
-├── business-rules.md — GENERATED dashboard from rules.yaml: totals, per-module counts and the index into views/; never edit
-├── views/<module>.md — GENERATED per-module views (game, identity, kernel, ledger, platform, schedule), the full rule blocks; never edit
+├── business-rules.md — GENERATED thin dashboard over rules/: totals by module and
+│                       status, plus links into rules/<module>/; never edit
 └── features/ — the Gherkin tree, one capability per file
 ```
 
 ## 1. The pieces
 
-- **Catalog.** `docs/spec/rules.yaml` is the canonical, hand-edited catalog. The readable
-  view is **generated** from it: `docs/spec/business-rules.md` is the dashboard (totals,
-  the per-module counts, the index) and `docs/spec/views/<module>.md` holds each module's
-  full rule blocks — never hand-edit either; only the YAML feeds them.
+- **Catalog.** `docs/spec/rules/` is the canonical, hand-edited catalog: one authored
+  Markdown file per rule, `<module>/<ID>.md`, whose YAML front matter carries the machine
+  fields (statement, authority, enforcement sites, refusal, verification pointers — see
+  `rules.schema.md` §2) and whose body's `## Notes` section carries the rule's notes. The
+  file stem is the id and the directory is the module; the loader enforces both. The one
+  readable view is **generated**: `docs/spec/business-rules.md` is a thin dashboard —
+  totals by module and status plus a link into each `rules/<module>/` — never hand-edit
+  it. There is no per-module view file any more: the rule file *is* the block.
 - **Scenarios.** `docs/spec/features/<module>/<capability>.feature` holds one capability
   of business-visible behaviour per file. Every scenario carries exactly one
   `@rule:R-...` tag. Authoring rules: `gherkin-style.md`.
@@ -33,16 +39,14 @@ docs/spec/
   allowlist: every word a step uses must be declared in its module's section (or in
   `common`), and policy 13 denies undeclared vocabulary as well as transport/SQL
   words. A new scenario word is a deliberate glossary edit.
-- **Checker.** `cmd/spec`: `gen` regenerates the Markdown — the dashboard and every
-  module view (or `--diff` to detect staleness in either, and in the `views/`
-  directory as a whole: a file the run does not render is an orphan and fails the
-  diff); `check` validates the
-  catalog's schema policies and traces every site, test pointer and Gherkin pointer to
-  something that exists, in both catalog → tree and tree → catalog directions. The
-  policies are `rules.schema.md` §3: enums and
-  pointers (1–12), the step vocabulary (13), the category's verification/refusal
-  binding (14), the `//rule:` annotations on Go enforcement sites (15) and
-  `knowledge-ref` (16). `--strict` makes any check error fatal.
+- **Checker.** `cmd/spec`: `gen` regenerates the one generated artifact — the thin
+  dashboard (or `--diff` to detect its staleness); `check` validates the catalog's schema
+  policies and traces every site, test pointer and Gherkin pointer to something that
+  exists, in both catalog → tree and tree → catalog directions. The policies are
+  `rules.schema.md` §3: enums and pointers (1–12), the step vocabulary (13), the
+  category's verification/refusal binding (14), the `//rule:` annotations on Go
+  enforcement sites (15), `knowledge-ref` (16) and the scenario oracle (18). `--strict`
+  makes any check error fatal.
 - **Enforcement suite.** `internal/spec` is a godog suite run as a plain `go test`
   against real Postgres — real migrations, role-restricted pools, the product's own
   entry points, plus sabotage steps for database-authority proofs.
@@ -55,17 +59,17 @@ implementation, then green. Nothing lands without the gate, and this recipe is w
 
 ### The gate
 
-1. Change the catalog entry in `docs/spec/rules.yaml` **and** its scenario under
+1. Change the rule's file under `docs/spec/rules/<module>/` **and** its scenario under
    `docs/spec/features/**` first.
 2. Run `make audit`: the gap between the spec and the code is the failure — the
    scenario is red (and so is an untraceable catalog entry, since `spec/check` runs
    `--strict`).
 3. Implement the change.
-4. Run `make spec/gen` to regenerate the dashboard and the module views.
+4. Run `make spec/gen` to regenerate the dashboard.
 5. Run `make audit` again; it is done when green.
 
 Never edit the generated Markdown; never add an enforcement site without updating the
-catalog entry that names it.
+rule file that names it.
 
 ### The recipe
 
@@ -79,18 +83,19 @@ What step 1 of the gate actually means, for a brand-new rule:
    comments are the most common source of stale pointers — verify, then record what you
    verified.
 3. **Decide each site's `role`.** One authority layer; everything else is a copy that
-   needs `pinned_by` or a loud-refusal `Tie:` note in `notes`.
+   needs `pinned_by` or a loud-refusal `tie:` note in the front matter.
 4. **Name the refusal.** SQLSTATE → constraint/raise name → sentinel → HTTP status. If
-   the refusal is unmapped, record `sentinel: null` and say so in `notes`.
+   the refusal is unmapped, record `sentinel: null` and say so in the `## Notes` body.
 5. **Record the knowledge reference when one exists.** When a rule has a
    knowledge-base note behind it under `docs/league-tokens-learning-phases/`, record
    `knowledge-ref:` beside `expert-ref`. Policy 16 validates that the path exists
    under that tree; `knowledge-ref` is additional to `expert-ref`, never a
    replacement.
 6. **Point at tests that exist.** Grep for the test before writing the pointer. If none
-   exists, the rule is `drifted` (or `implemented` with the gap in `notes` when it is a
+   exists, the rule is `drifted` (or `implemented` with the gap in `## Notes` when it is a
    coverage gap, not a disagreement).
-7. **Assign the next id** for that module; never reuse or renumber.
+7. **Assign the next id** for that module — a new file at
+   `docs/spec/rules/<module>/<ID>.md`; never reuse or renumber.
 8. **Declare the new scenario vocabulary.** Every word a new step uses must be
    declared in the module's section of `docs/spec/glossary.yaml` (or in `common`) —
    policy 13 denies undeclared step vocabulary, so the glossary edit belongs in the
@@ -100,23 +105,35 @@ What step 1 of the gate actually means, for a brand-new rule:
    contiguous comment block is fine, one line per id). Policy 15 checks both
    directions: the site must carry its rule, and every annotation must name a
    catalog rule.
-10. **Validate the YAML parses.** Stock macOS `python3` has no `yaml` module, so Ruby's
-   stdlib `psych` is the reliable one:
-   ```sh
-   ruby -ryaml -e 'p YAML.safe_load(File.read("docs/spec/rules.yaml")).size'
-   python3 -c "import yaml; yaml.safe_load(open('docs/spec/rules.yaml'))"
-   ```
+10. **Validate the front matter decodes.** Each file's front matter is a small,
+    strictly-decoded YAML document, so an unknown or misspelled key fails the load and
+    names the file — `make spec/check` is that check and the one to trust. A quick parse
+    of the files you touched (stock macOS `python3` has no `yaml` module, so Ruby's
+    stdlib `psych` is the portable one):
+    ```sh
+    ruby -ryaml -e 'ARGV.each { |f| YAML.safe_load(File.read(f)[/\A---\n(.*?)^---$/m, 1]) }' \
+      docs/spec/rules/<module>/<ID>.md
+    ```
 11. **Run the gate** (§2's gate steps 2–5, above). `make spec/check` enforces the
     `rules.schema.md` §3 policies mechanically; then `make spec/gen`; finish when
     `make audit` is green.
 
 ## 3. Running each piece
 
+Every `cmd/spec` subcommand takes `--rules`, which defaults to `docs/spec/rules` (the
+catalog directory); the targets below are thin `go run ./cmd/spec …` wrappers, so
+`go run ./cmd/spec gen --rules docs/spec/rules --out docs/spec/business-rules.md` and
+`make spec/gen` are the same run. Scoping: `check` takes `--module <m>` and
+`--rule <id>`; `brief` takes one rule id as a positional argument or `--module <m>`;
+`queue` takes `--module <m>` and `--json`; `prove` takes `--rule <id>`, `--all` and
+`--base <git-ref>`.
+
 | target | what it does |
 |---|---|
-| `make spec/gen` | regenerate `docs/spec/business-rules.md` (the dashboard) and `docs/spec/views/<module>.md` (the six module views) from `rules.yaml` |
+| `make spec/gen` | regenerate `docs/spec/business-rules.md` — the thin dashboard (totals by module and status, plus links into `rules/<module>/`) — from the rule files; the rule files themselves are authored, never generated |
 | `make spec/check` | validate schema policies + catalog/feature traceability; runs `--strict`, so any check error fails the target (and therefore `make audit`) |
-| `make spec/diff` | fail if the dashboard or any module view is stale, or if `views/` holds a file the run does not render (an orphan; `gen` reports it but never deletes it) |
+| `make spec/diff` | fail if the generated dashboard is stale (wired into `make audit`) |
+| `make prove args='--rule R-GAME-001'` | run the DB-backed mutant registry for the rules a change touches (or `args='--all'`, the default with no args) — not part of `make audit`; needs `LT_API_TEST_DSN` |
 | `make spec/brief args='R-GAME-001'` | print a Markdown work order for one rule — statement, sites, refusal map, fixture, resolved verification pointers, linked scenarios, gate — or `args='--module game'` for every rule of one module |
 | `make spec/queue` | print the read-only work queue in priority order — drifted, specified-only, then implemented rules with an enforcement site or verification pointer that does not resolve today — as Markdown, or `args='--json'` for task packets; `args='--module game'` scopes it |
 | `make db/up` | start the compose test database (CI's postgres:18 service container) and wait until its healthcheck passes |
@@ -137,6 +154,11 @@ enforcement half; the other `go test` targets (`make test`, `make test/unit`,
 → `make test/spec` (the first run applies migrations 000001–000022 to a database it
 creates and drops itself) → `make db/down` when done.
 
+`cmd/spec` still carries the one-shot `migrate` subcommand, which converted the retired
+single-file `rules.yaml` into `rules/<module>/<ID>.md`; it is a migration artifact with
+no `make` target and no place in this workflow, and it is scheduled for removal. Author
+and edit rule files directly.
+
 ## 4. Agent quickstart
 
 **Turn-start ritual.** Before picking anything up, run `make spec/queue` and take the
@@ -147,15 +169,16 @@ the matching `SPEC-SCOPE:` line from §5 so the worker's gates stay scoped. The 
 is a cheap triage view, not a verdict: policies 13, 15 and 18 still only run in
 `make spec/check`.
 
-**Picking up a task.** Find the rule in `docs/spec/rules.yaml`; read its `statement`,
-`enforcement`, `verification` and `notes`, then open the feature file it points at.
+**Picking up a task.** Find the rule's file — `docs/spec/rules/<module>/<ID>.md` (the id
+is the file stem); read its front matter (`statement`, `enforcement`, `verification`) and
+its `## Notes` body, then open the feature file the `verification.gherkin` pointers name.
 Implement against the behavior those two describe. Run `make audit`; done when green.
 If the behavior must change, change the catalog and scenario first (§2). The
 write boundaries that bind this loop — the worktree mount, the inert in-VM
 extension, and the host-only receipts — are in §5.
 
 **Adding a rule.** Follow §2 — the recipe is canonical there. Pick the authority and id,
-verify every site and test against the code today, add the catalog entry and its `@rule`
+verify every site and test against the code today, add the rule file and its `@rule`
 scenario, run `make spec/gen`, then `make audit`.
 
 **Adding a scenario to an existing rule.** One scenario, one rule; name it so
@@ -199,8 +222,8 @@ agent. Three consequences shape the spec loop:
 - *Workers are vault-less*, except the librarian profile — that is a mount, not a
   special case in the prompt.
 
-**RED is host-authored, before the task begins.** The catalog entry in
-`docs/spec/rules.yaml` and its `@rule:R-...` scenario under
+**RED is host-authored, before the task begins.** The rule file under
+`docs/spec/rules/<module>/` and its `@rule:R-...` scenario under
 `docs/spec/features/**` are written and committed on `delegate/<job-id>` on the host
 plane, and the batch is shown red *for the right reason* there: the new scenario
 fails and `spec/check` names the untraceable entry. Only then is a task text

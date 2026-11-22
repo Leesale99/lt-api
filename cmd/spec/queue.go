@@ -64,7 +64,7 @@ type queueTask struct {
 func runQueue(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("spec queue", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	rulesPath := fs.String("rules", "docs/spec/rules.yaml", "path to the canonical YAML catalog")
+	rulesPath := fs.String("rules", "docs/spec/rules", "path to the per-rule-file catalog directory")
 	module := fs.String("module", "", "emit only the work of one module")
 	asJSON := fs.Bool("json", false, "emit the queue as JSON task packets")
 	if err := fs.Parse(args); err != nil {

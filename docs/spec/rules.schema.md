@@ -1,8 +1,11 @@
 # Business-rule catalog — schema
 
-`docs/spec/rules.yaml` is the **canonical, hand-edited** catalog of the project's
-business rules. `docs/spec/business-rules.md` (later phase) is **generated** from it —
-never edit that file.
+`docs/spec/rules/` is the **canonical, hand-edited** catalog of the project's business
+rules: one authored Markdown file per rule at `<module>/<ID>.md` — a strict YAML front
+matter between two `---` fences holding the machine fields this document specifies,
+followed by an optional authored body whose `## Notes` section is the rule's notes.
+`docs/spec/business-rules.md` is **generated** from those files: a thin dashboard of
+totals and links into the rule files. Never edit it.
 
 The catalog exists so that every rule answers three questions in one place:
 
@@ -53,10 +56,10 @@ Ordering/locking/atomicity mechanics → **repository**. Request framing → han
 | `handler` | The transport frames and refuses the request. |
 
 `category` names the **default**; `authority` records the **actual** decision owner.
-A rule whose authority deviates from its category's default MUST say why in `notes`.
-Deviations are the interesting entries — they are where a rule migrated across a
-boundary (e.g. `R-GAME-010` left the database because its trigger read another
-context's table).
+A rule whose authority deviates from its category's default MUST say why in its
+`## Notes` (policy 8). Deviations are the interesting entries — they are where a rule
+migrated across a boundary (e.g. `R-GAME-010` left the database because its trigger read
+another context's table).
 
 #### Database vs repository authority
 
@@ -92,13 +95,18 @@ migration (e.g. `R-IDENTITY-014`'s roles, permission codes and grants) are catal
 keeps the seeded values true is migration immutability. (Gate B5 — no `seed` /
 `reference-data` value is added.)
 
-### `scope` — decides constraint vs trigger
+### `write_scope` — decides constraint vs trigger
 
 | value | meaning |
 |---|---|
 | `row-local` | The predicate references only `NEW` — a `CHECK` can express it. |
 | `cross-row` | Needs `OLD`, a sibling row, or a group aggregate. |
 | `cross-table` | Needs another table's facts. In a modular monolith that is usually a boundary smell — see `boundary`. |
+
+The front-matter key is `write_scope:` (it was `scope:` in the retired single-file
+catalog; the old key is now a hard error — see §2). The **values** are unchanged, and
+the field is still about *what the write reads*, never about which module or run the
+rule belongs to — that is what `module` and `expert-ref` are for.
 
 ### `enforcement[].layer` — where the site lives
 
@@ -118,22 +126,23 @@ keeps the seeded values true is migration immutability. (Gate B5 — no `seed` /
 | value | meaning |
 |---|---|
 | `authoritative` | This site **is** the decision, for the rule's one authority layer. Repeated only for disjoint cases (one per command's phase window; total vs delta of one formula). |
-| `defense-in-depth` | A data-carrying copy. Trusted only while something ties it to the authority: `pinned_by`, or a `Tie:` sentence in `notes` showing it cannot drift silently (the authority refuses the wrong copy). |
+| `defense-in-depth` | A data-carrying copy. Trusted only while something ties it to the authority: `pinned_by`, or the rule's `tie:` note showing it cannot drift silently (the authority refuses the wrong copy). |
 | `advisory-copy` | Caller-facing pre-check that only improves the refusal shape (a clean 409/422 instead of an error-path 500). The authority still refuses; drift is a UX divergence, never a data one. |
 
 **Copy policy.** Exactly one `authority` layer. A non-authoritative site is allowed only
 if it names what ties it to the authority:
 
 - `pinned_by: <fixture>` — a shared change-detector fixture (see §4), **or**
-- `pinned_by: null` **and** a `notes` sentence (the catalog convention is a sentence
-  beginning `Tie:`) showing the copy cannot drift silently: **defense-in-depth** must
+- `pinned_by: null` **and** the rule's `tie:` field (§2 — it replaces the retired
+  `Tie:` sentence convention in `notes`) showing the copy cannot drift silently:
+  **defense-in-depth** must
   fail loudly at the authority (wrong copy ⇒ the constraint/trigger refuses and its own
   test fails first); **advisory-copy** is exempt by definition — it only shapes the
   refusal, the authority still refuses the write.
 
 If neither holds for a data-carrying copy, the entry is a second copy of the rule —
-which the vault counts as zero. Record it as `status: drifted` and name the missing
-fixture in `notes`.
+which the vault counts as zero. The remedy is `status: drifted` with the missing tie
+named in the rule's `## Notes`.
 
 ### `status`
 
@@ -141,14 +150,14 @@ fixture in `notes`.
 |---|---|
 | `implemented` | The rule holds in code today, every named site exists, and at least one verification pointer exists. |
 | `specified-only` | Designed in a phase document; no code yet. `expert-ref` required, no `enforcement`, no `verification`. |
-| `drifted` | The rule's **content** disagrees between the expert docs and actual behavior: the code refuses what the doc allows (or vice versa), the formula/window/ordering differs, or a data-carrying copy has no tie. `notes` says what disagrees and which side the catalog believes. `notes` required. |
+| `drifted` | The rule's **content** disagrees between the expert docs and actual behavior: the code refuses what the doc allows (or vice versa), the formula/window/ordering differs, or a data-carrying copy has no tie. The `## Notes` body says what disagrees and which side the catalog believes. Notes required. |
 
 **Rot is not drift.** A *rotted pointer* — a change-detector naming a dead file, a
 comment pointing at a deleted test, enforcement that moved away from where the docs
 claim it lives — does NOT make a rule `drifted`: its content still holds. Keep `status:
-implemented` and record the rot in `notes` behind a `stale-pointer:` prefix. Both
-`drifted` rules and every `stale-pointer` note MUST be surfaced by `spec/check` and
-preserved in the catalog's own `notes`.
+implemented` and record the rot in the rule's `stale_pointer` field (§2) — policy 5
+refuses that field on any other status. Both `drifted` rules and every `stale_pointer`
+MUST be surfaced by `spec/check` (and `spec queue`).
 
 Applied migrations are immutable history; when rot is caused by stale prose in an
 applied migration, the fix is the catalog (and a comment at the current site), not a
@@ -163,7 +172,9 @@ rewrite of the migration.
 The coarse enum values `authority: db|app|both` and
 `layer: validator|domain|service|db|middleware` map onto this schema's taxonomy: the
 five-value authority and six-value layer name *which* app layer. The table below records
-the mapping; when generating `business-rules.md`, map:
+the mapping. It is a reading aid, not a transform: a rule file carries this schema's
+values directly (the retired single-file catalog's coarse values are gone), and the
+threadbare dashboard prints no per-rule fields at all.
 
 | coarse | this schema |
 |---|---|
@@ -176,26 +187,84 @@ the mapping; when generating `business-rules.md`, map:
 
 ---
 
-## 2. Fields
+## 2. The rule file
+
+A rule is one file: `docs/spec/rules/<module>/<ID>.md`. The directory names the module
+and the file stem names the id, so the path and the entry can never disagree. Here is a
+real one (`schedule/R-SCHEDULE-025.md`), abridged — shortened prose, fewer pointers:
+
+```markdown
+---
+id: R-SCHEDULE-025
+title: A team kept in the calendar by its matches cannot be deleted
+statement: |
+  A team that any match refers to cannot be removed. Match history is durable, so the
+  calendar's teams are protected by the fixtures that name them, not by a check the
+  application remembers to run.
+module: schedule
+entity: team
+category: invariant
+status: implemented
+authority: database
+mechanism: constraint
+write_scope: cross-table
+enforcement:
+  - site: migrations/000001_create_initial_game_models.up.sql
+    layer: db-constraint
+    role: authoritative
+    pinned_by: null
+refusal:
+  code: "23001"
+  constraint:
+    - matches_home_team_id_fkey
+    - matches_away_team_id_fkey
+  sentinel: ErrRecordInUse
+  http: 409
+fixture: null
+verification:
+  unit:
+    - internal/schedule/internal/repository/constraints_test.go::TestTeamDeleteRestricted
+  e2e:
+    - internal/e2e/teams_test.go::TestDeleteTeamHandler
+  gherkin:
+    - docs/spec/features/schedule/deletion.feature::A team a fixture names cannot be deleted
+expert-ref: null
+knowledge-ref: null
+stale_pointer: |-
+  TeamRepository.Delete's comment still names players, which migration 000016 dropped.
+tie: null
+---
+
+## Notes
+
+ON DELETE RESTRICT (not NO ACTION) on both sides of matches: the repository's 23001 map to
+ErrRecordInUse is advisory, the FK refuses either way.
+```
+
+### Front matter
+
+The front matter is the machine state: exactly the fields below, decoded strictly. It
+is a block of YAML between two `---` fences at the very top of the file and holds
+exactly **one** YAML document.
 
 | field | type | required | notes |
 |---|---|---|---|
-| `id` | string | yes | `R-<MODULE>-NNN`, flat per module, stable once assigned. Never renumber. A retired rule's entry is removed from the catalog and recorded in `rules.yaml`'s header note; its id is never reused (gate B5 — supersedes "retired rules are marked, not deleted"). |
+| `id` | string | yes | `R-<MODULE>-NNN`, flat per module, stable once assigned. Must equal the file's stem. Never renumber. A retired rule's file is deleted from the catalog and recorded in `rules/README.md`'s retired-ids note; its id is never reused (gate B5 — supersedes "retired rules are marked, not deleted"). |
 | `title` | string | yes | Short imperative name ("Rides are born locked"). |
-| `statement` | string (block) | yes | 1–3 sentences of business language. What the business demands, no code-speak. |
-| `module` | enum | yes | Owner context of the *rule*, not of every enforcement site. |
+| `statement` | string (block) | yes | 1–3 sentences of business language. What the business demands, no code-speak. It is a **front-matter** field, not body prose (ADR-030: the statement stays machine-readable, so the generator and `spec brief` can print it). |
+| `module` | enum | yes | Owner context of the *rule*, not of every enforcement site. Must equal the name of the directory the file sits in (§2 loader strictness). |
 | `entity` | string | yes | Table or aggregate the rule is about (`ride`, `balance`, `journal_entry`). |
 | `category` | enum | yes | §1. |
 | `status` | enum | yes | §1. |
 | `authority` | enum | yes | Exactly one. |
 | `mechanism` | enum \| null | iff `authority: database` | §1. |
-| `scope` | enum \| null | required for `authority: database`; optional elsewhere | §1. Outside the database it records the predicate's *shape*, which is often the reason the rule left the DB (`R-GAME-010`: `cross-table` is exactly why 000017 moved it to Go). |
+| `write_scope` | enum \| null | required for `authority: database`; optional elsewhere | §1. Renamed from `scope:` — the old key is a hard error. Outside the database it records the predicate's *shape*, which is often the reason the rule left the DB (`R-GAME-010`: `cross-table` is exactly why 000017 moved it to Go). |
 | `enforcement` | list | yes (may be empty only for `specified-only`) | Each item: `site`, `layer`, `role`, `pinned_by`. |
 | `enforcement[].site` | string | yes | Go: `path::Symbol` (`internal/game/internal/core/domain/ride.go::Ride.Create`). SQL: the migration id (`migrations/000012_add_rides_insert_state_gate.up.sql`). **Never line numbers.** |
 | `enforcement[].layer` | enum | yes | §1. |
 | `enforcement[].role` | enum | yes | §1. |
-| `enforcement[].pinned_by` | string \| null | yes (explicit) | Fixture id. `null` is allowed only with the copy policy above: a `Tie:` sentence for defense-in-depth, nothing needed for advisory-copy. |
-| `refusal` | map \| null | recommended | See §3. Omitted for rules that cannot refuse (pure computation) and for `specified-only` rules whose refusal surface is undesigned. |
+| `enforcement[].pinned_by` | string \| null | yes (explicit) | Fixture id. `null` is allowed only with the copy policy above: a `tie:` note for defense-in-depth, nothing needed for advisory-copy. |
+| `refusal` | map \| null | recommended | See the refusal table below. Omitted for rules that cannot refuse (pure computation) and for `specified-only` rules whose refusal surface is undesigned. |
 | `refusal.code` | string | in refusal | A 5-character SQLSTATE, or the reserved word `synthetic` (a Go-only refusal with no SQLSTATE). **Illustrative, not a closed list:** `P0001`, `23514`, `23503`, `23001` are the codes the house table below shows most often; any real SQLSTATE (`23505`, `23502`, `22003`, `42501`, …) is valid. `cmd/spec` warns — never errors — on a code outside the illustrative set (gate B5). |
 | `refusal.constraint` | string \| list \| null | in refusal | The named refusal (constraint name, or the name the trigger `RAISE`s). A list when a rule carries several constraints. |
 | `refusal.sentinel` | string \| null | in refusal | The domain sentinel the repository/ACL maps to (`ErrInvalidTransition`, …). `null` = unmapped. |
@@ -206,7 +275,51 @@ the mapping; when generating `business-rules.md`, map:
 | `verification.gherkin` | list of strings | no | `<feature-file>::<scenario name>` under `docs/spec/features/**`; every scenario carries an `@rule:R-...` tag. Counts toward policy 3 like `unit`/`e2e`; policy 10 resolves every pointer against the feature tree. |
 | `expert-ref` | string (path) | required for `specified-only` | The phase document the rule comes from. Omitted where no doc covers the rule (an ADR referenced only in code is not a path that exists in this repo). |
 | `knowledge-ref` | string (path) | no | The knowledge-base note behind the rule, relative to the repository root. It must exist and sit under `docs/league-tokens-learning-phases/` (policy 16). It is **additional** to `expert-ref`, never a replacement: a `specified-only` rule keeps its `expert-ref` and may add this beside it. |
-| `notes` | string (block) | required for `drifted`; required when `authority` ≠ category default | What disagrees, what the catalog believes, what would fix it. Rotted pointers (dead files, deleted tests, moved enforcement) belong here behind a `stale-pointer:` prefix, with `status: implemented`. |
+| `stale_pointer` | string (block) \| null | no | A **rot** note: pointers that no longer resolve (a dead file, a deleted test, enforcement that moved). Legal **only** on `status: implemented` — policy 5 refuses it on any other status (`stale-pointer note on a <status> rule`). It replaces the retired `stale-pointer:` prefix that used to live inside `notes`; the two are not interchangeable and the old prefix in prose is just prose. |
+| `tie` | string (block) \| null | no | How a data-carrying copy is tied to its authority: the sentence that shows it cannot drift silently (wrong copy ⇒ the authority refuses, and its own test fails first). Policy 7 accepts a non-null `tie` in place of a `pinned_by` fixture for a `defense-in-depth` site; `advisory-copy` needs neither. It replaces the retired `Tie:` sentence convention inside `notes`. |
+
+There is **no `notes` field.** The rule's notes are the prose under the body's `## Notes`
+heading; `notes:` in the front matter is a hard decoding error (see below).
+
+### The body
+
+Everything after the closing `---` fence is authored prose — Markdown, at the author's
+discretion. What the loader reads out of it is exactly one thing: the prose under the
+single `## Notes` heading, which becomes the rule's notes. That is the section policies
+5 and 8 look at (`drifted` ⇒ notes; `authority` ≠ category default ⇒ notes), and the
+one `spec brief` prints. Policy 7's tie is **not** read from here: it is the `tie`
+front-matter field.
+
+- A body may carry further `##` sections; they are documentation, not machine state,
+  and the loader ignores them. Notes end at the next level-2 heading.
+- A **non-empty body with no `## Notes` heading is an error** — that prose would
+  otherwise be invisible to the loader. A rule with nothing to say has no body at all
+  (the last fence line ends the file).
+- `notes`, `stale_pointer` and `tie` are compared in canonical form: every whitespace
+  run collapses to one space and leading/trailing whitespace is dropped, so an author's
+  line wrapping can never change the decoded value.
+
+### The loader's strictness
+
+The directory layout is strict, because a misplaced file would silently drop a rule:
+
+- Top level: one directory per module, named by a value of the frozen module enum.
+  The single exception is `README.md` at the rules-directory top level — authored prose
+  about the layout, skipped by the loader and not a rule. Any other non-directory entry
+  is an error, and so is a dotfile or a directory that is not a module name.
+- Inside a module directory: rule files only — regular, non-dotfile, `*.md`. A dotfile,
+  a non-Markdown file or a subdirectory is an error. Every `.md` file is parsed as a
+  rule.
+- Per file: the front matter must open with a `---` fence on line 1 and close with the
+  next one; it decodes **strictly**, so an unknown or misspelled key is an error.
+  `scope:` (the retired name) and `notes:` (a field that no longer exists) are therefore
+  hard errors, not silently dropped keys.
+- Per file: the front-matter `id` must equal the file stem and the front-matter `module`
+  must equal the directory name.
+- Across files: ids are unique — the same id in two module directories is an error.
+- Ordering is deterministic and independent of readdir order: module enum order
+  (`schedule`, `game`, `identity`, `ledger`, `kernel`, `platform` — the declaration order
+  of §1), then `id` ascending within a module.
 
 ### Refusal mapping (house convention)
 
@@ -237,14 +350,21 @@ list is the frequency.
    `verification` pointer, and every `verification` path/symbol exists today.
 4. `status: specified-only` ⇒ `expert-ref` present, `enforcement: []`, no
    `verification`, and no `refusal` unless the expert doc names one.
-5. `status: drifted` ⇒ `notes` present, naming the disagreement. A `notes` block may
-   carry the `stale-pointer:` prefix only when `status: implemented`.
-6. `authority: database` ⇒ `mechanism` non-null and `scope` non-null. Any other
-   authority ⇒ `mechanism` null (`scope` may still be set, see §2).
+5. `status: drifted` ⇒ the rule's notes (the `## Notes` body) are present and name the
+   disagreement. `stale_pointer` (the rot note) is legal **only** when `status:
+   implemented`: on any other status `cmd/spec` reports `stale-pointer note on a
+   <status> rule` (checker id `5-drifted`).
+6. `authority: database` ⇒ `mechanism` non-null and `write_scope` non-null (the message
+   is `database authority requires a write_scope`). Any other authority ⇒ `mechanism`
+   null (`write_scope` may still be set, see §2).
 7. Every `enforcement` entry with `role` ≠ `authoritative` carries `pinned_by`
-   (non-null) **or** a `Tie:` sentence in the rule's `notes`. `advisory-copy` is exempt
-   from both (§1 copy policy). Otherwise `status: drifted`.
-8. `authority` ≠ category default ⇒ `notes` present.
+   (non-null) **or** a non-null `tie` note; the message is
+   `non-authoritative site <site> has no pinned_by and no tie note`. `advisory-copy` is
+   exempt from both (§1 copy policy). A data-carrying copy with neither is a second copy
+   of the rule — the vault counts that as zero — so the remedy is `status: drifted` with
+   the missing tie named in notes.
+8. `authority` ≠ category default ⇒ the rule's notes are present (`authority <a>
+   deviates from category <c> default <d> without notes`).
 9. `site`/`verification` use `path::Symbol`, never line numbers, never a bare package.
 10. Every `verification.gherkin` pointer is `<feature-file>::<scenario name>` and
     resolves to a real scenario under `docs/spec/features/` (checker id `10-gherkin`).
@@ -303,8 +423,9 @@ list is the frequency.
       belongs to — `check` in `matches_ended_at_check` is an ERROR without needing a
       neighbour, since splitting names must not reopen the `_` bypass — and such
       names surface only in §8 steps, where the sabotage exemption covers them **only
-      when the name is REAL**: a `refusal.constraint` or `refusal.sentinel` value in
-      `docs/spec/rules.yaml`, or a name that appears literally in a `migrations/*.sql`
+      when the name is REAL**: a `refusal.constraint` or `refusal.sentinel` value in a
+      rule file under `docs/spec/rules/`, or a name that appears literally in a
+      `migrations/*.sql`
       file. A fabricated name gets the phrase denylist normally, in a sabotage step as
       anywhere else.
     - **Allowlist (the seeded glossary).** Every remaining token of every step must be
@@ -435,8 +556,29 @@ model for every future fixture.
 
 ## 5. How to add a rule
 
-> The canonical how-to-add-a-rule recipe lives in docs/spec/README.md §2 — the workflow
-> entry point. This section is a pointer only.
+The end-to-end recipe (gate, glossary, annotations) is `README.md` §2 — the workflow
+entry point. This section is the catalog half of it: the file, and the order the pieces
+appear in.
+
+1. **Pick the module and the next free id** for it. Create
+   `docs/spec/rules/<module>/<ID>.md`: the file stem **is** the id, the directory **is**
+   the module (see §2). Nothing else in the tree needs to be touched to register a rule
+   — the loader walks the directory.
+2. **Fill the front matter from the code, not from the docs**: `statement` in business
+   language, one `authority`, the `enforcement` sites you verified today, the `refusal`
+   chain, and `verification` pointers you grepped. Leave `fixture`, `knowledge-ref`,
+   `stale_pointer` and `tie` at `null` unless one applies (§2).
+3. **Add its scenario**: one `@rule:<ID>` scenario under
+   `docs/spec/features/<module>/**`, plus the glossary words that scenario needs
+   (`glossary.yaml`, policy 13) — the same change, not a follow-up.
+4. **Run `make audit` while the rule is still unimplemented.** It must be red *for the
+   right reason*: the scenario fails and `spec check --strict` names the missing site or
+   test pointer (an untraceable entry fails the gate too).
+5. **Implement the rule**, and put a `//rule:<ID>` annotation on each Go enforcement site
+   (policy 15, both directions).
+6. **Run `make spec/gen`.** The dashboard `docs/spec/business-rules.md` is regenerated;
+   the rule file is not — nothing under `rules/` is ever machine-written.
+7. **Run `make audit` again.** Green, including `spec/diff`, is done.
 
 ## 6. Open decisions (user gate A2)
 

@@ -160,7 +160,8 @@ smoke:
 # SPEC CATALOG
 # ============================================================================================================================ #
 
-## spec/gen: regenerate the catalog Markdown — the dashboard plus one view per module
+## spec/gen: regenerate the catalog's Markdown — the thin dashboard (totals by module/status + links
+## into rules/<module>/); the rule files under docs/spec/rules/ are authored, never generated
 .PHONY: spec/gen
 spec/gen:
 	go run ./cmd/spec gen
@@ -180,7 +181,7 @@ spec/brief:
 spec/queue:
 	go run ./cmd/spec queue $(args)
 
-## spec/diff: fail if the dashboard or any generated module view is stale (wired into `make audit`)
+## spec/diff: fail if the generated dashboard is stale (wired into `make audit`)
 .PHONY: spec/diff
 spec/diff:
 	go run ./cmd/spec gen --diff

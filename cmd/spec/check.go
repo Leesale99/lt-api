@@ -17,8 +17,6 @@ const (
 	statusSpecifiedOnly = "specified-only"
 	statusDrifted       = "drifted"
 
-	stalePointerPrefix = "stale-pointer:"
-
 	// policyCategory binds a rule's category to the verification and refusal
 	// surface it must carry; policyKnowledgeRef keeps the knowledge-base
 	// pointer honest.
@@ -44,7 +42,7 @@ var policies = []policy{
 	{"4-specified-only", "specified-only ⇒ expert-ref, no sites, no verification, no refusal"},
 	{"5-drifted", "drifted ⇒ notes; stale-pointer only on implemented rules"},
 	{"6-authority", "database ⇒ mechanism + scope; any other authority ⇒ no mechanism"},
-	{"7-copy-policy", "non-authoritative sites tied by pinned_by or a Tie: note"},
+	{"7-copy-policy", "non-authoritative sites tied by pinned_by or a tie note"},
 	{"8-authority-default", "authority ≠ category default ⇒ notes"},
 	{"9-site-ref", "path::Symbol, never a bare path or a line number"},
 	{"10-gherkin", "verification.gherkin resolves to a real scenario"},
@@ -145,7 +143,7 @@ func (c *checker) warnf(policyID, subject, format string, args ...any) {
 func runCheck(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("spec check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	rulesPath := fs.String("rules", "docs/spec/rules.yaml", "path to the canonical YAML catalog")
+	rulesPath := fs.String("rules", "docs/spec/rules", "path to the per-rule-file catalog directory")
 	strict := fs.Bool("strict", false, "exit 1 when any ERROR finding exists (warnings never fail)")
 	module := fs.String("module", "", "report only findings for one module; catalog-level findings (empty rule id) are hidden while scoped")
 	ruleID := fs.String("rule", "", "report only findings for one rule id; catalog-level findings (empty rule id) are hidden while scoped")
@@ -266,8 +264,8 @@ func (c *checker) checkEnums(rule Rule) {
 	if rule.Mechanism != nil {
 		check("mechanism", *rule.Mechanism, mechanismEnum, false)
 	}
-	if rule.Scope != nil {
-		check("scope", *rule.Scope, scopeEnum, false)
+	if rule.WriteScope != nil {
+		check("write_scope", *rule.WriteScope, scopeEnum, false)
 	}
 	for _, site := range rule.Enforcement {
 		check("enforcement.layer", site.Layer, layerEnum, false)
@@ -377,27 +375,27 @@ func (c *checker) checkSpecifiedOnly(rule Rule) {
 	}
 }
 
-// policy 5: drifted needs notes saying what disagrees; stale-pointer notes are
-// rot and only allowed on implemented rules.
+// policy 5: drifted needs notes saying what disagrees; a stale_pointer is rot
+// and only allowed on implemented rules.
 func (c *checker) checkDrifted(rule Rule) {
 	if rule.Status == statusDrifted && strings.TrimSpace(rule.Notes) == "" {
 		c.errorf("5-drifted", rule.ID, "drifted rule has no notes naming the disagreement")
 	}
-	if rule.Status != statusImplemented && strings.Contains(rule.Notes, stalePointerPrefix) {
+	if rule.Status != statusImplemented && rule.StalePointer != nil {
 		c.errorf("5-drifted", rule.ID,
 			"stale-pointer note on a %s rule; rot notes are only allowed on implemented rules", rule.Status)
 	}
 }
 
-// policy 6: database authority must name mechanism + scope; every other
+// policy 6: database authority must name mechanism + write_scope; every other
 // authority must leave mechanism null.
 func (c *checker) checkAuthority(rule Rule) {
 	if rule.Authority == "database" {
 		if rule.Mechanism == nil {
 			c.errorf("6-authority", rule.ID, "database authority requires a mechanism")
 		}
-		if rule.Scope == nil {
-			c.errorf("6-authority", rule.ID, "database authority requires a scope")
+		if rule.WriteScope == nil {
+			c.errorf("6-authority", rule.ID, "database authority requires a write_scope")
 		}
 		return
 	}
@@ -408,8 +406,8 @@ func (c *checker) checkAuthority(rule Rule) {
 }
 
 // policy 7: a data-carrying copy must be tied to its authority by a pinned_by
-// fixture or a `Tie:` sentence. advisory-copy is exempt; authoritative sites
-// are the authority itself.
+// fixture or a `tie` note. advisory-copy is exempt; authoritative sites are the
+// authority itself.
 func (c *checker) checkCopyPolicy(rule Rule) {
 	for _, site := range rule.Enforcement {
 		if site.Role == "authoritative" || site.Role == "advisory-copy" {
@@ -421,11 +419,11 @@ func (c *checker) checkCopyPolicy(rule Rule) {
 		if site.PinnedBy != nil && *site.PinnedBy != "" {
 			continue
 		}
-		if strings.Contains(rule.Notes, "Tie:") {
+		if rule.Tie != nil {
 			continue
 		}
 		c.errorf("7-copy-policy", rule.ID,
-			"non-authoritative site %q has no pinned_by and no `Tie:` note", site.Site)
+			"non-authoritative site %q has no pinned_by and no tie note", site.Site)
 	}
 }
 

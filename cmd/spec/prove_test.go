@@ -2,10 +2,14 @@ package main
 
 // Tests for `spec prove`: the registry seeds the 30 database-authority rules,
 // every mapped scenario resolves, the static vacuity verdict is the same rule
-// policy 18 applies, and the DB gate fails closed.
+// policy 18 applies, and the DB gate fails closed. The scope-derivation tests
+// exercise the per-rule-file catalog: a touched file is one rule (added,
+// removed or changed), and the git seam is stubbed where a base revision would
+// otherwise need a real commit.
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +22,7 @@ import (
 func realCatalogAndRoot(t *testing.T) (Catalog, string) {
 	t.Helper()
 	root := filepath.Join("..", "..")
-	catalog, err := loadCatalog(filepath.Join(root, "docs", "spec", "rules.yaml"))
+	catalog, err := loadCatalog(filepath.Join(root, "docs", "spec", "rules"))
 	if err != nil {
 		t.Fatalf("load the real catalog: %v", err)
 	}
@@ -147,7 +151,7 @@ func TestProveFailsClosedWithoutDatabase(t *testing.T) {
 	t.Setenv(proveDSNEnv, "")
 	var stdout, stderr bytes.Buffer
 	code := runProve([]string{
-		"--rules", filepath.Join("..", "..", "docs", "spec", "rules.yaml"),
+		"--rules", filepath.Join("..", "..", "docs", "spec", "rules"),
 		"--rule", "R-SCHEDULE-003",
 	}, &stdout, &stderr)
 	if code != 1 {
@@ -164,7 +168,7 @@ func TestProveFailsClosedWithoutDatabase(t *testing.T) {
 func TestProveRejectsUnknownRule(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := runProve([]string{
-		"--rules", filepath.Join("..", "..", "docs", "spec", "rules.yaml"),
+		"--rules", filepath.Join("..", "..", "docs", "spec", "rules"),
 		"--rule", "R-NOPE-999",
 	}, &stdout, &stderr)
 	if code != 1 {
@@ -175,8 +179,54 @@ func TestProveRejectsUnknownRule(t *testing.T) {
 	}
 }
 
+// proveRule builds a minimal rule that belongs to id's module and renders as a
+// parseable rule file (the per-rule catalog's only representation).
+func proveRule(id, module, entity, title string) Rule {
+	rule := baseRule()
+	rule.ID = id
+	rule.Module = module
+	rule.Entity = entity
+	rule.Title = title
+	return rule
+}
+
+func mustRenderRuleFile(t *testing.T, rule Rule) []byte {
+	t.Helper()
+	data, err := renderRuleFile(rule)
+	if err != nil {
+		t.Fatalf("render %s: %v", rule.ID, err)
+	}
+	return data
+}
+
+// stubGit replaces the git seam for one test: tree is the set of base revisions
+// that exist (`<base>:<path>`, a file or a directory) and files maps
+// `<base>:<path>` to that path's contents on the base. Anything else fails like
+// a missing revision.
+func stubGit(t *testing.T, tree map[string]bool, files map[string]string) {
+	t.Helper()
+	previous := gitOutput
+	t.Cleanup(func() { gitOutput = previous })
+	gitOutput = func(root string, args ...string) (string, error) {
+		switch {
+		case len(args) == 3 && args[0] == "cat-file" && args[1] == "-e":
+			if tree[args[2]] {
+				return "", nil
+			}
+			return "", fmt.Errorf("git cat-file -e %s: not found", args[2])
+		case len(args) == 2 && args[0] == "show":
+			if out, ok := files[args[1]]; ok {
+				return out, nil
+			}
+			return "", fmt.Errorf("git show %s: not found", args[1])
+		}
+		return "", fmt.Errorf("stub git: unexpected git %v", args)
+	}
+}
+
 func TestProveDerivesScopeFromDirtyTree(t *testing.T) {
-	root := t.TempDir()
+	repo := newTestRepo(t)
+	root := repo.root
 	run := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
@@ -187,38 +237,174 @@ func TestProveDerivesScopeFromDirtyTree(t *testing.T) {
 	run("init", "-q")
 	run("config", "user.email", "spec@example.test")
 	run("config", "user.name", "Spec Test")
-	write := func(rel, content string) {
+
+	// The base catalog: a kernel rule that will change, one that stays clean, a
+	// game rule that will be deleted, plus the directory's authored README.
+	repo.writeCatalog(t, Catalog{
+		proveRule("R-KERNEL-001", "kernel", "thing", "A thing always is"),
+		proveRule("R-KERNEL-005", "kernel", "thing", "A thing stays as it is"),
+		proveRule("R-GAME-001", "game", "ride", "A ride is born locked"),
+	})
+	repo.addFile(t, "docs/spec/rules/README.md", "# rules\n")
+	repo.addFile(t, "docs/spec/features/kernel/thing.feature",
+		"@kernel\nFeature: a thing\n\n  @rule:R-KERNEL-002\n  Scenario: a scenario\n    Then the thing reads \"locked\"\n")
+	run("add", ".")
+	run("commit", "-q", "-m", "base")
+
+	// Dirty the tree: a changed rule file, a new one, a deleted one, an edited
+	// README (not a rule), a Go annotation and a retagged feature.
+	repo.addFile(t, "docs/spec/rules/kernel/R-KERNEL-001.md",
+		string(mustRenderRuleFile(t, proveRule("R-KERNEL-001", "kernel", "thing", "A thing always was"))))
+	repo.addFile(t, "docs/spec/rules/kernel/R-KERNEL-006.md",
+		string(mustRenderRuleFile(t, proveRule("R-KERNEL-006", "kernel", "thing", "A thing arrives"))))
+	if err := os.Remove(filepath.Join(root, "docs", "spec", "rules", "game", "R-GAME-001.md")); err != nil {
+		t.Fatal(err)
+	}
+	repo.addFile(t, "docs/spec/rules/README.md", "# rules, edited\n")
+	repo.addFile(t, "internal/kernel/thing/thing.go", "package thing\n\n//rule:R-KERNEL-003\nfunc Do() {}\n")
+	repo.addFile(t, "docs/spec/features/kernel/thing.feature",
+		"@kernel\nFeature: a thing\n\n  @rule:R-KERNEL-004\n  Scenario: a scenario\n    Then the thing reads \"locked\"\n")
+
+	catalog, err := loadCatalog(repo.rulesPath)
+	if err != nil {
+		t.Fatalf("load the working catalog: %v", err)
+	}
+	index := (&checker{root: root}).indexFeatures()
+	scope, err := deriveProveScope(root, "HEAD", repo.rulesPath, "docs/spec/prove.yaml", catalog, index)
+	if err != nil {
+		t.Fatalf("derive scope: %v", err)
+	}
+	for _, want := range []string{
+		"R-KERNEL-001", // CHANGED rule file
+		"R-KERNEL-003", // //rule annotation in a touched Go file
+		"R-KERNEL-004", // tag in a touched feature file
+		"R-KERNEL-006", // ADDED rule file
+		"R-GAME-001",   // REMOVED rule file
+	} {
+		if !scope[want] {
+			t.Errorf("derived scope does not contain %s: %v", want, scope)
+		}
+	}
+	for _, unwanted := range []string{
+		"R-KERNEL-005", // the file did not change
+		"README",       // the rules directory's README is not a rule
+	} {
+		if scope[unwanted] {
+			t.Errorf("derived scope contains %s, which no touched rule file changed: %v", unwanted, scope)
+		}
+	}
+}
+
+func TestChangedRuleIDsComparesEveryTouchedRuleFile(t *testing.T) {
+	root := t.TempDir()
+	const rulesRel = "docs/spec/rules"
+	write := func(rel string, data []byte) {
 		t.Helper()
 		full := filepath.Join(root, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(full, data, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	write("docs/spec/rules.yaml", "- id: R-KERNEL-001\n  title: base\n")
-	write("internal/kernel/thing/thing.go", "package thing\n\nfunc Do() {}\n")
-	write("docs/spec/features/kernel/thing.feature",
-		"@kernel\nFeature: a thing\n\n  @rule:R-KERNEL-002\n  Scenario: a scenario\n    Then the thing reads \"locked\"\n")
-	run("add", ".")
-	run("commit", "-q", "-m", "base")
 
-	// Dirty the tree: a Go annotation, a feature tag, and a catalog change.
-	write("internal/kernel/thing/thing.go", "package thing\n\n//rule:R-KERNEL-003\nfunc Do() {}\n")
-	write("docs/spec/features/kernel/thing.feature",
-		"@kernel\nFeature: a thing\n\n  @rule:R-KERNEL-004\n  Scenario: a scenario\n    Then the thing reads \"locked\"\n")
-	write("docs/spec/rules.yaml", "- id: R-KERNEL-001\n  title: changed\n")
+	before := mustRenderRuleFile(t, proveRule("R-KERNEL-001", "kernel", "thing", "A thing always is"))
+	after := mustRenderRuleFile(t, proveRule("R-KERNEL-001", "kernel", "thing", "A thing always was"))
+	clean := mustRenderRuleFile(t, proveRule("R-KERNEL-005", "kernel", "thing", "A thing stays as it is"))
+	added := mustRenderRuleFile(t, proveRule("R-KERNEL-006", "kernel", "thing", "A thing arrives"))
+	deleted := mustRenderRuleFile(t, proveRule("R-GAME-001", "game", "ride", "A ride is born locked"))
 
-	catalog := Catalog{{ID: "R-KERNEL-001", Title: "changed"}}
-	index := (&checker{root: root}).indexFeatures()
-	scope, err := deriveProveScope(root, "HEAD", filepath.Join(root, "docs/spec/rules.yaml"), "docs/spec/prove.yaml", catalog, index)
-	if err != nil {
-		t.Fatalf("derive scope: %v", err)
+	write(rulesRel+"/kernel/R-KERNEL-001.md", after)
+	write(rulesRel+"/kernel/R-KERNEL-005.md", clean)
+	write(rulesRel+"/kernel/R-KERNEL-006.md", added)
+	// R-GAME-001 is absent from the working tree: it was removed.
+
+	stubGit(t,
+		map[string]bool{
+			"HEAD:" + rulesRel:             true,
+			"HEAD:" + rulesRel + "/kernel": true,
+			"HEAD:" + rulesRel + "/game":   true,
+		},
+		map[string]string{
+			"HEAD:" + rulesRel + "/kernel/R-KERNEL-001.md": string(before),
+			"HEAD:" + rulesRel + "/kernel/R-KERNEL-005.md": string(clean),
+			"HEAD:" + rulesRel + "/game/R-GAME-001.md":     string(deleted),
+		},
+	)
+
+	current := Catalog{
+		proveRule("R-KERNEL-001", "kernel", "thing", "A thing always was"),
+		proveRule("R-KERNEL-005", "kernel", "thing", "A thing stays as it is"),
+		proveRule("R-KERNEL-006", "kernel", "thing", "A thing arrives"),
 	}
-	for _, want := range []string{"R-KERNEL-001", "R-KERNEL-003", "R-KERNEL-004"} {
-		if !scope[want] {
-			t.Errorf("derived scope does not contain %s: %v", want, scope)
-		}
+	touched := []string{
+		rulesRel + "/kernel/R-KERNEL-001.md",
+		rulesRel + "/kernel/R-KERNEL-005.md",
+		rulesRel + "/kernel/R-KERNEL-006.md",
+		rulesRel + "/game/R-GAME-001.md",
+		rulesRel + "/README.md",
+	}
+	ids, err := changedRuleIDs(root, "HEAD", rulesRel, current, touched)
+	if err != nil {
+		t.Fatalf("changedRuleIDs: %v", err)
+	}
+	want := "R-GAME-001,R-KERNEL-001,R-KERNEL-006"
+	if got := strings.Join(ids, ","); got != want {
+		t.Errorf("changed ids = %s, want %s", got, want)
+	}
+}
+
+func TestChangedRuleIDsTreatsAnAbsentBaseCatalogAsAllAdded(t *testing.T) {
+	root := t.TempDir()
+	const rulesRel = "docs/spec/rules"
+	file := rulesRel + "/kernel/R-KERNEL-001.md"
+	full := filepath.Join(root, filepath.FromSlash(file))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, mustRenderRuleFile(t, proveRule("R-KERNEL-001", "kernel", "thing", "A thing always is")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// No rules directory on the base at all.
+	stubGit(t, nil, nil)
+
+	current := Catalog{
+		proveRule("R-KERNEL-001", "kernel", "thing", "A thing always is"),
+		proveRule("R-GAME-001", "game", "ride", "A ride is born locked"),
+	}
+	ids, err := changedRuleIDs(root, "HEAD", rulesRel, current, []string{file})
+	if err != nil {
+		t.Fatalf("changedRuleIDs: %v", err)
+	}
+	want := "R-GAME-001,R-KERNEL-001"
+	if got := strings.Join(ids, ","); got != want {
+		t.Errorf("changed ids = %s, want every current rule %s", got, want)
+	}
+}
+
+func TestChangedRuleIDsRejectsAMalformedBaseRuleFile(t *testing.T) {
+	root := t.TempDir()
+	const rulesRel = "docs/spec/rules"
+	file := rulesRel + "/kernel/R-KERNEL-001.md"
+	full := filepath.Join(root, filepath.FromSlash(file))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, mustRenderRuleFile(t, proveRule("R-KERNEL-001", "kernel", "thing", "A thing always is")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stubGit(t, map[string]bool{"HEAD:" + rulesRel: true}, map[string]string{
+		"HEAD:" + file: "not a rule file\n",
+	})
+
+	_, err := changedRuleIDs(root, "HEAD", rulesRel, Catalog{baseRule()}, []string{file})
+	if err == nil {
+		t.Fatal("changedRuleIDs accepted a malformed base rule file")
+	}
+	if !strings.Contains(err.Error(), "parse base rule file HEAD:") {
+		t.Errorf("error = %q, want the base-parse error style", err)
 	}
 }

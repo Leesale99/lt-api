@@ -18,11 +18,11 @@ import (
 const legacyFixturePath = "testdata/legacy-rules.yaml"
 
 // loadLegacyFixture decodes the synthetic old-format catalog with the real
-// single-file loader, so the fixture also pins that loadCatalog still understands
-// the format the migration reads.
-func loadLegacyFixture(t *testing.T) Catalog {
+// single-file legacy loader, so the fixture also pins that `spec migrate` still
+// understands the format it reads.
+func loadLegacyFixture(t *testing.T) legacyCatalog {
 	t.Helper()
-	catalog, err := loadCatalog(legacyFixturePath)
+	catalog, err := loadLegacyCatalog(legacyFixturePath)
 	if err != nil {
 		t.Fatalf("load legacy fixture: %v", err)
 	}
@@ -33,7 +33,7 @@ func loadLegacyFixture(t *testing.T) Catalog {
 }
 
 // fixtureRule transforms one fixture rule and renders its file.
-func fixtureRule(t *testing.T, id string) (RuleV2, []byte) {
+func fixtureRule(t *testing.T, id string) (Rule, []byte) {
 	t.Helper()
 	for _, old := range loadLegacyFixture(t) {
 		if old.ID != id {
@@ -47,7 +47,7 @@ func fixtureRule(t *testing.T, id string) (RuleV2, []byte) {
 		return rule, file
 	}
 	t.Fatalf("legacy fixture has no rule %s", id)
-	return RuleV2{}, nil
+	return Rule{}, nil
 }
 
 // TestMigrateFixtureRoundTrip is the format's contract: old → transform → render
@@ -153,7 +153,7 @@ func TestTransformLegacyFixture(t *testing.T) {
 
 	catalog := loadLegacyFixture(t)
 	for _, tc := range cases {
-		var old Rule
+		var old legacyRule
 		found := false
 		for _, candidate := range catalog {
 			if candidate.ID == tc.id {
@@ -417,7 +417,7 @@ func TestRuleDiffNamesDifferingFields(t *testing.T) {
 	}
 }
 
-func mustRender(t *testing.T, rule RuleV2) []byte {
+func mustRender(t *testing.T, rule Rule) []byte {
 	t.Helper()
 	file, err := renderRuleFile(rule)
 	if err != nil {

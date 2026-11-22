@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -13,12 +12,67 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Catalog is the top-level shape of docs/spec/rules.yaml: a flat sequence of
-// rules. Field shapes follow docs/spec/rules.schema.md §2.
+// catalog.go owns the live catalog: one Markdown file per rule at
+// docs/spec/rules/<module>/<ID>.md, the ONE front-matter + body parser that
+// reads such a file, and the directory loader that assembles them.
+//
+// # The file format
+//
+// A rule file is a strict YAML front matter between two `---` fences at the top
+// of the file, followed by an optional Markdown body of authored prose:
+//
+//	---
+//	<the machine fields, exactly the fields of Rule>
+//	---
+//
+//	## Notes
+//
+//	<the residual human prose for this rule>
+//
+// Front matter decodes strictly (yaml.v3 KnownFields(true)) into exactly one YAML
+// document, so a misspelled key is an error, `scope:` (the retired name) is an
+// error, and `notes:` is an error — notes are not a front-matter field any more.
+// Body prose is not machine state; the only thing the loader reads out of it is
+// the prose under the single `## Notes` heading, captured as the rule's Notes
+// string so policies 5 (drifted ⇒ notes), 7 (a copy tied by a tie note) and 8
+// (authority ≠ category default ⇒ notes) stay satisfiable.
+//
+// # Canonical prose form
+//
+// Notes, stale_pointer and tie are all stored as `normalizeProse` output: every
+// whitespace run (including the folded YAML line wrapping authors used to control
+// by hand) collapses to one space, and the value carries no leading/trailing
+// whitespace. An author's line wrapping therefore can never change the decoded
+// value.
+
+const (
+	// ruleFileFence delimits the front matter. It is matched at line start only,
+	// so an indented `---` inside a block scalar can never close the block.
+	ruleFileFence = "---"
+
+	// ruleNotesHeading is the one body section the loader reads.
+	ruleNotesHeading = "## Notes"
+
+	// catalogReadmeFile is the one authored prose file the rules directory
+	// carries: its README explains the layout and the conventions. It is not a
+	// rule, so the loader skips it (and only it) at the top level.
+	catalogReadmeFile = "README.md"
+)
+
+// Catalog is a loaded per-rule-file catalog: one Rule per rule file, in module
+// enum order then id order (see loadCatalog).
 type Catalog []Rule
 
 // Rule is one business rule. Nullable fields are pointers so that "absent" and
 // "explicitly null" stay distinguishable where the policies care.
+//
+// WriteScope is the former `scope:` field renamed (`write_scope:`) so it can
+// never be confused with run scoping; its values are unchanged
+// (row-local/cross-row/cross-table). StalePointer and Tie were prose notes with
+// `stale-pointer:`/`Tie:` markers in the single-file catalog and are first-class
+// fields now. Notes is not a front-matter field at all: it is the prose under the
+// body's `## Notes` heading, so its yaml tag is "-" and a `notes:` key in the
+// front matter is a strict-decoding error.
 type Rule struct {
 	ID           string        `yaml:"id"`
 	Title        string        `yaml:"title"`
@@ -29,7 +83,7 @@ type Rule struct {
 	Status       string        `yaml:"status"`
 	Authority    string        `yaml:"authority"`
 	Mechanism    *string       `yaml:"mechanism"`
-	Scope        *string       `yaml:"scope"`
+	WriteScope   *string       `yaml:"write_scope"`
 	Enforcement  []Enforcement `yaml:"enforcement"`
 	Refusal      *Refusal      `yaml:"refusal"`
 	Fixture      *string       `yaml:"fixture"`
@@ -39,7 +93,13 @@ type Rule struct {
 	// additional to expert-ref (never a replacement): policy 16 requires the
 	// path to exist and to sit under docs/league-tokens-learning-phases/.
 	KnowledgeRef *string `yaml:"knowledge-ref"`
-	Notes        string  `yaml:"notes"`
+	// StalePointer is a rot note: prose naming pointers that no longer resolve.
+	// Policy 5 allows it only on implemented rules.
+	StalePointer *string `yaml:"stale_pointer"`
+	// Tie is the sentence tying a data-carrying copy to its authority; policy 7
+	// accepts it in place of a pinned_by fixture.
+	Tie   *string `yaml:"tie"`
+	Notes string  `yaml:"-"`
 }
 
 // Enforcement is one place a rule is enforced. Site is `path::Symbol` for Go or
@@ -93,44 +153,209 @@ type Verification struct {
 	Gherkin []string `yaml:"gherkin"`
 }
 
-// loadCatalog reads and decodes the canonical catalog. Decoding is strict in two
-// ways. First, an unknown field is an error, because a misspelled key
-// (`knowledge_ref:` for `knowledge-ref:`) would otherwise be dropped silently, and
-// the policies that treat an absent key as legal (policy 16) could never notice
-// the typo. Second, the catalog is exactly one YAML document: a Decoder yields
-// one document per Decode call, so decoding once would drop everything after a
-// `---` separator (a merge accident) and still return a parsable catalog.
-func loadCatalog(path string) (Catalog, error) {
-	data, err := os.ReadFile(path)
+// loadCatalog reads the per-rule-file catalog: one Markdown file per rule at
+// <dir>/<module>/<ID>.md.
+//
+// The directory layout is strict, because a misplaced file would silently drop a
+// rule. At the top level every entry is a module directory named after a value of
+// the frozen module enum; the single exception is catalogReadmeFile, the
+// directory's authored README, which is skipped. Inside a module directory every
+// entry is a rule file: a regular, non-dotfile whose name ends in `.md`, one rule
+// per file. A dotfile or a non-Markdown file anywhere under the rules directory is
+// an error, not something to ignore — "ignored" is how a rule disappears.
+//
+// Per file, the front matter decodes strictly and the rule's `id` must equal the
+// file's stem and its `module` must equal the parent directory name, so the path
+// and the entry can never disagree. Across files, ids are unique.
+//
+// Ordering is deterministic and does not depend on readdir order: module enum
+// order first (the schema's declaration order), then id ascending.
+func loadCatalog(dir string) (Catalog, error) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("read catalog: %w", err)
+		return nil, fmt.Errorf("read catalog directory: %w", err)
 	}
+	seen := make(map[string]string, len(entries))
 	var catalog Catalog
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&catalog); err != nil {
-		return nil, fmt.Errorf("parse catalog %s: %w", path, err)
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") {
+			return nil, fmt.Errorf("load catalog %s: %q is a dotfile; the rules directory holds "+
+				"one directory per module", dir, name)
+		}
+		if !entry.IsDir() {
+			if name == catalogReadmeFile {
+				continue
+			}
+			return nil, fmt.Errorf("load catalog %s: %q is not a module directory (the only "+
+				"non-rule file allowed here is %s)", dir, name, catalogReadmeFile)
+		}
+		if !moduleEnum[name] {
+			return nil, fmt.Errorf("load catalog %s: module directory %q is not in the frozen "+
+				"module enum (%s)", dir, name, strings.Join(catalogModules(), ", "))
+		}
+		rules, err := loadModuleRules(filepath.Join(dir, name), name)
+		if err != nil {
+			return nil, err
+		}
+		for _, rule := range rules {
+			if other, ok := seen[rule.ID]; ok {
+				return nil, fmt.Errorf("load catalog %s: %s is defined in both %s/ and %s/; ids "+
+					"are unique across the catalog", dir, rule.ID, other, name)
+			}
+			seen[rule.ID] = name
+		}
+		catalog = append(catalog, rules...)
 	}
-	// Keep decoding until EOF: a second document, or malformed content after the
-	// first one, means the file is not the one-document catalog we expect.
-	trailing := fmt.Errorf("parse catalog %s: trailing YAML document after the first — "+
-		"the catalog must be exactly one document", path)
-	var extra yaml.Node
-	switch err := decoder.Decode(&extra); {
-	case errors.Is(err, io.EOF):
-		// Exactly one document: the catalog.
-	case err != nil:
-		return nil, fmt.Errorf("%w: %w", trailing, err)
-	default:
-		return nil, trailing
-	}
+	sort.SliceStable(catalog, func(i, j int) bool {
+		mi, mj := moduleIndex(catalog[i].Module), moduleIndex(catalog[j].Module)
+		if mi != mj {
+			return mi < mj
+		}
+		return catalog[i].ID < catalog[j].ID
+	})
 	return catalog, nil
 }
 
+// loadModuleRules reads every rule file of one module directory. The directory
+// name is the module, so a rule whose front matter names another module is a
+// path/entry disagreement and an error.
+func loadModuleRules(dir, module string) (Catalog, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read module directory: %w", err)
+	}
+	var rules Catalog
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") {
+			return nil, fmt.Errorf("load catalog %s: %q is a dotfile; a module directory holds "+
+				"rule files only", dir, name)
+		}
+		if entry.IsDir() {
+			return nil, fmt.Errorf("load catalog %s: %q is a directory; the layout is "+
+				"<module>/<ID>.md — one rule per file", dir, name)
+		}
+		if filepath.Ext(name) != ".md" {
+			return nil, fmt.Errorf("load catalog %s: %q is not a Markdown rule file", dir, name)
+		}
+		path := filepath.Join(dir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read rule file: %w", err)
+		}
+		rule, err := parseRuleFile(data, filepath.Join(module, name))
+		if err != nil {
+			return nil, fmt.Errorf("load catalog: %w", err)
+		}
+		stem := strings.TrimSuffix(name, ".md")
+		if rule.ID != stem {
+			return nil, fmt.Errorf("load catalog: %s: front-matter id %q does not match the "+
+				"file name %q", displayPath(filepath.Join(module, name)), rule.ID, stem)
+		}
+		if rule.Module != module {
+			return nil, fmt.Errorf("load catalog: %s: front-matter module %q does not match the "+
+				"directory %q", displayPath(filepath.Join(module, name)), rule.Module, module)
+		}
+		rules = append(rules, rule)
+	}
+	return rules, nil
+}
+
+// moduleIndex is the rule's position in the frozen module order, used for the
+// catalog's deterministic sort. An unknown module sorts last (policy 2 reports
+// it); loadCatalog rejects an unknown module directory before this runs.
+func moduleIndex(module string) int {
+	for i, name := range moduleOrder {
+		if name == module {
+			return i
+		}
+	}
+	return len(moduleOrder)
+}
+
+// parseRuleFile parses one rule file: a strict, single-document YAML front matter
+// between the fences, plus the Notes prose from the body. Strict decoding is the
+// point — it is what makes `scope:` (the retired name) and `notes:` (a field that
+// no longer exists) hard errors instead of silently dropped keys.
+func parseRuleFile(data []byte, name string) (Rule, error) {
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	if len(lines) == 0 || strings.TrimRight(lines[0], " \t") != ruleFileFence {
+		return Rule{}, fmt.Errorf("parse rule file %s: the file must start with a %q front-matter fence",
+			name, ruleFileFence)
+	}
+	closing := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimRight(lines[i], " \t") == ruleFileFence {
+			closing = i
+			break
+		}
+	}
+	if closing < 0 {
+		return Rule{}, fmt.Errorf("parse rule file %s: the front matter has no closing %q fence",
+			name, ruleFileFence)
+	}
+
+	front := strings.Join(lines[1:closing], "\n")
+	var rule Rule
+	decoder := yaml.NewDecoder(strings.NewReader(front))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&rule); err != nil {
+		return Rule{}, fmt.Errorf("parse rule file %s: front matter: %w", name, err)
+	}
+	// The front matter is exactly one YAML document, for the same reason the
+	// retired single-file catalog was: a second `---` document would be dropped
+	// silently.
+	var extra yaml.Node
+	switch err := decoder.Decode(&extra); {
+	case errors.Is(err, io.EOF):
+	case err != nil:
+		return Rule{}, fmt.Errorf("parse rule file %s: front matter must be exactly one YAML "+
+			"document: %w", name, err)
+	default:
+		return Rule{}, fmt.Errorf("parse rule file %s: front matter must be exactly one YAML "+
+			"document — found a second one", name)
+	}
+
+	notes, err := notesFromBody(lines[closing+1:])
+	if err != nil {
+		return Rule{}, fmt.Errorf("parse rule file %s: %w", name, err)
+	}
+	rule.Notes = notes
+	return rule, nil
+}
+
+// notesFromBody extracts the rule's Notes from the Markdown body: the prose under
+// the single `## Notes` heading, up to the next level-2 heading, in canonical
+// (normalized) form. Other level-2 sections may follow — they are authored prose
+// that is not machine state — but a non-empty body with no `## Notes` section is
+// an error, because that prose would otherwise be invisible to the loader.
+func notesFromBody(lines []string) (string, error) {
+	for i, line := range lines {
+		if strings.TrimRight(line, " \t") != ruleNotesHeading {
+			continue
+		}
+		var body []string
+		for _, rest := range lines[i+1:] {
+			if strings.HasPrefix(rest, "## ") || strings.TrimRight(rest, " \t") == "##" {
+				break
+			}
+			body = append(body, rest)
+		}
+		return normalizeProse(strings.Join(body, "\n")), nil
+	}
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			return "", fmt.Errorf("body prose must live under a %q heading", strings.TrimSpace(ruleNotesHeading))
+		}
+	}
+	return "", nil
+}
+
 // repoRoot resolves the tree that catalog paths are relative to. The catalog
-// lives at <root>/docs/spec/rules.yaml, so its directory's parent is the root.
-// Any other location falls back to the working directory (tests exercise the
-// docs/spec layout).
+// lives at <root>/docs/spec/rules (or the retired <root>/docs/spec/rules.yaml),
+// so its parent's parent is the root. Any other location falls back to the
+// working directory (tests exercise the docs/spec layout).
 func repoRoot(rulesPath string) (string, error) {
 	abs, err := filepath.Abs(rulesPath)
 	if err != nil {

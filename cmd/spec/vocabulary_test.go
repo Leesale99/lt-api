@@ -244,7 +244,7 @@ func TestVocabularyRejectsMalformedGlossaryTerms(t *testing.T) {
 // agree.
 func TestVocabularyRealTreePassesSeededGlossary(t *testing.T) {
 	root := filepath.Join("..", "..")
-	catalog, err := loadCatalog(filepath.Join(root, "docs", "spec", "rules.yaml"))
+	catalog, err := loadCatalog(filepath.Join(root, "docs", "spec", "rules"))
 	if err != nil {
 		t.Fatalf("load the seeded catalog: %v", err)
 	}

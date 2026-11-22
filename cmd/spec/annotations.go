@@ -92,7 +92,7 @@ type siteRequirement struct {
 // reads Go sources rather than catalog pointers, so it is called next to
 // collectVocabulary rather than from collectFindings.
 func collectAnnotations(catalog Catalog, root string) []Finding {
-	return collectAnnotationsAgainst(catalog, root, filepath.Join("docs", "spec", "rules.yaml"))
+	return collectAnnotationsAgainst(catalog, root, filepath.Join("docs", "spec", "rules"))
 }
 
 // collectAnnotationsAgainst is collectAnnotations with the catalog path the

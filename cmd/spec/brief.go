@@ -38,7 +38,7 @@ func newBriefContext(root string) *briefContext {
 func runBrief(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("spec brief", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	rulesPath := fs.String("rules", "docs/spec/rules.yaml", "path to the canonical YAML catalog")
+	rulesPath := fs.String("rules", "docs/spec/rules", "path to the per-rule-file catalog directory")
 	module := fs.String("module", "", "emit the work order for every rule of one module")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -165,8 +165,8 @@ func writeBriefRule(b *strings.Builder, rule Rule, ctx *briefContext) {
 	if rule.Mechanism != nil {
 		fmt.Fprintf(b, "| mechanism | `%s` |\n", mdCell(*rule.Mechanism))
 	}
-	if rule.Scope != nil {
-		fmt.Fprintf(b, "| scope | `%s` |\n", mdCell(*rule.Scope))
+	if rule.WriteScope != nil {
+		fmt.Fprintf(b, "| scope | `%s` |\n", mdCell(*rule.WriteScope))
 	}
 	fmt.Fprint(b, "\n")
 
@@ -203,6 +203,7 @@ func writeBriefRule(b *strings.Builder, rule Rule, ctx *briefContext) {
 		fmt.Fprintf(b, "**Knowledge ref** `%s`\n\n", mdCell(displayPath(*rule.KnowledgeRef)))
 	}
 
+	writeStructuredNotes(b, rule)
 	if !notesShown && strings.TrimSpace(rule.Notes) != "" {
 		writeNotes(b, rule.Notes)
 	}

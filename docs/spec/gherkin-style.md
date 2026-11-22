@@ -1,6 +1,7 @@
 # Gherkin style guide — the executable specification
 
-`docs/spec/rules.yaml` says **what** the business rules are and where they are enforced. A
+`docs/spec/rules/` says **what** the business rules are and where they are enforced — one
+authored Markdown file per rule at `rules/<module>/<ID>.md`. A
 `.feature` file says what those rules look like **from outside**, in words a product reader
 can check without opening Go: one capability, one file, scenarios the harness runs against
 real Postgres. The catalog is canonical for rule *content*; this file is canonical for *how
@@ -28,10 +29,10 @@ where the phase documents' vocabulary earns its keep.
 ## 2. The rule tag — one scenario, one rule
 
 Every scenario carries **exactly one** `@rule:R-<MODULE>-<NNN>` tag, and every tag resolves
-to a real catalog entry:
+to a real rule file — the id is the file's stem, the module is its directory:
 
 ```sh
-grep -F -- "- id: R-GAME-002" docs/spec/rules.yaml   # must print the entry
+test -f docs/spec/rules/game/R-GAME-002.md   # must succeed
 ```
 
 - **Preferred shape: 1:1** — one scenario per rule, tag on the scenario.
@@ -102,8 +103,8 @@ This section is enforced mechanically by checker policy 13 (`13-vocabulary`,
 step, and every remaining step token must be declared in the module's section of
 `docs/spec/glossary.yaml` (or in `common`). The one exception is a §8-shaped step: an
 underscore-joined database object name there is exempt from the phrase denylist only
-when the name is REAL — a `refusal.constraint` or `refusal.sentinel` value in
-`docs/spec/rules.yaml`, or a name literally present in a `migrations/*.sql` file. A
+when the name is REAL — a `refusal.constraint` or `refusal.sentinel` value in a
+rule file under `docs/spec/rules/`, or a name literally present in a `migrations/*.sql` file. A
 fabricated name gets the denylist normally: the exemption covers a name the database
 has, not the disguise of one. The SQL words are partitioned: the homographs
 that are ordinary English too (`check`, `unique`, `index`, `references`, `create`,
@@ -225,8 +226,9 @@ remain §6.
 - [ ] Could a reader who knows no Go, no SQL and no HTTP state what breaks if the rule is
       removed? If not, the scenario is code-speak.
 - [ ] Does every `Then` name a business fact (state, money, refusal), not a mechanism?
-- [ ] Exactly one `@rule` per scenario, every id resolving in `rules.yaml`, names unique in
-      the file and matching the catalog's `verification.gherkin` pointers.
+- [ ] Exactly one `@rule` per scenario, every id resolving to a file under
+      `docs/spec/rules/`, names unique in the file and matching the catalog's
+      `verification.gherkin` pointers.
 - [ ] No forbidden word from §6 left in the text?
 - [ ] Does every sabotage `Then` name a real database object — as the migration spells
       it, or by the default name the store gives it — and does the sabotaged rule really

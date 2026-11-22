@@ -50,7 +50,7 @@ func TestPrintFindingsDistinguishesAnnotationIdKinds(t *testing.T) {
 		malformed,
 		unknown,
 		real,
-		"names no rule in the catalog docs/spec/rules.yaml",
+		"names no rule in the catalog docs/spec/rules",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("report does not contain %q:\n%s", want, rendered)

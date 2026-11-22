@@ -46,7 +46,7 @@ func briefCatalog() Catalog {
 	money.Category = "policy"    // default authority: domain
 	money.Authority = "database" // the deviation the brief must explain
 	money.Mechanism = ptr("constraint")
-	money.Scope = ptr("row-local")
+	money.WriteScope = ptr("row-local")
 	money.Enforcement = []Enforcement{{
 		Site:  "migrations/000001_create_initial_game_models.up.sql",
 		Layer: "db-constraint", Role: "authoritative",

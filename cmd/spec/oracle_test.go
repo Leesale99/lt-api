@@ -119,7 +119,7 @@ func TestOracleExemptsDeclarationVocabulary(t *testing.T) {
 
 func TestOracleRealTreePasses(t *testing.T) {
 	root := filepath.Join("..", "..")
-	catalog, err := loadCatalog(filepath.Join(root, "docs", "spec", "rules.yaml"))
+	catalog, err := loadCatalog(filepath.Join(root, "docs", "spec", "rules"))
 	if err != nil {
 		t.Fatalf("load the real catalog: %v", err)
 	}

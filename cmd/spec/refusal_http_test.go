@@ -20,8 +20,8 @@ func TestPinnedRefusalHTTPRange(t *testing.T) {
 		fixture string
 		http    int
 	}{
-		{"zero", "catalog/refusal-http-zero.yaml", 0},
-		{"nine hundred ninety nine", "catalog/refusal-http-999.yaml", 999},
+		{"zero", "catalog/refusal-http-zero", 0},
+		{"nine hundred ninety nine", "catalog/refusal-http-999", 999},
 	}
 	for _, tt := range rejected {
 		t.Run(tt.name, func(t *testing.T) {

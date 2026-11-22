@@ -32,7 +32,7 @@ package main
 // The one phrase-level exception is a denylisted phrase glued inside a database
 // object name (`rides_status_code_present_check`), and it is CONDITIONAL on the
 // name being REAL (realObjectNames): a name is real when it is a value of some
-// rule's `refusal.constraint` or `refusal.sentinel` in docs/spec/rules.yaml, or
+// rule's `refusal.constraint` or `refusal.sentinel` in the catalog (docs/spec/rules/), or
 // when it appears literally in a migrations/*.sql file. A fabricated name names
 // no object the database has, so its fragments are the words the step said and
 // the phrase fires, in a sabotage step as anywhere else. Written as words, the

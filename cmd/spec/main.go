@@ -14,12 +14,12 @@ import (
 const usage = `usage: spec <command> [flags]
 
 Commands:
-  gen    generate the Markdown view of docs/spec/rules.yaml
+  gen    generate the Markdown view of docs/spec/rules
   check  validate the catalog against docs/spec/rules.schema.md §3
   brief  print a Markdown work order for one rule (R-XXX-NNN) or one module
   queue  print the read-only work queue: drifted, specified-only, broken-pointer rules
   prove  run the DB-backed mutant registry for the rules a change touches
-  migrate  convert the single-file catalog into one file per rule (docs/spec/rules/<module>/<ID>.md)
+  migrate  convert the retired single-file catalog into one file per rule (docs/spec/rules/<module>/<ID>.md)
 
 Run "spec <command> -h" for the command's flags.
 `

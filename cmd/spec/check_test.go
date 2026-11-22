@@ -214,7 +214,7 @@ func TestCheckPolicyViolations(t *testing.T) {
 				r.Enforcement = nil
 				r.Verification = Verification{}
 				r.ExpertRef = ptr("docs/league-tokens-learning-phases/phase-03.md")
-				r.Notes = "stale-pointer: a dead test pointer"
+				r.StalePointer = ptr("a dead test pointer")
 			},
 			wantPolicy: "5-drifted", wantErrors: 1,
 			wantMessage: "stale-pointer",
@@ -223,7 +223,7 @@ func TestCheckPolicyViolations(t *testing.T) {
 			name: "database without mechanism",
 			mutate: func(r *Rule) {
 				r.Authority = "database"
-				r.Scope = ptr("row-local")
+				r.WriteScope = ptr("row-local")
 				r.Notes = "database authority because the predicate is row-local"
 			},
 			wantPolicy: "6-authority", wantErrors: 1,
@@ -237,7 +237,7 @@ func TestCheckPolicyViolations(t *testing.T) {
 				r.Notes = "database authority because the predicate is row-local"
 			},
 			wantPolicy: "6-authority", wantErrors: 1,
-			wantMessage: "requires a scope",
+			wantMessage: "requires a write_scope",
 		},
 		{
 			name: "non-database with mechanism",
@@ -253,7 +253,7 @@ func TestCheckPolicyViolations(t *testing.T) {
 				r.Enforcement[0].Role = "defense-in-depth"
 			},
 			wantPolicy: "7-copy-policy", wantErrors: 1,
-			wantMessage: "no pinned_by and no `Tie:` note",
+			wantMessage: "no pinned_by and no tie note",
 		},
 		{
 			name: "authority deviates without notes",
@@ -303,7 +303,7 @@ func TestCheckPolicyViolations(t *testing.T) {
 			mutate: func(r *Rule) {
 				r.Enforcement[0].Role = "defense-in-depth"
 				r.Enforcement[0].PinnedBy = ptr("nope")
-				r.Notes = "Tie: the authority refuses the wrong copy."
+				r.Tie = ptr("the authority refuses the wrong copy.")
 			},
 			wantPolicy: "11-fixture", wantErrors: 1,
 			wantMessage: "not a fixture",
@@ -337,10 +337,10 @@ func TestCheckPolicyViolations(t *testing.T) {
 			mutate: func(r *Rule) { r.Refusal = &Refusal{Code: "synthetic"} },
 		},
 		{
-			name: "defense-in-depth tied by Tie note",
+			name: "defense-in-depth tied by a tie note",
 			mutate: func(r *Rule) {
 				r.Enforcement[0].Role = "defense-in-depth"
-				r.Notes = "Tie: the authority refuses the wrong copy."
+				r.Tie = ptr("the authority refuses the wrong copy.")
 			},
 		},
 		{
@@ -370,7 +370,7 @@ func TestCheckPolicyViolations(t *testing.T) {
 			mutate: func(r *Rule) {
 				r.Authority = "database"
 				r.Mechanism = ptr("constraint")
-				r.Scope = ptr("row-local")
+				r.WriteScope = ptr("row-local")
 				r.Notes = "database authority because the predicate is row-local"
 			},
 		},
@@ -429,13 +429,13 @@ func TestCheckEnumMembership(t *testing.T) {
 		{"mechanism", func(r *Rule) {
 			r.Authority = "database"
 			r.Mechanism = ptr("bogus")
-			r.Scope = ptr("row-local")
+			r.WriteScope = ptr("row-local")
 			r.Notes = "database authority by design"
 		}},
-		{"scope", func(r *Rule) {
+		{"write_scope", func(r *Rule) {
 			r.Authority = "database"
 			r.Mechanism = ptr("constraint")
-			r.Scope = ptr("bogus")
+			r.WriteScope = ptr("bogus")
 			r.Notes = "database authority by design"
 		}},
 		{"layer", func(r *Rule) { r.Enforcement[0].Layer = "bogus" }},
@@ -640,8 +640,8 @@ func (t *Thing) hidden() {}
 	}
 }
 
-// loadFixtureCatalog reads a one-rule catalog fixture (testdata/catalog) as the
-// canonical YAML would arrive from disk.
+// loadFixtureCatalog reads a one-rule catalog fixture directory
+// (testdata/catalog/<name>/<module>/<ID>.md) through the real directory loader.
 func loadFixtureCatalog(t *testing.T, name string) Catalog {
 	t.Helper()
 
@@ -668,7 +668,7 @@ func TestCheckCategoryBinding(t *testing.T) {
 	}{
 		{
 			name:       "interface without a refusal",
-			fixture:    "catalog/policy14-interface-no-refusal.yaml",
+			fixture:    "catalog/policy14-interface-no-refusal",
 			wantErrors: 1, wantMessage: "no refusal",
 		},
 		{
@@ -710,7 +710,7 @@ func TestCheckCategoryBinding(t *testing.T) {
 		},
 		{
 			name:       "persistence-fact without a unit pointer",
-			fixture:    "catalog/policy14-persistence-fact-no-unit.yaml",
+			fixture:    "catalog/policy14-persistence-fact-no-unit",
 			wantErrors: 1, wantMessage: "no unit verification pointer",
 		},
 		{
@@ -735,7 +735,7 @@ func TestCheckCategoryBinding(t *testing.T) {
 				r.Category = "invariant"
 				r.Authority = "database"
 				r.Mechanism = ptr("constraint")
-				r.Scope = ptr("row-local")
+				r.WriteScope = ptr("row-local")
 			},
 			wantWarnings: 1, wantMessage: "no gherkin pointer",
 		},
@@ -753,7 +753,7 @@ func TestCheckCategoryBinding(t *testing.T) {
 				r.Category = "invariant"
 				r.Authority = "database"
 				r.Mechanism = ptr("constraint")
-				r.Scope = ptr("row-local")
+				r.WriteScope = ptr("row-local")
 				r.Verification.Gherkin = []string{"docs/spec/features/kernel/thing.feature::A thing always is a thing"}
 			},
 		},
@@ -837,12 +837,12 @@ func TestCheckKnowledgeRef(t *testing.T) {
 		},
 		{
 			name:       "outside the learning-phase tree",
-			fixture:    "catalog/policy16-knowledge-ref-outside.yaml",
+			fixture:    "catalog/policy16-knowledge-ref-outside",
 			wantErrors: 1, wantMessage: "is not under docs/league-tokens-learning-phases/",
 		},
 		{
 			name:       "a note that does not exist",
-			fixture:    "catalog/policy16-knowledge-ref-missing.yaml",
+			fixture:    "catalog/policy16-knowledge-ref-missing",
 			wantErrors: 1, wantMessage: "does not exist",
 		},
 		{
@@ -899,7 +899,7 @@ func TestCheckKnowledgeRef(t *testing.T) {
 // specified-only rule keeps expert-ref and adds knowledge-ref beside it.
 func TestKnowledgeRefIsAdditionalToExpertRef(t *testing.T) {
 	repo := newTestRepo(t)
-	catalog := loadFixtureCatalog(t, "catalog/policy16-specified-only.yaml")
+	catalog := loadFixtureCatalog(t, "catalog/policy16-specified-only")
 	if len(catalog) != 1 {
 		t.Fatalf("fixture carries %d rules, want 1", len(catalog))
 	}

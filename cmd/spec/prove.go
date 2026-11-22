@@ -54,7 +54,7 @@ type proveRegistry map[string]proveEntry
 func runProve(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("spec prove", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	rulesPath := fs.String("rules", "docs/spec/rules.yaml", "path to the canonical YAML catalog")
+	rulesPath := fs.String("rules", "docs/spec/rules", "path to the per-rule-file catalog directory")
 	registryPath := fs.String("registry", proveRegistryFile, "path to the per-rule mutant registry")
 	base := fs.String("base", "", "git ref to diff against (default: the repository's default branch)")
 	ruleID := fs.String("rule", "", "prove one rule id, bypassing the diff-derived scope")
@@ -368,9 +368,9 @@ func defaultProveBase(root string) (string, error) {
 }
 
 // deriveProveScope maps the touched files onto the rules they name. A touched
-// Go file contributes its //rule annotations, a touched rules.yaml contributes
-// the rules whose YAML changed, and a touched feature file contributes every
-// rule it tags.
+// Go file contributes its //rule annotations, a touched per-rule file under the
+// catalog directory contributes that rule when its file changed (each file is
+// one rule), and a touched feature file contributes every rule it tags.
 func deriveProveScope(root, base, rulesPath, registryPath string, catalog Catalog, index *featureIndex) (map[string]bool, error) {
 	touched, err := touchedFiles(root, base)
 	if err != nil {
@@ -379,9 +379,28 @@ func deriveProveScope(root, base, rulesPath, registryPath string, catalog Catalo
 	scope := map[string]bool{}
 	relRules, _ := filepath.Rel(root, rulesPath)
 	relRules = filepath.ToSlash(relRules)
+	rulesPrefix := strings.TrimSuffix(relRules, "/") + "/"
 	fileRules := map[string][]string{}
 	for _, file := range index.files {
 		fileRules[file.Path] = file.Rules
+	}
+
+	// The catalog is one file per rule, so the touched-set comparison runs once
+	// over every touched file under the rules directory.
+	var touchedRules []string
+	for _, file := range touched {
+		if strings.HasPrefix(file, rulesPrefix) {
+			touchedRules = append(touchedRules, file)
+		}
+	}
+	if len(touchedRules) > 0 {
+		changed, err := changedRuleIDs(root, base, relRules, catalog, touchedRules)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range changed {
+			scope[id] = true
+		}
 	}
 
 	for _, file := range touched {
@@ -392,14 +411,6 @@ func deriveProveScope(root, base, rulesPath, registryPath string, catalog Catalo
 				continue
 			}
 			for _, id := range goAnnotationIDs(file, data) {
-				scope[id] = true
-			}
-		case file == relRules:
-			changed, err := changedRuleIDs(root, base, relRules, catalog)
-			if err != nil {
-				return nil, err
-			}
-			for _, id := range changed {
 				scope[id] = true
 			}
 		case strings.HasSuffix(file, ".feature"):
@@ -441,41 +452,64 @@ func goAnnotationIDs(filename string, data []byte) []string {
 	return ids
 }
 
-// changedRuleIDs compares the base catalog with the working-tree catalog. A
-// rule changed when its YAML differs; a rule added or removed is also touched.
-func changedRuleIDs(root, base, relRules string, current Catalog) ([]string, error) {
-	out, err := gitOutput(root, "show", base+":"+relRules)
-	if err != nil {
-		// A catalog that did not exist on the base is wholly new.
+// changedRuleIDs compares the touched per-rule files with their base revision.
+// The catalog is one file per rule, so every file under the rules directory is
+// exactly one rule and the file's stem is its id:
+//
+//   - the base tree has no file there: the rule is ADDED;
+//   - the working tree no longer has the file: the rule is REMOVED;
+//   - both sides exist: the two are parsed with the live strict rule-file parser
+//     and a deep-equality difference makes the rule CHANGED.
+//
+// A file that is identical on both sides contributes nothing. When the base tree
+// has no rules directory at all (the catalog is wholly new), every rule of the
+// current catalog counts as added.
+func changedRuleIDs(root, base, relRules string, current Catalog, touched []string) ([]string, error) {
+	if _, err := gitOutput(root, "cat-file", "-e", base+":"+relRules); err != nil {
+		// A catalog directory that did not exist on the base is wholly new.
 		ids := make([]string, 0, len(current))
 		for _, rule := range current {
 			ids = append(ids, rule.ID)
 		}
+		sort.Strings(ids)
 		return ids, nil
 	}
-	var old Catalog
-	if err := yaml.Unmarshal([]byte(out), &old); err != nil {
-		return nil, fmt.Errorf("parse base catalog %s:%s: %w", base, relRules, err)
-	}
-	oldByID := map[string]Rule{}
-	for _, rule := range old {
-		oldByID[rule.ID] = rule
-	}
-	currentByID := map[string]Rule{}
-	for _, rule := range current {
-		currentByID[rule.ID] = rule
-	}
+
 	changed := map[string]bool{}
-	for id, rule := range currentByID {
-		if before, ok := oldByID[id]; !ok || !reflect.DeepEqual(before, rule) {
-			changed[id] = true
+	for _, file := range touched {
+		name := filepath.Base(filepath.FromSlash(file))
+		// The rules directory's authored README is not a rule, and the loader
+		// would reject anything else that is not <module>/<ID>.md.
+		if name == catalogReadmeFile || filepath.Ext(name) != ".md" {
+			continue
+		}
+		id := strings.TrimSuffix(name, filepath.Ext(name))
+
+		out, baseErr := gitOutput(root, "show", base+":"+file)
+		working, workErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(file)))
+		switch {
+		case baseErr != nil && workErr != nil:
+			// Neither side has the file: nothing changed.
+			continue
+		case baseErr != nil:
+			changed[id] = true // ADDED
+		case workErr != nil:
+			changed[id] = true // REMOVED
+		default:
+			before, err := parseRuleFile([]byte(out), base+":"+file)
+			if err != nil {
+				return nil, fmt.Errorf("parse base rule file %s:%s: %w", base, file, err)
+			}
+			after, err := parseRuleFile(working, file)
+			if err != nil {
+				return nil, fmt.Errorf("parse rule file %s: %w", file, err)
+			}
+			if !reflect.DeepEqual(before, after) {
+				changed[id] = true // CHANGED
+			}
 		}
 	}
-	for id := range oldByID {
-		if _, ok := currentByID[id]; !ok {
-			changed[id] = true
-		}
-	}
+
 	ids := make([]string, 0, len(changed))
 	for id := range changed {
 		ids = append(ids, id)
@@ -535,7 +569,10 @@ func readWorkingOrBase(root, base, rel string) ([]byte, error) {
 	return []byte(out), nil
 }
 
-func gitOutput(root string, args ...string) (string, error) {
+// gitOutput runs git in root and returns its standard output. It is a variable
+// so a test can stub the git seam — the per-file comparison needs a base tree
+// the test controls — while production code always uses the real command.
+var gitOutput = func(root string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
 	out, err := cmd.Output()
 	if err != nil {

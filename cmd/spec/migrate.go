@@ -1,44 +1,14 @@
 package main
 
-// migrate.go owns the per-rule-file catalog format — one Markdown file per rule
-// at docs/spec/rules/<module>/<ID>.md — and the one-shot `spec migrate` command
-// that produces it from today's single-file catalog.
+// migrate.go owns the one-shot `spec migrate` command that produced the
+// per-rule-file catalog from the retired single-file catalog (docs/spec/rules.yaml).
+// The live format — the Rule struct, the ONE front-matter + body parser, and the
+// directory loader — lives in catalog.go; this file keeps only what is
+// migration-specific: the retired single-file struct and its strict loader, the
+// notes-to-fields transform, and the canonical rule-file renderer the migration
+// proved its round trip with (and which the tests still use to build fixtures).
 //
-// NOTHING here is wired into the live loader yet: loadCatalog, check, gen, brief,
-// queue and prove still read docs/spec/rules.yaml, so the tree stays green on the
-// old format while the new one is introduced. The struct (RuleV2) lives here for
-// the same reason and moves into catalog.go in the commit that switches the
-// loader over.
-//
-// The file format
-// ---------------
-// A rule file is a strict YAML front matter between two `---` fences at the top
-// of the file, followed by an optional Markdown body of authored prose:
-//
-//	---
-//	<the machine fields, exactly the fields of RuleV2>
-//	---
-//
-//	## Notes
-//
-//	<the residual human prose for this rule>
-//
-// Front matter decodes strictly (yaml.v3 KnownFields(true)) into exactly one YAML
-// document, so a misspelled key is an error, `scope:` (the old name) is an error,
-// and `notes:` is an error — notes are not a front-matter field any more. Body
-// prose is not machine state; the only thing the loader reads out of it is the
-// prose under the single `## Notes` heading, captured as the rule's Notes string
-// so policies 5 (drifted ⇒ notes), 7 (a copy tied by a Tie note) and 8 (authority
-// ≠ category default ⇒ notes) stay satisfiable.
-//
-// Canonical Notes form
-// --------------------
-// Notes, stale_pointer and tie are all stored as `normalizeProse` output: every
-// whitespace run (including the folded YAML line wrapping authors used to control
-// by hand) collapses to one space, and the value carries no leading/trailing
-// whitespace. Rendering therefore writes one paragraph line per value and
-// parsing re-normalizes, so parse(render(t)) == t holds by construction and an
-// author's line wrapping can never change the decoded value.
+// The file format itself is documented in catalog.go.
 
 import (
 	"bytes"
@@ -58,31 +28,18 @@ import (
 )
 
 const (
-	// ruleFileFence delimits the front matter. It is matched at line start only,
-	// so an indented `---` inside a block scalar can never close the block.
-	ruleFileFence = "---"
-
-	// ruleNotesHeading is the one body section the loader reads.
-	ruleNotesHeading = "## Notes"
-
-	// noteMarkerTie and noteMarkerStalePointer are today's in-prose markers. The
-	// migration lifts them into the `tie:` and `stale_pointer:` fields; the
-	// per-rule-file format has no in-prose markers.
+	// noteMarkerTie and noteMarkerStalePointer are the retired catalog's
+	// in-prose markers. The migration lifted them into the `tie:` and
+	// `stale_pointer:` fields; the per-rule-file format has no in-prose markers.
 	noteMarkerTie          = "Tie"
 	noteMarkerStalePointer = "stale-pointer"
 )
 
-// RuleV2 is one rule of the per-rule-file catalog. It mirrors Rule field for
-// field — same yaml tags, same pointer-for-nullable discipline — except:
-//
-//   - Scope is renamed WriteScope (`write_scope:`), which kills the collision
-//     with run-scoping; the values are unchanged (row-local/cross-row/cross-table).
-//   - StalePointer and Tie are promoted out of the folded notes prose into
-//     first-class fields.
-//   - Notes is not a front-matter field at all: it is captured from the body
-//     prose under `## Notes`, so its tag is "-" and a `notes:` key in the front
-//     matter is a strict-decoding error.
-type RuleV2 struct {
+// legacyRule is one entry of the retired single-file catalog: Rule before the
+// format switch, with `scope:` under its old name and `notes:` still a folded
+// prose field. It exists so `spec migrate` (and its tests) can still read the
+// old format strictly; nothing live decodes it.
+type legacyRule struct {
 	ID           string        `yaml:"id"`
 	Title        string        `yaml:"title"`
 	Statement    string        `yaml:"statement"`
@@ -92,30 +49,31 @@ type RuleV2 struct {
 	Status       string        `yaml:"status"`
 	Authority    string        `yaml:"authority"`
 	Mechanism    *string       `yaml:"mechanism"`
-	WriteScope   *string       `yaml:"write_scope"`
+	Scope        *string       `yaml:"scope"`
 	Enforcement  []Enforcement `yaml:"enforcement"`
 	Refusal      *Refusal      `yaml:"refusal"`
 	Fixture      *string       `yaml:"fixture"`
 	Verification Verification  `yaml:"verification"`
 	ExpertRef    *string       `yaml:"expert-ref"`
 	KnowledgeRef *string       `yaml:"knowledge-ref"`
-	StalePointer *string       `yaml:"stale_pointer"`
-	Tie          *string       `yaml:"tie"`
-	Notes        string        `yaml:"-"`
+	Notes        string        `yaml:"notes"`
 }
+
+// legacyCatalog is the retired top-level shape: a flat sequence of rules.
+type legacyCatalog []legacyRule
 
 // noteMarkerPattern matches today's in-prose note markers. Every occurrence of
 // either marker in the canonical catalog is a marker (14 stale-pointer, 41 Tie);
 // the labels are unique enough that no prose word ends in them.
 var noteMarkerPattern = regexp.MustCompile(`(stale-pointer|Tie):`)
 
-// transformRule maps a rule of today's single-file catalog onto the per-rule-file
-// shape. Everything except the notes split is a verbatim copy; Scope becomes
-// WriteScope, and the notes prose is split into stale_pointer, tie and the
-// residual Notes.
-func transformRule(old Rule) RuleV2 {
+// transformRule maps a rule of the retired single-file catalog onto the live
+// per-rule-file shape. Everything except the notes split is a verbatim copy;
+// Scope becomes WriteScope, and the notes prose is split into stale_pointer, tie
+// and the residual Notes.
+func transformRule(old legacyRule) Rule {
 	stalePointer, tie, residual := splitNotes(old.Notes)
-	return RuleV2{
+	return Rule{
 		ID:           old.ID,
 		Title:        old.Title,
 		Statement:    old.Statement,
@@ -190,9 +148,10 @@ func splitNotes(notes string) (stalePointer, tie *string, residual string) {
 		}
 		value := strings.TrimSpace(strings.TrimPrefix(segment, h.kind+":"))
 		if value != "" {
-			if h.kind == noteMarkerTie {
+			switch h.kind {
+			case noteMarkerTie:
 				tieParts = append(tieParts, value)
-			} else {
+			case noteMarkerStalePointer:
 				staleParts = append(staleParts, value)
 			}
 		}
@@ -222,7 +181,7 @@ func joinNoteParts(parts []string) *string {
 // fields, and — only when there is residual prose — a `## Notes` body. The result
 // always has exactly one trailing newline (render.go's finishMarkdown), and a rule
 // with no residual prose is front matter only.
-func renderRuleFile(rule RuleV2) ([]byte, error) {
+func renderRuleFile(rule Rule) ([]byte, error) {
 	front, err := ruleFrontMatter(rule)
 	if err != nil {
 		return nil, err
@@ -253,7 +212,7 @@ func renderRuleFile(rule RuleV2) ([]byte, error) {
 // the emitter cannot reflow a value: prose fields are literal blocks, and null /
 // `[]` stay distinguishable (a nil slice and an empty slice are different values
 // to reflect.DeepEqual and therefore to the round-trip gate).
-func ruleFrontMatter(rule RuleV2) ([]byte, error) {
+func ruleFrontMatter(rule Rule) ([]byte, error) {
 	root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 	add := func(key string, value *yaml.Node) {
 		root.Content = append(root.Content, yamlString(key), value)
@@ -390,87 +349,45 @@ func yamlMapping(pairs ...any) *yaml.Node {
 	return node
 }
 
-// parseRuleFile parses one rule file: a strict, single-document YAML front matter
-// between the fences, plus the Notes prose from the body. Strict decoding is the
-// point — it is what makes `scope:` (the old name) and `notes:` (a field that no
-// longer exists) hard errors instead of silently dropped keys.
-func parseRuleFile(data []byte, name string) (RuleV2, error) {
-	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
-	if len(lines) == 0 || strings.TrimRight(lines[0], " \t") != ruleFileFence {
-		return RuleV2{}, fmt.Errorf("parse rule file %s: the file must start with a %q front-matter fence",
-			name, ruleFileFence)
+// loadLegacyCatalog reads and decodes the retired single-file catalog. Decoding
+// is strict in two ways. First, an unknown field is an error, because a
+// misspelled key (`knowledge_ref:` for `knowledge-ref:`) would otherwise be
+// dropped silently, and the policies that treat an absent key as legal (policy
+// 16) could never notice the typo. Second, the catalog is exactly one YAML
+// document: a Decoder yields one document per Decode call, so decoding once
+// would drop everything after a `---` separator (a merge accident) and still
+// return a parsable catalog.
+func loadLegacyCatalog(path string) (legacyCatalog, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read legacy catalog: %w", err)
 	}
-	closing := -1
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimRight(lines[i], " \t") == ruleFileFence {
-			closing = i
-			break
-		}
-	}
-	if closing < 0 {
-		return RuleV2{}, fmt.Errorf("parse rule file %s: the front matter has no closing %q fence",
-			name, ruleFileFence)
-	}
-
-	front := strings.Join(lines[1:closing], "\n")
-	var rule RuleV2
-	decoder := yaml.NewDecoder(strings.NewReader(front))
+	var catalog legacyCatalog
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
-	if err := decoder.Decode(&rule); err != nil {
-		return RuleV2{}, fmt.Errorf("parse rule file %s: front matter: %w", name, err)
+	if err := decoder.Decode(&catalog); err != nil {
+		return nil, fmt.Errorf("parse legacy catalog %s: %w", path, err)
 	}
-	// The front matter is exactly one YAML document, for the same reason the
-	// single-file catalog is: a second `---` document would be dropped silently.
+	// Keep decoding until EOF: a second document, or malformed content after the
+	// first one, means the file is not the one-document catalog we expect.
+	trailing := fmt.Errorf("parse legacy catalog %s: trailing YAML document after the first — "+
+		"the catalog must be exactly one document", path)
 	var extra yaml.Node
 	switch err := decoder.Decode(&extra); {
 	case errors.Is(err, io.EOF):
+		// Exactly one document: the catalog.
 	case err != nil:
-		return RuleV2{}, fmt.Errorf("parse rule file %s: front matter must be exactly one YAML "+
-			"document: %w", name, err)
+		return nil, fmt.Errorf("%w: %w", trailing, err)
 	default:
-		return RuleV2{}, fmt.Errorf("parse rule file %s: front matter must be exactly one YAML "+
-			"document — found a second one", name)
+		return nil, trailing
 	}
-
-	notes, err := notesFromBody(lines[closing+1:])
-	if err != nil {
-		return RuleV2{}, fmt.Errorf("parse rule file %s: %w", name, err)
-	}
-	rule.Notes = notes
-	return rule, nil
+	return catalog, nil
 }
 
-// notesFromBody extracts the rule's Notes from the Markdown body: the prose under
-// the single `## Notes` heading, up to the next level-2 heading, in canonical
-// (normalized) form. Other level-2 sections may follow — they are authored prose
-// that is not machine state — but a non-empty body with no `## Notes` section is
-// an error, because that prose would otherwise be invisible to the loader.
-func notesFromBody(lines []string) (string, error) {
-	for i, line := range lines {
-		if strings.TrimRight(line, " \t") != ruleNotesHeading {
-			continue
-		}
-		var body []string
-		for _, rest := range lines[i+1:] {
-			if strings.HasPrefix(rest, "## ") || strings.TrimRight(rest, " \t") == "##" {
-				break
-			}
-			body = append(body, rest)
-		}
-		return normalizeProse(strings.Join(body, "\n")), nil
-	}
-	for _, line := range lines {
-		if strings.TrimSpace(line) != "" {
-			return "", fmt.Errorf("body prose must live under a %q heading", strings.TrimSpace(ruleNotesHeading))
-		}
-	}
-	return "", nil
-}
-
-// ruleDiff names the RuleV2 fields whose values differ, so the round-trip gate
-// can report "R-GAME-001 failed round-trip in field(s): tie" instead of a wall of
+// ruleDiff names the Rule fields whose values differ, so the round-trip gate can
+// report "R-GAME-001 failed round-trip in field(s): tie" instead of a wall of
 // struct dumps.
-func ruleDiff(want, got RuleV2) []string {
+func ruleDiff(want, got Rule) []string {
 	var diff []string
 	wantValue, gotValue := reflect.ValueOf(want), reflect.ValueOf(got)
 	typ := wantValue.Type()
@@ -494,7 +411,7 @@ func ruleDiff(want, got RuleV2) []string {
 func runMigrate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("spec migrate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	rulesPath := fs.String("rules", "docs/spec/rules.yaml", "path to the single-file YAML catalog to convert")
+	rulesPath := fs.String("rules", "docs/spec/rules.yaml", "path to the retired single-file YAML catalog to convert")
 	outDir := fs.String("out", "docs/spec/rules", "directory to write the per-rule files into")
 	force := fs.Bool("force", false, "write into a non-empty target directory")
 	if err := fs.Parse(args); err != nil {
@@ -505,7 +422,7 @@ func runMigrate(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	catalog, err := loadCatalog(*rulesPath)
+	catalog, err := loadLegacyCatalog(*rulesPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "spec migrate: %v\n", err)
 		return 1
@@ -529,7 +446,7 @@ func runMigrate(args []string, stdout, stderr io.Writer) int {
 	}
 
 	type migratedRule struct {
-		rule RuleV2
+		rule Rule
 		file []byte
 	}
 	migrated := make([]migratedRule, 0, len(catalog))

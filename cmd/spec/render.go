@@ -17,7 +17,12 @@ import (
 
 // moduleEnum is the frozen module set, docs/spec/rules.schema.md §1. It lives
 // with the renderers because every generated view is keyed by a module.
-var moduleEnum = enum("schedule", "game", "identity", "ledger", "kernel", "platform")
+// moduleOrder is the frozen module enum in declaration order — the order the
+// schema's tables and the catalog list modules in. The per-rule-file loader sorts
+// the catalog by it, so catalog order never depends on readdir order.
+var moduleOrder = []string{"schedule", "game", "identity", "ledger", "kernel", "platform"}
+
+var moduleEnum = enum(moduleOrder...)
 
 // catalogModules returns the six module names, sorted, straight from the frozen
 // enum so a module can never exist in the views and not in the checker.
