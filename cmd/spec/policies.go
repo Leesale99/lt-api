@@ -253,7 +253,7 @@ var policies = []Policy{
 		ID: policyOracle, Name: "scenarios assert an observable outcome, bound to their category",
 		Level: LevelCatalog, Scopeable: true,
 		Run: func(env *policyEnv) []Finding {
-			return collectOracle(env.catalog, env.root)
+			return collectOracle(env)
 		},
 	},
 }

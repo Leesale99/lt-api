@@ -48,6 +48,11 @@ package main
 //
 // Sources are parsed with go/parser, not searched line by line: a `//rule:`
 // inside a string literal or a doc sentence is not an annotation.
+//
+// `spec prove` reads the same lexer (`annotatedRuleIDs` with annotationDeclared)
+// to derive the rules a changed Go file touches, so there is one `//rule:` reader
+// in the package and prove counts exactly the annotations the checker accepts at
+// a site — never one it would reject for placement or contiguity.
 
 import (
 	"fmt"
@@ -209,14 +214,13 @@ func scanGoFiles(c *checker, root string) []goSource {
 			c.errorf(policyAnnotations, rel, "Go source %q cannot be read: %v", rel, readErr)
 			return nil
 		}
-		fset := token.NewFileSet()
-		file, parseErr := parser.ParseFile(fset, rel, data, parser.ParseComments|parser.SkipObjectResolution)
-		if parseErr != nil {
-			// Unparseable code fails the build long before this policy; the
-			// checker has nothing to say about the annotations inside it.
+		// Unparseable code fails the build long before this policy; the
+		// checker has nothing to say about the annotations inside it.
+		source, ok := parseGoSource(rel, data)
+		if !ok {
 			return nil
 		}
-		sources = append(sources, goSource{path: rel, fset: fset, file: file, decls: declarationsOf(file, fset)})
+		sources = append(sources, source)
 		return nil
 	})
 	if walkErr != nil {
@@ -323,6 +327,101 @@ func annotationIDsOf(group *ast.CommentGroup) []string {
 	var ids []string
 	for _, comment := range group.List {
 		ids = append(ids, commentAnnotationIDs(comment.Text)...)
+	}
+	return ids
+}
+
+// annotationPlacement selects which comment groups count as the annotations of a
+// declaration. It is the ONE flag that separates the two directions the tree is
+// read in, so a caller can never invent a third reading of `//rule:`.
+type annotationPlacement int
+
+const (
+	// annotationAnywhere is the reverse direction's (tree → catalog) view: every
+	// comment group in the file, wherever it sits. A typo beside a detached
+	// comment still names an id that must resolve.
+	annotationAnywhere annotationPlacement = iota
+	// annotationDeclared is the forward direction's (catalog → tree) view: only
+	// the ids a declaration actually owns — its contiguous doc block, or a
+	// comment group on the declaration's first or last line. A block separated
+	// from the declaration by a blank line documents something else, so its ids
+	// are not that declaration's annotations. `spec prove` reads this view: an
+	// annotation the checker would reject for placement or contiguity is not
+	// coverage, so it must not widen prove's scope either.
+	annotationDeclared
+)
+
+// parseGoSource parses one Go source for the annotation checks: the comment
+// groups both directions read and the declarations the forward direction locates
+// a site's annotation at. ok is false when the source does not parse (unparseable
+// code fails the build long before this policy).
+func parseGoSource(filename string, data []byte) (goSource, bool) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filename, data, parser.ParseComments|parser.SkipObjectResolution)
+	if err != nil {
+		return goSource{}, false
+	}
+	return goSource{path: filename, fset: fset, file: file, decls: declarationsOf(file, fset)}, true
+}
+
+// declarationAnnotationIDs returns the ids the annotations at one declaration
+// carry: its contiguous doc block (go/ast leaves Doc nil when a blank line or a
+// non-comment line separates the block, which is exactly the pinned contiguity
+// rule) and every comment group on the declaration's first or last line (the
+// trailing-comment placement `func Do() {} //rule:R-X-001`). This is the one
+// implementation of placement semantics.
+func declarationAnnotationIDs(source goSource, decl declaration) []string {
+	ids := annotationIDsOf(decl.doc)
+	startLine := source.fset.Position(decl.start).Line
+	for _, group := range source.file.Comments {
+		line := source.fset.Position(group.Pos()).Line
+		if line != startLine && line != decl.endLine {
+			continue
+		}
+		ids = append(ids, annotationIDsOf(group)...)
+	}
+	return ids
+}
+
+// annotatedRuleIDs parses Go source and returns the well-formed `//rule:` ids its
+// annotations carry at the requested placement, each id once. It is the only
+// Go-parse-and-lex path outside the checker itself: `spec prove` reads it with
+// annotationDeclared to derive the rules a changed Go file touches, so prove
+// counts exactly the annotations the checker accepts at a site.
+func annotatedRuleIDs(filename string, data []byte, placement annotationPlacement) []string {
+	source, ok := parseGoSource(filename, data)
+	if !ok {
+		return nil
+	}
+
+	var raw []string
+	switch placement {
+	case annotationDeclared:
+		// A declaration map has no order, and two keys may share one block
+		// (a method is recorded under both `Type.Name` and `Name`), so the
+		// names are sorted and the ids deduplicated below.
+		names := make([]string, 0, len(source.decls))
+		for name := range source.decls {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			raw = append(raw, declarationAnnotationIDs(source, source.decls[name])...)
+		}
+	default:
+		for _, group := range source.file.Comments {
+			raw = append(raw, annotationIDsOf(group)...)
+		}
+	}
+
+	var ids []string
+	seen := map[string]bool{}
+	for _, id := range raw {
+		if !idPattern.MatchString(id) || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
 	}
 	return ids
 }
@@ -483,19 +582,8 @@ func (c *checker) checkSitesAnnotated(files map[string]goSource, naming map[stri
 				continue
 			}
 			present := map[string]bool{}
-			for _, id := range annotationIDsOf(decl.doc) {
+			for _, id := range declarationAnnotationIDs(source, decl) {
 				present[id] = true
-			}
-			// A trailing comment on the declaration line is the other accepted
-			// placement (`func Do() {} //rule:R-X-001`).
-			for _, group := range source.file.Comments {
-				line := source.fset.Position(group.Pos()).Line
-				if line != source.fset.Position(decl.start).Line && line != decl.endLine {
-					continue
-				}
-				for _, id := range annotationIDsOf(group) {
-					present[id] = true
-				}
 			}
 			if present[req.ruleID] {
 				continue

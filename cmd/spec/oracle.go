@@ -21,10 +21,11 @@ package main
 //     exempt — domain vocabulary necessarily lives there — and only Go sites
 //     (never migrations or tests) contribute literals.
 //
-// The collector walks the parsed feature tree exactly as policy 13 does, so a
-// finding names the same `file::scenario` pointer a catalog verification entry
-// uses. Rules with no executable scenario are outside its reach (policy 14
-// already reports their missing proof).
+// The collector walks the parsed feature tree exactly as policy 13 does — the
+// shared featureIndex (features.go), never a second parse — so a finding names
+// the same `file::scenario` pointer a catalog verification entry uses. Rules
+// with no executable scenario are outside its reach (policy 14 already reports
+// their missing proof).
 
 import (
 	"go/ast"
@@ -36,7 +37,6 @@ import (
 	"strconv"
 	"strings"
 
-	gherkin "github.com/cucumber/gherkin/go/v42"
 	messages "github.com/cucumber/messages/go/v34"
 )
 
@@ -72,17 +72,17 @@ var (
 	oracleFloatPattern       = regexp.MustCompile(`[0-9]+\.[0-9]+`)
 )
 
-// oracleScenario is one executable pickle plus the rule its tags name.
+// oracleScenario is one executable scenario plus the rule its tags name.
 type oracleScenario struct {
 	ref   scenarioRef
-	steps []*messages.PickleStep
+	steps []scenarioStep
 }
 
-// thenSteps returns the outcome steps of a pickle. gherkin's pickle compiler
+// thenSteps returns the outcome steps of a scenario. gherkin's pickle compiler
 // gives an And/But continuation the previous step's type, so a continuation of
 // a Then is an Outcome too.
-func thenSteps(steps []*messages.PickleStep) []*messages.PickleStep {
-	out := make([]*messages.PickleStep, 0, len(steps))
+func thenSteps(steps []scenarioStep) []scenarioStep {
+	out := make([]scenarioStep, 0, len(steps))
 	for _, step := range steps {
 		if step.Type == messages.PickleStepType_OUTCOME {
 			out = append(out, step)
@@ -143,49 +143,31 @@ func assertsRefusal(rule Rule, text string) bool {
 	return false
 }
 
-// collectOracle runs policy 18 over the feature tree.
-func collectOracle(catalog Catalog, root string) []Finding {
-	c := &checker{root: root}
-	index := (&checker{root: root}).indexFeatures()
-	scenarios := c.parseOracleScenarios(index)
+// collectOracle runs policy 18 over the feature tree. It reads the one parse the
+// policy environment holds, so the check run parses the feature files once.
+func collectOracle(env *policyEnv) []Finding {
+	c := newChecker(env)
+	scenarios := oracleScenarios(env.featureIndex())
 
 	c.checkVacuousThen(scenarios)
-	c.checkCategoryAssertions(catalog, scenarios)
-	c.checkReDerivedExpectations(catalog, scenarios)
+	c.checkCategoryAssertions(env.catalog, scenarios)
+	c.checkReDerivedExpectations(env.catalog, scenarios)
 	sortFindings(c.findings)
 	return c.findings
 }
 
-// parseOracleScenarios parses every feature file into the executable pickles
-// policy 18 reads. Rule attribution comes from the same featureIndex policy 12
-// builds, so a scenario under a tagged Rule: group is attributed identically.
-func (c *checker) parseOracleScenarios(index *featureIndex) []oracleScenario {
-	root := filepath.Join(c.root, filepath.FromSlash(featuresRoot))
-	var scenarios []oracleScenario
-	for _, full := range walkingFeatureFiles(root) {
-		rel, err := filepath.Rel(c.root, full)
-		if err != nil {
-			rel = full
-		}
-		rel = filepath.ToSlash(rel)
-
-		file, err := os.Open(full)
-		if err != nil {
+// oracleScenarios projects the shared feature index onto the shape policy 18
+// reads: every scenario that names a rule, with the steps the index already
+// retained (text, pickle step type, docstring, table cells). Rule attribution
+// comes from the same featureIndex policy 12 builds, so a scenario under a
+// tagged Rule: group is attributed identically.
+func oracleScenarios(index *featureIndex) []oracleScenario {
+	scenarios := make([]oracleScenario, 0, len(index.scenarios))
+	for _, ref := range index.scenarios {
+		if ref.Rule == "" {
 			continue
 		}
-		ids := &messages.Incrementing{}
-		doc, parseErr := gherkin.ParseGherkinDocument(file, ids.NewId)
-		_ = file.Close()
-		if parseErr != nil || doc.Feature == nil {
-			continue
-		}
-		for _, pickle := range gherkin.Pickles(*doc, rel, ids.NewId) {
-			ref, ok := index.byPointer[rel+"::"+pickle.Name]
-			if !ok || ref.Rule == "" {
-				continue
-			}
-			scenarios = append(scenarios, oracleScenario{ref: ref, steps: pickle.Steps})
-		}
+		scenarios = append(scenarios, oracleScenario{ref: ref, steps: ref.Steps})
 	}
 	return scenarios
 }

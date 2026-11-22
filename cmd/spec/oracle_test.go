@@ -20,7 +20,7 @@ func oracleRepo(t *testing.T, feature string) *testRepo {
 
 func oracleFindings(t *testing.T, repo *testRepo, catalog Catalog) []Finding {
 	t.Helper()
-	findings := collectOracle(catalog, repo.root)
+	findings := collectOracle(&policyEnv{catalog: catalog, root: repo.root})
 	if len(findings) != 0 {
 		for _, f := range findings {
 			if f.Policy != policyOracle {
@@ -123,7 +123,7 @@ func TestOracleRealTreePasses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load the real catalog: %v", err)
 	}
-	if findings := collectOracle(catalog, root); len(findings) != 0 {
+	if findings := collectOracle(&policyEnv{catalog: catalog, root: root}); len(findings) != 0 {
 		t.Fatalf("the real feature tree violates policy 18:\n%s", describeFindings(findings))
 	}
 }

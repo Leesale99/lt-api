@@ -80,8 +80,8 @@ func TestProveRegistrySeedsTheThirtyRules(t *testing.T) {
 	}
 }
 
-func outcomeStep(text string) *messages.PickleStep {
-	return &messages.PickleStep{Text: text, Type: messages.PickleStepType_OUTCOME}
+func outcomeStep(text string) scenarioStep {
+	return scenarioStep{Text: text, Type: messages.PickleStepType_OUTCOME}
 }
 
 func TestProveVacuityMatchesPolicy18(t *testing.T) {
@@ -92,30 +92,30 @@ func TestProveVacuityMatchesPolicy18(t *testing.T) {
 	tests := []struct {
 		name   string
 		rule   Rule
-		steps  []*messages.PickleStep
+		steps  []scenarioStep
 		reason string
 	}{
 		{
 			name:  "observable refusal",
 			rule:  rule,
-			steps: []*messages.PickleStep{outcomeStep("the write is refused by things_check")},
+			steps: []scenarioStep{outcomeStep("the write is refused by things_check")},
 		},
 		{
 			name:   "no Then at all",
 			rule:   rule,
-			steps:  []*messages.PickleStep{{Text: "the thing is written", Type: messages.PickleStepType_ACTION}},
+			steps:  []scenarioStep{{Text: "the thing is written", Type: messages.PickleStepType_ACTION}},
 			reason: "no Then outcome",
 		},
 		{
 			name:   "vacuous Then",
 			rule:   rule,
-			steps:  []*messages.PickleStep{outcomeStep("the call succeeds")},
+			steps:  []scenarioStep{outcomeStep("the call succeeds")},
 			reason: "asserts nothing observable",
 		},
 		{
 			name:   "write allowed on a database-refusal rule",
 			rule:   rule,
-			steps:  []*messages.PickleStep{outcomeStep("the write is allowed")},
+			steps:  []scenarioStep{outcomeStep("the write is allowed")},
 			reason: "claims database refusal",
 		},
 		{
@@ -125,7 +125,7 @@ func TestProveVacuityMatchesPolicy18(t *testing.T) {
 				r.Refusal = nil
 				return r
 			}(),
-			steps: []*messages.PickleStep{outcomeStep("the write is allowed")},
+			steps: []scenarioStep{outcomeStep("the write is allowed")},
 		},
 	}
 	for _, tt := range tests {
@@ -144,6 +144,75 @@ func TestProveVacuityMatchesPolicy18(t *testing.T) {
 				t.Errorf("verdict = %q, want it to mention %q", reason, tt.reason)
 			}
 		})
+	}
+}
+
+// TestProveCountsOnlyAcceptedAnnotations pins the semantics prove inherits from
+// the checker: prove derives scope from the same `//rule:` lexer policy 15 uses,
+// so an annotation the checker would reject for placement or contiguity is not
+// coverage. (Before the unification prove counted every comment group in the
+// file, including a block detached from its declaration by a blank line.)
+func TestProveCountsOnlyAcceptedAnnotations(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		want   []string
+	}{
+		{
+			name:   "contiguous doc block",
+			source: "package p\n\n//rule:R-KERNEL-001\nfunc Do() {}\n",
+			want:   []string{"R-KERNEL-001"},
+		},
+		{
+			name:   "stacked block above one declaration",
+			source: "package p\n\n//rule:R-KERNEL-001\n//rule:R-KERNEL-002\nfunc Do() {}\n",
+			want:   []string{"R-KERNEL-001", "R-KERNEL-002"},
+		},
+		{
+			name:   "trailing comment on the declaration line",
+			source: "package p\n\nfunc Do() {} //rule:R-KERNEL-003\n",
+			want:   []string{"R-KERNEL-003"},
+		},
+		{
+			name:   "gofmt-normalized spelling is the same annotation",
+			source: "package p\n\n// rule:R-KERNEL-004\nfunc Do() {}\n",
+			want:   []string{"R-KERNEL-004"},
+		},
+		{
+			name:   "block detached by a blank line is not this declaration's annotation",
+			source: "package p\n\n//rule:R-KERNEL-005\n\nfunc Do() {}\n",
+			want:   nil,
+		},
+		{
+			name:   "a comment in the middle of a body names no declaration",
+			source: "package p\n\nfunc Do() {\n\t//rule:R-KERNEL-006\n}\n",
+			want:   nil,
+		},
+		{
+			name:   "a rule: inside a string literal is not an annotation",
+			source: "package p\n\nvar doc = \"//rule:R-KERNEL-007\"\n",
+			want:   nil,
+		},
+		{
+			name:   "a malformed id is not coverage",
+			source: "package p\n\n//rule:nope\nfunc Do() {}\n",
+			want:   nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := annotatedRuleIDs("thing.go", []byte(tt.source), annotationDeclared)
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Errorf("annotatedRuleIDs(annotationDeclared) = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	// The reverse direction still reads every comment group: a detached block's
+	// ids must resolve, even though they are no declaration's annotation.
+	detached := "package p\n\n//rule:R-KERNEL-005\n\nfunc Do() {}\n"
+	if got := annotatedRuleIDs("thing.go", []byte(detached), annotationAnywhere); strings.Join(got, ",") != "R-KERNEL-005" {
+		t.Errorf("annotatedRuleIDs(annotationAnywhere) = %v, want the detached id", got)
 	}
 }
 

@@ -34,17 +34,23 @@ type scenarioRef struct {
 	Line int
 	Rule string // the one @rule id this scenario proves ("" when untagged)
 	Tags []string
-	// Steps is the scenario's step text, so a policy that reads the sentence
-	// (13-vocabulary) uses this parse instead of reading the tree again. An
-	// outline's rows that share one name contribute each row's steps once.
+	// Steps is the scenario's steps, so a policy that reads them (13-vocabulary,
+	// 18-oracle) uses this parse instead of reading the tree again. An outline's
+	// rows that share one name contribute each row's steps once.
 	Steps []scenarioStep
 }
 
-// scenarioStep is one step as a vocabulary policy reads it: the line's text plus
-// the literal argument blocks the step carries (a docstring body, or the cells
-// of a data table). Both halves are part of the step, so both are scanned.
+// scenarioStep is one step as a policy reads it: the line's text, the step type
+// the pickle compiler assigned it (a Then and its And/But continuations are an
+// Outcome), and the literal argument blocks the step carries (a docstring body,
+// or the cells of a data table). All of it is part of the step, so all of it is
+// read.
 type scenarioStep struct {
-	Text      string
+	Text string
+	// Type is the pickle's step type: Context, Action or Outcome. It is what
+	// makes `Then` (and every And/But continuing one) addressable without a
+	// second parse of the feature file.
+	Type      messages.PickleStepType
 	DocString string   // "" when the step carries no docstring
 	Cells     []string // data-table cell values, row-major
 }
@@ -244,7 +250,7 @@ type pickleScenario struct {
 func indexedSteps(steps []*messages.PickleStep) []scenarioStep {
 	indexed := make([]scenarioStep, 0, len(steps))
 	for _, step := range steps {
-		indexed = append(indexed, scenarioStep{Text: step.Text})
+		indexed = append(indexed, scenarioStep{Text: step.Text, Type: step.Type})
 		argument := step.Argument
 		if argument == nil {
 			continue

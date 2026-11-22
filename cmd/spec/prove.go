@@ -21,8 +21,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"go/parser"
-	"go/token"
 	"io"
 	"os"
 	"os/exec"
@@ -86,6 +84,9 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 
 	var scope Scope
 	baseLabel := ""
+	// One parse of the feature tree for the whole run: the diff-derived scope
+	// reads its per-file rule tags, and the oracle pass reads its steps.
+	index := (&checker{root: root}).indexFeatures()
 	switch {
 	case *all:
 		ids := make([]string, 0, len(registry))
@@ -113,7 +114,6 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 		}
-		index := (&checker{root: root}).indexFeatures()
 		derived, err := deriveProveScope(root, *base, *rulesPath, registryRelPath(root, *registryPath), catalog, index)
 		if err != nil {
 			fmt.Fprintf(stderr, "spec prove: %v\n", err)
@@ -141,9 +141,8 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	index := (&checker{root: root}).indexFeatures()
 	scenarioByPointer := map[string][]oracleScenario{}
-	for _, scenario := range (&checker{root: root}).parseOracleScenarios(index) {
+	for _, scenario := range oracleScenarios(index) {
 		scenarioByPointer[scenario.ref.pointer()] = append(scenarioByPointer[scenario.ref.pointer()], scenario)
 	}
 
@@ -410,7 +409,7 @@ func deriveProveScope(root, base, rulesPath, registryPath string, catalog Catalo
 			if err != nil {
 				continue
 			}
-			for _, id := range goAnnotationIDs(file, data) {
+			for _, id := range annotatedRuleIDs(file, data, annotationDeclared) {
 				scope[id] = true
 			}
 		case strings.HasSuffix(file, ".feature"):
@@ -430,26 +429,6 @@ func deriveProveScope(root, base, rulesPath, registryPath string, catalog Catalo
 		}
 	}
 	return scope, nil
-}
-
-// goAnnotationIDs reads the //rule: annotations from parsed Go comments, not
-// from raw text: a `//rule:` inside a string literal (a test fixture, a doc
-// example) is not an annotation and must not widen prove's scope.
-func goAnnotationIDs(filename string, data []byte) []string {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, filename, data, parser.ParseComments|parser.SkipObjectResolution)
-	if err != nil {
-		return nil
-	}
-	var ids []string
-	for _, group := range file.Comments {
-		for _, id := range annotationIDsOf(group) {
-			if idPattern.MatchString(id) {
-				ids = append(ids, id)
-			}
-		}
-	}
-	return ids
 }
 
 // changedRuleIDs compares the touched per-rule files with their base revision.
