@@ -64,19 +64,32 @@ export const SANDBOX_TEMPLATE_NAME = "docker.io/library/pi-worker:v1";
  * unavailable. An absent kit path is a loud infra-failure, never a silent
  * agent-image fallback.
  *
- * The KIT DIRECTORY, not the packed `.zip`. `dist/` is gitignored and written by
+ * The KIT DIRECTORY is the artifact. It is a v3 workload kit (`pi-worker.yaml`
+ * plus the stem-paired `pi-worker.dockerfile`), so the image is built from the
+ * checked-in recipe: there is nothing to pack, and no `.zip` is produced any
+ * more (`sbx kit pack` was the v2 flow). `dist/` is gitignored and written by
  * the same `.pi/sandboxes/build.sh` run that saves the `pi-worker:v1` template,
- * so on the fresh host this fallback exists for (no template yet) the zip does
- * not exist either — it would turn a recoverable create into a loud failure.
- * The checked-in directory is the source of truth (`sbx kit validate` accepts it
- * as-is) and cannot drift from a stale packed artifact.
+ * so on the fresh host this fallback exists for, the checked-in directory is
+ * the only thing guaranteed to be present.
+ *
+ * PASSED POSITIONALLY, NOT WITH `--kit`. `sbx create AGENT|SANDBOX_KIT
+ * [PATH...]` takes the kit in the agent slot (`sbx create ../path/to/my-agent/`
+ * is the documented local-kit form), while `--kit` is documented as a MIXIN
+ * flag (`sbx create claude --kit ./my-mixin/`) — a v3 workload in the `--kit`
+ * slot is the wrong kind of kit. Local refs also have to be explicit paths; the
+ * path handed to `sbx` here is resolved to an absolute one.
  */
 export const SANDBOX_KIT_FALLBACK_PATH = ".pi/sandboxes/kit";
 /** CPU allocation per VM. `sbx create` defaults to ALL host CPUs — never default. */
 export const SANDBOX_DEFAULT_CPUS = 4;
 /** Memory per VM (binary units). `sbx create` defaults to 50% of host RAM. */
 export const SANDBOX_DEFAULT_MEMORY = "8g";
-/** Agent positional used for every VM: the image comes from the template/kit. */
+/**
+ * Agent positional for a TEMPLATE create: the image comes from the template, so
+ * the slot only names a built-in agent. On the kit fallback this token is
+ * replaced by the kit directory itself (`sbx create AGENT|SANDBOX_KIT
+ * [PATH...]`), which is why `createSandboxArgs` pushes exactly one of the two.
+ */
 export const SANDBOX_CREATE_AGENT = "shell";
 
 /** Egress allowlist for roles with a read-write worktree mount (default-deny). */
@@ -645,11 +658,17 @@ export function createSandboxArgs(opts: {
   args.push("--cpus", String(opts.profile.cpus), "--memory", opts.profile.memory);
   if (opts.reference === "template") {
     args.push("-t", opts.template ?? SANDBOX_TEMPLATE_NAME);
-  } else if (opts.kitPath) {
-    args.push("--kit", opts.kitPath);
   }
+  // The first positional is the agent slot: a built-in agent name for a
+  // template create, or the sandbox-kit reference for a kit create
+  // (`sbx create AGENT|SANDBOX_KIT [PATH...]`). The kit path is NOT a `--kit`
+  // value — that flag is mixin-only, so a v3 workload passed there would be the
+  // wrong kind of kit. Everything after the first positional is a workspace
+  // path, in profile order.
+  const agentSlot =
+    opts.reference === "kit" && opts.kitPath ? opts.kitPath : SANDBOX_CREATE_AGENT;
   args.push(
-    SANDBOX_CREATE_AGENT,
+    agentSlot,
     ...workspaceArgsFor(opts.profile, opts.worktreePath, opts.vaultPath, opts.scratchPath),
   );
   return args;

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Build the `pi-worker:v1` sbx template from the versioned kit in ./kit.
+# Build the `pi-worker:v1` sbx template from the v3 kit in ./kit.
 #
 # Run from anywhere (paths are resolved from this script):
 #   .pi/sandboxes/build.sh
 #
+# The kit is a v3 workload: `kit/pi-worker.yaml` (descriptor) + the stem-paired
+# `kit/pi-worker.dockerfile` (recipe). Go, pi and the agent config are IMAGE
+# content, so there is no install phase and no pack step: the kit directory is
+# the artifact — `sbx create <kit-dir> [PATH...]` builds and boots it in one go.
+#
 # Optional env:
-#   KIT_SOURCE=dir|zip   compose the build sandbox from ./kit (dir) or from the
-#                        packed dist/pi-worker.zip (zip, default). ZIP artifacts
-#                        skip the shared `sbx-kit-builder` sandbox that
-#                        source-form builds use.
 #   KEEP=1               keep the build/sanity sandboxes around for inspection.
 #   MODEL_CALL=0         skip the in-VM live model call.
 #   SKIP_REBUILD=1       reuse an existing pi-worker:v1 template (no rebuild).
@@ -34,15 +35,19 @@ SANITY_SANDBOX="pi-worker-sanity"
 TEMPLATE_TAG="pi-worker:v1"
 CPUS=4
 MEMORY=8g
-KIT_SOURCE="${KIT_SOURCE:-zip}"
+KIT_YAML="$KIT_DIR/pi-worker.yaml"
+KIT_RECIPE="$KIT_DIR/pi-worker.dockerfile"
 MODEL_CALL="${MODEL_CALL:-1}"
 SKIP_REBUILD="${SKIP_REBUILD:-0}"
 KEEP="${KEEP:-0}"
 
 # Pins echoed in the run log and checked in-VM.
-# Go comes from the repo's go.mod (`go` directive); pi from the host install.
+# Go comes from the repo's go.mod (`go` directive) and must match the recipe's
+# ARG; pi is pinned in the recipe and cross-checked against the host install.
 GO_PIN=$(awk '$1 == "go" { print $2; exit }' "$REPO_ROOT/go.mod")
 PI_PIN=$(pi --version 2>/dev/null | tail -n 1 | tr -d '[:space:]')
+KIT_GO_PIN=$(sed -n 's/^ARG GO_VERSION=//p' "$KIT_RECIPE" 2>/dev/null | head -n 1)
+KIT_PI_PIN=$(sed -n 's/^ARG PI_VERSION=//p' "$KIT_RECIPE" 2>/dev/null | head -n 1)
 BASE_IMAGE="docker/sandbox-templates:shell-docker"
 
 RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
@@ -190,16 +195,29 @@ template_exists() {
 
 say "pi-worker kit build — run $RUN_ID"
 say "  repo worktree : $WORKTREE"
-say "  kit dir       : $KIT_DIR ($KIT_SOURCE)"
-say "  base image    : $BASE_IMAGE"
-say "  go pin        : $GO_PIN (from go.mod)"
-say "  pi pin        : $PI_PIN (from host \`pi --version\`)"
+say "  kit descriptor: $KIT_YAML (schemaVersion 3, kind: workload)"
+say "  kit recipe    : $KIT_RECIPE"
+say "  base image    : $BASE_IMAGE (recipe FROM)"
+say "  go pin        : $GO_PIN (go.mod) / ${KIT_GO_PIN:-<unset>} (recipe ARG)"
+say "  pi pin        : ${KIT_PI_PIN:-<unset>} (recipe ARG) / $PI_PIN (host \`pi --version\`)"
 say "  template tag  : $TEMPLATE_TAG"
 say "  layout        : --cpus $CPUS --memory $MEMORY"
 
-if [ -z "$GO_PIN" ] || [ -z "$PI_PIN" ]; then
-    say "FATAL: could not resolve pins (go.mod go directive / host pi version)"
+if [ -z "$GO_PIN" ] || [ -z "$PI_PIN" ] || [ -z "$KIT_GO_PIN" ] || [ -z "$KIT_PI_PIN" ]; then
+    say "FATAL: could not resolve pins (go.mod go directive, host pi version, recipe ARG lines)"
     exit 1
+fi
+# The Go pin is hardcoded twice on purpose (repo toolchain + recipe), so a bump
+# that lands in only one place is a hard failure here rather than a template
+# built with a toolchain the repo does not pin.
+if [ "$GO_PIN" != "$KIT_GO_PIN" ]; then
+    say "FATAL: go.mod pins Go $GO_PIN but $KIT_RECIPE installs Go $KIT_GO_PIN — bump both"
+    exit 1
+fi
+if [ "$PI_PIN" != "$KIT_PI_PIN" ]; then
+    say "WARN: host pi is $PI_PIN but the template will ship $KIT_PI_PIN (recipe pin)."
+    say "      Not fatal — the host version is only a cross-check — but host/VM drift"
+    say "      is now visible in this log."
 fi
 
 # ---------------------------------------------------------------- 0. clean slate
@@ -219,36 +237,52 @@ if template_exists "$TEMPLATE_TAG"; then
     say "           (kept until then, so a failed run leaves a usable template)"
 fi
 
-# ---------------------------------------------------- 1. validate + pack the kit
-run_timed "kit validate (daemon policy)" sbx kit validate "$KIT_DIR" || {
-    say "FATAL: kit validation failed"
-    exit 1
-}
-
+# ------------------------------------------------- 1. validate the v3 kit
+# There is no v1/v2 style `sbx kit validate` + `sbx kit pack` flow for a v3
+# SOURCE kit: v3 validation IS the image build. The descriptor is echoed with
+# `sbx kit inspect` (advisory — if this CLI rejects a v3 source directory, the
+# build below is the authority and nothing is lost), then the recipe is built
+# once with the sandbox-kit:3 frontend and thrown away (`--output
+# type=cacheonly`), so a malformed descriptor or a broken RUN fails here, fast
+# and cheap, instead of half way through `sbx create`.
 mkdir -p "$DIST_DIR"
-KIT_ZIP="$DIST_DIR/pi-worker.zip"
-rm -f "$KIT_ZIP"
-run_timed "kit pack -> dist/pi-worker.zip" sbx kit pack "$KIT_DIR" --output "$KIT_ZIP" || {
-    say "FATAL: kit pack failed"
-    exit 1
-}
-run_timed "kit validate (packed zip, offline)" sbx kit validate "$KIT_ZIP" --offline || {
-    say "FATAL: packed kit validation failed"
-    exit 1
-}
 
-if [ "$KIT_SOURCE" = "zip" ]; then
-    KIT_REF="$KIT_ZIP"
+if run_timed "kit inspect (v3 descriptor echo)" sbx kit inspect "$KIT_DIR" --offline; then
+    say "  descriptor accepted by this CLI"
 else
-    KIT_REF="$KIT_DIR"
+    say "  WARN: \`sbx kit inspect\` did not accept the v3 source kit — the build"
+    say "        step below is the validation authority, so this is not fatal."
 fi
 
-# ------------------------------------------- 2. build sandbox + install hooks
-run_detached "create build sandbox (kit + install hooks)" 900 15 \
-    sbx create --name "$BUILD_SANDBOX" -t "$BASE_IMAGE" --pull never \
-    --cpus "$CPUS" --memory "$MEMORY" "$KIT_REF" "$WORKTREE" || {
-    say "FATAL: could not create the build sandbox. If this is a --pull never"
-    say "       failure, pre-pull the base image or re-run with KIT_SOURCE=dir."
+if command -v docker >/dev/null 2>&1 && docker buildx version >/dev/null 2>&1; then
+    run_detached "kit build (docker buildx, cacheonly) — v3 validation" 1800 30 \
+        docker buildx build -f "$KIT_YAML" --output type=cacheonly "$KIT_DIR" || {
+        say "FATAL: the kit recipe failed to build (descriptor or Dockerfile error)."
+        say "       Nothing was snapshotted; fix $KIT_YAML / $KIT_RECIPE and re-run."
+        exit 1
+    }
+else
+    say "WARN: docker buildx not available — skipping the standalone kit build."
+    say "      \`sbx create\` below still builds the image and fails on a bad kit,"
+    say "      it just costs a sandbox-create attempt before the error surfaces."
+fi
+
+# ------------------------------------------------ 2. build sandbox from the kit
+# The kit DIRECTORY is the first positional: it replaces the `shell` agent token
+# of the template create form (`sbx create AGENT|SANDBOX_KIT [PATH...]`), and the
+# workspaces follow it. There is no `-t` here — the base image is the recipe's
+# FROM, and passing both a template and a kit would ask for two images.
+# No install hook runs at create time: Go, pi and the agent config are already in
+# the image, so this step only has to build and boot it.
+run_detached "create build sandbox (v3 kit, image build)" 1800 20 \
+    sbx create --name "$BUILD_SANDBOX" --pull never \
+    --cpus "$CPUS" --memory "$MEMORY" "$KIT_DIR" "$WORKTREE" || {
+    say "FATAL: could not create the build sandbox from $KIT_DIR."
+    say "       If the error is about the template/pull policy, the base image"
+    say "       ($BASE_IMAGE) is not local and --pull never blocked it; drop"
+    say "       --pull never or pre-pull the base image."
+    say "       If the error is about the kit positional, add"
+    say "       -t $BASE_IMAGE to this create."
     exit 1
 }
 
@@ -318,8 +352,8 @@ MODCACHE_PATHS=$(with_timeout 180 sbx exec --no-input "$BUILD_SANDBOX" /bin/sh -
     'echo "$(go env GOMODCACHE) $(go env GOPATH)"; du -sh "$(go env GOMODCACHE)" 2>/dev/null' 2>&1)
 say "$MODCACHE_PATHS" | tee -a "$LOG"
 
-TIMEOUT_SECS=120 run_timed "exec: GOPROXY/GOTOOLCHAIN (kit env)" \
-    sbx exec --no-input "$BUILD_SANDBOX" go env GOPROXY GOTOOLCHAIN
+TIMEOUT_SECS=120 run_timed "exec: GOPROXY/GOTOOLCHAIN (image env)" \
+    sbx exec --no-input "$BUILD_SANDBOX" go env GOPROXY GOTOOLCHAIN GOSUMDB
 
 # --------------------------------------------------- 5. live model call (cheap)
 # Not fatal: this is a smoke signal that the host proxy + sentinel key + baked
@@ -369,11 +403,12 @@ TIMEOUT_SECS=120 run_timed "sanity exec: pi --version" \
 TIMEOUT_SECS=120 run_timed "sanity exec: placeholder prefix" \
     bash -c "sbx exec --no-input '$SANITY_SANDBOX' printenv OPENCODE_GO_API_KEY | head -c 8 | grep -q '^sbx-cs-' && echo 'placeholder prefix ok: sbx-cs-'"
 
-# PI_AGENT_HOME comes from the kit's environment block, which is sandbox-scoped
-# and therefore NOT baked into the template: fall back to pi's own default.
-TIMEOUT_SECS=120 run_timed "sanity exec: pi config baked into the image" \
+# PI_AGENT_HOME is now image ENV (it was per-sandbox kit env in v2 and vanished
+# with `sbx template save`), so the strict value has to be present here. This
+# check fails loudly if a future edit moves it back into something per-sandbox.
+TIMEOUT_SECS=120 run_timed "sanity exec: pi config + PI_AGENT_HOME baked into the image" \
     sbx exec --no-input -w "$WORKTREE" "$SANITY_SANDBOX" /bin/sh -c \
-    'home="${PI_AGENT_HOME:-$HOME/.pi/agent}"; ls -l "$home/settings.json" "$home/models.json"; cat "$home/settings.json"; grep -c "\"id\":" "$home/models.json"'
+    'test -n "$PI_AGENT_HOME" || { echo "PI_AGENT_HOME is unset in a template sandbox" >&2; exit 1; }; echo "PI_AGENT_HOME=$PI_AGENT_HOME"; ls -l "$PI_AGENT_HOME/settings.json" "$PI_AGENT_HOME/models.json"; cat "$PI_AGENT_HOME/settings.json"; grep -c "\"id\":" "$PI_AGENT_HOME/models.json"'
 
 # The warm GOMODCACHE is the entire point of the snapshot: an empty cache would
 # silently push module fetches back onto the network in every task sandbox.
@@ -388,11 +423,25 @@ if printf '%s\n' "$CACHE_REPORT" | head -n 1 | grep -q '^0'; then
     exit 1
 fi
 
-# Kit environment variables are per-sandbox, never image-level: a sandbox made
-# from the template alone runs with Go's defaults. Recorded here so the split
-# stays visible (task sandboxes constrain egress per-sandbox instead).
-TIMEOUT_SECS=120 run_timed "sanity exec: go env (Go defaults, kit env is not baked)" \
-    sbx exec --no-input "$SANITY_SANDBOX" go env GOPROXY GOTOOLCHAIN GOMODCACHE
+# The v2 gap this build used to record — "kit env is per-sandbox, so a sandbox
+# created from the template alone reports Go's defaults" — is closed: the strict
+# values are image ENV (plus the agent's own go env file), so they must survive
+# the snapshot. Assert that instead of just printing it.
+GO_ENV_REPORT=$(with_timeout 120 sbx exec --no-input "$SANITY_SANDBOX" \
+    go env GOPROXY GOTOOLCHAIN GOSUMDB GOMODCACHE 2>&1)
+say ""
+say "go env in the fresh template sandbox (image ENV must survive template save):"
+say "$GO_ENV_REPORT"
+if printf '%s\n' "$GO_ENV_REPORT" | grep -q 'direct'; then
+    say "FATAL: GOPROXY in a template sandbox contains ',direct' — the image ENV"
+    say "       did not survive template save, which reopens the v2 env gap."
+    exit 1
+fi
+if ! printf '%s\n' "$GO_ENV_REPORT" | grep -qx 'local'; then
+    say "FATAL: GOTOOLCHAIN is not 'local' in a template sandbox — a future go.mod"
+    say "       bump would make the VM download a toolchain."
+    exit 1
+fi
 
 # --------------------------------------------------------------- 8. teardown
 if [ "$KEEP" = "1" ]; then
@@ -400,13 +449,6 @@ if [ "$KEEP" = "1" ]; then
 else
     run_timed "remove sanity sandbox" sbx rm "$SANITY_SANDBOX" --force || say "WARN: could not remove $SANITY_SANDBOX"
     run_timed "remove build sandbox" sbx rm "$BUILD_SANDBOX" --force || say "WARN: could not remove $BUILD_SANDBOX"
-fi
-
-# Source-form kit builds leave the shared `sbx-kit-builder` sandbox behind; a
-# ZIP build should not. Drop it if it exists so no sandbox is left running.
-if sandbox_exists "sbx-kit-builder"; then
-    say "cleanup: removing leftover kit builder sandbox (build cache)"
-    sbx kit builder rm --force >/dev/null 2>&1 || true
 fi
 
 # ------------------------------------------------------------- 9. deliverables
@@ -417,8 +459,8 @@ fi
         IFS=$'\t' read -r label ms result <<<"$row"
         printf '| %s | %s | %s |\n' "$label" "$ms" "$result"
     done
-    printf '\n- go pin: `%s` (go.mod)\n- pi pin: `%s` (npm)\n- base image: `%s`\n- model call: %s\n' \
-        "$GO_PIN" "$PI_PIN" "$BASE_IMAGE" "$MODEL_CALL_STATUS"
+    printf '\n- go pin: `%s` (go.mod) = `%s` (recipe ARG)\n- pi pin: `%s` (recipe ARG; host `pi --version` was `%s`)\n- base image: `%s` (recipe FROM)\n- model call: %s\n' \
+        "$GO_PIN" "$KIT_GO_PIN" "$KIT_PI_PIN" "$PI_PIN" "$BASE_IMAGE" "$MODEL_CALL_STATUS"
 } >"$TIMINGS_MD"
 
 {
@@ -431,9 +473,9 @@ say "================ timings ================"
 cat "$TIMINGS_MD" | tee -a "$LOG"
 say ""
 say "artifacts:"
-say "  $KIT_ZIP"
 say "  $TIMINGS_MD"
 say "  $LOG"
+say "  kit (the artifact; pass the DIR to \`sbx create\`): $KIT_DIR"
 say ""
 say "templates:"
 sbx template ls 2>&1 | tee -a "$LOG"

@@ -322,7 +322,10 @@ await check("createSandboxArgs: template create --cpus --memory, positional work
       worktree + ":ro",
     ],
   );
-  // kit reference swaps -t <template> for --kit <path>, nothing else moves
+  // kit reference swaps the `-t <template>` pair AND the `shell` agent token for
+  // the kit directory as the FIRST POSITIONAL (`sbx create AGENT|SANDBOX_KIT
+  // [PATH...]`); the workspaces still follow it, in profile order. `--kit` is a
+  // mixin-only flag and must not appear here.
   const kit = createSandboxArgs({
     name: "n",
     profile: profileForRole("worker"),
@@ -330,12 +333,16 @@ await check("createSandboxArgs: template create --cpus --memory, positional work
     reference: "kit",
     kitPath: "/host/repo/.pi/sandboxes/kit",
   });
-  assert.deepEqual(kit.slice(8, 10), ["--kit", "/host/repo/.pi/sandboxes/kit"]);
+  assert.deepEqual(kit.slice(8, 9), ["/host/repo/.pi/sandboxes/kit"]);
+  assert.equal(kit.includes("--kit"), false, "a kit goes in the agent slot, not --kit");
+  assert.equal(kit.includes("shell"), false, "the kit dir replaces the agent token");
   assert.equal(kit.includes("-t"), false, "the kit reference is not a template reference");
   assert.equal(kit[kit.length - 1], worktree);
-  // The fallback is the checked-in kit DIRECTORY: dist/ is gitignored and only
-  // exists on a host that already ran build.sh (i.e. that has the template), so
-  // the packed zip would be absent exactly when the fallback is needed.
+  // The fallback is the checked-in kit DIRECTORY (pi-worker.yaml + its
+  // stem-paired recipe). dist/ is gitignored and only exists on a host that
+  // already ran build.sh (i.e. that has the template), so a packed artifact
+  // would be absent exactly when the fallback is needed — and the v3 flow packs
+  // nothing: the directory is the artifact.
   assert.equal(SANDBOX_KIT_FALLBACK_PATH, ".pi/sandboxes/kit");
 });
 
@@ -457,8 +464,10 @@ await check("createWorkerSandbox: template 125 falls back to the kit exactly onc
   assert.equal(stub.calls.length, 3, "template attempt + kit attempt + egress rule");
   assert.deepEqual(stub.calls[2], policyAllowArgs("pi-worker-kit-1", SANDBOX_WORKER_EGRESS_HOSTS));
   assert.equal(stub.calls[0].includes("-t"), true);
-  assert.equal(stub.calls[1][8], "--kit");
-  assert.equal(stub.calls[1][9], path.resolve(repo, SANDBOX_KIT_FALLBACK_PATH));
+  // fallback argv: kit dir in the agent slot, workspace after it, no --kit
+  assert.deepEqual(stub.calls[1].slice(8), [path.resolve(repo, SANDBOX_KIT_FALLBACK_PATH), repo]);
+  assert.equal(stub.calls[1].includes("--kit"), false);
+  assert.equal(stub.calls[1].includes("shell"), false);
   assert.equal(stub.existsCalls.length, 1, "the kit is probed before the fallback");
   setSbxProcessOps(null);
 });
