@@ -905,7 +905,7 @@ await check("generatedSandboxName: sbx-legal, role-tagged, unique per nonce/stam
   assert.notEqual(a, b, "a different nonce yields a different name");
   const later = generatedSandboxName("worker", fixed + 1000, () => 0.01);
   assert.notEqual(a, later, "a different second yields a different name");
-  assert.match(generatedSandboxName("Go Worker!!"), /^pi-go-worker-/);
+  assert.match(generatedSandboxName("Worker Two!!"), /^pi-worker-two-/);
   assert.match(generatedSandboxName(""), /^pi-worker-/, "empty role falls back to worker");
   assert.ok(generatedSandboxName("x".repeat(40)).length <= 63, "sbx name length cap");
 });

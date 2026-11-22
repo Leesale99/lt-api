@@ -26,6 +26,13 @@
  * that is PRESENT and well-typed overrides both the default and the env knob.
  * Only `version` (and the file itself) is hard-required.
  *
+ * The four `DEFAULT_*_CMD` constants below are FIXTURE FALLBACKS ONLY. A real
+ * tree declares its gate commands (`audit_static_cmd`, `audit_cmd`, `prove_cmd`,
+ * `scoped_check_cmd`) in WORKFLOW.md front matter, and that declaration is what
+ * the gates run; the defaults exist so headless smoke fixtures can omit those
+ * fields. A resolved default in a real tree is a missing declaration to fix,
+ * not a second source of policy.
+ *
  * One deliberate exception: `gate_file_paths` is a LIST field that REFUSES on a
  * malformed value instead of falling back. The integrity check it configures is
  * the merge-boundary net, so an empty or unsafe declaration must not silently

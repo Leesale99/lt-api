@@ -266,33 +266,19 @@ report"*.
 
 ## Sandbox profiles: what a task VM actually gets
 
-One profile table (`.pi/extensions/delegate/sbx.ts`, `SANDBOX_PROFILES`) is the
-policy. A role gets exactly what its row lists — no mount it does not name, no
-egress it does not name, no secret it does not name. The profile also states the
-VM's resources; **no role relies on an sbx default** (`--cpus 0` means *all* host
-CPUs, and an omitted `--memory` means 50% of host RAM — both wrong for a task
-VM).
+Sandbox profiles — per-role mounts, egress, secret sentinels and VM resources — are declared in
+`SANDBOX_PROFILES` in `.pi/extensions/delegate/sbx.ts` and asserted by `smoke-sbx.mjs`; that table is the
+source of truth for this section.
 
-| role | workspace mounts | egress allowlist (`sbx policy allow network`) | secret sentinels | vCPUs | memory |
-|---|---|---|---|---|---|
-| `worker` | worktree `rw` | `opencode.ai`, `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com` (:443) | `OPENCODE_GO_API_KEY` | 4 | 8g |
-| `general` | worktree `rw` | same four as `worker` | `OPENCODE_GO_API_KEY` | 4 | 8g |
-| `scout` | scratch `rw` + worktree `ro` | `opencode.ai` (model only) | — | 2 | 4g |
-| `librarian` | vault `rw` + worktree `ro` | `opencode.ai` (model only) | — | 2 | 4g |
-| `researcher` | **none (mountless)** | `opencode.ai`, `*.opencode.ai`, `localhost:8787` (host codex relay), `context7.com` (:443) | `CONTEXT7_API_KEY` | 2 | 4g |
+A role gets exactly what its row lists — no mount, no egress, no secret it does not name. The profile also
+states the VM's resources; **no role relies on an sbx default** (`--cpus 0` means *all* host CPUs, and an
+omitted `--memory` means 50% of host RAM — both wrong for a task VM).
 
-Read-only/mountless roles (scout, librarian, researcher) are model-call-bound,
-not build-bound, hence 2 CPU / 4g; worker and general are the roles that run Go
-builds and gates and keep 4 CPU / 8g.
-
-The **researcher is sandboxed and genuinely mountless**: `sbx create` gets zero
-workspace positionals, so the VM has no copy of the repo, the vault, or the
-host. Its whole work surface is the network — the model provider, the **host
-codex search relay** (`localhost:8787`, which serves `web_search`) and the
-docs-lookup backend (`context7.com`) — which is why its agent frontmatter drops
-`read` and its prompt says a task needing repo/local access is a blocked report.
-Anything a `fetch_content` call reaches for outside that allowlist is denied by
-the default-deny proxy.
+The **researcher is sandboxed and genuinely mountless**: `sbx create` gets zero workspace positionals, so
+the VM has no copy of the repo, the vault, or the host. Its whole work surface is the network of its profile
+row — which is why its agent frontmatter drops `read` and its prompt says a task needing repo/local access is
+a blocked report. Anything a `fetch_content` call reaches for outside that allowlist is denied by the
+default-deny proxy.
 
 Its **toolset comes from the image, not from pi's core binary**: `web_search`,
 `fetch_content`, `source_check` and `get_search_content` are `pi-web-access`
@@ -311,8 +297,8 @@ Two fail-closed details of the spawn path:
 - `--deny-network <host>` at create time, from an optional per-profile
   `denyNetworkHosts` list. Create-time denies are in force *before* the
   per-sandbox allow rule (a separate, later `sbx policy allow` call), which
-  closes the post-create window. Every profile's list is currently empty; the
-  mechanism is the deliverable, not an invented deny.
+  closes the post-create window. The mechanism is the deliverable, not an
+  invented deny — what each role declares lives in `SANDBOX_PROFILES`.
 
 ### Host-side secret setup (once per host)
 
@@ -610,15 +596,13 @@ capabilities:
        opencode.ai:443,proxy.golang.org:443,sum.golang.org:443,storage.googleapis.com:443
    ```
 
-   Those four are the `worker`/`general` row of the profile table above: model
+   Those four are one row of `SANDBOX_PROFILES` (`worker`/`general`): model
    calls (`opencode.ai`), module and checksum fetches (`proxy.golang.org`,
-   `sum.golang.org`), and Go tooling artefacts (`storage.googleapis.com`). The
-   other roles get narrower or different lists from that same table (scout and
-   librarian: model provider only; researcher: model provider, the host codex
-   relay `localhost:8787`, and `context7.com`) — the table is authoritative,
-   this snippet is one row. If the policy fails to apply, the extension tears
-   the VM down and fails loudly — a VM without its declared egress is useless, a
-   VM with undeclared egress is dangerous.
+   `sum.golang.org`), and Go tooling artefacts (`storage.googleapis.com`). Other
+   roles declare narrower or different lists there — that table is
+   authoritative, this snippet is one row. If the policy fails to apply, the
+   extension tears the VM down and fails loudly — a VM without its declared
+   egress is useless, a VM with undeclared egress is dangerous.
 
 The reason for the split: baking the runtime list into every task VM would grant
 each of them npm and toolchain-download reach they never need. Per-sandbox

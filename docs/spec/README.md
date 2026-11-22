@@ -190,7 +190,7 @@ scenario, run `make spec/gen`, then `make audit`.
 ## 5. Delegated work: the two planes and the gates
 
 A delegated task is shaped by `.pi/prompts/implement.md`, executed under
-`.pi/agents/go-worker.md` (the loop and report format) and driven by the main session
+`.pi/agents/worker.md` (the loop and report format) and driven by the main session
 (persona: `.pi/agents/main.md`) and its child orchestrators, against the protocol
 those files carry (worktree, commits, approval, merge-back).
 `WORKFLOW.md` carries the machine-checked policy: the write boundary, the gate

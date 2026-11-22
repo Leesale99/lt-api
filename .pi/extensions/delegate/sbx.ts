@@ -756,7 +756,7 @@ export function generatedSandboxName(
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
 export interface CreateSandboxOptions {
-  /** Role name from the agent frontmatter (`go-worker`, `scout`, …). */
+  /** Role name from the agent frontmatter (`worker`, `scout`, …). */
   role: string;
   /**
    * Absolute host path of the worktree to mount at the same path in the VM.

@@ -52,8 +52,9 @@ Because the worktree arrives as a mount, `.git` is unresolvable inside it: **wor
 cannot commit, stash, checkout, reset or merge. The host commits, the host merges, and the host owns every
 ref.
 
-Sandbox profiles are declared in `.pi/extensions/delegate/sbx.ts` and asserted by `smoke-sbx.mjs`. No sandbox
-gets `LT_API_TEST_DSN`, so `make audit` and `make prove` cannot run in one.
+Sandbox profiles are declared in `.pi/extensions/delegate/sbx.ts` and asserted by `smoke-sbx.mjs`.
+
+No sandbox gets `LT_API_TEST_DSN`, so `make audit` and `make prove` cannot run in one.
 
 ## In-VM gates are advisory; the gate VM executes; the host decides and records
 

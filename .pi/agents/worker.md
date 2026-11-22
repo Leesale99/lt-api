@@ -1,5 +1,5 @@
 ---
-name: go-worker
+name: worker
 description: Implements Go backend tasks to green inside a sandboxed worktree mount; reports back when done
 tools: read, bash, edit, write, grep, find, ls
 model: opencode-go/deepseek-v4.1-flash

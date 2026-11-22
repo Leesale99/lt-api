@@ -165,7 +165,7 @@ import { openAgentsView, openJobsView, openJobViewer } from "./tui/index.ts";
  * appends the dialog hint.
  */
 const DELEGATE_REASON =
-  "Orchestrator does not implement. Delegate this to a subagent (go-worker for Go, general for anything else) via the subagent tool";
+  "Orchestrator does not implement. Delegate this to a subagent (worker for Go, general for anything else) via the subagent tool";
 
 export default function (pi: ExtensionAPI) {
   // Sandboxed (in-VM) instance: inert. Register the advisory notes and stop —
