@@ -180,15 +180,15 @@ These are documented limitations, not hidden ones:
   (`Makefile`, `cmd/spec`, `.github`, `WORKFLOW.md`). A worker can still poison a non-gate file in its
   read-write mount; the full audit at the merge boundary is the backstop, and the orchestrator is expected
   to read the diff rather than trust the exit codes alone.
+- **The gate VM is built** (pi-gate:v1): the host no longer executes worktree code. What remains is honest
+  drift to watch, not a gap: the gate image itself is trusted infrastructure (like sbx and the host git),
+  and a *compound* bash command mixing a declared gate with other segments is deliberately not rewritten
+  into the gate VM — such a gate segment would host-execute, so do not write compound gate commands.
 
 ## Not built yet
 
 - **Sealed fleet mode**: one mountless sandbox for everything, with no worktree handed to workers at all.
   Deferred by the user for POC use.
-- The **gate VM is built** (pi-gate:v1): the host no longer executes worktree code. What remains is honest
-  drift to watch, not a gap: the gate image itself is trusted infrastructure (like sbx and the host git),
-  and a *compound* bash command mixing a declared gate with other segments is deliberately not rewritten
-  into the gate VM — such a gate segment would host-execute, so do not write compound gate commands.
 
 Everything below is judgment, not policy. Delegate when the work is separable and the context you would
 burn is larger than the context you would spend explaining it; do the task yourself when it is one edit, one
