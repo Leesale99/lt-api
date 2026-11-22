@@ -5,14 +5,17 @@ version: 1
 
 # ── Gate commands ──────────────────────────────────────────────────────────
 # Executed verbatim (whitespace-split argv, no shell) by the extension.
-# Host-side only: every authoritative verdict is produced by the host plane,
-# AFTER the worker's sandbox has exited. The identical commands exist inside a
-# worker VM, but there they are advisory (see "In-VM gates are advisory").
+# Verdict plane: every authoritative verdict is produced by the host plane, AFTER the
+# worker's sandbox has exited — but the EXECUTION plane is the gate VM (pi-gate:v1):
+# the host never executes worktree code, only `git` (the integrity check) and
+# `sbx exec`. The identical commands exist inside a worker VM as advisory only
+# (see "In-VM gates are advisory; the host is the verifier plane").
 audit_static_cmd: make audit/static
-# Full audit gate (DB-backed). The host has LT_API_TEST_DSN; sandboxes never do,
-# so this is a host-only, merge-boundary gate.
+# Full audit gate (DB-backed): runs in the gate VM, whose image carries an
+# apt-baked Postgres on the repo's documented port 5433 — no host DB, no
+# LT_API_TEST_DSN on the host path. Merge-boundary, like every gate.
 audit_cmd: make audit
-# Behavioral proof gate: the PROVE step, executed at merge-back (host-only).
+# Behavioral proof gate: the PROVE step, executed at merge-back in the gate VM.
 prove_cmd: make prove
 # Scoped spec-check base invocation; --strict is part of the declared policy.
 scoped_check_cmd: "go run ./cmd/spec check --strict"
@@ -98,13 +101,19 @@ No DB: no `LT_API_TEST_DSN` is exported into any sandbox, so `make audit` and `m
 even if someone types them. A worker that needs a host, a dependency outside its egress allowlist, or the
 vault is a blocked, explained report — not a workaround.
 
-## In-VM gates are advisory; the host is the verifier plane
+## In-VM gates are advisory; the gate VM executes; the host decides and records
 
-The main session and the background orchestrators stay host-side. The extension also loads inside the VM,
-but it sees `PI_DELEGATE_SANDBOX=1` and is **inert**: it registers no gate, issues no verdict, writes no
-receipt, and exists only so a worker's own gate runs are labelled advisory. All authoritative verdicts —
-`make audit/static`, the scoped spec check, `make prove`, the full `make audit` — are produced on the host
-AFTER the worker has exited, and their results are what the approval and merge machinery consumes.
+The main session and the background orchestrators stay host-side. The extension also loads inside a
+WORKER VM, but it sees `PI_DELEGATE_SANDBOX=1` and is **inert**: it registers no gate, issues no verdict,
+writes no receipt, and exists only so a worker's own gate runs are labelled advisory. The authoritative
+gates — `make audit/static`, the scoped spec check, `make audit`, `make prove` — no longer execute on the
+host at all: each runs inside a second, locked-down **gate VM** (`pi-gate:v1`: git, Go, make, an
+apt-baked Postgres on the repo's documented port 5433, no model, egress only the Go module fallback).
+The host's entire execution surface for the tree is now `git` (the integrity check — a trusted host
+binary reading paths, never worktree code) and `sbx exec` into the gate VM. The verdict is still the
+host's: it consumes the gate VM's exit codes, and the receipts the approval and merge machinery reads
+remain host-extension-written. DB-backed gates run against the gate VM's own Postgres (DSN delivered as a
+make command-line override, which is the only form that survives the Makefile's `-include .envrc`).
 
 ## The integrity check replaced the scanner and the allowlist
 
@@ -174,10 +183,12 @@ These are documented limitations, not hidden ones:
 
 ## Not built yet
 
-- **Gate-VM**: running the authoritative gates inside a second, locked-down VM instead of on the host. Today
-  the host is trusted and the gates inherit that trust.
 - **Sealed fleet mode**: one mountless sandbox for everything, with no worktree handed to workers at all.
   Deferred by the user for POC use.
+- The **gate VM is built** (pi-gate:v1): the host no longer executes worktree code. What remains is honest
+  drift to watch, not a gap: the gate image itself is trusted infrastructure (like sbx and the host git),
+  and a *compound* bash command mixing a declared gate with other segments is deliberately not rewritten
+  into the gate VM — such a gate segment would host-execute, so do not write compound gate commands.
 
 Everything below is judgment, not policy. Delegate when the work is separable and the context you would
 burn is larger than the context you would spend explaining it; do the task yourself when it is one edit, one
