@@ -1,0 +1,60 @@
+#!/bin/sh
+# pg-up — start the Postgres cluster baked into the pi-gate image and wait until
+# it accepts connections. Idempotent: calling it twice is a no-op the second time.
+#
+# Debian's `pg_ctlcluster` wants root; the gate VM runs as `agent`, so the cluster
+# is a plain initdb data dir owned by the agent (see pi-gate.dockerfile) driven
+# with the server's own pg_ctl. Everything is config-driven (PGDATA, PGHOST,
+# PGPORT come from the image ENV), so there are no flags to remember.
+#
+# Usage:  pg-up            # start + health check (exit 0 = accepting connections)
+#         pg-up status     # report only; exit 0 = running, 1 = stopped
+set -eu
+
+PGDATA="${PGDATA:-/home/agent/pgdata}"
+PGHOST="${PGHOST:-/home/agent/pgsock}"
+PGPORT="${PGPORT:-5432}"
+PGDATABASE="${PGDATABASE:-lt_api_test}"
+PGUSER="${PGUSER:-lt_test}"
+
+# Debian's pg_config usually reports the versioned server bindir, but if a
+# packaging change points it somewhere without pg_ctl, fall back to the
+# versioned directory and fail loudly if neither has the server binaries.
+from_pgconfig="$(pg_config --bindir 2>/dev/null || true)"
+bindir="$from_pgconfig"
+if [ ! -x "$bindir/pg_ctl" ]; then
+    bindir="$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -n 1 || true)"
+fi
+if [ ! -x "$bindir/pg_ctl" ]; then
+    echo "pg-up: cannot find pg_ctl — pg_config --bindir said '${from_pgconfig}' and no /usr/lib/postgresql/*/bin has one" >&2
+    exit 1
+fi
+
+if [ ! -s "$PGDATA/PG_VERSION" ]; then
+    echo "pg-up: no cluster at $PGDATA — this image should have one baked in" >&2
+    exit 1
+fi
+
+running=0
+if "$bindir/pg_ctl" -D "$PGDATA" status >/dev/null 2>&1; then
+    running=1
+fi
+
+if [ "${1:-start}" = "status" ]; then
+    [ "$running" = "1" ] || { echo "pg-up: stopped"; exit 1; }
+    "$bindir/pg_isready" -h "$PGHOST" -p "$PGPORT" -d "$PGDATABASE" -U "$PGUSER"
+    exit 0
+fi
+
+mkdir -p "$PGHOST"
+
+if [ "$running" = "1" ]; then
+    echo "pg-up: already running at $PGHOST:$PGPORT"
+else
+    "$bindir/pg_ctl" -D "$PGDATA" -l "$PGDATA/server.log" -w -t 60 start
+    echo "pg-up: started at $PGHOST:$PGPORT (log: $PGDATA/server.log)"
+fi
+
+# "accepting connections" is the signal; a listening port that is not ready yet
+# would hand the gate a half-up database.
+"$bindir/pg_isready" -h "$PGHOST" -p "$PGPORT" -d "$PGDATABASE" -U "$PGUSER"

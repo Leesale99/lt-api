@@ -16,6 +16,9 @@ It builds *only* the machine. Everything that is per-task or sensitive — the
 worktree mount, egress rules, the model key — is attached when a sandbox is
 *created*, never captured in the snapshot (see "Secrets" and "Egress" below).
 
+The same directory also builds `pi-gate:v1`: an agent-less image (git, Go, make,
+Postgres, no `pi`) for the **authoritative gate VM** — see "pi-gate kit" below.
+
 ```
 .pi/sandboxes/
 ├── kit/
@@ -28,10 +31,24 @@ worktree mount, egress rules, the model key — is attached when a sandbox is
 │       └── web-search.json    web-search provider for the researcher (COPY'd into the image)
 ├── relay/
 │   └── codex-search-relay.mjs host-side codex relay: the researcher's web-search backend
+├── gate-kit/
+│   ├── pi-gate.yaml           v3 descriptor: the locked-down gate executor (no agent)
+│   ├── pi-gate.dockerfile     the recipe: FROM shell, git/Go/make/Postgres, warm GOMODCACHE
+│   └── files/
+│       ├── pg-up              start the image-baked Postgres (idempotent, health-checked)
+│       └── pg-down            stop it cleanly before a snapshot
 ├── build.sh                   the build pipeline (validate → build → warm → snapshot → prove → clean)
+├── build-gate.sh              the gate-template pipeline (probe → audit/static → snapshot → cold boot)
 ├── README.md                  this file
-└── dist/                      artifacts, gitignored: timings.tsv, timings-*.md, logs/
+└── dist/                      artifacts, gitignored: timings*.tsv, timings-*.md, logs/
 ```
+
+Templates produced here:
+
+| template | built by | what it is |
+|---|---|---|
+| `pi-worker:v1` | `./build.sh` | Go + pi + provider/config + warm module cache — the delegate worker VMs |
+| `pi-gate:v1` | `./build-gate.sh` | git + Go + make + Postgres, **no agent**, 3-host runtime egress — the authoritative gate VM |
 
 ## What the snapshot contains
 
@@ -49,6 +66,200 @@ worktree mount, egress rules, the model key — is attached when a sandbox is
 Nothing auto-runs on boot: the recipe sets no entrypoint (the base image's
 shell-compatible launcher keeps the sandbox alive), so the delegate extension
 starts `pi` itself through `sbx exec`.
+
+## pi-gate kit → `pi-gate:v1` template (the authoritative gate VM)
+
+The pi-worker template answers "where does an agent run". This one answers
+"where does the **gate** run". Today `WORKFLOW.md` lists Gate-VM under "Not built
+yet" and names the reason precisely: *"the host is trusted and the gates inherit
+that trust"* — `make audit/static` executes the worktree's Makefile, Go toolchain
+and `cmd/spec` on the host itself.
+
+`pi-gate:v1` moves that execution into a VM. The worktree root is mounted into a
+locked-down sandbox, `make audit/static` runs **there**, and the host only reads an
+exit code and the output. Worktree code is data to the host, never a process it
+spawned. The baked Postgres means the DB-backed `make audit` can run there too;
+wiring that target is the extension's call (see the scope note at the end of this
+section).
+
+The image is deliberately the smallest thing that can run a gate — `git`, Go,
+`make`, `jq`, a Postgres server — and nothing else: **no `pi`, no npm, no node, no
+model config**. A gate does not think, commit, or call a provider, and an image
+that cannot run an agent cannot be talked into one.
+
+### What the `pi-gate:v1` snapshot contains
+
+| item | detail |
+|---|---|
+| base image | `docker/sandbox-templates:shell` — the non-Docker flavor; a gate needs no nested daemon |
+| gate toolchain | `git`, `make`, `jq`, `curl`, `ca-certificates` (apt, one transaction) |
+| Go | `1.27.1` at `/usr/local/go`, symlinked to `/usr/local/bin/go` and `gofmt` (`ARG GO_VERSION`) |
+| Postgres | Debian's `postgresql` + `postgresql-contrib` (+ `libpq-dev` for `pg_config`), with a **pre-initialised cluster** at `/home/agent/pgdata`: superuser role `lt_test` / password `test`, database `lt_api_test`, loopback TCP `127.0.0.1:5432`, unix socket `/home/agent/pgsock` |
+| image env | `GOTOOLCHAIN=local`, `GOPROXY=https://proxy.golang.org`, `GOSUMDB=sum.golang.org`, `PGDATA`/`PGHOST`/`PGPORT`/`PGUSER`/`PGDATABASE` — plus the same three Go values in `/home/agent/.config/go/env` |
+| Go module cache | `/home/agent/go/pkg/mod`, ~132 MB / 45 module zips, warmed **at image build** from a staged `go.mod`+`go.sum` |
+| helpers | `/usr/local/bin/pg-up` (start + `pg_isready`, idempotent) and `/usr/local/bin/pg-down` |
+| capability set | `com.docker.sandbox/sbx@1` + `network-policy@1`. No lifecycle, no long-running, no host-mount, no git-identity: a gate is a one-shot executor that never commits |
+| template tag | `pi-gate:v1` |
+
+Nothing auto-starts. Postgres is baked but *stopped* in the snapshot; the gate
+runner calls `pg-up` (the descriptor has no lifecycle capability by design, so
+there is no boot hook to hide the start in), then points the DB-backed gate at
+
+```
+postgres://lt_test:test@127.0.0.1:5432/lt_api_test?sslmode=disable
+```
+
+Same role, password and database name as CI's `postgres:18` service container and
+`.envrc`'s compose DSN — only the port differs, because inside the VM there is no
+host 5432 to avoid (`5433` exists solely because the developer host already runs
+Postgres).
+
+### Workspace model: the repo ROOT, or git cannot resolve
+
+The sandbox is created with the **repository root** as its workspace positional:
+
+```sh
+sbx create <this dir>/gate-kit <repo-root>
+```
+
+That is not a convenience. `make audit/static` starts with `go mod tidy -diff` and
+its gofmt step runs `git ls-files '*.go'`, so the VM's git must resolve `.git`;
+mounting a subdirectory (or the kit directory alone) leaves `git rev-parse
+--git-dir` with nothing to find. The build verifies exactly that inside the VM.
+
+The gate itself does not need to *write* to that mount: `go mod tidy -diff` only
+reports, `spec gen --diff` never writes (`cmd/spec/gen.go` says so explicitly),
+and every cache (`GOCACHE`, `GOMODCACHE`) lives in the image's home directory. A
+gate VM can therefore mount the tree read-only — worth pairing with
+`GIT_OPTIONAL_LOCKS=0`, which is how the in-VM git probe was validated — and the
+kit works either way. Making the mount read-only is the extension's decision, not
+the image's.
+
+**Linked worktrees are the extension's job, not this kit's.** In a `git worktree`
+checkout `.git` is a *file* pointing into the main repository's
+`.git/worktrees/<name>`, so a mount of the linked tree alone does not carry the
+target. The delegate extension mounts the **main repo root read-only as an extra
+workspace** alongside the linked worktree when it creates a gate VM; this kit only
+supplies the image, and deliberately declares no host-mount capability so the
+policy stays in one place (the extension's profile table).
+
+### Why Postgres is baked into the image (and not DinD)
+
+`sbx template save` snapshots the sandbox **filesystem**; it does not capture the
+nested Docker daemon's `/var/lib/docker` (verified by probe on the sbx version this
+repo targets). Anything a nested container writes at runtime is therefore absent
+from the template, so a Compose-provisioned database — the `make db/up` flow —
+would have to be created and populated on every gate VM boot, and the VM would
+need a Docker daemon inside it (`shell-docker`, plus the daemon's own surface).
+
+So the recipe installs the server with apt and `initdb`s a cluster **inside
+`/home/agent`**, which the snapshot does capture. The trade is honest: the VM's
+Postgres is Debian's packaged server (15 on bookworm, 17 on trixie), while CI and
+`compose.yaml` run `postgres:18`. The static gate never touches it; the DB-backed
+gate runs the repo's migrations, and if that SQL ever depends on an 18-only
+feature this is the first place to look.
+
+The `pg_ctlcluster` wrapper Debian ships insists on root. The gate VM runs as
+`agent`, so the cluster is a plain data directory owned by the agent and driven
+with the server's own `pg_ctl` — wrapped in `pg-up`/`pg-down` so no gate command
+has to know the Postgres version or carry flags.
+
+### Go module cache: warm at build, three hosts at runtime
+
+The warm happens in the **image**, not at sandbox-create time: `build-gate.sh`
+stages `go.mod`+`go.sum` into `gate-kit/staging/`, the recipe `COPY`s that pair to
+`/tmp/gomodwarm` and runs `go mod download all` as `agent`, then throws the
+directory away. `GOMODCACHE` is left at the image default (`/home/agent/go/pkg/mod`)
+precisely so the snapshot captures it (same reasoning as the pi-worker warm).
+
+Why not warm the mounted worktree at create time, the way `build.sh` does? Because
+`go mod download` **rewrites `go.sum`**, and a gate VM's mount may be the author's
+live checkout. Warming from a COPY'd pair inside a throwaway `/tmp` directory
+leaves the repository byte-for-byte untouched — no snapshot/restore dance, and no
+chance of a gate run dirtying the tree it is grading.
+
+The kit's `runtime.allow` list is then only the fallbacks a cache miss needs:
+
+```
+proxy.golang.org:443, sum.golang.org:443, storage.googleapis.com:443
+```
+
+No model host (there is no agent), no npm, no apt, no VCS fallback — `GOPROXY` has
+no `,direct`, for the same reason the pi-worker image omits it: direct fetching
+would be a bypass route around the allowlist, not a feature. If a worktree's
+`go.mod` has moved ahead of the image, those three hosts serve the delta; anything
+else fails closed.
+
+### Build it
+
+```sh
+./.pi/sandboxes/build-gate.sh     # ~5-10 min: two full static gates, one image build
+```
+
+| env | default | meaning |
+|---|---|---|
+| `KEEP` | `0` | `1` keeps `pi-gate-build` and `pi-gate-sanity` around for inspection. |
+| `SKIP_REBUILD` | `0` | `1` exits early if `pi-gate:v1` already exists. |
+
+Pipeline (timings in `dist/timings-gate.tsv` + `dist/timings-gate-<run>.md`):
+
+0. **pins + pre-clean** — the Go pin is read from `go.mod` and from the recipe's
+   `ARG GO_VERSION`; drift is fatal. There is **no pi pin**: a gate image ships no
+   agent, so there is nothing to cross-check.
+1. **stage module files** — `go.mod`+`go.sum` copied to `gate-kit/staging/`. This
+   is a build-only artifact: the exit trap removes it on success, failure and
+   interrupt, so nothing needs a `.gitignore` entry. (A `SIGKILL`ed run leaves it
+   behind: `rm -rf .pi/sandboxes/gate-kit/staging`.)
+2. **validate the v3 kit** — `sbx kit inspect` (advisory) plus
+   `docker buildx build -f gate-kit/pi-gate.yaml --output type=cacheonly`, the real
+   validation: a bad descriptor or a failing `RUN` dies here.
+3. **build VM** — `sbx create --name pi-gate-build <gate-kit> <repo-root>`, i.e. the
+   kit directory is the `AGENT|SANDBOX_KIT` positional and the repo root is the
+   workspace. This is the only step with install-phase egress (apt + the Go tarball
+   + the module warm).
+4. **probes** — `git rev-parse --git-dir` in the mounted tree, `make --version`,
+   the gate binaries, `go version` **asserted equal to the ARG**, `pg_config
+   --version`, `go env` values, and a full Postgres round-trip (`pg-up` →
+   `pg_isready` → create/drop a throwaway DB → drop it). `GOMODCACHE` must be
+   non-empty; an empty cache fails the run.
+5. **the ultimate probe** — `make audit/static` **inside the VM**, against the
+   mounted worktree. Exit 0 is required.
+6. **snapshot** — `pg-down`, `sbx stop`, `sbx template save pi-gate:v1` (the old
+   tag is dropped only now, so a failed run leaves a usable template behind).
+7. **cold boot from the template** — a new sandbox from `pi-gate:v1` repeats the
+   git probe, the Go pin check, the `go env` assertions, the module-cache check,
+   the Postgres round-trip **and `make audit/static` again**. That is the proof the
+   snapshot — not the kit's install phase — carries everything a gate needs.
+8. **teardown + deliverables** — both sandboxes removed, timings written, template
+   and sandbox lists printed.
+
+One caveat, stated up front: the build **fails if the worktree is red for
+`make audit/static`**, because running that gate is a pipeline step. That is the
+gate's verdict on the worktree, not an image defect. The usual false alarm is a
+`go.sum` dirtied by someone's `go mod download` (`go mod tidy -diff` is the first
+step of the gate); the script prints `git status --porcelain` and a pointer to the
+host command before it starts, so the distinction is visible in the log.
+
+Scope note: the pipeline proves the **static** gate only. Postgres is baked and
+round-tripped, but `make audit` (the DB-backed full gate) is not wired up here,
+because no sandbox is handed `LT_API_TEST_DSN` today (`WORKFLOW.md`: *"A worker
+that needs a host … is a blocked, explained report"*). Wiring it means exporting a
+DSN that points at `127.0.0.1:5432` inside the VM — an extension-policy decision,
+not a kit one.
+
+### Assumptions the host build must watch
+
+- **Base image is apt-based Debian with an `agent` user (UID 1000) and
+  `/home/agent`.** Both are asserted in the recipe with actionable messages; if the
+  `shell` flavor ever changes, the build says so rather than failing obscurely.
+- **apt sources.** `install.allow` lists `deb.debian.org` and
+  `security.debian.org` on both `:443` and `:80` — Debian's default `sources.list`
+  is plain `http://`, and the port pair costs nothing while a missing `:80` would
+  break the build. If the base is https-only, drop the `:80` entries.
+- **Postgres version.** Debian's packaged server, not 18 (see above).
+- **First-compile cost.** The image warms `GOMODCACHE`, not `GOCACHE`, so the first
+  `go tool staticcheck` in a gate VM compiles the analyzer once (tens of seconds).
+  A gate VM is short-lived, so warming `GOCACHE` would buy little.
 
 ## Sandbox profiles: what a task VM actually gets
 
