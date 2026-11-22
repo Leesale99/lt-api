@@ -65,6 +65,10 @@ export const WORKFLOW_FILE_REL_PATH = "WORKFLOW.md";
 export const SUPPORTED_POLICY_VERSIONS: readonly number[] = [1];
 
 // ── Code-side defaults (the batch-1/2 behavior, migrated verbatim) ──────────
+//
+// B3.4: ONE source per knob. Every consumer reads these bindings — the settle/
+// backoff resolution functions in ./gates.ts included, so no module carries a
+// second copy of a default.
 
 /** Default gate commands (what the extension actually runs today). */
 export const DEFAULT_AUDIT_STATIC_CMD = "make audit/static";

@@ -1192,8 +1192,10 @@ await check("prove receipts: the receipt cwd is the SESSION cwd, never a leading
   // The prove receipt writer lives inside a pi `tool_result` hook, so it cannot
   // be called directly from a harness. Assert the wiring at the source level
   // instead: the hook identifies the command through `leadingCdTarget` but
-  // resolves the receipt against `ctx.cwd` unconditionally.
-  const source = fs.readFileSync(path.join(SUITE_DIR, "index.ts"), "utf8");
+  // resolves the receipt against `ctx.cwd` unconditionally. Since B3.4 the hook
+  // body lives with the prove policy in ./mergegate.ts (the root only registers
+  // it), so that is the source under test.
+  const source = fs.readFileSync(path.join(SUITE_DIR, "mergegate.ts"), "utf8");
   const helperUses = [...source.matchAll(/leadingCdTarget\(/g)];
   assert.equal(helperUses.length, 2, "leadingCdTarget: one definition, one call site");
   assert.match(source, /const receiptCwd = ctx\.cwd;/);

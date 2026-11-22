@@ -138,3 +138,20 @@ export function startStallWatchdog(opts: {
 
   return { stop, check };
 }
+
+/**
+ * Referenced sleep (ms). Moved here from ./surfacing.ts (B3.4): both the
+ * surfacing settle-wait and the worker-settle gate's continuation backoff need
+ * the SAME referenced timer, and this module is the timing plane that both may
+ * import.
+ *
+ * The timer MUST be referenced: in headless runs the event loop can otherwise
+ * drain during the sleep (keep-alive sockets time out a few seconds after
+ * agent_end) and the process exits cleanly mid-boundary — no settle, no output,
+ * exit 0. Verified empirically; do not unref here.
+ */
+export function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}

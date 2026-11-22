@@ -28,6 +28,14 @@
  * The gate VM registry is session-scoped and keyed by worktree path; all of
  * them are torn down at session end.
  *
+ * THE IMAGE'S DATABASE IS IMAGE KNOWLEDGE (B3.4). The gate VM's Postgres — its
+ * port, its baked cluster and socket dir, the throwaway role/DSN the DB-backed
+ * gates receive, and the start/wait/drop/create pre-sequence — lives HERE, next
+ * to the template it describes. ./gates.ts is only the RUNNER: it hands argv to
+ * `sbx exec` through `execGateVmCommand` and reuses `prepareGateDbVm`, so the
+ * sandbox module never depends on the gate runner at runtime (the step/report
+ * types below are TYPE-ONLY imports, erased by type stripping).
+ *
  * FAIL CLOSED. A create/exec that cannot run is an INFRA-FAILURE result — never
  * a silent fallback to a host-side spawn, which would hand a worker host reach
  * behind the profile's back.
@@ -41,6 +49,9 @@ import { execFileSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+// TYPE-ONLY (erased at runtime): the gate runner's step/result shapes. The
+// runtime dependency points the other way — ./gates.ts imports this module.
+import type { GateResult, GateStep } from "./gates.ts";
 
 // ── Version pin + binary ────────────────────────────────────────────────────
 
@@ -701,6 +712,16 @@ export const SANDBOX_ENV_FLAG = "PI_DELEGATE_SANDBOX";
  */
 export function isSandboxedChild(env: NodeJS.ProcessEnv = process.env): boolean {
   return env[SANDBOX_ENV_FLAG] === "1";
+}
+
+/**
+ * Is THIS process a spawned WORKER child (foreground spawns only — background
+ * children are orchestrators)? The spawn writes both flags (see ./spawn.ts), so
+ * the worker-only surfaces (settle gate, post-write gate) can be registered
+ * without re-deriving the role.
+ */
+export function isWorkerChild(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PI_DELEGATE_CHILD === "1" && env.PI_DELEGATE_ROLE === "worker";
 }
 
 // ── Sandbox names ───────────────────────────────────────────────────────────
@@ -1406,4 +1427,258 @@ export async function teardownGateSandboxes(): Promise<TeardownResult[]> {
 export function resetGateSandboxRegistryForTests(): void {
   gateSandboxes.clear();
   gateSandboxCreates.clear();
+}
+
+// ── Gate VM: the in-VM database (image knowledge) ───────────────────────────
+//
+// Moved here from ./gates.ts (B3.4): what the `pi-gate:v1` image bakes is
+// image knowledge, so it lives with the template constant it describes. The
+// gate RUNNER keeps only the argv it hands to `sbx exec`.
+
+/** Database the DB-backed gates use inside the gate VM (the repo's test DB). */
+export const GATE_DB_NAME = "lt_api_test";
+/** Role the throwaway in-VM DSN authenticates as (SUPERUSER in the image). */
+export const GATE_DB_USER = "lt_test";
+/** Throwaway in-VM password; plaintext on purpose — it protects nothing real. */
+export const GATE_DB_PASSWORD = "test";
+/**
+ * How the DSN reaches the VM-local server. `127.0.0.1` (TCP) rather than the
+ * image's unix socket: the suites connect over TCP anyway, and the pi-gate
+ * image configures `listen_addresses = '127.0.0.1'` with `auth-host=trust`.
+ */
+export const GATE_DB_HOST = "127.0.0.1";
+/**
+ * 5433 on purpose: `internal/testdb.DefaultTestDSN` and the (gitignored)
+ * `.envrc` both pin the test database to localhost:5433, and the Makefile
+ * `-include .envrc` re-exports it — overriding any env-passed DSN. The gate
+ * image's Postgres therefore LISTENS on 5433, so the repo's documented DSN is
+ * literally true inside the gate VM.
+ */
+export const GATE_DB_PORT = 5433;
+/**
+ * The pi-gate image bakes an agent-owned cluster (PGDATA=/home/agent/pgdata)
+ * because `sbx template save` snapshots the filesystem, not /var/lib/docker. It
+ * starts it with the image's `pg-up` helper (Debian's `pg_ctlcluster`/
+ * `service postgresql start` require root and the VM runs as `agent`), and its
+ * unix socket lives here (image ENV `PGHOST`).
+ */
+export const GATE_DB_SOCKET_DIR = "/home/agent/pgsock";
+/**
+ * The DSN a DB-backed gate receives, mirroring the shape the Makefile and
+ * internal/testdb expect (`<dsn-db>_<suite>` databases are created by the
+ * suites themselves). It is delivered as a make COMMAND-LINE variable
+ * (`make audit LT_API_TEST_DSN=…`), NOT via `-e`: the Makefile's
+ * `-include .envrc` re-exports the repo DSN, and a makefile assignment beats
+ * the process environment — only a command-line variable beats it, and fresh
+ * worktrees (where the gitignored `.envrc` does not exist) still need one.
+ * (./gates.ts `appendGateDbOverride` appends that command-line variable.)
+ */
+export const GATE_DB_DSN =
+  "postgres://" + GATE_DB_USER + ":" + GATE_DB_PASSWORD + "@" + GATE_DB_HOST + ":" +
+  String(GATE_DB_PORT) + "/" + GATE_DB_NAME + "?sslmode=disable";
+/** `pg_isready` attempts before the DB gate pre-sequence gives up. */
+export const GATE_PG_READY_ATTEMPTS = 30;
+/** Wait between `pg_isready` attempts (ms). */
+export const GATE_PG_READY_INTERVAL_MS = 500;
+/** Timeout for one DB pre-sequence command (start / drop / create). */
+export const GATE_DB_STEP_TIMEOUT_MS = 60_000;
+
+/** One command of the DB pre-sequence (argv + its exec env). */
+export interface GateDbPrestep {
+  argv: string[];
+  env: Record<string, string>;
+}
+
+/**
+ * The DB gate pre-sequence, in order: start Postgres → wait for readiness →
+ * drop the test DB → create it. The gate command itself runs AFTER this.
+ *
+ * `pg-up` is the pi-gate image's own helper (baked cluster + `pg_isready`
+ * health check); Debian's `service postgresql start`/`pg_ctlcluster` are NOT
+ * used because the VM runs as `agent` and the image deliberately keeps no
+ * root-owned distro cluster. Readiness is re-checked explicitly so a failed
+ * start cannot fall through to the gate. The role (`lt_test`, SUPERUSER) and
+ * the cluster are baked into the image; only the throwaway database is reset
+ * per gate run.
+ */
+export function gateDbPresteps(): GateDbPrestep[] {
+  const clientEnv = { PGPASSWORD: GATE_DB_PASSWORD };
+  const endpoint = ["-h", GATE_DB_SOCKET_DIR, "-p", String(GATE_DB_PORT), "-U", GATE_DB_USER];
+  return [
+    { argv: ["pg-up"], env: {} },
+    {
+      argv: ["pg_isready", ...endpoint, "-d", GATE_DB_NAME],
+      env: {},
+    },
+    { argv: ["dropdb", "--if-exists", ...endpoint, GATE_DB_NAME], env: clientEnv },
+    { argv: ["createdb", ...endpoint, "-O", GATE_DB_USER, GATE_DB_NAME], env: clientEnv },
+  ];
+}
+
+// ── Gate VM: exec env + the fail-closed exec adapter ────────────────────────
+
+/**
+ * Env for an `sbx exec` gate.
+ *
+ * `GIT_OPTIONAL_LOCKS=0` stops `git status` from taking the index lock in a
+ * shared mount. The `safe.directory` config is load-bearing: the repo-root
+ * mount is owned by another UID once it is read-only in the VM, and git refuses
+ * to operate on a repo it considers foreign (dubious ownership) without it.
+ * `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` is the env-only way to set it, so no
+ * in-VM git config has to be written.
+ *
+ * A DB-backed gate gets `LT_API_TEST_DSN` as a make command-line variable
+ * (see GATE_DB_DSN) — never via this env, which `-include .envrc` would
+ * override. Static gates get nothing DB-related at all.
+ */
+export function gateVmExecEnv(worktreePath: string, opts: { db?: boolean } = {}): Record<string, string> {
+  const env: Record<string, string> = {
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "safe.directory",
+    GIT_CONFIG_VALUE_0: "*",
+  };
+  void worktreePath;
+  void opts;
+  return env;
+}
+
+/**
+ * One `sbx exec` in the gate VM, mapped into the fail-closed GateResult shape.
+ * A 125/127/timeout/spawn error is infrastructure (no verdict) and still a
+ * FAILED gate: the caller never sees a silent pass.
+ */
+export async function execGateVmCommand(
+  sandbox: string,
+  argv: readonly string[],
+  opts: { cwd: string; timeoutMs: number; env: Record<string, string> },
+): Promise<{ result: GateResult; sandbox: string }> {
+  const startedAt = Date.now();
+  let raw: SandboxExecResult;
+  try {
+    raw = await execInSandbox(sandbox, argv, {
+      worktreePath: opts.cwd,
+      env: opts.env,
+      timeoutMs: opts.timeoutMs,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      sandbox,
+      result: {
+        ok: false,
+        exitCode: null,
+        stdout: "",
+        stderr: message,
+        timedOut: false,
+        spawnError: message,
+        durationMs: Date.now() - startedAt,
+        reason: "gate VM exec threw: " + message,
+      },
+    };
+  }
+
+  let reason = "";
+  if (!raw.ok) {
+    if (raw.timedOut) reason = "timed out after " + String(opts.timeoutMs) + "ms";
+    else if (raw.classification.infraFailure) reason = raw.classification.reason;
+    else if (raw.exitCode === null) reason = "no exit code";
+    else reason = "exited with code " + String(raw.exitCode);
+  }
+  return {
+    sandbox,
+    result: {
+      ok: raw.ok,
+      exitCode: raw.exitCode,
+      stdout: raw.stdout,
+      stderr: raw.stderr,
+      timedOut: raw.timedOut,
+      spawnError: raw.spawnError,
+      durationMs: raw.durationMs,
+      reason,
+    },
+  };
+}
+
+// ── Gate VM: DB-backed gate pre-sequence ────────────────────────────────────
+
+function sleepGap(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * The gate-step shape for a FAILED pre-sequence command. Mirrors ./gates.ts
+ * `stepOf` (the one step shape a gate report renders) WITHOUT importing the
+ * gate runner: this module stays the leaf of the import graph.
+ */
+function dbStepOf(result: GateResult, argv: string[], note: string): GateStep {
+  return {
+    command: argv.join(" "),
+    argv,
+    ok: result.ok,
+    exitCode: result.exitCode,
+    timedOut: result.timedOut,
+    durationMs: result.durationMs,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    spawnError: result.spawnError,
+    reason: result.reason,
+    note,
+  };
+}
+
+/**
+ * Run the DB gate pre-sequence in the gate VM. Returns ok:true when Postgres is
+ * ready and the test DB was recreated; ok:false carries a failed GateStep so
+ * the gate report names exactly which step stopped the run. The pre-sequence is
+ * NOT part of the receipt's command list on success (it produces no verdict);
+ * a failure IS reported as a step.
+ */
+export async function prepareGateDbVm(
+  worktreePath: string,
+  opts: { timeoutMs?: number; readyAttempts?: number; intervalMs?: number } = {},
+): Promise<{ ok: boolean; step: GateStep | null; sandbox: string }> {
+  const sandbox = await ensureGateSandbox(worktreePath);
+  const timeoutMs = opts.timeoutMs ?? GATE_DB_STEP_TIMEOUT_MS;
+  const attempts = Math.max(1, opts.readyAttempts ?? GATE_PG_READY_ATTEMPTS);
+  const intervalMs = Math.max(0, opts.intervalMs ?? GATE_PG_READY_INTERVAL_MS);
+  const [start, ready, drop, create] = gateDbPresteps();
+
+  const fail = (argv: string[], failure: GateResult): { ok: false; step: GateStep; sandbox: string } => ({
+    ok: false,
+    sandbox,
+    step: dbStepOf(failure, argv, "gate VM db pre-sequence"),
+  });
+
+  const started = await execGateVmCommand(sandbox.name, start.argv, {
+    cwd: worktreePath,
+    timeoutMs,
+    env: { ...gateVmExecEnv(worktreePath), ...start.env },
+  });
+  if (!started.result.ok) return fail(start.argv, started.result);
+
+  let readyRun = await execGateVmCommand(sandbox.name, ready.argv, {
+    cwd: worktreePath,
+    timeoutMs,
+    env: { ...gateVmExecEnv(worktreePath), ...ready.env },
+  });
+  for (let attempt = 1; !readyRun.result.ok && attempt < attempts; attempt++) {
+    if (intervalMs > 0) await sleepGap(intervalMs);
+    readyRun = await execGateVmCommand(sandbox.name, ready.argv, {
+      cwd: worktreePath,
+      timeoutMs,
+      env: { ...gateVmExecEnv(worktreePath), ...ready.env },
+    });
+  }
+  if (!readyRun.result.ok) return fail(ready.argv, readyRun.result);
+
+  for (const step of [drop, create]) {
+    const run = await execGateVmCommand(sandbox.name, step.argv, {
+      cwd: worktreePath,
+      timeoutMs,
+      env: { ...gateVmExecEnv(worktreePath), ...step.env },
+    });
+    if (!run.result.ok) return fail(step.argv, run.result);
+  }
+  return { ok: true, step: null, sandbox };
 }

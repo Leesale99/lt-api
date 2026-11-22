@@ -12,8 +12,9 @@
  *
  * Semantics:
  *   - At most ONE `SPEC-SCOPE:` line per packet. A packet with NO such line is
- *     still valid: it means "full spec check", and index.ts exports NO
- *     `PI_DELEGATE_SPEC_SCOPE` env var for it (today's behavior).
+ *     still valid: it means "full spec check", and the spawn boundary
+ *     (./dispatch.ts → ./spawn.ts) exports NO `PI_DELEGATE_SPEC_SCOPE` env var
+ *     for it (today's behavior).
  *   - `none` is an EXPLICIT empty scope, distinct from "no line at all". Its
  *     normalized env value is the literal string `none`: formatSpecScope() of
  *     an empty scope returns `none`, and parseSpecScopeEnv("none") recognizes
@@ -121,7 +122,8 @@ export function parseSpecScope(text: string): SpecScope | null {
 }
 
 /**
- * Parse the PI_DELEGATE_SPEC_SCOPE env value (already normalized by index.ts).
+ * Parse the PI_DELEGATE_SPEC_SCOPE env value (already normalized by the
+ * task-packet boundary in ./dispatch.ts).
  * Lenient: a hand-set value in either "module=… rules=…" or bare "rules=…"
  * form is accepted; `none` is an explicit empty scope; unusable values yield
  * null (→ full check).

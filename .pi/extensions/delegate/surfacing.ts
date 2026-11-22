@@ -11,7 +11,8 @@
  *      `content` is what the LLM reads, `details` feeds the card renderer).
  *   2. SURFACING LIFECYCLE — the exactly-once bookkeeping the root cannot own:
  *      `surfacedJobIds`, the parallel-call `pickupsInFlight` guard and the
- *      per-(id,status) `emittedCardKeys` dedupe. index.ts reads/mutates them
+ *      per-(id,status) `emittedCardKeys` dedupe. The tool layer (./dispatch.ts)
+ *      reads/mutates them
  *      through the named accessors below, so "delivered once per session" has
  *      one home.
  *   3. AMBIENT FOOTER STATUS — `sbx 2 · host 1`: how many subagents are LIVE
@@ -21,7 +22,7 @@
  *      cards, the `delegate-job` entry card and the `delegate-job-result`
  *      message card, plus the formatting/truncation helpers they show the user
  *      (`formatUsageStats`, `formatToolCall`, the collapsed-item windows).
- *      index.ts registers these; nothing here touches pi's tool schema.
+ *      the ROOT registers these; nothing here touches pi's tool schema.
  *   5. HOOKS — `registerSurfacingHooks(pi)` registers the two surfacing
  *      boundaries (round-start injection, settle auto-surface) and the ambient
  *      settle clear, in the same order they were registered when they lived in
@@ -32,10 +33,10 @@
  * it stays with the spawn path. The pure badge helpers live in ./tui/badges.ts;
  * job fact formatting lives in ./jobs.ts.
  *
- * Import direction: ./jobs.ts, ./output.ts, ./tui/*, and TYPE-ONLY from
- * ./index.ts (the result contracts the root still owns). Type-only imports are
- * erased at runtime, so the graph stays acyclic: index.ts → surfacing.ts →
- * tui/*.
+ * Import direction: ./jobs.ts, ./output.ts, ./runtime.ts, ./tui/*, and
+ * TYPE-ONLY from ./spawn.ts and ./dispatch.ts (the result contracts those layers
+ * own). Type-only imports are erased at runtime, so the graph stays acyclic:
+ * index.ts → dispatch.ts → { spawn.ts, surfacing.ts } → tui/*.
  *
  * Loader gotcha (pi 1.5.2 extension parser): no `?:` ternaries with
  * double-quoted strings inside a template literal's ${} — the moved code keeps
@@ -56,11 +57,13 @@ import {
   listJobEntries,
 } from "./jobs.ts";
 import { getFinalOutput } from "./output.ts";
+import { sleepMs } from "./runtime.ts";
 import type { AgentScope } from "./agents.ts";
 import { isHostPassthroughRole } from "./sbx.ts";
 import { BACKGROUND_JOB_PLANE, planeBadge, planeInfoLineText, resultPlaneBadge } from "./tui/badges.ts";
 import { jobAge, jobStatusIcon, refreshJobWidget } from "./tui/widgets.ts";
-import type { AnyToolDetails, SingleResult, UsageStats } from "./index.ts";
+import type { SingleResult, UsageStats } from "./spawn.ts";
+import type { AnyToolDetails } from "./dispatch.ts";
 
 /** The slice of pi's theme the renderers use (identity-typed for smoke fakes). */
 type Theme = {
@@ -276,14 +279,11 @@ function settleWaitMs(): number {
  * seconds after agent_end) and the process exits cleanly mid-boundary — no
  * settle, no output, exit 0. Verified empirically; do not unref here.
  *
- * Exported because the worker-settle gate's continuation backoff (index.ts)
- * uses the same referenced sleep.
+ * B3.4: the implementation moved to ./runtime.ts (the timing plane) because the
+ * worker-settle gate's continuation backoff (./gates.ts) needs the same
+ * referenced sleep, and the execution plane must not import the chat surface.
  */
-export function sleepMs(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
+export { sleepMs };
 
 // ── Ambient execution-plane status (footer) ────────────────────────────────
 // `sbx 2 · host 1`: how many subagents are LIVE right now and on which plane.
@@ -338,7 +338,8 @@ export function clearLiveRuns(ctx?: Pick<ExtensionContext, "hasUI" | "ui">): voi
 
 /**
  * A child run that did not complete successfully. Shared with the spawn/dispatch
- * paths in index.ts (tool-result error state, claim release, chain stop), which
+ * paths (./spawn.ts, ./dispatch.ts: tool-result error state, claim release,
+ * chain stop), which
  * is why it lives HERE and is imported back: the renderers are the lower module.
  */
 export function isFailedResult(result: SingleResult): boolean {
@@ -470,7 +471,7 @@ function getDisplayItems(messages: Message[]): DisplayItem[] {
   return items;
 }
 
-// ── Result-card renderers (registered by index.ts) ─────────────────────────
+// ── Result-card renderers (registered by the root) ──────────────────────────
 
 export function renderSubagentCall(args: any, theme: Theme, _context: any) {
   const scope: AgentScope = args.agentScope ?? "both";

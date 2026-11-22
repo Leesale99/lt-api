@@ -420,7 +420,7 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
     lines.push("#!/bin/sh");
     lines.push("# pi delegate background job " + id + (interactive ? " (interactive TUI in tmux pane)" : " (headless fallback)"));
     // Scrub pi's session env (the same five keys the foreground spawn deletes in
-    // index.ts) so background children start clean: the runner inherits the full
+    // ./spawn.ts) so background children start clean: the runner inherits the full
     // parent env via tmux/detached spawn, including pi's bash-tool exports.
     lines.push("unset PI_SESSION_ID PI_SESSION_FILE PI_PROVIDER PI_MODEL PI_REASONING_LEVEL");
     lines.push("cd " + shq(opts.cwd) + " || exit 1");
@@ -773,7 +773,7 @@ export interface ApprovalRelayOutcome {
  * and, for a job whose RECORDED scope names rules, VERIFIED prove receipts for
  * EVERY named rule. Both the scope (`resolveJobRuleIds`) and the receipt policy
  * (`checkProveCoverage`) come from ./mergegate.ts — the same resolver and
- * policy the merge execution path in index.ts uses, so the relay and the merge
+ * policy the merge-path hook in ./mergegate.ts uses, so the relay and the merge
  * block can never disagree about a job's scope. A refusal names the rule ids
  * and tells the caller to relay `rejected:` so the orchestrator runs prove and
  * re-emits a fresh approval request — never approve over missing evidence.

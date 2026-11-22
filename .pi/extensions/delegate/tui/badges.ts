@@ -8,9 +8,9 @@
  * which is why every seam is directly importable (smoke-ui.mjs pins them).
  *
  * Import direction: this module imports ./sbx.ts (profiles, passthrough roles)
- * and type-only from ../index.ts (the result contracts the root still owns).
+ * and type-only from ../spawn.ts (the result contracts the spawn layer owns).
  * The type-only import is erased at runtime, so the graph stays acyclic:
- * index.ts → surfacing.ts → tui/*.
+ * index.ts → dispatch.ts → spawn.ts → surfacing.ts → tui/*.
  *
  * Loader gotcha (pi 1.5.2 extension parser): no `?:` ternaries with
  * double-quoted strings inside a template literal's ${} — the moved code below
@@ -18,7 +18,7 @@
  */
 import type { SandboxMount } from "../sbx.ts";
 import { isHostPassthroughRole, profileForRole } from "../sbx.ts";
-import type { SandboxDetails, SingleResult } from "../index.ts";
+import type { SandboxDetails, SingleResult } from "../spawn.ts";
 
 /** The plane a run occupies. Policy for pre-run, instance truth for post-run. */
 export type ExecutionPlane = "host" | "sandbox";

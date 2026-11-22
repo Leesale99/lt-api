@@ -25,12 +25,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  SETTLE_BACKOFF_BASE_MS,
-  SETTLE_GATE_MAX_ATTEMPTS,
-  GATE_DB_DSN,
-  GATE_DB_NAME,
-  GATE_DB_USER,
-  GATE_PG_READY_ATTEMPTS,
   bumpSettleGateAttempts,
   catalogHash,
   describeWaitMs,
@@ -38,16 +32,13 @@ import {
   formatGateReport,
   formatSettleEscalation,
   formatSettleTrail,
-  gateDbPresteps,
   gateFilePathsFor,
-  gateVmExecEnv,
   gateVmShellCommand,
   isGateRelevantWrite,
   latestPassingReceipt,
   matchGlob,
   parseGateVmShellCommand,
   planSettleGateAttempt,
-  prepareGateDbVm,
   receiptsFileFor,
   RECEIPT_SCHEMA_VERSION,
   receiptCommandsOf,
@@ -91,7 +82,17 @@ import {
   parseSpecScopeEnv,
   parseTaskPacket,
 } from "./protocol.ts";
-import { execSandboxArgs } from "./sbx.ts";import {
+import {
+  GATE_DB_DSN,
+  GATE_DB_NAME,
+  GATE_DB_USER,
+  GATE_PG_READY_ATTEMPTS,
+  execSandboxArgs,
+  gateDbPresteps,
+  gateVmExecEnv,
+  prepareGateDbVm,
+} from "./sbx.ts";
+import {
   WORKER_STALL_TIMEOUT_MS,
   formatStallReason,
   stallDecision,
@@ -424,11 +425,12 @@ await check("parseTaskPacket: whitespace-only CLAIMS-PATHS entries are refused, 
 });
 
 await check("subagent boundary: ONE packet parse refuses before any spawn", async () => {
-  // index.ts's execute() cannot be imported headless (it imports the pi
-  // packages); smoke-sbx.mjs models wiring checks like this at the source
-  // level. Assert the boundary shape instead: one strict parse, an error tool
-  // result, and the env threading from the parsed packet (no re-parse).
-  const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "index.ts"), "utf8");
+  // The subagent execute() now lives in ./dispatch.ts (B3.4) and cannot be
+  // imported headless (it imports the pi packages); smoke-sbx.mjs models wiring
+  // checks like this at the source level. Assert the boundary shape instead: one
+  // strict parse, an error tool result, and the env threading from the parsed
+  // packet (no re-parse) — in the module that owns the tool.
+  const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "dispatch.ts"), "utf8");
   assert.equal([...source.matchAll(/parseTaskPacket\(/g)].length, 1, "exactly one parseTaskPacket call site");
   assert.match(source, /TASK-PACKET BOUNDARY \(B3\.1\)/);
   const refusalAt = source.indexOf("text: formatTaskPacketRefusal(packetErrors)");
@@ -594,8 +596,9 @@ function fakeFailedRun(command = "make audit/static", exitCode = 1) {
 }
 
 await check("planSettleGateAttempt: 3 immediate, then 2s/4s backoff, terminal at 5", async () => {
-  assert.equal(SETTLE_GATE_MAX_ATTEMPTS, 5, "total attempts raised from 3 to 5");
-  assert.equal(SETTLE_BACKOFF_BASE_MS, 2000, "backoff base is 2s");
+  // B3.4: policy.ts's DEFAULT_* are the single source (gates.ts keeps none).
+  assert.equal(DEFAULT_SETTLE_MAX_ATTEMPTS, 5, "total attempts raised from 3 to 5");
+  assert.equal(DEFAULT_SETTLE_BACKOFF_BASE_MS, 2000, "backoff base is 2s");
   for (let attempt = 1; attempt <= 3; attempt++) {
     const plan = planSettleGateAttempt(attempt, { maxAttempts: 5, baseMs: 2000 });
     assert.equal(plan.waitMs, 0, "attempt " + String(attempt) + " retries immediately");
@@ -1933,8 +1936,10 @@ await check("mergegate: both merge-back consumers call the ONE resolver (source-
   const gatesSource = fs.readFileSync(path.join(DELEGATE_DIR, "gates.ts"), "utf8");
   const mergegateSource = fs.readFileSync(path.join(DELEGATE_DIR, "mergegate.ts"), "utf8");
 
-  // Consumer B (merge execution path).
-  assert.match(indexSource, /const rules = await resolveJobRuleIds\(ctx\.cwd, jobId\);/, "the merge hook resolves via mergegate");
+  // Consumer B (merge execution path). The hook (and the whole prove policy)
+  // lives in mergegate.ts since B3.4; the root only registers it.
+  assert.match(mergegateSource, /const rules = await resolveJobRuleIds\(ctx\.cwd, jobId\);/, "the merge hook resolves via mergegate");
+  assert.match(indexSource, /registerMergePathProveHook\(pi\)/, "the root only registers the merge hook");
   // Consumer A (approval relay).
   assert.match(jobsSource, /const scopedRules = await resolveJobRuleIds\(cwd, entry\.id\);/, "the relay resolves via mergegate");
   // No private scope derivation left in either consumer.

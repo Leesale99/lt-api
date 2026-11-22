@@ -3,7 +3,7 @@
  *
  * Why this module exists (defect 2): "which rules does this job own?" used to
  * have TWO answers. The approval relay in ./jobs.ts parsed the job's task text,
- * the merge-path block in ./index.ts read the claims log — so a job whose claim
+ * the merge-path block read the claims log — so a job whose claim
  * named rule ids but whose task text carried no `SPEC-SCOPE` line could be
  * relay-approved and then merge-blocked on the very same merge-back. One
  * resolver, one answer: both consumers call `resolveJobRuleIds`, so
@@ -58,10 +58,21 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { ExtensionAPI, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_CLAIMS_DIR, loadWorkflowPolicy, workflowPolicyRefusal } from "./policy.ts";
-import { type ReceiptRecord, parseReceiptLines, splitCommandLine } from "./gates.ts";
-import { type ClaimsRecord, readClaims } from "./claims.ts";
+import {
+  type ReceiptRecord,
+  detectMergeBackCommands,
+  logGateDebug,
+  parseGateVmShellCommand,
+  parseReceiptLines,
+  splitCommandLine,
+  splitTopLevelSegments,
+  writeReceipt,
+} from "./gates.ts";
+import { type ClaimsRecord, jobIdForEnv, readClaims } from "./claims.ts";
 import { parseSpecScope } from "./protocol.ts";
+import { gateSandboxFor, isSandboxedChild } from "./sbx.ts";
 
 // ── The job-scope resolver (ONE answer) ─────────────────────────────────────
 
@@ -162,7 +173,7 @@ async function registryTaskText(cwd: string, jobId: string): Promise<string> {
 /**
  * THE job-scope resolver: claims first, registry task text second, nothing
  * third. Both merge-back consumers (./jobs.ts `relayApprovalDecision` and the
- * merge-path prove block in ./index.ts) call this — there is no other
+ * merge-path prove hook in this module) call this — there is no other
  * derivation of "which rules does this job own".
  */
 export async function resolveJobScope(cwd: string, job: JobScopeRef): Promise<JobScope> {
@@ -410,4 +421,199 @@ export async function checkProveCoverage(
       : "status: BLOCKED \u2014 missing VERIFIED prove receipts for " + missing.join(", ") + ".",
   );
   return { ok: missing.length === 0, covered, missing, report: lines.join("\n") };
+}
+
+// ── Hook registration: the merge path's two entry points ────────────────────
+//
+// Moved out of index.ts by B3.4 (pure motion). These are the two places the
+// extension can OBSERVE a merge-back, and both defer to the policy above:
+// `registerMergePathProveHook` blocks an executing merge, and
+// `registerProveReceiptHook` writes the evidence the block reads back.
+
+/**
+ * MERGE-PATH PROVE enforcement (sandbox era). This hook closes the
+ * typed-in-pane bypass: a confirm-handoff user can type "approved" straight
+ * into the orchestrator's tmux pane, which never passes through job_approve.
+ * The precondition therefore lives on the MERGE EXECUTION PATH, not on the
+ * approval path: in an orchestrator host session, any `git merge …` (including
+ * the `git -C <worktree> merge` form) is blocked when the job's RECORDED spec
+ * scope names rules that lack VERIFIED prove receipts host-side. A job with no
+ * recorded SPEC-SCOPE merges freely. Host-side only — an in-VM instance never
+ * registers this (the inert-mode early return in the root).
+ *
+ * The scope is `resolveJobRuleIds` — THE resolver (claims first, registry task
+ * text second), the same call the approval relay in jobs.ts makes, so this
+ * block and a relay approval can never disagree about the job's scope
+ * (defect 2).
+ */
+export function registerMergePathProveHook(pi: ExtensionAPI): void {
+  pi.on("tool_call", async (event, ctx) => {
+    if (process.env.PI_DELEGATE_ROLE !== "orchestrator") return;
+    if (isSandboxedChild()) return;
+    if (event.toolName !== "bash") return;
+    const input = event.input as { command?: unknown };
+    if (typeof input.command !== "string" || input.command.trim().length === 0) return;
+    const merges = detectMergeBackCommands(input.command).filter((entry) => !entry.controlOnly);
+    if (merges.length === 0) return;
+
+    const jobId = jobIdForEnv();
+    const rules = await resolveJobRuleIds(ctx.cwd, jobId);
+    if (rules.length === 0) return;
+
+    let coverage: Awaited<ReturnType<typeof checkProveCoverage>>;
+    try {
+      coverage = await checkProveCoverage(ctx.cwd, rules, { worktreePath: merges[0].worktree ?? undefined });
+    } catch (error) {
+      // Fail closed: an internal error is a refusal, never a pass.
+      coverage = {
+        ok: false,
+        covered: [],
+        missing: rules,
+        report:
+          "PROVE coverage check crashed: " + (error instanceof Error ? error.message : String(error)) +
+          " (scoped rules: " + rules.join(", ") + ")",
+      };
+    }
+    if (coverage.ok) return;
+
+    return {
+      block: true,
+      reason:
+        "MERGE BLOCKED \u2014 PROVE receipts missing for this merge-back (HANDOFF_BLOCKED). " +
+        "The job's recorded SPEC-SCOPE names " + rules.join(", ") + ", so the merge execution path " +
+        "requires a VERIFIED host-side prove receipt for EVERY scoped rule \u2014 no matter how the " +
+        "approval arrived (typed in the pane or relayed via job_approve). Missing: " +
+        coverage.missing.join(", ") + ". " +
+        "Run `make prove args='--rule <id>'` once per scoped rule (the bash gate hook " +
+        "dispatches it into the gate VM; the extension records the receipt in the host receipts dir), " +
+        "then retry the merge.\n" + coverage.report,
+    };
+  });
+}
+
+/**
+ * The directory of a leading `cd <dir>` segment, or null. Only the FIRST
+ * segment counts: the orchestrator's handoff form is
+ * `cd ../lt-api-wt-<id> && make prove args='--rule <id>'`, and a cd later in
+ * the chain says nothing about the command that followed.
+ *
+ * IDENTIFICATION ONLY. In the sandbox era a `cd` never redirects the receipt
+ * (receipts resolve against the host session's own root): routing evidence into
+ * the worktree would let a worker pre-forge a VERIFIED receipt inside its mount.
+ */
+function leadingCdTarget(segment: string): string | null {
+  const words = splitCommandLine(segment);
+  if (words.length !== 2 || words[0] !== "cd") return null;
+  return words[1];
+}
+
+/** Non-negative integer or null for anything else (never assume a code). */
+function exitCodeNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  return null;
+}
+
+/**
+ * Exit code of a bash tool result. pi 1.5.2 carries it in the result's
+ * `structuredContent.exit_code`; the details object is typed without it, so
+ * every location is read defensively and a status line in the content is the
+ * last resort. Unreadable ⇒ null (a null exitCode is never ok:true), never 0.
+ */
+function bashExitCodeOf(event: ToolResultEvent): number | null {
+  const details = event.details as { exitCode?: unknown; exit_code?: unknown } | undefined;
+  const fromDetails = exitCodeNumber(details?.exitCode) ?? exitCodeNumber(details?.exit_code);
+  if (fromDetails !== null) return fromDetails;
+  const structured = event.structuredContent as { exit_code?: unknown } | undefined;
+  const fromStructured = exitCodeNumber(structured?.exit_code);
+  if (fromStructured !== null) return fromStructured;
+  for (const part of event.content) {
+    if (part.type !== "text") continue;
+    const match = /Command exited with code (-?\d+)\s*$/.exec(part.text.trim());
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+/**
+ * PROVE receipt writer (merge-back evidence). The extension records every
+ * scoped prove run, because the merge-back gates (`checkProveCoverage`, called
+ * by the jobs.ts approval relay and the merge-path hook above) trust host
+ * receipts and nothing else — and no worker ever writes one. Active in CHILD
+ * sessions only (orchestrators): prove is the orchestrator's merge-back step,
+ * and a main session has no job to prove for. HOST-ONLY resolution: the
+ * receipt always lands in THIS session's own receipts dir. There is
+ * deliberately NO leading-`cd` redirect — routing evidence into the worktree
+ * would let a worker pre-forge a VERIFIED receipt inside its own mount.
+ */
+export function registerProveReceiptHook(pi: ExtensionAPI): void {
+  pi.on("tool_result", async (event, ctx) => {
+    if (process.env.PI_DELEGATE_CHILD !== "1") return;
+    if (isSandboxedChild()) return;
+    if (event.toolName !== "bash") return;
+    const input = event.input as { command?: unknown };
+    if (typeof input.command !== "string" || input.command.trim().length === 0) return;
+    const command = input.command;
+    const ruleIds = proveRuleIdsIn(command);
+    if (ruleIds.length === 0) return;
+
+    const segments = splitTopLevelSegments(command)
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0);
+    if (segments.length === 0) return;
+
+    // A leading `cd <worktree>` is still tolerated for COMMAND IDENTIFICATION
+    // (the orchestrator's handoff form), but it never moves the receipt: proofs
+    // are host artifacts.
+    const cdTarget = leadingCdTarget(segments[0]);
+    const rest = cdTarget !== null ? segments.slice(1) : segments;
+    const receiptCwd = ctx.cwd;
+
+    // The prove command is DECLARED (WORKFLOW.md `prove_cmd`), never
+    // hardcoded: an unavailable policy means the gate set is undeclared, so no
+    // run can be identified as prove — log it and write nothing (the
+    // merge-back gate then refuses for the missing policy anyway).
+    const loaded = loadWorkflowPolicy(receiptCwd);
+    if (!loaded.ok) {
+      void logGateDebug(receiptCwd, "prove receipt skipped (policy unavailable): " + command);
+      return;
+    }
+    const proveTokens = splitCommandLine(loaded.policy.proveCmd);
+    // The command may already be the REWRITTEN `sbx exec` line (the gate-VM
+    // tool_call hook ran before this tool_result). Unwrap it: the in-VM argv is
+    // what identifies a prove run, and `-w` names the worktree whose gate VM
+    // executed it. A plain (unrewritten) command keeps the original matching.
+    const unwrapped = parseGateVmShellCommand(command);
+    const proves =
+      unwrapped !== null
+        ? isProveSegment(unwrapped.argv.join(" "), proveTokens)
+        : rest.some((segment) => isProveSegment(segment, proveTokens));
+    if (!proves) return;
+
+    const exitCode = bashExitCodeOf(event);
+    try {
+      // The prove command ran in the gate VM (the bash tool_call hook rewrites
+      // a declared gate command to `sbx exec`), so the receipt names the VM it
+      // executed in. A missing VM entry simply means the receipt predates the
+      // rewrite (or the command was identified after the fact) — no key.
+      const proveCwd =
+        unwrapped && unwrapped.worktree
+          ? unwrapped.worktree
+          : cdTarget !== null
+            ? path.resolve(ctx.cwd, cdTarget)
+            : ctx.cwd;
+      await writeReceipt({
+        cwd: receiptCwd,
+        agent: process.env.PI_DELEGATE_ROLE ?? "worker",
+        session: process.env.PI_SESSION_ID,
+        // The FULL command line, so the receipt names the run a human/checker
+        // reads back (including the `cd`); its exit code decides VERIFIED.
+        commands: [{ command, exitCode, timedOut: false, durationMs: 0 }],
+        ok: exitCode === 0,
+        note: "prove rules=" + ruleIds.join(","),
+        sandbox: gateSandboxFor(proveCwd)?.name,
+      });
+    } catch (error) {
+      console.error("[delegate] prove receipt failed:", error);
+    }
+  });
 }

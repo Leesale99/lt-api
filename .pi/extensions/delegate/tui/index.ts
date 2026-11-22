@@ -18,8 +18,9 @@
  * SelectList/viewer machinery.
  *
  * Import direction: tui/* → ./jobs.ts / ./agents.ts / ./sbx.ts / pi-tui, and
- * TYPE-ONLY back to ../index.ts. Nothing in tui/ imports ../surfacing.ts, so
- * the graph stays acyclic: index.ts → { surfacing.ts, tui/* }.
+ * TYPE-ONLY to ../spawn.ts (the result contracts). Nothing in tui/ imports
+ * ../surfacing.ts, so the graph stays acyclic: index.ts → { surfacing.ts,
+ * tui/* }.
  *
  * Loader gotcha (pi 1.5.2 extension parser): no `?:` ternaries with
  * double-quoted strings inside a template literal's ${} — the moved code keeps
