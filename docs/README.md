@@ -32,13 +32,13 @@ from outside, and the checker that keeps catalog, code, tests and scenarios tied
 together. The rule files are authored: one Markdown file per rule at
 `docs/spec/rules/<module>/<ID>.md`, front matter for the machine fields, body for the
 notes. Everything else in the tree is either generated from them (the dashboard
-`docs/spec/business-rules.md`) or checked against them (`cmd/spec check --strict`).
+`docs/spec/coverage.md`) or checked against them (`cmd/spec check --strict`).
 The format authority is [`spec/rules.schema.md`](spec/rules.schema.md); the workflow,
 the commands and the rule-change protocol are [`spec/README.md`](spec/README.md).
 
 What this plane buys you is three mechanical guarantees, each one a numbered policy in
 the catalog's own invariants (the list itself is
-[`spec/rules.schema.md`](spec/rules.schema.md) §3):
+[`spec/policies.md`](spec/policies.md), one section per policy):
 
 - **Policy 12 (`12-features`) — no dangling tag, no ambiguous scenario.** The feature
   tree is cross-checked in both directions — every `@rule` tag names a catalog rule,
@@ -107,7 +107,7 @@ proof is a gate, not a claim:
    the loop and certifies nothing.
 4. **Regenerate the dashboard.** `make spec/gen` after any catalog change; the
    freshness diff is part of `audit/static`, so a hand-edited
-   `docs/spec/business-rules.md` fails the gate.
+   `docs/spec/coverage.md` fails the gate.
 5. **Prove it.** `make prove args='--rule <ID>'` runs the rule's mapped bypass
    scenarios — the ones that attempt the forbidden write or action outside the
    application — and must report VERIFIED. Registry mappings whose scenarios assert

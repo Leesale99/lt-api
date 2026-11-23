@@ -535,7 +535,7 @@ export interface SandboxMount {
 
 /**
  * The GATE profile: one read-write worktree mount (gates legitimately write
- * generated artifacts such as docs/spec/business-rules.md), plus — for a LINKED
+ * generated artifacts such as docs/spec/coverage.md), plus — for a LINKED
  * worktree — the main repo root as a read-only EXTRA workspace so the
  * worktree's `.git` pointer (`.git` is a file naming the main repo's gitdir)
  * resolves inside the VM. Absolute paths are preserved, which is what makes the

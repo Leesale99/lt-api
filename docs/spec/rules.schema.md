@@ -4,7 +4,7 @@
 rules: one authored Markdown file per rule at `<module>/<ID>.md` — a strict YAML front
 matter between two `---` fences holding the machine fields this document specifies,
 followed by an optional authored body whose `## Notes` section is the rule's notes.
-`docs/spec/business-rules.md` is **generated** from those files: a thin dashboard of
+`docs/spec/coverage.md` is **generated** from those files: a thin coverage dashboard of
 totals and links into the rule files. Never edit it.
 
 The catalog exists so that every rule answers three questions in one place:
@@ -458,7 +458,7 @@ is done:
 - `go run ./cmd/spec check --strict` (the `make spec/check` target) reports no ERROR:
   every policy holds, every pointer resolves into the tree, and the feature tree and the
   catalog agree in both directions.
-- `make spec/gen` regenerates `docs/spec/business-rules.md` from the rule files; nothing
+- `make spec/gen` regenerates `docs/spec/coverage.md` from the rule files; nothing
   under `rules/` is ever machine-written and `make spec/diff` fails until the dashboard
   is regenerated.
 - `make audit/static` is green, which is the DB-free half of the gate and includes the

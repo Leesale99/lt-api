@@ -21,7 +21,7 @@ GREEN — implement. Add the code, its `//rule:` annotations and the verificatio
 
 PROVE is a host merge-back gate, not a worker step. If something you touched cannot be proven — no observable, no oracle, an assertion you cannot make honest — say so under Notes as UNVALIDATABLE and stop; the human sign-off is not your call.
 
-REFACTOR — `make spec/gen`, then `make audit/static` again. The generated dashboard (`docs/spec/business-rules.md`) is a committed output: regenerate it with the command, never hand-edit it. The audit re-runs `gen --diff`, so a hand-edit reads as stale on the host too.
+REFACTOR — `make spec/gen`, then `make audit/static` again. The generated dashboard (`docs/spec/coverage.md`) is a committed output: regenerate it with the command, never hand-edit it. The audit re-runs `gen --diff`, so a hand-edit reads as stale on the host too.
 
 ## Budget and limits
 - 3 attempts per phase, then stop and report what you tried and how it failed. Never silent retry.

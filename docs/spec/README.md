@@ -21,7 +21,7 @@ Five artifacts answer those questions, and each has one owner:
   tagged with exactly one rule id.
 - **The checker** — `cmd/spec`, which validates the catalog against its policies and
   traces every pointer into the tree in both directions.
-- **The dashboard** — `docs/spec/business-rules.md`, a thin generated summary. Never
+- **The dashboard** — `docs/spec/coverage.md`, a thin generated summary. Never
   edited by hand.
 
 Three documents hold the format and the style: [`rules.schema.md`](rules.schema.md) is
@@ -42,7 +42,7 @@ docs/spec/
 ├── glossary.yaml — the per-module step-vocabulary allowlist (policy 13)
 ├── prove/ — the registry, one <module>.yaml per module: which scenario
 │            attempts each rule's bypass; prove/README.md is the directory's map
-├── business-rules.md — GENERATED dashboard; never edit
+├── coverage.md — GENERATED coverage dashboard; never edit
 └── gherkin-style.md — Gherkin authoring style
 ```
 
@@ -208,7 +208,7 @@ rest of the tree had been verified.
 
 ## 6. `spec/gen` — the one generated artifact
 
-`make spec/gen` writes `docs/spec/business-rules.md` from the rule files: totals by
+`make spec/gen` writes `docs/spec/coverage.md` from the rule files: totals by
 module and status, plus links into each `rules/<module>/`. That is the whole artifact.
 The rule files are authored, and there is no per-module generated view — the rule file
 *is* the block.
@@ -263,7 +263,7 @@ all — it is a merge-back gate (§9, delegated work).
 
 Every subcommand takes `--rules`, defaulting to `docs/spec/rules`. The make targets are
 thin wrappers, so `make spec/gen` and
-`go run ./cmd/spec gen --rules docs/spec/rules --out docs/spec/business-rules.md` are
+`go run ./cmd/spec gen --rules docs/spec/rules --out docs/spec/coverage.md` are
 the same run.
 
 | target | what it does |
