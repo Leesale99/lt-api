@@ -184,6 +184,25 @@ export default function (pi: ExtensionAPI) {
     if (process.env.PI_DELEGATE_CHILD) return;
     // Opt-in delegate-only mode: PI_DELEGATE_ONLY set in the main session leaves subagent as its only callable tool.
     if (process.env.PI_DELEGATE_ONLY) pi.setActiveTools(["subagent"]);
+    // Host-tool seal: the host plane — this interactive session — reads
+    // untrusted text, so capability minimization leaves it read-only plus the
+    // extension's own verbs: delegate, poll a job, relay an approval.
+    // WORKFLOW.md documents the policy, including why the background
+    // orchestrator keeps bash for now (the gate-VM dispatch and merge-path
+    // prove seams are hooks on the bash tool) and is sealed by its card's
+    // `--tools` list instead: a job carries PI_DELEGATE_CHILD and returned
+    // above.
+    // PI_DELEGATE_UNSEALED is the human escape hatch for a session that needs
+    // the full toolset back.
+    // This call is the only mechanism that reaches extension- and
+    // package-registered tools: `defaultTools` in the project
+    // `.pi/settings.json` replaces the inherited builtin list, and a plain name
+    // list there neither registers nor narrows what an extension or an
+    // installed package registered. PI_DELEGATE_ONLY above is the stricter
+    // list, so its call is left standing when both apply.
+    if (!process.env.PI_DELEGATE_UNSEALED && !process.env.PI_DELEGATE_ONLY) {
+      pi.setActiveTools(["read", "subagent", "job_status", "job_approve"]);
+    }
     return { systemPrompt: event.systemPrompt + loadOrchestratorPrompt(ctx.cwd) };
   });
 

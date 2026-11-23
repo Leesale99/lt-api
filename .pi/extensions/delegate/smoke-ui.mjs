@@ -11,6 +11,10 @@
 // index.ts stays the entry point for `default` (the register function) — the
 // renderers under test are the ones it registers.
 //
+// The host tool policy is pinned here too: the project `.pi/settings.json`
+// builtin list, the orchestrator card's tools, and the extension seal on the
+// host branch of `before_agent_start` (driven through the real registration).
+//
 // Nothing here renders a TUI and nothing spawns a subagent: the surface under
 // test is the PURE half (badge derivation, mount/egress compaction, info-line
 // formatting, status text). The renderers themselves are thin: they call these
@@ -340,6 +344,9 @@ function makeFakePi() {
   const tools = new Map();
   const entryRenderers = new Map();
   const messageRenderers = new Map();
+  // Every setActiveTools list the host branch requests, in call order: the host
+  // tool seal is asserted on these, not on the source text alone.
+  const activeToolsCalls = [];
   // Lifecycle handlers are recorded (not dropped) so the main-session persona
   // injection can be driven through its REAL before_agent_start registration.
   const handlers = new Map();
@@ -357,9 +364,9 @@ function makeFakePi() {
     },
     sendMessage: () => {},
     appendEntry: () => {},
-    setActiveTools: () => {},
+    setActiveTools: (list) => activeToolsCalls.push(list),
   };
-  return { api, tools, entryRenderers, messageRenderers, handlers };
+  return { api, tools, entryRenderers, messageRenderers, handlers, activeToolsCalls };
 }
 
 const plainTheme = {
@@ -467,6 +474,93 @@ check("discovery skips the persona file (no frontmatter → never a worker)", ()
   assert.ok(found.agents.length > 0, "discovery found no project agents at all (vacuous check)");
   assert.ok(!found.agents.some((a) => a.filePath === PERSONA_PATH), ".pi/agents/main.md was registered as a spawnable agent");
   assert.ok(found.agents.every((a) => a.name !== "main"), "a `main` agent name leaked into the roster");
+});
+
+console.log("host tool policy (.pi/settings.json + the extension seal)");
+
+// The host plane is the main session and every background orchestrator job.
+// Both read untrusted text, so two surfaces keep the interactive host session
+// read-only: the project settings file strips the inherited builtin tools, and
+// the extension seal below covers extension- and package-registered tools (a
+// plain name list in settings cannot). The orchestrator card keeps bash for
+// now: the gate-VM dispatch and merge-path prove seams are hooks on the bash
+// tool (gates.ts, mergegate.ts), so dropping it before they become extension
+// verbs would silently break the machinery — that conversion is the Phase 05.9
+// follow-up, and the check below pins the known card state until it lands.
+const SETTINGS_PATH = path.join(REPO_ROOT, ".pi", "settings.json");
+const ORCHESTRATOR_PATH = path.join(REPO_ROOT, ".pi", "agents", "orchestrator.md");
+const SEAL_TOOLS = ["read", "subagent", "job_status", "job_approve"];
+const TOOL_POLICY_ENV_KEYS = [...childEnvKeys, "PI_DELEGATE_ONLY", "PI_DELEGATE_UNSEALED"];
+
+/**
+ * Drive the REAL `before_agent_start` registration under a controlled env and
+ * return every setActiveTools list it set (empty = the handler left the toolset
+ * alone). Async handlers are kicked off but not awaited — they set no tools.
+ */
+function hostActiveTools(env = {}) {
+  const saved = new Map(TOOL_POLICY_ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of TOOL_POLICY_ENV_KEYS) delete process.env[key];
+  for (const [key, value] of Object.entries(env)) process.env[key] = value;
+  const before = fake.activeToolsCalls.length;
+  try {
+    for (const fn of fake.handlers.get("before_agent_start") ?? []) {
+      const result = fn({ systemPrompt: "BASE", messageType: "user" }, { cwd: REPO_ROOT });
+      if (result && typeof result.then === "function") result.catch(() => {});
+    }
+  } finally {
+    for (const [key, value] of saved) {
+      if (value !== undefined) process.env[key] = value;
+      else delete process.env[key];
+    }
+  }
+  return fake.activeToolsCalls.slice(before);
+}
+
+check(".pi/settings.json strips every inherited builtin (defaultTools = [read])", () => {
+  assert.ok(fs.existsSync(SETTINGS_PATH), "missing .pi/settings.json");
+  const settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf-8"));
+  assert.equal(Object.keys(settings).length, 1, "settings.json carries keys besides defaultTools: " + Object.keys(settings).join(", "));
+  assert.deepEqual(settings.defaultTools, ["read"], "defaultTools must leave read as the only builtin");
+});
+
+check("orchestrator card tools: subagent + read + bash (bash pinned until the verb conversion)", () => {
+  const found = agents.discoverAgents(REPO_ROOT, "project");
+  const orchestrator = found.agents.find((a) => a.filePath === ORCHESTRATOR_PATH);
+  assert.ok(orchestrator, "orchestrator card was not discovered (missing or unparseable front matter)");
+  const tools = orchestrator.tools ?? [];
+  assert.ok(tools.includes("subagent"), "orchestrator lost the subagent tool: " + tools.join(", "));
+  assert.ok(tools.includes("read"), "orchestrator lost the read tool: " + tools.join(", "));
+  assert.ok(
+    tools.every((t) => ["subagent", "read", "bash"].includes(t)),
+    "orchestrator card carries a tool outside the host policy allowlist: " + tools.join(", "),
+  );
+});
+
+check("index.ts carries the seal tool list and the PI_DELEGATE_UNSEALED escape hatch", () => {
+  const source = fs.readFileSync(path.join(HERE, "index.ts"), "utf-8");
+  assert.match(
+    source,
+    /pi\.setActiveTools\(\["read", "subagent", "job_status", "job_approve"\]\)/,
+    "the host seal call with its sealed tool list is gone from index.ts",
+  );
+  assert.match(source, /PI_DELEGATE_UNSEALED/, "the PI_DELEGATE_UNSEALED escape hatch is gone from index.ts");
+});
+
+check("host main session: the seal applies", () => {
+  assert.deepEqual(hostActiveTools(), [SEAL_TOOLS]);
+});
+
+check("a delegate child sets no tools (the seal is host-only)", () => {
+  assert.deepEqual(hostActiveTools({ PI_DELEGATE_CHILD: "1" }), []);
+});
+
+check("PI_DELEGATE_UNSEALED is the human escape hatch: no tool change", () => {
+  assert.deepEqual(hostActiveTools({ PI_DELEGATE_UNSEALED: "1" }), []);
+});
+
+check("PI_DELEGATE_ONLY is stricter than the seal and wins when both apply", () => {
+  assert.deepEqual(hostActiveTools({ PI_DELEGATE_ONLY: "1" }), [["subagent"]]);
+  assert.deepEqual(hostActiveTools({ PI_DELEGATE_ONLY: "1", PI_DELEGATE_UNSEALED: "1" }), [["subagent"]]);
 });
 
 check("renderCall single foreground → [foreground] + policy badge", () => {

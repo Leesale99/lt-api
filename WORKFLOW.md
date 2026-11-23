@@ -56,6 +56,10 @@ Sandbox profiles are declared in `.pi/extensions/delegate/sbx.ts` and asserted b
 
 No sandbox gets `LT_API_TEST_DSN`, so `make audit` and `make prove` cannot run in one.
 
+## The host plane is sealed to read-only plus extension verbs
+
+The interactive main session reads every untrusted byte a worker or a research task produces, so it runs with the minimum toolset that role needs. `.pi/settings.json` leaves `read` as the only builtin tool, and the delegate extension's host branch applies a seal — `read`, `subagent`, `job_status`, `job_approve` — that also covers extension- and package-registered tools, which the settings list cannot reach. `PI_DELEGATE_ONLY` is the stricter opt-in (`subagent` alone); `PI_DELEGATE_UNSEALED` restores the full toolset for a human-driven session. Background orchestrator jobs take their toolset from the orchestrator card's front matter and keep `bash` until the gate-VM dispatch and merge-path prove seams (both bash-tool hooks in the delegate extension) become extension verbs; the card may carry no tool outside `subagent`, `read`, `bash`, and `smoke-ui.mjs` pins that allowlist. A web lookup is not a host-plane capability: it delegates to the sandboxed researcher through the codex-search relay.
+
 ## In-VM gates are advisory; the gate VM executes; the host decides and records
 
 The main session and the background orchestrators stay host-side. The extension also loads inside a worker
