@@ -1727,14 +1727,14 @@ function dbStepOf(result: GateResult, argv: string[], note: string): GateStep {
 export async function prepareGateDbVm(
   worktreePath: string,
   opts: { timeoutMs?: number; readyAttempts?: number; intervalMs?: number } = {},
-): Promise<{ ok: boolean; step: GateStep | null; sandbox: string }> {
+): Promise<{ ok: boolean; step: GateStep | null; sandbox: SandboxHandle }> {
   const sandbox = await ensureGateSandbox(worktreePath);
   const timeoutMs = opts.timeoutMs ?? GATE_DB_STEP_TIMEOUT_MS;
   const attempts = Math.max(1, opts.readyAttempts ?? GATE_PG_READY_ATTEMPTS);
   const intervalMs = Math.max(0, opts.intervalMs ?? GATE_PG_READY_INTERVAL_MS);
   const [start, ready, drop, create] = gateDbPresteps();
 
-  const fail = (argv: string[], failure: GateResult): { ok: false; step: GateStep; sandbox: string } => ({
+  const fail = (argv: string[], failure: GateResult): { ok: false; step: GateStep; sandbox: SandboxHandle } => ({
     ok: false,
     sandbox,
     step: dbStepOf(failure, argv, "gate VM db pre-sequence"),

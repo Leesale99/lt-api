@@ -44,7 +44,11 @@
  */
 import * as os from "node:os";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  SessionBoundaryDraft,
+} from "@earendil-works/pi-coding-agent";
 import { formatReadLineRange, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
 import { Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";

@@ -13,15 +13,8 @@
  * reads), ../agents.ts (discovery). Nothing here imports ../surfacing.ts or
  * ../index.ts, so the graph stays acyclic.
  */
-import { CONFIG_DIR_NAME, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import {
-  type SelectItem,
-  Container,
-  DynamicBorder,
-  SelectList,
-  Text,
-  truncateToWidth,
-} from "@earendil-works/pi-tui";
+import { CONFIG_DIR_NAME, DynamicBorder, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type SelectItem, Container, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { type AgentConfig, discoverAgents } from "../agents.ts";
 import {
   formatJobList,
@@ -167,7 +160,7 @@ export async function openJobsView(ctx: ExtensionContext): Promise<void> {
   }));
   const selected = await ctx.ui.custom<string | null>((tui, theme, _keybindings, done) => {
     const container = new Container();
-    container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+    container.addChild(new DynamicBorder((str: string) => theme.fg("accent", str)));
     container.addChild(new Text(theme.fg("accent", theme.bold("Background jobs"))));
     const selectList = new SelectList(items, Math.min(items.length, 10), {
       selectedPrefix: (text) => theme.fg("accent", text),
