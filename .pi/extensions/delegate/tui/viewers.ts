@@ -180,7 +180,7 @@ export async function openJobsView(ctx: ExtensionContext): Promise<void> {
     selectList.onCancel = () => done(null);
     container.addChild(selectList);
     container.addChild(new Text(theme.fg("dim", "↑↓ navigate · enter view job · esc cancel")));
-    container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+    container.addChild(new DynamicBorder((str: string) => theme.fg("accent", str)));
     return {
       capturesViewportInput: selectList.capturesViewportInput,
       render(width: number) {
@@ -249,7 +249,7 @@ export async function openAgentsView(ctx: ExtensionContext): Promise<void> {
   }));
   const selected = await ctx.ui.custom<string | null>((tui, theme, _keybindings, done) => {
     const container = new Container();
-    container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+    container.addChild(new DynamicBorder((str: string) => theme.fg("accent", str)));
     container.addChild(new Text(theme.fg("accent", theme.bold("Agents"))));
     const selectList = new SelectList(items, Math.min(items.length, 10), {
       selectedPrefix: (text) => theme.fg("accent", text),
@@ -262,7 +262,7 @@ export async function openAgentsView(ctx: ExtensionContext): Promise<void> {
     selectList.onCancel = () => done(null);
     container.addChild(selectList);
     container.addChild(new Text(theme.fg("dim", "↑↓ navigate · enter view details · esc cancel")));
-    container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+    container.addChild(new DynamicBorder((str: string) => theme.fg("accent", str)));
     return {
       capturesViewportInput: selectList.capturesViewportInput,
       render(width: number) {
