@@ -116,17 +116,6 @@ func (app *application) registerPlayerHandler(w http.ResponseWriter, r *http.Req
 
 The handler is deliberately boring. That is a feature.
 
-## Orientation graph
-
-```mermaid
-flowchart LR
-    Client --> Router
-    Router --> Handler
-    Handler --> GameService
-    GameService --> Response
-    Response --> Client
-```
-
 ## Tasks
 
 1. Create the Go module and `cmd/server/main.go`.
@@ -157,6 +146,17 @@ Research only as you encounter them:
 - authentication
 - PostgreSQL transaction orchestration
 - market
+
+## Orientation graph
+
+```mermaid
+flowchart LR
+    Client --> Router
+    Router --> Handler
+    Handler --> GameService
+    GameService --> Response
+    Response --> Client
+```
 
 ## Done when
 

@@ -135,6 +135,19 @@ sequenceDiagram
 - exactly-once processing claims
 - multi-node schedulers
 
+## Orientation graph
+
+```mermaid
+flowchart TD
+    Client --> Handler[HTTP handler]
+    Handler --> Key[(idempotency keys)]
+    Handler --> Service[game service]
+    Service --> Guard[FOR UPDATE / version guard]
+    Guard --> Tx[sql.Tx: one transaction]
+    Tx --> Ride[(rides)]
+    Tx --> Match[(matches)]
+```
+
 ## Done when
 
 Your tests demonstrate that concurrent or repeated operations cannot duplicate a burn, duplicate a result settlement, or create negative balances.
