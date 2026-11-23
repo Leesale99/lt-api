@@ -9,11 +9,22 @@ ran.
 [`WORKFLOW.md`](../WORKFLOW.md) is the policy of record: its front matter is the
 machine-checked declaration (gate commands, machine paths, retry and stall limits,
 approval tokens) and the extension reads it fresh on every gate decision. This document
-is the narrative
-around that policy: what the machinery is, why it is shaped that way, and where to look
-when something blocks. When the two disagree, the policy wins and this file is the bug
-— but nothing here restates a policy value, by design. If you need the number, field or
-token, it is in `WORKFLOW.md`, not here.
+is the narrative around that policy: what the machinery is, why it is shaped that way,
+and where to look when something blocks. When the two disagree, the policy wins and
+this file is the bug — but nothing here restates a policy value, by design. If you need
+the number, field or token, it is in `WORKFLOW.md`, not here.
+
+Start where your question is:
+
+- **A policy value** — a gate command, a machine path, a retry or stall limit, an
+  approval token: `WORKFLOW.md` front matter.
+- **The task-packet line forms**: `WORKFLOW.md` § Task packets.
+- **The rule-change protocol and the gate ladder**: `docs/spec/README.md`.
+- **The task-packet grammar as implemented**: `.pi/extensions/delegate/protocol.ts`.
+- **Sandbox profiles, VM lifecycle, the gate VM image and its database**:
+  `.pi/extensions/delegate/sbx.ts`.
+- **Which module owns which behaviour**: the module table at the end of this file,
+  § Where the code lives.
 
 ## The two planes
 
@@ -41,33 +52,38 @@ merge boundary.
 ## The write boundary is the mount
 
 What a worker can write is decided by what the VM mounts, not by what the agent says.
-The profile table in `sbx.ts` is the policy, and `smoke-sbx.mjs` asserts it:
+The profile table in `sbx.ts` is the policy, and `smoke-sbx.mjs` asserts it row by row:
+the exact mount list for each agent, the egress allowlist that agent's VM carries, and
+that no profile is host passthrough. For `gopher` and `general` those hosts are the
+model provider `opencode.ai:443` plus the Go module proxies `proxy.golang.org:443`,
+`sum.golang.org:443` and `storage.googleapis.com:443`, and no others. The table names
+the agent; `sbx.ts` keys its profiles by role:
 
-| Role | Mounts | Egress |
+| Agent | Mounts | Egress |
 | --- | --- | --- |
-| `worker`, `general` | worktree, read-write | model provider + Go module proxies |
+| `gopher`, `general` | worktree, read-write | model provider + Go module proxies |
 | `scout` | disposable scratch dir (rw) + worktree (ro) | model provider only |
 | `librarian` | vault (rw) + worktree (ro) | model provider only |
 | `researcher` | none at all | model provider, docs host, host search relay |
 
-An unknown role falls back to the `worker` profile — narrower, never a host
-passthrough. No role is passthrough today; the field exists so that a future role could
-be declared host-side deliberately instead of by accident.
+An unknown role falls back to the `worker` profile (a profile key in `sbx.ts`, not an
+agent name) — narrower, never a host passthrough. `gopher` resolves there today because
+no `gopher` key exists; the keyed profiles are `worker`, `general`, `scout`, `librarian`
+and `researcher`. No role is passthrough today; the field exists so that a future role
+could be declared host-side deliberately instead of by accident.
 
 Three consequences shape everything downstream.
 
-**Workers are git-less.** The worktree arrives as a mount, so `.git` is unresolvable
-inside it: no status, diff, commit, stash, checkout, branch or merge. A worker reports
-a change set; the host names the commit. This is also why `make audit/static` is a
-poor in-VM gate — its `gofmt` step enumerates `git ls-files` — and why a worker that
-hits that wall reports the failing line instead of editing the Makefile.
-
-**Workers are DSN-less.** No sandbox gets `LT_API_TEST_DSN`, so the DB-backed half of
-`make audit` and all of `make prove` simply cannot run in a worker VM, even if a
-worker typed them.
-
-**Workers are vault-less**, except `librarian`, whose read-write mount is the vault
-and whose repo mount is read-only. That is a profile, not a special case in a prompt.
+- **Workers are git-less.** The worktree arrives as a mount, so `.git` is unresolvable
+  inside it: no status, diff, commit, stash, checkout, branch or merge. A worker reports
+  a change set; the host names the commit. This is also why `make audit/static` is a
+  poor in-VM gate — its `gofmt` step enumerates `git ls-files` — and why a worker that
+  hits that wall reports the failing line instead of editing the Makefile.
+- **Workers are DSN-less.** No sandbox gets `LT_API_TEST_DSN`, so the DB-backed half of
+  `make audit` and all of `make prove` simply cannot run in a worker VM, even if a
+  worker typed them.
+- **Workers are vault-less**, except `librarian`, whose read-write mount is the vault
+  and whose repo mount is read-only. That is a profile, not a special case in a prompt.
 
 Egress is default-deny per profile, and a worker's model credential reaches the VM
 through the `sbx` secret sentinel rather than a value written into a file. A dependency
@@ -97,10 +113,11 @@ are torn down when the session ends. A gate command typed into a host bash sessi
 recognised, checked, DB-pre-sequenced and rewritten into the equivalent `sbx exec`
 line, so there is no path where the host runs the tree's code.
 
-The gate VM carries its own Postgres on the port the repo documents; the DSN reaches
-the make target as a command-line override, which is the only form that survives the
-Makefile's `-include .envrc`. That is why a DB-backed gate needs no credential on the
-host at all.
+The gate VM carries its own Postgres on port 5433 — the port the repo's documented test
+DSN pins, baked into the `pi-gate:v1` image so that DSN is literally true inside the VM
+— and the DSN reaches the make target as a command-line override, the only form that
+survives the Makefile's `-include .envrc`. That is why a DB-backed gate needs no
+credential on the host at all.
 
 **The integrity check runs on the host, before any gate.** One `git diff --exit-code`
 against `HEAD` over the paths declared as `gate_file_paths` (plus the index variant, so
@@ -137,11 +154,12 @@ runs the rule's mapped bypass scenarios — the ones that attempt the forbidden 
 around the application — and requires them to pass, so VERIFIED means the rule's refusal
 actually happened when something tried to break it. VACUOUS (the mapping asserts
 nothing observable) and BROKEN-TEST (a scenario fails against an intact tree) are hard
-fails and cannot be waived; UNVALIDATABLE is reported and stops for human sign-off
-against the registry's git-attributed signoff. It needs Postgres, so it lives in the
-gate VM. And it is enforced where it matters: the extension blocks a merge command in
-an orchestrator session when the job's scoped rules lack VERIFIED receipts,
-independently of how the approval arrived.
+fails and cannot be waived; UNVALIDATABLE is reported and stops for human sign-off,
+which the prove registry (`docs/spec/prove.yaml`) records as a git-attributed name rather
+than an executable scenario. It needs Postgres, so it lives in the gate VM. And it is
+enforced where it matters: the extension blocks a merge command in an orchestrator
+session when the job's scoped rules lack VERIFIED receipts, independently of how the
+approval arrived.
 
 ## Task packets
 
@@ -164,7 +182,9 @@ The grammar is not decoration. The scope is what narrows the worker's advisory g
 what the claims log records, and what the merge-back and the approval relay resolve
 against — so a line the parser cannot read would have become a job that is
 relay-approved and merge-blocked on the same scope. That was a real defect; it is
-closed by having one resolver, described below.
+closed by having one resolver: `mergegate.ts` takes the rule ids from the job's spawn
+claims and reads the task text's `SPEC-SCOPE` line only when the claims name none, and
+both the approval relay and the merge block call it.
 
 ## Claims and receipts are host-only
 
@@ -172,12 +192,12 @@ Two append-only records, both written by the host extension instance and only fo
 things the host actually did.
 
 **Claims** live under the job directory and record two kinds of event: a `claim` at
-spawn (worker, session, rule ids, module, owned paths, the `git status --porcelain`
-baseline) and a `completed` after the worker returns (the paths that changed against
-that baseline). The point is parallelism safety: before a spawn the extension reads
-the log and blocks an overlapping claim — same rule id, same module, same owned path —
-so two workers cannot rewrite each other's files and then both fail for reasons
-neither can see. The next worker's prompt carries a short broadcast of the most recent
+spawn (the spawned agent, its session, rule ids, module, owned paths, the
+`git status --porcelain` baseline) and a `completed` after the worker returns (the paths
+that changed against that baseline). The point is parallelism safety: before a spawn the
+extension reads the log and blocks an overlapping claim — same rule id, same module,
+same owned path — so two workers cannot rewrite each other's files and then both fail
+for reasons neither can see. The next worker's prompt carries a short broadcast of the most recent
 completions, so siblings start with context instead of duplicating it. Claims are
 telemetry: a `git` failure records an empty change set and a note rather than failing
 a spawn.
@@ -240,10 +260,10 @@ bound, so GREEN, PROVE, REFACTOR and the merge-back proceed only while `HEAD` st
 matches it.
 
 The terminal state is always the last line of the round's final message, drawn from
-the declared token set. The registry reads them: a round that ends on the approval
-marker becomes `awaiting_approval` — a first-class waiting status rather than "done"
-with a strange last message — and a terminal token wins over the marker, so a report
-that mentions the approval gate in passing is still a finished report.
+the declared token set. The job registry (`jobs.ts`) reads them: a round that ends on
+the approval marker becomes `awaiting_approval` — a first-class waiting status rather
+than "done" with a strange last message — and a terminal token wins over the marker, so
+a report that mentions the approval gate in passing is still a finished report.
 
 The main session's own edit/write confirmation is a separate, host-side thing and
 stays: it is the human's, and no sandbox policy replaces it.
