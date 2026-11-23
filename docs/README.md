@@ -36,10 +36,25 @@ notes. Everything else in the tree is either generated from them (the dashboard
 The format authority is [`spec/rules.schema.md`](spec/rules.schema.md); the workflow,
 the commands and the rule-change protocol are [`spec/README.md`](spec/README.md).
 
-What this plane buys you: a rule cannot be added without a scenario, an enforcement
-site cannot be added without naming its rule, and a scenario cannot assert something
-the code already prints. Those are policies 12, 15 and 18, and they fail the audit
-rather than a review.
+What this plane buys you is three mechanical guarantees, each one a numbered policy in
+the catalog's own invariants (the list itself is
+[`spec/rules.schema.md`](spec/rules.schema.md) §3):
+
+- **Policy 12 (`12-features`) — no dangling tag, no ambiguous scenario.** The feature
+  tree is cross-checked in both directions — every `@rule` tag names a catalog rule,
+  and every scenario names exactly one — so a tag pointing at a missing rule and a
+  scenario naming zero or two rules are both errors.
+- **Policy 15 (`15-annotations`) — no unannotated enforcement site, no orphan
+  annotation.** Every Go enforcement site carries its rule's `//rule:R-XXX-NNN`
+  annotation, and every annotation in any non-vendor Go file names a catalog rule —
+  in both directions.
+- **Policy 18 (`18-oracle`) — no vacuous assertion, no copied expectation.** Scenarios
+  must assert something an observer can see, and the assertion must match the rule's
+  category — no vacuous Then steps ('runs without throwing'), and no expected value
+  copied verbatim from the implementation's source literals.
+
+All three fail `make audit` rather than a review, so the guarantee is a gate verdict,
+not a reviewer's opinion.
 
 ## Delegate harness plane
 
@@ -135,7 +150,7 @@ describe the same thing, this table says which one is the source.
 | --- | --- | --- |
 | the rule catalog (`docs/spec/rules/**`) | you; schema in `docs/spec/rules.schema.md`, loader in `cmd/spec/catalog.go` | `cmd/spec check` (policies in `cmd/spec/policies.go`) |
 | the generated dashboard | `cmd/spec gen` — never hand-edited | `spec/gen --diff`, wired into `audit/static` |
-| the Gherkin tree and the step glossary | you; style in `docs/spec/gherkin-style.md` | policy 13 (`cmd/spec/vocabulary.go`), policy 12 (feature tags) |
+| the Gherkin tree and the step glossary | you; style in `docs/spec/gherkin-style.md` | policy 13 — every step in `docs/spec/features/**` is bounded by the declared vocabulary, the transport/SQL denylist plus the `glossary.yaml` allowlist (`cmd/spec/vocabulary.go`) — and policy 12 — every `@rule` tag names a catalog rule and every scenario names exactly one (feature tags) |
 | the mutant registry (`docs/spec/prove.yaml`) | you, one entry per provable rule | `cmd/spec prove`, at merge-back |
 | the workflow policy (`WORKFLOW.md` front matter) | you; parser `.pi/extensions/delegate/policy.ts` | the loader refuses unknown fields, and the approval constants must equal `contracts.ts` |
 | the task-packet grammar | `.pi/extensions/delegate/protocol.ts` (doc-of-record: `WORKFLOW.md` § Task packets) | one strict parse at spawn; a malformed packet spawns nothing |
