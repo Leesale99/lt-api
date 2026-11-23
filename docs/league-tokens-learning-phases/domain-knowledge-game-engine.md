@@ -10,6 +10,8 @@ This document does not describe APIs, database schemas, authentication, deployme
 
 ## 1. Core concepts
 
+This table defines the domain concepts the engine manipulates, so later sections can use the terms without redefining them.
+
 | Concept | Meaning |
 |---|---|
 | **Season** | A competition with a configured set of teams, matches, and championship standings. |
@@ -27,7 +29,9 @@ This document does not describe APIs, database schemas, authentication, deployme
 
 ## 2. Season lifecycle
 
-A season moves through four states:
+This section defines the four states a season moves through and the conditions that characterize each one.
+
+The four states, in order, are:
 
 ```text
 Created → Open → InProgress → Closed
@@ -41,6 +45,8 @@ Created → Open → InProgress → Closed
 At Launch, seasons are independent. There is no cross-season carryover.
 
 ## 3. Team phases and match lifecycle
+
+This section defines how each team's phases are derived from that team's match schedule, the buffers that time them, how postponed fixtures and match statuses affect them, and the decision window that closes each Action Phase.
 
 ### 3.1 Phases belong to teams, not rounds
 
@@ -79,13 +85,14 @@ The engine must use the actual configured match schedule and the timestamp at wh
 
 ### 3.3 Postponed matches
 
-A postponed match does not put the team into a Match Phase. The team remains in its Action Phase while that fixture is postponed. The next Match Phase begins one `pre_match_buffer` before the next match whose status is `created`. A team enters Match Phase only when its next match is in the `created` state; postponed fixtures are skipped when determining the next match window.
+A postponed match does not put the team into a Match Phase; the team remains in its Action Phase while that fixture is postponed. Two scheduling consequences follow:
 
-
+- The next Match Phase begins one `pre_match_buffer` before the next match whose status is `created`.
+- A team enters Match Phase only when its next match is in the `created` state; postponed fixtures are skipped when determining the next match window.
 
 ### 3.4 Match statuses
 
-The match status values are:
+The engine recognizes these four Match status values:
 
 ```go
 const (
@@ -114,13 +121,13 @@ When a match result is committed:
 
 The decision deadline is the close of the team's Action Phase: the start of its next Match Phase, one `pre_match_buffer` before the next scheduled match.
 
-If the official result is delayed, the Action Phase and the decision window are delayed with it. A Ride must never be auto-burned before the player has had the Action Phase that follows the official result and its configured post-result buffer.
+A delayed official result delays the Action Phase and the decision window with it. A Ride must never be auto-burned before the player has had the Action Phase that follows the official result and its configured post-result buffer.
 
 At season end, the FinalAutoBurn operation burns all remaining `WonPending` Rides after the official result of the final regular-season match has been committed.
 
 ## 4. Ride lifecycle
 
-A Ride moves through these states:
+This section defines the five Ride states, the transitions between them, and the data a Ride must retain. A Ride moves through these states:
 
 ```text
 Locked
@@ -173,15 +180,15 @@ These Go types illustrate the domain data; exact implementation types are a deci
 
 ## 5. Player operations
 
-All operations must validate the relevant phase, Ride state, and balance rules before changing game state.
+This section defines each player and system operation in turn, with the validations it requires and the state changes it applies. All operations must validate the relevant phase, Ride state, and balance rules before changing game state.
 
 ### 5.1 Register
 
 Registration:
 
-- creates the player;
-- records the player's favourite team, which cannot be changed during that season;
-- grants 50 Currency.
+- Creates the player.
+- Records the player's favourite team, which cannot be changed during that season.
+- Grants 50 Currency.
 
 Players do not receive Tokens automatically at Launch.
 
@@ -206,9 +213,9 @@ A player can create a Ride only during the team's Action Phase.
 
 Requirements:
 
-- the team is in its Action Phase;
-- the player has enough Tokens for that team;
-- the team has a next scheduled match to which the Ride can be committed.
+- The team is in its Action Phase.
+- The player has enough Tokens for that team.
+- The team has a next scheduled match to which the Ride can be committed.
 
 When the Ride is created:
 
@@ -326,6 +333,8 @@ At season end, the `FinalAutoBurn` operation burns every remaining `WonPending` 
 
 ## 6. Economy calculations
 
+This section states every calculation the engine performs: the `acc` earned on a win, loss destruction, base price updates, reserve purchase price, and Currency flow.
+
 ### 6.1 `acc` earned on a win
 
 ```text
@@ -393,9 +402,11 @@ At Launch:
 - Burns return Currency from the CommonPool to player wallets.
 - Token destruction destroys Tokens, not Currency.
 
-The Game Design document describes the CommonPool deficit mechanism as mechanical safety, but its exact accounting treatment must remain consistent with the intended closed Currency economy. See the open question in Section 11.
+The Game Design document describes the CommonPool deficit mechanism as mechanical safety, but its exact accounting treatment must remain consistent with the intended closed Currency economy. Whether a burn may create Currency when the pool is insufficient, or must be backed by available pool funds, is listed as decision 1 in §11 Decisions to confirm.
 
 ## 7. Championships and standings
+
+This section defines how player and team TB totals are produced, which tiebreaks Launch uses, and which leaderboards ship at Launch.
 
 TB is the only championship score. Currency and wallet value do not count toward either championship.
 
@@ -418,8 +429,8 @@ At Launch, the tiebreaks are:
 
 Launch leaderboards:
 
-- Team Championship;
-- Player Championship;
+- Team Championship.
+- Player Championship.
 - Team Contributors.
 
 The Net Worth board is part of the later Market delivery.
@@ -441,10 +452,9 @@ The engine must preserve these rules on every operation:
 11. **Idempotent result commitment:** a match result and its economic effects are applied at most once per `match_id`.
 12. **Ride lock remains fixed:** the wallet Token lock reference, locked amount, and `BaseAtLock` do not change during a Ride chain.
 
-
 ## 9. Configuration
 
-These are per-season engine settings. Values marked as current defaults may be changed through simulation or product decisions.
+This section lists the per-season engine settings that tune risk, price movement, supply, and phase timing. Values marked as current defaults may be changed through simulation or product decisions.
 
 | Setting | Current value | Purpose |
 |---|---:|---|
@@ -458,6 +468,8 @@ These are per-season engine settings. Values marked as current defaults may be c
 | `post_result_buffer` | 1 hour | Opens the team's Action Phase after official result commitment |
 
 ## 10. Scope and open questions
+
+This section lists what the Launch build includes, what is deferred, and which decisions must be confirmed before implementation relies on them.
 
 ### Included at Launch
 
@@ -476,12 +488,12 @@ These are per-season engine settings. Values marked as current defaults may be c
 - Wallet-burn.
 - Playoffs and season rollover.
 - Live match centre and richer notifications.
-- Cancelled, voided, or corrected match handling beyond the Launch assumption that a committed result is final. Postponed fixtures follow the team-phase rule in Section 3.3.
+- Cancelled, voided, or corrected match handling beyond the Launch assumption that a committed result is final. Postponed fixtures do not put a team into a Match Phase and are skipped when the engine determines the next match window (§3.3 Postponed matches).
 
 ### Decisions to confirm
 
 1. **CommonPool deficit handling:** The Game Design document calls this a mechanical safety mechanism but does not fully define its accounting. Confirm whether a burn may create Currency if the pool is insufficient, or whether burns must be backed by available pool funds.
-2. **Ride already committed to a postponed match:** Section 3.3 defines the team's phase scheduling while a fixture is postponed. The handling of a Ride already committed to that fixture remains unresolved and must be decided before relying on postponed fixtures in production.
+2. **Ride already committed to a postponed match:** A postponed fixture does not put the team into a Match Phase and is skipped when the engine determines the next match window (§3.3 Postponed matches). The handling of a Ride already committed to that fixture remains unresolved and must be decided before relying on postponed fixtures in production.
 3. **Result-feed failure:** A delayed official result keeps the team in its Match Phase and delays its next Action Phase. Operational retry and escalation behavior belongs in the system design.
 
 Until these decisions are made, do not invent additional gameplay behavior.
