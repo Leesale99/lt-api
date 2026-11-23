@@ -31,9 +31,9 @@ func TestValidate(t *testing.T) {
 		// mutate breaks exactly one setting.
 		mutate func(*Config)
 		// wantErr is the setting's env spelling; wantFlag is its flag
-		// spelling. Every refusal must name both (misalignment-report §6
-		// item 17: stdlib flag cannot say whether a typed value was passed
-		// on the command line, so the message names both knobs).
+		// spelling. Every refusal must name both: stdlib flag cannot say
+		// whether a typed value was passed on the command line, so the
+		// message names both knobs.
 		wantErr  string
 		wantFlag string
 		wantMsg  string // exact message, when the wording itself is the pin
@@ -432,7 +432,7 @@ func TestParse(t *testing.T) {
 		{
 			// The value arrived as a flag, not a variable: the message must
 			// name the flag too, or the operator is told to change something
-			// they never set (misalignment-report §6 item 17).
+			// they never set.
 			name:    "bad flag port names both spellings",
 			env:     map[string]string{"LT_API_DSN": validDSN},
 			args:    []string{"-port=0"},

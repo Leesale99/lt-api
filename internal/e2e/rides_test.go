@@ -1137,8 +1137,8 @@ type rideRouteCase struct {
 }
 
 // TestRideRoutesPermissionGate pins the permission ladder on all six
-// /v1/rides* routes (misalignment-report §6 item #10): the two reads are gated
-// with players:read and the four commands with players:write. The ladder is
+// /v1/rides* routes: the two reads are gated with players:read and the four
+// commands with players:write. The ladder is
 // anonymous -> 401, unactivated -> 403 (R-IDENTITY-016), activated without the
 // code -> 403 (R-IDENTITY-017), and the standard 'user' role — which holds
 // both players codes — admitted to every route, the product flow the code

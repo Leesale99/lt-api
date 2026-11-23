@@ -408,12 +408,11 @@ func TestDeleteCreatedSeasonHandler(t *testing.T) {
 }
 
 // TestDeleteSeasonRefusalKeepsSeasonPlayers pins the all-or-nothing shape of
-// the season delete (R-SCHEDULE-027, misalignment report §6 item 6): the
-// composition deletes the season's players through game BEFORE the season
-// row, so a refusal that arrives afterwards must roll the player delete back
-// with it. Before the transaction, a refused delete left the season alive and
-// its registrations gone — the old single-statement cascade could not do
-// that.
+// the season delete (R-SCHEDULE-027): the composition deletes the season's
+// players through game BEFORE the season row, so a refusal that arrives
+// afterwards must roll the player delete back with it. Before the transaction,
+// a refused delete left the season alive and its registrations gone — the old
+// single-statement cascade could not do that.
 //
 // Both refusals the path has are here: schedule's own delete gate
 // (seasons_delete_gate, a BEFORE DELETE trigger — the shape that made the
