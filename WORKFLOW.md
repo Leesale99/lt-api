@@ -126,18 +126,5 @@ approval arrived: the extension blocks a merge command in an orchestrator sessio
 VERIFIED prove receipts. VERIFIED is the only verdict that needs nothing more; VACUOUS and BROKEN-TEST are
 hard fails and cannot be waived; UNVALIDATABLE is reported and stops for human sign-off.
 
-## Judgment
-
-Everything below is judgment, not policy. Delegate when the work is separable and the context you would burn
-is larger than the context you would spend explaining it; do the task yourself when it is one edit, one
-lookup, or a decision only you can make. Prefer one foreground worker over a fan-out you cannot verify, and a
-fan-out over a long serial chain when the scopes are genuinely disjoint.
-
-Escalate upward, not sideways: a worker reports, an orchestrator coordinates, a human decides. When a gate
-fails for a reason the tree cannot fix by itself (a missing capability, an ambiguous requirement, a dirty
-integrity check, a red approval stop), stop and say so plainly with the failing command and its output — a
-blocked, well-explained report beats a green-looking summary.
-
-Go one level deep. Workers do not delegate and never run in the background; an orchestrator may spawn workers
-but not another orchestrator. That limit keeps a failure attributable to a single context and a single set of
-receipts.
+Delegation judgment — when to delegate, escalate or fan out — lives in the agent cards (`.pi/agents/main.md`,
+`.pi/agents/orchestrator.md`), not here.
