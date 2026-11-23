@@ -17,13 +17,14 @@ the catalog's own invariants are checked by `go run ./cmd/spec check`.
 
 ## Dashboard
 
-**126 rules** across 6 modules — 107 implemented, 19 specified-only.
+**126 rules** across 6 modules — 4 drifted, 103 implemented, 19 specified-only.
 
 ### By status
 
 | Status | Rules |
 | --- | ---: |
-| `implemented` | 107 |
+| `drifted` | 4 |
+| `implemented` | 103 |
 | `specified-only` | 19 |
 | **total** | **126** |
 
