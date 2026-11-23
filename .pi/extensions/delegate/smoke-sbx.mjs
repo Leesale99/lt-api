@@ -351,6 +351,38 @@ await check("workspaceArgsFor: same absolute path, :ro suffix, scratch primary w
   assert.deepEqual(workspaceArgsFor(profileForRole("librarian"), worktree), [SANDBOX_VAULT_PATH, worktree + ":ro"]);
 });
 
+await check("workspaceArgsFor: a worktree that IS the vault collapses to ONE workspace, first declaration wins", async () => {
+  const vault = "/tmp/host/vault";
+  // A librarian spawn whose cwd IS the vault used to emit `<vault>` AND
+  // `<vault>:ro`: contradictory modes for one path, which `sbx create` rejects
+  // with "conflicting read-only settings for workspace" — the spawn could not
+  // even start. Resolved-path dedupe keeps the profile's declared order
+  // authoritative, so the rw vault mount survives (primary) and the duplicate is
+  // dropped.
+  const collapsed = workspaceArgsFor(profileForRole("librarian"), vault, vault);
+  assert.deepEqual(collapsed, [vault]);
+  assert.equal(collapsed.length, 1, "exactly one workspace positional");
+  assert.equal(collapsed[0], vault, "the vault stays a rw primary — no :ro suffix");
+  // Different spellings of the same host directory are the same mount.
+  assert.deepEqual(workspaceArgsFor(profileForRole("librarian"), vault + "/", vault + "/./"), [vault]);
+  // scout collapses the same way when the worktree is the scratch primary.
+  assert.deepEqual(workspaceArgsFor(profileForRole("scout"), vault, vault, vault), [vault]);
+  // A DISTINCT path still emits both, in profile order.
+  const distinct = workspaceArgsFor(profileForRole("librarian"), "/tmp/host/lt-api-wt-distinct", vault);
+  assert.deepEqual(distinct, [vault, "/tmp/host/lt-api-wt-distinct:ro"]);
+  assert.equal(distinct.length, 2, "no over-eager dedupe");
+  // …and the collapse reaches the real argv (one positional, not two).
+  const argv = createSandboxArgs({
+    name: "pi-librarian-collapsed-1",
+    profile: profileForRole("librarian"),
+    worktreePath: vault,
+    reference: "template",
+    vaultPath: vault,
+  });
+  const agentSlot = argv.indexOf(SANDBOX_CREATE_AGENT);
+  assert.deepEqual(argv.slice(agentSlot + 1), [vault], "create carries exactly the vault workspace");
+});
+
 // ── 3. Argv shapes (recorded-realistic fixtures) ────────────────────────────
 
 await check("createSandboxArgs: template create --no-input --cpus --memory, positional workspace", async () => {
@@ -614,6 +646,69 @@ await check("createWorkerSandbox: template create + per-sandbox egress, argv fro
   );
   assert.deepEqual(stub.calls[1], policyAllowArgs("pi-worker-fixed-1", SANDBOX_WORKER_EGRESS_HOSTS));
   assert.equal(stub.existsCalls.length, 0, "no kit probe when the template works");
+  setSbxProcessOps(null);
+});
+
+await check("createWorkerSandbox: a cwd that IS or lies INSIDE the vault is refused before any sbx call", async () => {
+  const vault = path.join(tmp, "vault-refuse");
+  const inside = path.join(vault, "job-1");
+  fs.mkdirSync(inside, { recursive: true });
+  const stub = installStub();
+
+  // 1. cwd === vault (the librarian-in-the-vault spawn that started this):
+  //    refused up front, with the fix spelled out.
+  await assert.rejects(
+    () =>
+      createWorkerSandbox({
+        role: "librarian",
+        worktreePath: vault,
+        cwd: vault,
+        vaultPath: vault,
+        name: "pi-librarian-refused-1",
+      }),
+    (error) => {
+      assert.match(error.message, /^spawn refused: cwd /);
+      assert.match(error.message, /is the sandbox's vault mount/);
+      assert.equal(error.message.includes(vault), true);
+      assert.match(error.message, /the profile already mounts it/);
+      assert.match(error.message, /spawn with the repo root as cwd/);
+      return true;
+    },
+  );
+
+  // 2. cwd INSIDE the vault from a worker: today that would silently mount the
+  //    vault READ-WRITE as the worker's own workspace. The invariant "only the
+  //    librarian touches the vault" is enforced here, not by convention.
+  await assert.rejects(
+    () =>
+      createWorkerSandbox({
+        role: "worker",
+        worktreePath: inside,
+        cwd: inside,
+        vaultPath: vault,
+        name: "pi-worker-refused-1",
+      }),
+    /spawn refused: cwd .* lies inside the sandbox's vault mount .*only a librarian sandbox may mount the vault/,
+  );
+
+  // The guard is fail-closed BEFORE the CLI: no create, no policy allow, no kit
+  // probe — the stub recorded nothing at all.
+  assert.equal(stub.calls.length, 0, "the guard fires before any sbx subprocess");
+  assert.equal(stub.existsCalls.length, 0, "…and before the kit probe");
+
+  // 3. A sibling that merely shares a NAME PREFIX is not inside the vault
+  //    (separator-respecting test, not string.startsWith).
+  const sibling = vault + "-evil";
+  fs.mkdirSync(sibling, { recursive: true });
+  const ok = await createWorkerSandbox({
+    role: "worker",
+    worktreePath: sibling,
+    cwd: sibling,
+    vaultPath: vault,
+    name: "pi-worker-sibling-1",
+  });
+  assert.equal(ok.worktreePath, sibling, "a prefix sibling spawns normally");
+  assert.equal(stub.calls.length, 2, "create + one policy allow for the sibling");
   setSbxProcessOps(null);
 });
 

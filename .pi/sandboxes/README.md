@@ -300,6 +300,16 @@ Two fail-closed details of the spawn path:
   closes the post-create window. The mechanism is the deliverable, not an
   invented deny — what each role declares lives in `SANDBOX_PROFILES`.
 
+**The worktree mount must not point into a profile-declared vault or scratch mount.** A spawn's cwd
+becomes its worktree mount (a subagent started in a subdirectory mounts that subdirectory), so the
+extension refuses — before any `sbx` call — a cwd that *is* or *lies inside* the vault (for every role:
+a worker spawned in the vault would otherwise mount it read-write) or inside a profile's disposable
+scratch primary. The refusal is an actionable error naming both paths (`spawn refused: cwd … lies
+inside the sandbox's vault mount … — spawn with the repo root as cwd`), not an opaque CLI failure.
+Mounts that resolve to the *same* host path are deduplicated first-declaration-wins, so the profile's
+declared order stays authoritative (a librarian whose cwd is the vault emits one rw workspace, not
+`<vault>` plus `<vault>:ro`, which `sbx create` rejects as conflicting read-only settings).
+
 ### Host-side secret setup (once per host)
 
 Only the model key needs setup as a **custom secret**: the value stays in the

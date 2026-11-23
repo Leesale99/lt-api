@@ -834,6 +834,16 @@ export function createScratchWorkspace(label: string): string {
  * `scratchPath` is required for (and only used by) a `scratch` mount; a profile
  * that declares one and gets no path is a programming error, not something to
  * paper over with a fallback that could point at the repo.
+ *
+ * Every mount path is RESOLVED (`path.resolve`) before it is emitted, and two
+ * mounts that resolve to the same host path collapse into ONE workspace
+ * positional: the FIRST declaration wins, so the profile's mount order stays
+ * authoritative (for the librarian the vault rw is primary and a worktree that
+ * happens to BE the vault is dropped instead of being re-declared `:ro`). This
+ * is what keeps `sbx create` from failing with "conflicting read-only settings
+ * for workspace" when the spawn cwd and a profile mount are the same directory.
+ * Nesting (a worktree INSIDE the vault) is a different failure and is refused
+ * outright by `createWorkerSandbox`.
  */
 export function workspaceArgsFor(
   profile: SandboxProfile,
@@ -841,18 +851,27 @@ export function workspaceArgsFor(
   vaultPath: string = SANDBOX_VAULT_PATH,
   scratchPath?: string,
 ): string[] {
-  return profile.mounts.map((mount) => {
-    if (mount.kind === "vault") return workspaceArg(vaultPath, mount.mode);
-    if (mount.kind === "scratch") {
+  const args: string[] = [];
+  const emitted = new Set<string>();
+  for (const mount of profile.mounts) {
+    let hostPath: string;
+    if (mount.kind === "vault") {
+      hostPath = path.resolve(vaultPath);
+    } else if (mount.kind === "scratch") {
       if (!scratchPath) {
         throw new Error(
           "profile '" + profile.role + "' declares a scratch workspace but no scratch path was provided",
         );
       }
-      return workspaceArg(scratchPath, mount.mode);
+      hostPath = path.resolve(scratchPath);
+    } else {
+      hostPath = path.resolve(worktreePath);
     }
-    return workspaceArg(worktreePath, mount.mode);
-  });
+    if (emitted.has(hostPath)) continue;
+    emitted.add(hostPath);
+    args.push(workspaceArg(hostPath, mount.mode));
+  }
+  return args;
 }
 
 /** `sbx create` argv for one profile (exported so tests can pin the shape). */
@@ -911,6 +930,50 @@ export function policyAllowArgs(sandbox: string, hosts: readonly string[]): stri
 }
 
 /**
+ * true ⇒ `target` IS `root` or lies beneath it. A separator-respecting prefix
+ * test (`path.relative`), not `String.startsWith`: `/vault-evil` is NOT inside
+ * `/vault`.
+ */
+function isSameOrInside(target: string, root: string): boolean {
+  const relative = path.relative(root, target);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+/**
+ * FAIL CLOSED before any `sbx` invocation: a spawn cwd that is (or lies inside)
+ * a directory the sandbox mounts for another purpose would mount that directory
+ * with the WORKTREE's mode.
+ *
+ *  - cwd === vault (a librarian session started in the vault): the same path
+ *    would arrive twice with contradictory modes, and `sbx create` refuses it
+ *    with "conflicting read-only settings for workspace" — a spawn that cannot
+ *    even start, reported as an opaque CLI failure.
+ *  - cwd INSIDE the vault from a worker/general spawn: the vault would be a
+ *    read-write WORKSPACE of that VM, silently. That is the real hole —
+ *    "only the librarian touches the vault" must be enforced here, not left to
+ *    convention (the vault is not a git checkout, exactly like a worktree, so
+ *    nothing downstream would notice).
+ *
+ * A refusal is cheap (no VM, no scratch dir) and the message says what to do.
+ */
+function refuseWorkspaceOverlap(
+  worktreePath: string,
+  protectedMounts: { label: string; root: string; hint: string }[],
+): void {
+  const worktree = path.resolve(worktreePath);
+  for (const protectedMount of protectedMounts) {
+    const root = path.resolve(protectedMount.root);
+    if (!isSameOrInside(worktree, root)) continue;
+    throw new Error(
+      "spawn refused: cwd " + worktree +
+      (worktree === root ? " is" : " lies inside") +
+      " the sandbox's " + protectedMount.label + " mount " + root +
+      "; " + protectedMount.hint + " — spawn with the repo root as cwd",
+    );
+  }
+}
+
+/**
  * Create one worker sandbox from the saved template, falling back to the local
  * kit when the template is not on this host yet (the template may be created by
  * a parallel step). Applies the profile's egress allow rules per sandbox.
@@ -926,6 +989,20 @@ export async function createWorkerSandbox(opts: CreateSandboxOptions): Promise<S
   const name = opts.name ?? generatedSandboxName(opts.role);
   const template = opts.template ?? SANDBOX_TEMPLATE_NAME;
   const kitPath = path.resolve(opts.cwd ?? process.cwd(), opts.kitPath ?? SANDBOX_KIT_FALLBACK_PATH);
+  // The vault is protected for EVERY role, not just the role that mounts it: a
+  // worker/general spawn with a cwd inside the vault would otherwise mount the
+  // vault read-write as its worktree. A `scratch` mount is protected too (it is
+  // the disposable rw PRIMARY, so a worktree inside it must never be a second
+  // workspace). Both checks run before anything is created.
+  refuseWorkspaceOverlap(opts.worktreePath, [
+    {
+      label: "vault",
+      root: opts.vaultPath ?? SANDBOX_VAULT_PATH,
+      hint: profile.mounts.some((mount) => mount.kind === "vault")
+        ? "the profile already mounts it"
+        : "only a librarian sandbox may mount the vault",
+    },
+  ]);
   // sbx requires a read/write PRIMARY workspace. A production role mounts the
   // worktree rw and needs nothing else; a scratch-mount role (scout) must not
   // write the repo, so it gets a throwaway host dir as the primary and the
@@ -944,6 +1021,19 @@ export async function createWorkerSandbox(opts: CreateSandboxOptions): Promise<S
       /* host temp dir; the OS cleans it eventually */
     }
   };
+  // Same fail-closed check against the scratch PRIMARY, now that its path
+  // exists: a worktree inside the disposable dir would be mounted twice (rw
+  // primary + worktree). Refusing must not leak the temp dir.
+  if (scratchPath) {
+    try {
+      refuseWorkspaceOverlap(opts.worktreePath, [
+        { label: "scratch", root: scratchPath, hint: "the profile already mounts it as the primary workspace" },
+      ]);
+    } catch (error) {
+      discardScratch();
+      throw error;
+    }
+  }
 
   const create = async (reference: "template" | "kit"): Promise<SbxProcessResult> =>
     await runSbx(
