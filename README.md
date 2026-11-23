@@ -1,8 +1,20 @@
 # lt-api
 
-**League Tokens API** — a backend service for a game token system, built as a progressive learning project. The goal is not to ship fast, but to build deep understanding of backend fundamentals one phase at a time.
+**League Tokens API** — a Go backend service for a game token system, built as a progressive learning project: the goal is to build deep understanding of backend fundamentals one phase at a time, not to ship fast. The service is one modular monolith; four support systems sit around it and each owns one job. The executable specification in `docs/spec/` states which business rules the system holds, who decides each one, and how we know it still holds. The delegated-work harness in `.pi/`, with its machine-checked policy in `WORKFLOW.md`, decides who may change what and which gate certifies the change. The learning plan in `docs/league-tokens-learning-phases/` explains each backend concept in the order this project introduces it. The developer hub in `docs/README.md` is the map across all of them.
+
+Start with the row that matches your question:
+
+| Question | Read |
+| --- | --- |
+| Where does a new developer start? | [`docs/README.md`](docs/README.md) — the four planes, the one-change flow, where each gate lives |
+| Which business rules does the system hold, and what enforces them? | [`docs/spec/README.md`](docs/spec/README.md) — the rule catalog, the Gherkin scenarios, the checker |
+| Who may change what, and what proves a change is good? | [`docs/delegate-workflow.md`](docs/delegate-workflow.md) for the narrative, [`WORKFLOW.md`](WORKFLOW.md) for the policy |
+| Why does a concept exist, and in which phase do we add it? | [`docs/league-tokens-learning-phases/README.md`](docs/league-tokens-learning-phases/README.md) |
+| Why was a decision made, and what did we learn? | [`.pi/skills/lt-api-kb/SKILL.md`](.pi/skills/lt-api-kb/SKILL.md) — the knowledge vault |
 
 ## Tech stack
+
+The runtime surface stays deliberately small, so each phase introduces machinery only when the system needs it:
 
 - **Go** (1.27)
 - `net/http` standard library (routing/mux)
@@ -11,7 +23,7 @@
 
 ## Learning path
 
-Implementation follows the phased plan in [`docs/league-tokens-learning-phases/`](docs/league-tokens-learning-phases/README.md):
+Implementation follows the phased plan in [`docs/league-tokens-learning-phases/`](docs/league-tokens-learning-phases/README.md), with one guide file per phase:
 
 0. HTTP/API foundation
 1. PostgreSQL persistence
@@ -24,6 +36,8 @@ Implementation follows the phased plan in [`docs/league-tokens-learning-phases/`
 8. Transactional outbox & events
 
 Each phase introduces one major backend concept only when the system has a concrete reason to need it. Things deliberately deferred: microservices, Kubernetes, message brokers, Redis, gRPC, and heavy architectural frameworks.
+
+Two domain documents in `docs/league-tokens-learning-phases/` are the source of truth the phases build on: `domain-knowledge.md` is the player-facing game design, and `domain-knowledge-game-engine.md` defines season and match lifecycles, Ride behavior, and the engine states the system must protect.
 
 ## Project layout
 
@@ -89,14 +103,22 @@ composes them — so the wire surface is identical to the pre-refactor one.
 The E2E suite lives in `internal/e2e` and composes the
 real modules exactly like `cmd/api/main.go` through one shared helper.
 
+Two files state these rules in code and in picture form: `internal/arch/arch_test.go` pins every import edge between the module, kernel, platform and shared classes, so a new import either fits the matrix or fails the build, and `docs/designs/bounded-contexts-dependency-map.mmd` draws the data-flow view of the same contexts.
+
 ## Database: context schemas, per-context roles and configuration
 
-The Postgres layout mirrors the bounded contexts (ADR-028), and the
-boundary is enforced by Postgres itself (migrations 000015–000018):
+The Postgres layout mirrors the bounded contexts (ADR-028 — one Postgres schema per bounded context), and the boundary is enforced by Postgres itself (migrations 000015 through 000018):
 
 - `schedule` — teams, seasons, rounds, matches (+ their internal gates)
 - `game` — rides, players, idempotency_keys
 - `identity` — users, user_tokens, roles, permissions, roles_permissions
+
+Four migrations carry that split:
+
+- 000015 gives each context its own schema
+- 000016 drops the cross-context foreign keys the split makes unenforceable
+- 000017 moves the ride-result agreement check out of a database trigger into game's Go code
+- 000018 creates the per-context roles with their grants
 
 One NOLOGIN role per context — `schedule_app`, `game_app`, `identity_app` —
 holds exactly its own schema's CRUD; `game_app` can additionally EXECUTE
@@ -141,7 +163,7 @@ the membership grant makes `SET ROLE` possible).
 
 ### Bounded contexts: who owns what
 
-The schema split above mirrors the module split. **Schedule** owns teams,
+The three-schema split mirrors the module split. **Schedule** owns teams,
 seasons, rounds and matches, mints their ids, and is the ACL for the upstream
 feed; it publishes `MatchResultRecorded` and `RoundCompleted` on the
 in-process eventbus (transactional outbox deferred to Phase 08). **Game**
