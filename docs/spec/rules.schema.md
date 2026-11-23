@@ -16,12 +16,15 @@ The catalog exists so that every rule answers three questions in one place:
 3. **How do we know it still holds** — the tests that exist *today*, and the expert
    document the rule came from.
 
-Vocabulary follows the vault's lessons: *Four kinds of rule decide where logic lives*,
-*Source of truth per invariant*, *A rule with two enforcement points has zero*, and
-*Tactical design heuristics*.
+Four kinds of rule decide where logic lives: an invariant (data integrity) is enforced by
+the database, a policy (business math and windows) by the domain, orchestration (order,
+transaction boundary) by the service, and an interface rule (request framing) by the
+handler. Vocabulary follows the vault's lessons: *Four kinds of rule decide where logic
+lives*, *Source of truth per invariant*, *A rule with two enforcement points has zero*,
+and *Tactical design heuristics*.
 
-> **Naming note.** `repository` (the vault Lessons call this layer *store*; the Go type
-> was renamed `Store` → `Repository` in the modular-monolith refactor).
+> **Naming note.** This document says `repository`; it means the layer some older
+> material calls *store* — the Go type is `Repository`.
 
 ---
 
@@ -103,11 +106,10 @@ keeps the seeded values true is migration immutability. No `seed` /
 | `cross-row` | Needs `OLD`, a sibling row, or a group aggregate. |
 | `cross-table` | Needs another table's facts. In a modular monolith that is usually a boundary smell — see `boundary`. |
 
-The front-matter key is `write_scope:` (it was `scope:` in the retired single-file
-catalog, and the old key is now a hard error because the rule file decodes strictly —
-§2, the rule file). The **values** are unchanged, and the field is still about *what the
-write reads*, never about which module or run the rule belongs to — that is what `module`
-and `expert-ref` are for.
+The front-matter key is `write_scope:`. `scope:` is a hard decoding error, because the
+rule file decodes strictly (§2, the rule file). The field is about *what the write
+reads*, never about which module or run the rule belongs to — that is what `module` and
+`expert-ref` are for.
 
 ### `enforcement[].layer` — where the site lives
 
@@ -134,12 +136,11 @@ and `expert-ref` are for.
 if it names what ties it to the authority:
 
 - `pinned_by: <fixture>` — a shared change-detector fixture (§4, fixtures), **or**
-- `pinned_by: null` **and** the rule's `tie:` field (the rule file, §2 — it replaces the retired
-  `Tie:` sentence convention in `notes`) showing the copy cannot drift silently:
-  **defense-in-depth** must
-  fail loudly at the authority (wrong copy ⇒ the constraint/trigger refuses and its own
-  test fails first); **advisory-copy** is exempt by definition — it only shapes the
-  refusal, the authority still refuses the write.
+- `pinned_by: null` **and** the rule's `tie:` field (the rule file, §2) showing the copy
+  cannot drift silently: **defense-in-depth** must fail loudly at the authority (wrong
+  copy ⇒ the constraint/trigger refuses and its own test fails first); **advisory-copy**
+  is exempt by definition — it only shapes the refusal, the authority still refuses the
+  write.
 
 If neither holds for a data-carrying copy, the entry is a second copy of the rule —
 which the vault counts as zero. The remedy is `status: drifted` with the missing tie
@@ -156,11 +157,13 @@ named in the rule's `## Notes`.
 **Rot is not drift.** A *rotted pointer* — a change-detector naming a dead file, a
 comment pointing at a deleted test, enforcement that moved away from where the docs
 claim it lives — does NOT make a rule `drifted`: its content still holds. Keep `status:
-implemented` and record the rot in the rule's `stale_pointer` field (the rule file, §2) —
+implemented` and record the rot in the rule's `stale_pointer` field (the rule file, §2);
 policy 5 (stale pointers only on implemented rules) refuses that field on any other
-status. Both `drifted` rules and every `stale_pointer` MUST be surfaced by `spec/check`,
-which owns the verdict — `spec work` surfaces drifted rules as its first queue priority,
-but it never evaluates `stale_pointer`.
+status.
+
+Both `drifted` rules and every `stale_pointer` MUST be surfaced by `spec/check`, which
+owns the verdict — `spec work` surfaces drifted rules as its first queue priority, but it
+never evaluates `stale_pointer`.
 
 When a rule conflicts with the domain sources (`domain-knowledge.md`,
 `domain-knowledge-game-engine.md`), the domain sources win: the rule is marked `drifted`
@@ -180,15 +183,14 @@ The coarse enum values `authority: db|app|both` and
 `layer: validator|domain|service|db|middleware` map onto this schema's taxonomy: the
 five-value authority and six-value layer name *which* app layer. The table below records
 the mapping. It is a reading aid, not a transform: a rule file carries this schema's
-values directly (the retired single-file catalog's coarse values are gone), and the
-threadbare dashboard prints no per-rule fields at all.
+values directly, and the threadbare dashboard prints no per-rule fields at all.
 
 | coarse | this schema |
 |---|---|
 | `authority: db` | `database` |
 | `authority: app` | `domain` \| `service` \| `repository` \| `composition-root` \| `handler` (the actual value) |
 | `authority: both` | not a valid state: one `authority` + N `enforcement` entries |
-| `layer: validator` | `validator` (own value as of A2; use `handler` for inline DTO checks) |
+| `layer: validator` | `validator` (own value; use `handler` for inline DTO checks) |
 | `layer: db` | `db-constraint` or `db-trigger` |
 | `layer: middleware` | `handler` |
 
@@ -258,14 +260,14 @@ exactly **one** YAML document.
 |---|---|---|---|
 | `id` | string | yes | `R-<MODULE>-NNN`, flat per module, stable once assigned. Must equal the file's stem. Never renumber. A retired rule's file is deleted from the catalog and recorded in `rules/README.md`'s retired-ids note; its id is never reused. |
 | `title` | string | yes | Short imperative name ("Rides are born locked"). |
-| `statement` | string (block) | yes | 1–3 sentences of business language. What the business demands, no code-speak. It is a **front-matter** field, not body prose (ADR-030: the statement stays machine-readable — greppable and carried by the one strict-decoded document — rather than swallowed into body prose, so no generated view has to parse it back out). |
+| `statement` | string (block) | yes | 1–3 sentences of business language. What the business demands, no code-speak. It is a **front-matter** field, not body prose: the statement stays machine-readable — greppable and carried by the one strict-decoded document — rather than swallowed into body prose, so no generated view has to parse it back out (ADR-030). |
 | `module` | enum | yes | Owner context of the *rule*, not of every enforcement site. Must equal the name of the directory the file sits in (§2, the loader's strictness). |
 | `entity` | string | yes | Table or aggregate the rule is about (`ride`, `balance`, `journal_entry`). **Descriptive only** — no policy reads it; it exists for the work-order field table. |
 | `category` | enum | yes | The frozen enum, §1. |
 | `status` | enum | yes | The frozen enum, §1. |
 | `authority` | enum | yes | Exactly one. |
 | `mechanism` | enum \| null | iff `authority: database` | The frozen enum, §1. |
-| `write_scope` | enum \| null | required for `authority: database`; optional elsewhere | The frozen enum, §1. Renamed from `scope:` — the old key is a hard error. Outside the database it records the predicate's *shape*, which is often the reason the rule left the DB (`R-GAME-010`: `cross-table` is exactly why 000017 moved it to Go). |
+| `write_scope` | enum \| null | required for `authority: database`; optional elsewhere | The frozen enum, §1. `scope:` is a hard error. Outside the database it records the predicate's *shape*, which is often the reason the rule left the DB (`R-GAME-010`: `cross-table` is exactly why 000017 moved it to Go). |
 | `enforcement` | list | yes (may be empty only for `specified-only`) | Each item: `site`, `layer`, `role`, `pinned_by`. |
 | `enforcement[].site` | string | yes | Go: `path::Symbol` (`internal/game/internal/core/domain/ride.go::Ride.Create`). SQL: the migration id (`migrations/000012_add_rides_insert_state_gate.up.sql`). **Never line numbers.** |
 | `enforcement[].layer` | enum | yes | The frozen enum, §1. |
@@ -280,10 +282,10 @@ exactly **one** YAML document.
 | `verification.unit` | list of strings | yes for `implemented` (one of three) | `path::TestSymbol` (add `::Subtest` text only if the subtest name is stable). One of `unit`/`e2e`/`gherkin`: **any one** satisfies policy 3. Must exist **today** — grep it. |
 | `verification.e2e` | list of strings | no | `path::TestSymbol` for existing E2E coverage. Counts toward policy 3 exactly like `unit`; a rule proved only by an e2e test is covered. Must exist **today**. |
 | `verification.gherkin` | list of strings | no | `<feature-file>::<scenario name>` under `docs/spec/features/**`; every scenario carries an `@rule:R-...` tag. Counts toward policy 3 like `unit`/`e2e`; policy 10 resolves every pointer against the feature tree. |
-| `expert-ref` | string (path) | required for `specified-only` | The domain source the rule comes from — a section of `docs/league-tokens-learning-phases/domain-knowledge.md` or `domain-knowledge-game-engine.md` (policy 4). Existing rules may still point at a phase guide (29 do today): the migration to domain-source refs is planned for the next phase, and the checker continues to accept any existing file under `docs/league-tokens-learning-phases/` until then. Omitted where no doc covers the rule. |
+| `expert-ref` | string (path) | required for `specified-only` | The domain source the rule comes from — a section of `docs/league-tokens-learning-phases/domain-knowledge.md` or `domain-knowledge-game-engine.md` (policy 4). Existing rules may still point at a phase guide (28 do today); the checker accepts any existing file under `docs/league-tokens-learning-phases/`. Omitted where no doc covers the rule. |
 | `knowledge-ref` | string (path) | no | An auxiliary knowledge note behind the rule, relative to the repository root, under `docs/league-tokens-learning-phases/` (policy 16) — typically the phase guide that implements the rule. It is **additional** to `expert-ref`, never a replacement. |
-| `stale_pointer` | string (block) \| null | no | A **rot** note: pointers that no longer resolve (a dead file, a deleted test, enforcement that moved). Legal **only** on `status: implemented` — policy 5 refuses it on any other status (`stale-pointer note on a <status> rule`). It replaces the retired `stale-pointer:` prefix that used to live inside `notes`; the two are not interchangeable and the old prefix in prose is just prose. |
-| `tie` | string (block) \| null | no | How a data-carrying copy is tied to its authority: the sentence that shows it cannot drift silently (wrong copy ⇒ the authority refuses, and its own test fails first). Policy 7 accepts a non-null `tie` in place of a `pinned_by` fixture for a `defense-in-depth` site; `advisory-copy` needs neither. It replaces the retired `Tie:` sentence convention inside `notes`. |
+| `stale_pointer` | string (block) \| null | no | A **rot** note: pointers that no longer resolve (a dead file, a deleted test, enforcement that moved). Legal **only** on `status: implemented` — policy 5 refuses it on any other status (`stale-pointer note on a <status> rule`). It is a front-matter field, not a `stale-pointer:` prefix inside `notes`; a prefix in prose is just prose. |
+| `tie` | string (block) \| null | no | How a data-carrying copy is tied to its authority: the sentence that shows it cannot drift silently (wrong copy ⇒ the authority refuses, and its own test fails first). Policy 7 accepts a non-null `tie` in place of a `pinned_by` fixture for a `defense-in-depth` site; `advisory-copy` needs neither. It is a front-matter field; a `Tie:` sentence inside `notes` is prose only. |
 
 There is **no `notes` field.** The rule's notes are the prose under the body's `## Notes`
 heading; `notes:` in the front matter is a hard decoding error (the loader's
@@ -320,8 +322,8 @@ The directory layout is strict, because a misplaced file would silently drop a r
   rule.
 - Per file: the front matter must open with a `---` fence on line 1 and close with the
   next one; it decodes **strictly**, so an unknown or misspelled key is an error.
-  `scope:` (the retired name) and `notes:` (a field that no longer exists) are therefore
-  hard errors, not silently dropped keys.
+  `scope:` is a hard decoding error, and so is `notes:` (a field the schema does not
+  define) — an unknown key is never silently dropped.
 - Per file: the front-matter `id` must equal the file stem and the front-matter `module`
   must equal the directory name.
 - Across files: ids are unique — the same id in two module directories is an error.
@@ -450,7 +452,7 @@ disagrees is drift to fix (§1, the frozen enums, where the domain sources win).
    enforcement site carries its annotation — both directions: the site names the rule,
    the annotation names a catalog rule).
 
-## Check it worked
+## 6. Check it worked
 
 Both paths end at the same gate, and all three commands below are green before the batch
 is done:
@@ -467,5 +469,8 @@ is done:
   that red is the expected state of a rule stated ahead of its code, not a catalog
   failure.
 
-A lane that names rule ids also carries VERIFIED prove before the merge; the workflow
-(`README.md` §1 and §7) owns that gate.
+A lane that names rule ids also carries a VERIFIED prove verdict before the merge: the
+prove registry's bypass scenarios for each named rule ran and passed, or a
+git-attributed signoff covers it, and `make prove args='--rule <ID>'` is not part of
+`make audit` even though it is the merge-back gate (the workflow in
+`docs/spec/README.md` §1 and §7 owns that gate).

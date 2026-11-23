@@ -13,17 +13,19 @@ invariant, what the checker accepts and the remedy its finding points at; the ch
 implementation is the verdict, so where the two disagree the checker is right and this
 file is a bug to fix.
 
-**Citing a policy.** Always expand the statement inline at first use, so a reader who
-lands on the citing sentence does not have to open this file to know what was meant:
-*policy 7 (non-authoritative sites are tied by a fixture or a tie note)*,
-*policy 13 (step text stays inside the vocabulary)*. Link the expansion to the policy's
-own section, `policies.md#policy-<n>--<short-name>`; later uses in the same section may
-shorten to *policy 13*.
-
 An ERROR fails `--strict`; a WARN never does. The frozen enums a policy reasons about
 (`category`, `authority`, `mechanism`, `write_scope`, `enforcement[].layer`,
 `enforcement[].role`, `status`) and the rule file's field table are stated once in
 `rules.schema.md` — §1 for the enums, §2 for the fields.
+
+## Citing a policy
+
+Always expand a policy's statement inline at first use, so a reader who lands on the
+citing sentence does not have to open this file to know what was meant: *policy 7
+(non-authoritative sites are tied by a fixture or a tie note)*, *policy 13 (step text
+stays inside the vocabulary)*. Link the expansion to the policy's own section,
+`docs/spec/policies.md#policy-<n>--<short-name>`; later uses in the same section may
+shorten to *policy 13*.
 
 ---
 
@@ -93,84 +95,102 @@ rule, and every scenario names exactly one (checker id `12-features`).
 ## Policy 13 — Step text stays inside the vocabulary
 
 Every step in `docs/spec/features/**` is bounded by the vocabulary, in both directions
-(checker id `13-vocabulary`):
+(checker id `13-vocabulary`).
 
-- **Denylist (absolute for transport).** A step may not use the transport words of
-  `gherkin-style.md` §6 — `http`, `https`, `json`, `request`, `response`, `header`,
-  `headers`, `endpoint`, `route`, `handler`, `dto`, `payload`, `status code` — or a bare
-  three-digit HTTP-range figure (`200`, `401`, `409`, `422`, `500`). A three-digit
-  figure is a QUANTITY rather than a status only when the very next token of the step is
-  one of the closed set of units and business nouns `tokens`, `rounds`, `matches`,
-  `minutes`, `hours`, `days`, `seconds`, `players`, `teams`, `members`, `points`,
-  `entries`, `rows` (`100 tokens`, `200 entries`, `200 rows`). The set is curated and
-  closed: the figure either quantifies one of those nouns or it is the transport fact the
-  vocabulary section of `gherkin-style.md` (§6) forbids — a figure at the end of a step
-  (`refused as 409`) and a figure before any other token (`409 status`, `409 conflict`,
-  `200 ok`) are numeric statuses.
-- **SQL vocabulary (adjacency).** The SQL words of `gherkin-style.md` §6 are
-  partitioned, because some of them are ordinary English:
-  - **Homographs** — `check`, `unique`, `index`, `references`, `create`, `table`,
-    `column` — never error **alone**: `the check passes`, `each pair of teams is unique`
-    and `the table is set for match day 1` are business prose. A homograph fires only on
-    **adjacency**: it is an ERROR iff the neighbouring token of the same step is itself
-    SQL vocabulary — homograph or hard keyword — or one of the database object nouns
-    `key`, `database`, `schema`, `row`. Adjacency is i±1 **after skipping the closed
-    stopword set** `a`, `an`, `the`, `new`, `temporary`, `each`, `every`, `per`: the walk
-    passes over consecutive stopwords, the first non-stopword neighbour decides, and the
-    boundary of the token stream is not adjacency. So `create table`, `create a table`,
-    `create a new table`, `check constraint`, `unique index` and `unique key` are ERRORs.
-  - **Hard keywords** — `select`, `insert`, `update`, `delete`, `join`, `drop`, `alter`,
-    `constraint`, `trigger`, `grant`, `revoke`, `cascade`, `upsert`, `truncate` — have no
-    English reading in this domain and error alone, exactly as before: `insert into
-    game.rides` is an ERROR.
-  Matching is on **exact tokens** and does no stemming, which is what gives the two
-  halves the asymmetry above: a hard keyword errors **alone**, a homograph only on
-  adjacency. Their inflected forms (`deletes`, `updates`, `inserting`, `created`) are
-  therefore ordinary words that trigger nothing on their own — they bind through the
-  glossary below like every other undeclared word.
-  - The SQL half is **scoped to facade steps**: the sabotage family of
-    `gherkin-style.md` §8 (`the Owner pool …`, `the write is refused by …`, `the refusal
-    names …`, `the write is allowed`) exists to bypass the application with raw writes
-    and legitimately says `insert`; no SQL word, homograph or hard, is reported there,
-    and the exemption is decided once per step and covers its step arguments. The
-    transport half applies to it.
-  The denylist also reads each token **split on `_`**, so joining words is not a way past
-  it: `status_code` denies as the phrase `status code`, `http_status` as the transport
-  word `http`, and a figure respelled with letters (`2OO`) as the numeric status it
-  imitates. A database object name's fragments are scanned that way too, and a homograph
-  fragment is SQL by the **form** of the identifier it belongs to — `check` in
-  `matches_ended_at_check` is an ERROR without needing a neighbour, since splitting names
-  must not reopen the `_` bypass — and such names surface only in sabotage steps
-  (`gherkin-style.md` §8), where the sabotage exemption covers them **only when the name
-  is REAL**: a `refusal.constraint` or `refusal.sentinel` value in a rule file under
-  `docs/spec/rules/`, or a name that appears literally in a `migrations/*.sql` file. A
-  fabricated name gets the phrase denylist normally, in a sabotage step as anywhere
-  else.
-- **Allowlist (the seeded glossary).** Every remaining token of every step must be
-  declared in `docs/spec/glossary.yaml` — in the section named after the feature file's
-  module directory (`game`, `identity`, `schedule`, `ledger`, `kernel`, `platform`, one
-  section each even where the module has no feature file yet) or in the shared `common`
-  section. An undeclared token is an ERROR naming `file::scenario` and the section to
-  extend. The seed describes the vocabulary the tree uses today; extending it is part of
-  the change that needs the word. A term that merely respells denylisted **transport**
-  vocabulary over its `_`-split form (`status_code`, `http_status`), that glues any two
-  or more such words together with no separator at all (`httpstatus`, `httpstatuscode`,
-  `statuscodehttp`), or that is a status figure written with letters in place of digits —
-  the three-character figure, a leading 1–5 and then digits or the letter `o` (`2oo`,
-  `4O4`, `2o0`), or that same figure with its trailing `o`s standing in for nothing
-  (`200o`, `2o0o`) — is an ERROR naming the section and the term, and never enters the
-  allowlist: the remedy may not launder the disguise. The SQL half of the denylist is
-  deliberately **not** applied to glossary terms, so the database object names the
-  sabotage steps declare (`rides_tokens_locked_check`) stay addable here.
-- **Tokenizer.** Lowercase; the English possessive suffix (`'s`) folds away; quoted
-  literals (`"Spring 2026"`, `"2–1"`, `"ana@example.com"`) are data and are dropped;
-  every remaining run of characters other than a letter, a digit or an underscore becomes
-  a separator. Underscore is *not* a separator, so a database object name
-  (`rides_state_gate`) is one token and is seeded like any other word. A step's
-  **docstring body and data-table cells** are part of the step: the same rules scan them
-  and the same `file::scenario` pointer reports them. A docstring body keeps its
-  quotation marks (there they are prose, not data); a table cell keeps the
-  quoted-literal exemption.
+**Denylist (absolute for transport).** A step may not use the transport words of
+`gherkin-style.md` §6 — `http`, `https`, `json`, `request`, `response`, `header`,
+`headers`, `endpoint`, `route`, `handler`, `dto`, `payload`, `status code` — or a bare
+three-digit HTTP-range figure (`200`, `401`, `409`, `422`, `500`).
+
+A three-digit figure is a QUANTITY rather than a status only when the very next token of
+the step is one of the closed set of units and business nouns `tokens`, `rounds`,
+`matches`, `minutes`, `hours`, `days`, `seconds`, `players`, `teams`, `members`, `points`,
+`entries`, `rows` (`100 tokens`, `200 entries`, `200 rows`).
+
+The set is curated and closed: the figure either quantifies one of those nouns or it is
+the transport fact the vocabulary section of `gherkin-style.md` (§6) forbids — a figure
+at the end of a step (`refused as 409`) and a figure before any other token (`409
+status`, `409 conflict`, `200 ok`) are numeric statuses.
+
+**SQL vocabulary (adjacency).** The SQL words of `gherkin-style.md` §6 are partitioned,
+because some of them are ordinary English:
+
+- **Homographs** — `check`, `unique`, `index`, `references`, `create`, `table`,
+  `column` — never error **alone**: `the check passes`, `each pair of teams is unique`
+  and `the table is set for match day 1` are business prose. A homograph fires only on
+  **adjacency**: it is an ERROR iff the neighbouring token of the same step is itself
+  SQL vocabulary — homograph or hard keyword — or one of the database object nouns
+  `key`, `database`, `schema`, `row`. Adjacency is i±1 **after skipping the closed
+  stopword set** `a`, `an`, `the`, `new`, `temporary`, `each`, `every`, `per`: the walk
+  passes over consecutive stopwords, the first non-stopword neighbour decides, and the
+  boundary of the token stream is not adjacency. So `create table`, `create a table`,
+  `create a new table`, `check constraint`, `unique index` and `unique key` are ERRORs.
+- **Hard keywords** — `select`, `insert`, `update`, `delete`, `join`, `drop`, `alter`,
+  `constraint`, `trigger`, `grant`, `revoke`, `cascade`, `upsert`, `truncate` — have no
+  English reading in this domain and error alone, exactly as before: `insert into
+  game.rides` is an ERROR.
+
+Matching is on **exact tokens** and does no stemming, which is what gives the two halves
+the asymmetry above: a hard keyword errors **alone**, a homograph only on adjacency.
+Their inflected forms (`deletes`, `updates`, `inserting`, `created`) are therefore
+ordinary words that trigger nothing on their own — they bind through the glossary below
+like every other undeclared word.
+
+The SQL half is **scoped to facade steps**: the sabotage family of `gherkin-style.md` §8
+(`the Owner pool …`, `the write is refused by …`, `the refusal names …`, `the write is
+allowed`) exists to bypass the application with raw writes and legitimately says
+`insert`; no SQL word, homograph or hard, is reported there, and the exemption is
+decided once per step and covers its step arguments. The transport half applies to it.
+
+**Denylist (`_`-split forms).** The denylist also reads each token **split on `_`**, so
+joining words is not a way past it: `status_code` denies as the phrase `status code`,
+`http_status` as the transport word `http`, and a figure respelled with letters (`2OO`)
+as the numeric status it imitates.
+
+A database object name's fragments are scanned that way too, and a homograph fragment is
+SQL by the **form** of the identifier it belongs to — `check` in
+`matches_ended_at_check` is an ERROR without needing a neighbour, since splitting names
+must not reopen the `_` bypass.
+
+Such names surface only in sabotage steps (`gherkin-style.md` §8), where the sabotage
+exemption covers them **only when the name is REAL**: a `refusal.constraint` or
+`refusal.sentinel` value in a rule file under `docs/spec/rules/`, or a name that appears
+literally in a `migrations/*.sql` file. A fabricated name gets the phrase denylist
+normally, in a sabotage step as anywhere else.
+
+**Allowlist (the seeded glossary).** Every remaining token of every step must be
+declared in `docs/spec/glossary.yaml` — in the section named after the feature file's
+module directory (`game`, `identity`, `schedule`, `ledger`, `kernel`, `platform`, one
+section each even where the module has no feature file yet) or in the shared `common`
+section. An undeclared token is an ERROR naming `file::scenario` and the section to
+extend. The seed describes the vocabulary the tree uses today; extending it is part of
+the change that needs the word.
+
+A term that does any of the following is an ERROR naming the section and the term, and
+never enters the allowlist: the remedy may not launder the disguise.
+
+- It merely respells denylisted **transport** vocabulary over its `_`-split form
+  (`status_code`, `http_status`).
+- It glues any two or more such words together with no separator at all (`httpstatus`,
+  `httpstatuscode`, `statuscodehttp`).
+- It is a status figure written with letters in place of digits — the three-character
+  figure, a leading 1–5 and then digits or the letter `o` (`2oo`, `4O4`, `2o0`), or that
+  same figure with its trailing `o`s standing in for nothing (`200o`, `2o0o`).
+
+The SQL half of the denylist is deliberately **not** applied to glossary terms, so the
+database object names the sabotage steps declare (`rides_tokens_locked_check`) stay
+addable here.
+
+**Tokenizer.** Lowercase; the English possessive suffix (`'s`) folds away; quoted
+literals (`"Spring 2026"`, `"2–1"`, `"ana@example.com"`) are data and are dropped;
+every remaining run of characters other than a letter, a digit or an underscore becomes
+a separator.
+
+Underscore is *not* a separator, so a database object name (`rides_state_gate`) is one
+token and is seeded like any other word. A step's **docstring body and data-table cells**
+are part of the step: the same rules scan them and the same `file::scenario` pointer
+reports them. A docstring body keeps its quotation marks (there they are prose, not data);
+a table cell keeps the quoted-literal exemption.
 
 ## Policy 14 — The category binds the verification and refusal surface
 
