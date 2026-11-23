@@ -34,9 +34,9 @@ Retired ids (kept as a note because ids are never reused):
 
 - the accepted crash gap between a committed round close and the settlement
   transaction that consumes RoundCompleted (close durable, settlement may be
-  dropped) — Phase 07/08 work, not a rule the code holds today.
+  dropped) — not a rule the code holds.
 - rankings / leaderboard rules — no code exists and the module enum has no
-  value for the context; phase 05 defers them to Phase 09+.
+  value for the context.
 - the phase-03 "inject a failure halfway through any major operation" test
   obligation — a verification gap across several rules, not a business
   statement.

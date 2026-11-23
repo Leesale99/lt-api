@@ -303,9 +303,11 @@ from a rule about prompts:
   committed on the host plane before the task text exists, and the batch is shown red
   for the right reason there. A worker never authors RED and never edits a scenario into
   agreement with its code — a scenario that looks wrong is a report.
-- **The worker's gates are advisory.** A worker's VM has no usable `.git` (so
-  `make audit/static` cannot be its gate) and no `LT_API_TEST_DSN` (so `make audit` and
-  `make prove` cannot run at all). Its loop is the scoped
+- **The worker's gates are advisory.** A worker's VM is git-less, and `make audit/static`
+  still runs there: its `gofmt` step enumerates `git ls-files` and degrades to a no-op
+  without a usable `.git`, a gap the worker covers with `gofmt -l` over the files it
+  touched. What a worker cannot run is the DB-backed half — `make audit` and `make
+  prove` — because no worker VM gets `LT_API_TEST_DSN`. Its loop is the scoped
   `spec check --strict --module <m>` / `--rule <id>` plus `gofmt`, plus `make spec/gen`
   when the catalog changed. Those runs shorten the loop and certify nothing.
 - **PROVE is a merge-back gate.** It is not a worker step and not a formality: for a
