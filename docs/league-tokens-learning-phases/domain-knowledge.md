@@ -97,8 +97,8 @@ and match windows are timed, and which match statuses the engine recognizes.
 - Each season is configured with **N teams** and **R rounds**.
 - The simulation corpus uses EuroLeague history: 18 teams and 34 rounds. A later season may use 20 teams.
 - The application build targets a **20-team, 38-round** season — a double round-robin in which every team
-  plays every other team once at home and once away. That shape is a recorded product decision (dated
-  2026-11-23), restated with the simulation parameters in §12 Simulation-Owned Parameters.
+  plays every other team once at home and once away. That shape is restated with the simulation parameters in
+  §12 Simulation-Owned Parameters.
 - The game uses the real league schedule, match results, and bookmaker odds.
 
 ### Season lifecycle
@@ -522,7 +522,7 @@ must examine, and the season-shape decision already made for the application bui
 is the pre-launch simulation corpus; the values below are starting assumptions, not immutable design
 decisions.
 
-> **Application configuration — product decision (2026-11-23).** The application build uses **20 teams and 38
+> **Application configuration.** The application build uses **20 teams and 38
 > rounds**: a double round-robin in which every team plays every other team once at home and once away. The
 > EuroLeague corpus description and the parameters below stay as historical context and simulation starting
 > points; the 20-team, 38-round shape is the configuration the application is built for.

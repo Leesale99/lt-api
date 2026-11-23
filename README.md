@@ -179,7 +179,7 @@ The three-schema split mirrors the module split. Each context owns one slice of 
   it publishes `MatchResultRecorded` and `RoundCompleted` on the in-process eventbus (transactional outbox
   deferred to Phase 08).
 - **Game** owns rides and players, drives the ride state transitions and settlement, and reaches schedule only
-  through the `SchedulePort` and ledger only through the extracted `Ledger` interface (`LockTokens` / `Burn`
+  through the `Schedule` port and ledger only through the extracted `Ledger` interface (`LockTokens` / `Burn`
   money intents) — never through schedule's or ledger's tables.
 - **Ledger** owns balances and is thin: money intents in, it writes its own tables.
 - **Identity** is the generic supporting context.

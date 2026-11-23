@@ -5,7 +5,7 @@ package testdb
 // asserts the boundary from the outside:
 //
 //   - game_app can read/write game.* and can execute schedule's two
-//     SECURITY DEFINER round guards (the SchedulePort's in-tx gates) but
+//     SECURITY DEFINER round guards (the Schedule port's in-tx gates) but
 //     is DENIED every direct schedule.* statement, read or write;
 //   - schedule_app can read/write schedule.* but is denied game.*;
 //   - identity_app can read identity.* but is denied the other two.
@@ -142,7 +142,7 @@ func TestGameAppBoundary(t *testing.T) {
 		VALUES ('boundary-probe', 'boundary', decode(repeat('00', 32), 'hex'), 200, '\x00'::bytea)`)
 	allowed(t, game, `DELETE FROM idempotency_keys WHERE key = 'boundary-probe'`)
 
-	// The SchedulePort's definer guards: schedule's own operations, the
+	// The Schedule port's definer guards: schedule's own operations, the
 	// only schedule surface game may touch. NULL/false for unknown ids is
 	// the facts-only answer.
 	allowed(t, game, `SELECT schedule.round_open_guard($1)`, 999)

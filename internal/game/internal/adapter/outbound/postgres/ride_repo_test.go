@@ -539,7 +539,7 @@ func decisionWrite(ctx context.Context, t *testing.T, ride domain.Ride, ownMatch
 
 // TestRideRepository_DecisionGuardedTx covers the DecisionPhase commands'
 // guarded write (Phase 04 TOCTOU sweep) in its post-split shape: the round
-// facts are the SchedulePort gates (run here through decisionWrite), the
+// facts are the Schedule port's gates (run here through decisionWrite), the
 // rides-row-only UPDATE re-checks the row's own facts (state, version) at
 // the write instant. Three deliberate choices the cases pin:
 //

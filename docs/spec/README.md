@@ -33,7 +33,7 @@ docs/spec/
 ├── rules/ — the catalog: <module>/<ID>.md, one authored file per rule;
 │            rules/README.md is the directory's own map
 ├── rules.schema.md — format authority (enums §1, the rule file §2, adding a rule §5)
-├── policies.md — the 18 machine-checked catalog policies, one section each
+├── policies.md — the machine-checked catalog policies, one section each
 ├── features/ — the Gherkin tree, one capability per file
 ├── glossary.yaml — the per-module step-vocabulary allowlist (policy 13)
 ├── prove/ — the registry, one <module>.yaml per module: which scenario
@@ -163,7 +163,7 @@ owns the verdict.
 
 ## 5. `spec check --strict`
 
-`make spec/check` runs `go run ./cmd/spec check --strict`: the 18 policies stated in
+`make spec/check` runs `go run ./cmd/spec check --strict`: the policies stated in
 [`policies.md`](policies.md), every pointer traced into the tree in both directions, and `--strict` making any
 ERROR fatal. That is why `make audit/static` cannot pass with a spec that disagrees with the code, and why an
 untraceable new entry fails the gate the moment it is written.

@@ -260,7 +260,7 @@ func (r *MatchRepository) Update(ctx context.Context, match model.Match) (model.
 // dependent (single-valued per group).
 func (r *MatchRepository) PhaseForMatch(ctx context.Context, matchID int) (model.RoundStatus, *time.Time, *time.Time, error) {
 	// Schema-qualified: this statement runs on both pools — the
-	// schedule's own (schedule_app) and, through the SchedulePort, game's
+	// schedule's own (schedule_app) and, through the Schedule port, game's
 	// ride commands' phase gate — so it names the schema it reads across
 	// instead of leaning on a search_path that differs per role.
 	query := `
@@ -287,7 +287,7 @@ func (r *MatchRepository) PhaseForMatch(ctx context.Context, matchID int) (model
 
 func (r *MatchRepository) NextForTeam(ctx context.Context, teamID int) (model.Match, error) {
 	// Schema-qualified like PhaseForMatch: dual-pool statement (schedule's
-	// own and, via the SchedulePort, game's continuation pick).
+	// own and, via the Schedule port, game's continuation pick).
 	query := `
 		SELECT m.id, m.created_at, m.starts_at, m.ended_at, m.season_id, m.round_id, m.home_team_id, m.away_team_id, m.status, m.home_odds, m.away_odds, m.home_score, m.away_score, m.version
 		FROM schedule.matches m

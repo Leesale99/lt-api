@@ -9,8 +9,7 @@ file per rule at `<module>/<ID>.md`, where the directory names the module and th
   [`../policies.md`](../policies.md).
 - **The workflow** — rule-change protocol, `spec work`, check, gen and prove: [`../README.md`](../README.md).
 
-The retired single-file catalog grouped rules under banner comments; the module directories carry that
-grouping now:
+The catalog groups rules by module directory:
 
 - `schedule` — calendar authority (teams, seasons, rounds, matches)
 - `game` — rides, players, settlement, the ride state machine, the event seam
@@ -26,7 +25,7 @@ Retired ids (kept as a note because ids are never reused):
 > merged into R-KERNEL-014 — kernel owns the statement, game call-sites are
 > enforcement sites on it. Ids are never reused.
 
-## Deliberately NOT catalogued yet
+## Deliberately not catalogued yet
 
 - the accepted crash gap between a committed round close and the settlement transaction that consumes
   RoundCompleted (close durable, settlement may be dropped) — not a rule the code holds.
