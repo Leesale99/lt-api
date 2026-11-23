@@ -659,7 +659,7 @@ func TestRideRepository_DecisionGuardedTx(t *testing.T) {
 		// A second player command (or a retry) holding the pre-decision
 		// snapshot: the state predicate refuses it — the decision is
 		// re-checked at the write instant, not only in the domain. The
-		// round is still open, so classifyUpdateRefusal reads the moved
+		// round is still open, so classifyDecisionRefusal reads the moved
 		// row and names the CAS loss: domain.ErrInvalidTransition, the same
 		// answer the domain read side gives this race.
 		_, err := decisionWrite(ctx, t, ride, closedMatch, 0)

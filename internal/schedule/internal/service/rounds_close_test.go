@@ -177,12 +177,14 @@ func seedFixture(ctx context.Context, t *testing.T) (int, int, int, int) {
 // TestMatchDeleteRestricted pins the post-000016 shape of the ADR-018 rule:
 // rides_match_id_fkey's RESTRICT is gone with the cross-context FKs
 // (migration 000016), so the store alone no longer refuses a delete over
-// rides — the "match still has rides" check is the api delete handler's,
-// an api-level composition of schedule's and game's facts (same 409; the
-// probe lives in internal/e2e/matches_test.go). This store-level case now
-// documents the boundary: the delete goes through (rides_player_id RESTRICT
-// is game-internal and stays, but nothing on THIS side references the
-// match anymore).
+// rides — the "match still has rides" check is the delete policy's
+// (internal/schedule/internal/service/delete_policy.go::Service.DeleteMatch),
+// which asks game's own RidesExistForMatch through the GameUsage port the
+// composition root adapts (cmd/api/gamerefs.go::gameRefs) and answers the
+// same 409; the probe lives in internal/e2e/matches_test.go. This
+// store-level case now documents the boundary: the delete goes through
+// (rides_player_id RESTRICT is game-internal and stays, but nothing on THIS
+// side references the match anymore).
 func TestMatchDeleteRestricted(t *testing.T) {
 	requireDB(t)
 
@@ -195,7 +197,7 @@ func TestMatchDeleteRestricted(t *testing.T) {
 	err := repository.NewMatchRepository(schedulePool).Delete(ctx, matchID, 1)
 
 	if err != nil {
-		t.Fatalf("Delete() = %v, want nil (rides RESTRICT moved to the api layer, 000016)", err)
+		t.Fatalf("Delete() = %v, want nil (rides RESTRICT moved to schedule's delete policy, 000016)", err)
 	}
 
 	// The delete actually deleted: the match row is gone.

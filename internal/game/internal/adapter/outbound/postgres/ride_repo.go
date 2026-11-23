@@ -75,9 +75,12 @@ func insertRide(ctx context.Context, q persistence.Querier, ride domain.Ride) (d
 	if err != nil {
 		switch {
 		case persistence.IsFKViolation(err):
-			// The referenced player, team or match does not exist — the
-			// transport validates only positivity, so an unknown parent can
-			// only be caught here.
+			// rides_player_id_fkey is the only reference this INSERT still
+			// carries (000016 dropped the cross-context FKs): the player is
+			// game's own record, so a missing one is caught here and nowhere
+			// above. The team reference is the use case's calendar check and
+			// the match reference is the round gate, both before this write;
+			// the transport validates only positivity.
 			return domain.Ride{}, domain.ErrNotFound
 		case persistence.IsTriggerViolation(err):
 			// rides_state_insert_gate: a non-locked state tried to be born
@@ -442,9 +445,11 @@ const decisionUpdateSQL = `
 //   - the round/destination gates are the use case's, run before this call
 //   - 0 rows is the CAS lost to a concurrent ride command — classified after
 //     the fact by classifyDecisionRefusal; rides_state_gate P0001 and
-//     rides_money_state_coupling 23514 -> ErrInvalidTransition; a
-//     destination deleted between the port gate and this write surfaces as
-//     the FK 23503 -> ErrNotFound
+//     rides_money_state_coupling 23514 -> ErrInvalidTransition
+//   - an FK 23503 -> ErrNotFound is the generic race-mapping shape kept in
+//     the switch, not a live reference check: since 000016 no FK is left on
+//     rides, so a destination deleted between the port gate and this write
+//     is the port gate's refusal, answered before this write ever runs
 //
 // rule:R-GAME-024
 func (r *RideRepository) DecisionGuardedTx(ctx context.Context, tx pgx.Tx, ride domain.Ride) (domain.Ride, error) {

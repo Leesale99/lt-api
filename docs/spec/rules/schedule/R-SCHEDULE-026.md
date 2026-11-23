@@ -70,8 +70,7 @@ verification:
     - docs/spec/features/schedule/deletion.feature::A match a ride still sits on cannot be deleted
 expert-ref: null
 knowledge-ref: null
-stale_pointer: |-
-  000016's header still describes the replacement as "the api layer (api holds the identity store)" and "the api season-delete handler" / "PlayerStore"; internal/api no longer exists — the delete policies are internal/schedule/internal/service/delete_policy.go, the adapter is cmd/api/gamerefs.go and the store is game's own repository.
+stale_pointer: null
 tie: |-
   they cannot drift into a wrong answer without failing the calendar's own delete test), and the composed check cannot silently disappear because the port is required at wiring time.
 ---

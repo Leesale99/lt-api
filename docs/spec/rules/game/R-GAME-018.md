@@ -44,8 +44,7 @@ verification:
     - docs/spec/features/game/idempotency.feature::A retry under the same key comes back with the recorded answer
 expert-ref: docs/league-tokens-learning-phases/phase-04-concurrency-and-idempotency.md
 knowledge-ref: null
-stale_pointer: |-
-  phase-04's §"Later, for HTTP commands, add an idempotency key table" is superseded sequencing, not a disagreement — migrations/000010 and this rule's sites are that table. Nothing else in the doc names a path that no longer exists.
+stale_pointer: null
 tie: null
 ---
 

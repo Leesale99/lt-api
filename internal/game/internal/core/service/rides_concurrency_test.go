@@ -444,7 +444,7 @@ func TestService_RideCommandsRaceOnOneRide(t *testing.T) {
 					// The loser: either its domain read saw the winner's
 					// commit (burned/unlocked is outside won_pending's
 					// transitions) or its guarded write lost the CAS and
-					// classifyUpdateRefusal named the cause.
+					// classifyDecisionRefusal named the cause.
 				default:
 					t.Fatalf("ride command = %v, want nil or domain.ErrInvalidTransition", err)
 				}

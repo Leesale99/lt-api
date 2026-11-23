@@ -41,8 +41,9 @@ func (r *PlayerRepository) GetAll(ctx context.Context, name string, favoriteTeam
 		args = append(args, "%"+name+"%")
 		conds = append(conds, fmt.Sprintf("name ILIKE $%d", len(args)))
 	}
-	// favorite_team_id is never 0 in the schema (FK), so 0 doubles as the
-	// "no filter" sentinel from the query-string default.
+	// favorite_team_id is a team the use case confirmed against the calendar
+	// (the FK that said so is gone with 000016) and team ids start at 1, so 0
+	// doubles as the "no filter" sentinel from the query-string default.
 	if favoriteTeamID != 0 {
 		args = append(args, favoriteTeamID)
 		conds = append(conds, fmt.Sprintf("favorite_team_id = $%d", len(args)))

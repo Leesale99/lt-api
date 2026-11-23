@@ -3,10 +3,10 @@ id: R-GAME-013
 title: Another context's records are checked when game writes a reference to them
 statement: |
   A registration's season and favourite team must exist in the calendar, and a
-  ride's team must exist, at the moment game writes them — the cross-context
-  foreign keys no longer do it. A missing favourite team is refused on the
-  field, a missing season or team elsewhere is not-found, and a registration
-  also requires its user to exist in the identity context.
+  ride's team must exist, at the moment game writes them: game checks each
+  cross-context reference itself before the write. A missing favourite team is
+  refused on the field, a missing season or team elsewhere is not-found, and a
+  registration also requires its user to exist in the identity context.
 module: game
 entity: player
 category: boundary
@@ -48,8 +48,7 @@ verification:
     - docs/spec/features/game/players.feature::A registration naming a team the calendar does not carry is refused
 expert-ref: null
 knowledge-ref: docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md
-stale_pointer: |-
-  two repository comments still describe FK-era behaviour after 000016 — ride_repo.go::insertRide's FK branch says "the referenced player, team or match does not exist", though with the cross-context FKs gone the only surviving reference on that INSERT is rides_player_id_fkey (a missing team or match is the port's check), and player_repo.go::GetAll's "favorite_team_id is never 0 in the schema (FK)" names an FK that 000016 dropped (0 still works as the no-filter sentinel).
+stale_pointer: null
 tie: |-
   the handler site fails loudly — it asks identity for the principal's user row and its refusal keeps the field-error shape, but the user reference is checked *only* there and only when the identity directory was installed (`if h.users != nil`): with the FK gone, a module wired without identity silently plants an orphan user_id.
 ---

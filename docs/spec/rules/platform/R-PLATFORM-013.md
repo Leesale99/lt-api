@@ -48,8 +48,7 @@ verification:
   gherkin: null
 expert-ref: docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md
 knowledge-ref: null
-stale_pointer: |-
-  phase-05 §"As built" names `cmd/server` as the composition root and the hoisted `internal/idempotency`, and lists "api — the HTTP gateway" as a component; the binary is cmd/api, the idempotency engine is internal/kernel/idempotency and there is no api package (each module owns its transport). The doc's §"Suggested ownership" is already flagged in the extraction as superseded by its own §"As built".
+stale_pointer: null
 tie: |-
   the copies cannot drift silently — TestImportBoundaries walks every import in the tree against internal/arch's allowedImports, so an httpx -> identity edge or a schedule -> identity edge fails the build's test first.
 ---

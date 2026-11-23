@@ -42,8 +42,7 @@ verification:
   gherkin: null
 expert-ref: null
 knowledge-ref: null
-stale_pointer: |-
-  two comments in the ride adapter still name the old shape — DecisionGuardedTx's doc comment says a destination deleted between the port gate and the write "surfaces as the FK 23503 -> ErrNotFound", while the inline comment two screens down says (correctly) that since 000016 no FK is left on rides and the branch is only the generic race-mapping shape; ride_repo_test.go's comments still cite classifyUpdateRefusal, a symbol that no longer exists (the classifiers are classifyDecisionRefusal, classifyArrivalRefusal and classifyResolveRefusal).
+stale_pointer: null
 tie: null
 ---
 

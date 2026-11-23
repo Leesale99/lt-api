@@ -53,7 +53,14 @@ func (r *Repository) AccrueBonus(ctx context.Context, q persistence.Querier, rid
 // bonus is forfeited, never paid out). Runs before the state arrival write
 // — rides_money_state_coupling (000013) refuses an unlocked|lost row
 // carrying acc, so the money write must precede the state write inside the
-// caller's transaction.
+// caller's transaction. This UPDATE is the copy that reaches the row:
+// domain.Ride.Unlock/Lost zero only an in-memory acc the repository never
+// persists, so they document the intent and this release-before-flip order
+// carries it. Change-detector: the constraint and this method are the
+// load-bearing pair — release before the arrival, or the CHECK refuses it —
+// and TestRideMoneyStateCoupling
+// (internal/game/internal/core/service/constraints_test.go) pins the refusal
+// name the two share.
 // rule:R-GAME-005
 func (r *Repository) ReleaseBonus(ctx context.Context, q persistence.Querier, rideID int) error {
 	tag, err := q.Exec(ctx, `

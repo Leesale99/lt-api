@@ -45,8 +45,7 @@ verification:
     - docs/spec/features/game/settlement.feature::A settlement that misreports the odds is refused and pays nothing
 expert-ref: docs/league-tokens-learning-phases/phase-05-modular-monolith-boundaries.md
 knowledge-ref: null
-stale_pointer: |-
-  the rule holds and is fixture-pinned (scoreStateRule: three score pairings × both sides, asserted against all three encodings), but the three change-detector comments that lead a reader between them are stale. 000011 and 000013 name "Match.Winner (internal/game/matches.go)" and "the CASE in RideStore.UpdateAllForMatchTx (internal/game/rides.go)", and 000017 says the check verifies "through the SchedulePort (Store.MatchResultTx)"; after the modular-monolith refactor the site is internal/schedule/internal/model/match.go::Match.Winner, the payload derivation is settlement.go::Service.settleRideFromResult (there is no CASE in SQL any more), the enforcement is settlement.go::resultAgreement, and the port method is Schedule.Match. internal/schedule/internal/model/match.go's own comment still points at "internal/game/score_state_rule_test.go", which no longer exists either. The rule's content is unchanged, so the status stays `implemented` — a rotted pointer is not drift; fix the comments at the current sites (do not rewrite applied migrations).
+stale_pointer: null
 tie: null
 ---
 
