@@ -124,6 +124,11 @@ tidy:
 # system gofmt older than the toolchain cannot parse newer language
 # features and misreports them as errors (e.g. generic methods in go1.27).
 GOFMT := $(shell go env GOROOT)/bin/gofmt
+# The gofmt step must never pass vacuously: in a git-less worktree `git ls-files`
+# yields nothing, gofmt with no path arguments reads stdin and prints nothing,
+# and the -z test would pass on a tree nobody looked at. Capture the list once
+# and refuse to run when it is empty.
+GOFILES := $(shell git ls-files '*.go' | grep -v '^vendor/')
 
 ## audit/static: run the static half of the merge gate (fails on any unformatted
 ## file, stale spec or spec-check error): go mod tidy -diff → go mod verify →
@@ -132,7 +137,8 @@ GOFMT := $(shell go env GOROOT)/bin/gofmt
 audit/static:
 	go mod tidy -diff
 	go mod verify
-	@test -z "$$( $(GOFMT) -l $$(git ls-files '*.go' | grep -v '^vendor/') )" || ( $(GOFMT) -l $$(git ls-files '*.go' | grep -v '^vendor/'); exit 1)
+	@test -n "$(GOFILES)" || (echo "audit/static: no Go files found (git-less worktree?) - refusing a vacuous gofmt pass" >&2; exit 1)
+	@test -z "$$( $(GOFMT) -l $(GOFILES) )" || ( $(GOFMT) -l $(GOFILES); echo "audit/static: unformatted Go files above" >&2; exit 1)
 	go vet ./...
 	go tool staticcheck ./...
 	$(MAKE) spec/diff
