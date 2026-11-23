@@ -10,17 +10,13 @@ The phase guides are deliberately simpler than the production-oriented system-de
 `system-design.md`, the "System architecture and technical design" entry in
 `domain-knowledge.md`'s source-of-truth table. That document is planned and not yet written;
 until it exists, the two domain references above (`domain-knowledge.md` and
-`domain-knowledge-game-engine.md`) are the current source of truth. The phase guides are
-designed to build gently on the knowledge from *Let's Go Further* and introduce one major
-backend concept at a time.
+`domain-knowledge-game-engine.md`) are the current source of truth. The phase guides
+introduce one backend concept at a time and state where prior knowledge helps.
 
 ## Learning sequence
 
 ```text
-Let's Go Further
-      |
-      v
-Phase 0  HTTP/API foundation
+Phase 0  HTTP/API foundation   (prior backend experience helpful)
       |
       v
 Phase 1  PostgreSQL persistence
@@ -57,15 +53,18 @@ At every phase, resist introducing a concept merely because it appears in a more
 
 The learning path does not initially require:
 
-- microservices
-- Kubernetes
-- Kafka/NATS
-- Redis
-- gRPC
-- SSE infrastructure
+- microservices and Kubernetes
+- Kafka/NATS and Redis
+- gRPC and SSE infrastructure
 - advanced identity/refresh-token architecture
 - a dormant market module
 - a generic dependency-injection framework
 - a large Clean Architecture / Hexagonal folder hierarchy
 
 Those can be explored later once the monolith has real pressures that justify them.
+
+## What this path does not cover
+
+The guides teach backend concepts in this repo's order; Go syntax, deployment and
+operations stay out, and the two domain documents above remain the gameplay source of
+truth rather than something a phase guide restates.

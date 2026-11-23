@@ -172,35 +172,8 @@ flowchart LR
 
 You can trace a buy, lock, loss, and burn operation from the API to the ledger journal and back to the player's visible balance.
 
+The seven ledger rules are `specified-only` rule files at `docs/spec/rules/ledger/` — one authored file per rule, each with an `expert-ref` back to this document — so the phase is done when the trace above holds and every one of them is green in the executable specification.
+
 ## What this prepares you for
 
 Once the core operation is correct, you can safely introduce work that happens outside the request lifecycle, such as automatic burns.
-
-## How this phase is tracked in the repo — roadmap Phase F, spec-first
-
-This phase is a separate roadmap effort from the executable specification, and its
-first real pilot: the ledger is built *through* that pipeline rather than beside it.
-The catalog already carries the phase's rules. The catalog lives at
-`docs/spec/rules/<module>/<ID>.md` — one authored Markdown file per rule — and
-R-LEDGER-001..007 are authored there in that per-file format, at
-`docs/spec/rules/ledger/`. Each is marked `specified-only` with an `expert-ref`
-back to this document, so every rule above is stated once in machine-checkable
-form while this doc stays its design rationale. R-LEDGER-001/002 were the phase's
-first two catalog entries; the remaining ledger rules join them the same way as
-the design firms up.
-
-The order of work is fixed: **spec first, code second.**
-
-1. Write scenarios for the ledger rules from this doc — the buy, lock, loss and burn
-   movements, and the negative-balance and balanced-pair invariants — starting with
-   R-LEDGER-001/002.
-2. Run them against the current code and watch them fail. A scenario that was never
-   red has not proved anything.
-3. Build the tables and the ledger operation until they go green, one rule at a time,
-   then let `make audit` hold the rule there. The workflow and the rule-change
-   protocol are in `docs/spec/README.md`.
-
-"Done" for this phase is therefore two things together: the trace described under
-§"Done when" end to end, and every R-LEDGER rule green in the executable
-specification. The accounting invariant is only real when the design, the catalog, the
-scenarios and the database agree — one of them alone is a promise.

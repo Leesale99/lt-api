@@ -88,7 +88,7 @@ func (s *PlayerStore) Create(ctx context.Context, teamID string) (Player, error)
 }
 ```
 
-This is intentionally close to the SQL style you are learning in *Let's Go Further*.
+The SQL stays deliberately plain `database/sql` — `QueryRowContext`, `Scan`, explicit column lists — so the migration and query path stays readable. *Let's Go Further* is an optional companion if you want a worked tour of the same style.
 
 ## Migration workflow
 

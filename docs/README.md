@@ -15,11 +15,13 @@ has one deep-dive document. Start here, then open only the deep dive you need.
 
 A modular monolith in Go: three bounded contexts (`schedule`, `game`, `identity`)
 plus a thin `ledger`, composed by `cmd/api` over a kernel (`internal/kernel/`) and a
-platform (`internal/platform/`). A context root package is the only package outsiders
-may import, and those edges are pinned in code rather than agreed in prose —
-`internal/arch/arch_test.go` is the boundary's source of truth, so a new import either
-fits the matrix or fails the build. Each context also owns a Postgres schema and a
-NOLOGIN role, so the same boundary exists at the database.
+platform (`internal/platform/`). Two boundaries keep the split honest:
+
+- A context root package is the only package outsiders may import, and those edges are
+  pinned in code rather than agreed in prose — `internal/arch/arch_test.go` is the
+  boundary's source of truth, so a new import either fits the matrix or fails the build.
+- Each context owns a Postgres schema and a NOLOGIN role, so the same boundary exists
+  at the database.
 
 The root [`README.md`](../README.md) is the model for how the whole repo documents
 itself: a layout block, then the why. Read it before changing how a module is
@@ -149,9 +151,9 @@ describe the same thing, this table says which one is the source.
 | Format | Authored / owned by | Checked by |
 | --- | --- | --- |
 | the rule catalog (`docs/spec/rules/**`) | you; schema in `docs/spec/rules.schema.md`, loader in `cmd/spec/catalog.go` | `cmd/spec check` (policies in `cmd/spec/policies.go`) |
-| the generated dashboard | `cmd/spec gen` — never hand-edited | `spec/gen --diff`, wired into `audit/static` |
+| the generated dashboard (`docs/spec/coverage.md`) | `cmd/spec gen`, run as `make spec/gen` — never hand-edited | `make spec/diff`, wired into `make audit/static` |
 | the Gherkin tree and the step glossary | you; style in `docs/spec/gherkin-style.md` | policy 13 — every step in `docs/spec/features/**` is bounded by the declared vocabulary, the transport/SQL denylist plus the `glossary.yaml` allowlist (`cmd/spec/vocabulary.go`) — and policy 12 — every `@rule` tag names a catalog rule and every scenario names exactly one (feature tags) |
-| the mutant registry (`docs/spec/prove.yaml`) | you, one entry per provable rule | `cmd/spec prove`, at merge-back |
+| the prove registry (`docs/spec/prove/<module>.yaml`) | you, one file per module, one entry per provable rule in that module | `cmd/spec prove`, at merge-back |
 | the workflow policy (`WORKFLOW.md` front matter) | you; parser `.pi/extensions/delegate/policy.ts` | the loader refuses unknown fields, and the approval constants must equal `contracts.ts` |
 | the task-packet grammar | `.pi/extensions/delegate/protocol.ts` (doc-of-record: `WORKFLOW.md` § Task packets) | one strict parse at spawn; a malformed packet spawns nothing |
 | the sandbox profiles | `.pi/extensions/delegate/sbx.ts` | `smoke-sbx.mjs` |
@@ -162,8 +164,14 @@ describe the same thing, this table says which one is the source.
 ## Where to start
 
 - New to the service: the root [`README.md`](../README.md), then `cmd/api/main.go`.
-- New to the rules: [`spec/README.md`](spec/README.md) §1 for the change protocol,
-  §2 for the file you are about to write, then one real rule file.
+- New to the rules: the rule-change protocol and the rule-file fields, in
+  [`spec/README.md`](spec/README.md) §1 and §2, then one real rule file.
 - About to delegate work: [`delegate-workflow.md`](delegate-workflow.md), then
   `WORKFLOW.md`.
-- Looking for why: a rule file's `knowledge-ref`, then the vault.
+- Looking for why: a rule file's `knowledge-ref`, then the vault at
+  `~/Projects/vaults/lt-api`.
+
+## What this does not cover
+
+Each plane's implementation details live in its own deep dive, and the reasoning behind
+a decision lives in an ADR or note in the vault — this page only routes to them.

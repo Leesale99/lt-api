@@ -1,6 +1,6 @@
 # lt-api
 
-**League Tokens API** — a Go backend service for a game token system, built as a progressive learning project: the goal is to build deep understanding of backend fundamentals one phase at a time, not to ship fast. The service is one modular monolith; four support systems sit around it and each owns one job. The executable specification in `docs/spec/` states which business rules the system holds, who decides each one, and how we know it still holds. The delegated-work harness in `.pi/`, with its machine-checked policy in `WORKFLOW.md`, decides who may change what and which gate certifies the change. The learning plan in `docs/league-tokens-learning-phases/` explains each backend concept in the order this project introduces it. The developer hub in `docs/README.md` is the map across all of them.
+**League Tokens API** — a Go backend service for a game token system, built as a progressive learning project: the goal is to build deep understanding of backend fundamentals one phase at a time, not to ship fast. The service is one modular monolith; three support systems sit around it and each owns one job. The executable specification in `docs/spec/` states which business rules the system holds, who decides each one, and how we know it still holds. The delegated-work harness in `.pi/`, with its machine-checked policy in `WORKFLOW.md`, decides who may change what and which gate certifies the change. The learning plan in `docs/league-tokens-learning-phases/` explains each backend concept in the order this project introduces it. The developer hub in `docs/README.md` is the map across all of them.
 
 Start with the row that matches your question:
 
@@ -90,24 +90,28 @@ docs/                 Developer hub (docs/README.md: the four planes, the
 Bounded contexts sit behind facades: the module root is the only package
 outsiders may import, and everything else lives under
 `internal/<ctx>/internal/` so the layers cannot leak — the privacy is
-compile-time, not convention. `httpx`, `persistence`, `eventbus`, `validator`
-and `idempotency` are the kernel, nested under `internal/kernel/`; `config`,
-`logging`, `mailer` and `server` are the platform, nested under
-`internal/platform/` (the VCS version helper is inlined into `config`). They
-classify as `kernel:<name>` and `platform:<name>` in the boundary matrix.
-Only the test harness (`internal/testdb`) and the matrix itself
-(`internal/arch`) sit outside those classes, as `shared:<name>`.
+compile-time, not convention. Every package classifies into one of three
+boundary-matrix classes:
+
+- `kernel:<name>` — `httpx`, `persistence`, `eventbus`, `validator` and
+  `idempotency`, nested under `internal/kernel/`.
+- `platform:<name>` — `config`, `logging`, `mailer` and `server`, nested under
+  `internal/platform/` (the VCS version helper is inlined into `config`).
+- `shared:<name>` — only the test harness (`internal/testdb`) and the matrix
+  itself (`internal/arch`).
 
 Each module owns its own route table (`RegisterRoutes`), and `cmd/api`
-composes them — so the wire surface is identical to the pre-refactor one.
-The E2E suite lives in `internal/e2e` and composes the
+composes them, so the wire surface is declared module by module and assembled
+in the composition root. The E2E suite lives in `internal/e2e` and composes the
 real modules exactly like `cmd/api/main.go` through one shared helper.
 
 Two files state these rules in code and in picture form: `internal/arch/arch_test.go` pins every import edge between the module, kernel, platform and shared classes, so a new import either fits the matrix or fails the build, and `docs/designs/bounded-contexts-dependency-map.mmd` draws the data-flow view of the same contexts.
 
 ## Database: context schemas, per-context roles and configuration
 
-The Postgres layout mirrors the bounded contexts (ADR-028 — one Postgres schema per bounded context), and the boundary is enforced by Postgres itself (migrations 000015 through 000018):
+The Postgres layout mirrors the bounded contexts — one schema per context — and
+the boundary is enforced by Postgres itself (migrations 000015 through 000018).
+The decision is recorded as ADR-028 in the vault at `~/Projects/vaults/lt-api`:
 
 - `schedule` — teams, seasons, rounds, matches (+ their internal gates)
 - `game` — rides, players, idempotency_keys
@@ -163,19 +167,31 @@ the membership grant makes `SET ROLE` possible).
 
 ### Bounded contexts: who owns what
 
-The three-schema split mirrors the module split. **Schedule** owns teams,
-seasons, rounds and matches, mints their ids, and is the ACL for the upstream
-feed; it publishes `MatchResultRecorded` and `RoundCompleted` on the
-in-process eventbus (transactional outbox deferred to Phase 08). **Game**
-owns rides and players, drives the ride state transitions and settlement, and
-reaches schedule only through the `SchedulePort` and ledger only through the
-extracted `Ledger` interface (`LockTokens` / `Burn` money intents) — never
-through schedule's or ledger's tables. **Ledger** owns balances and is thin:
-money intents in, it writes its own tables. **Identity** is the generic
-supporting context. `cmd/api` is the composition root, not a context: it owns
-the router, the middleware chain and the healthcheck, and the only HTTP
-surface above the modules is the shared `httpx` transport.
+The three-schema split mirrors the module split. Each context owns one slice of
+the domain:
+
+- **Schedule** owns teams, seasons, rounds and matches, mints their ids, and is
+  the ACL for the upstream feed; it publishes `MatchResultRecorded` and
+  `RoundCompleted` on the in-process eventbus (transactional outbox deferred to
+  Phase 08).
+- **Game** owns rides and players, drives the ride state transitions and
+  settlement, and reaches schedule only through the `SchedulePort` and ledger
+  only through the extracted `Ledger` interface (`LockTokens` / `Burn` money
+  intents) — never through schedule's or ledger's tables.
+- **Ledger** owns balances and is thin: money intents in, it writes its own
+  tables.
+- **Identity** is the generic supporting context.
+
+`cmd/api` is the composition root, not a context: it owns the router, the
+middleware chain and the healthcheck, and the only HTTP surface above the
+modules is the shared `httpx` transport.
 
 The import edges between these packages are pinned in code by
 `internal/arch/arch_test.go`; the data-flow view lives in
 `docs/designs/bounded-contexts-dependency-map.mmd`.
+
+## What this does not cover
+
+This page covers the service and the repo layout; the rule catalog lives in
+`docs/spec/`, the delegate harness in `docs/delegate-workflow.md` and
+`WORKFLOW.md`, and the learning path in `docs/league-tokens-learning-phases/`.

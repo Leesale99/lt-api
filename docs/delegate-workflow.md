@@ -23,8 +23,8 @@ Start where your question is:
 - **The task-packet grammar as implemented**: `.pi/extensions/delegate/protocol.ts`.
 - **Sandbox profiles, VM lifecycle, the gate VM image and its database**:
   `.pi/extensions/delegate/sbx.ts`.
-- **Which module owns which behaviour**: the module table at the end of this file,
-  § Where the code lives.
+- **Which module owns which behaviour**: the table under § Where the code lives, which
+  names each module in `.pi/extensions/delegate/` and the one job it owns.
 
 ## The two planes
 
@@ -76,9 +76,11 @@ Three consequences shape everything downstream.
 
 - **Workers are git-less.** The worktree arrives as a mount, so `.git` is unresolvable
   inside it: no status, diff, commit, stash, checkout, branch or merge. A worker reports
-  a change set; the host names the commit. This is also why `make audit/static` is a
-  poor in-VM gate — its `gofmt` step enumerates `git ls-files` — and why a worker that
-  hits that wall reports the failing line instead of editing the Makefile.
+  a change set; the host names the commit. `make audit/static` is still the worker's
+  advisory in-VM gate, and it runs git-less: its `gofmt` step enumerates `git ls-files`
+  and degrades to a no-op without a usable `.git`, so it never stops the gate. The
+  worker covers that gap with `gofmt -l` over the files it touched; the authoritative
+  `gofmt` run happens host-side, in a gate VM.
 - **Workers are DSN-less.** No sandbox gets `LT_API_TEST_DSN`, so the DB-backed half of
   `make audit` and all of `make prove` simply cannot run in a worker VM, even if a
   worker typed them.
@@ -101,17 +103,20 @@ the files the worker changed. They shorten the loop; they certify nothing. The i
 extension runs them, labels them advisory, and refuses to write a receipt for them. A
 worker that reports "green" is reporting exit codes it observed, not a verdict.
 
-**Authoritative gates run in a gate VM.** The forwarded gate commands are the ones
-declared in `WORKFLOW.md` — the scoped spec check, `make audit/static`, `make audit`,
-`make prove` — and the host does not execute them either. It creates a second,
-locked-down VM from the `pi-gate:v1` template, with one read-write mount of the
-worktree (gates legitimately regenerate artifacts), the main repo root mounted
-read-only when the worktree is linked so `git` resolves in-VM, and egress for the Go
-module proxy only: no model, no secret sentinel. Gate VMs are session-scoped and keyed
-by worktree path, so a background job's fresh worktree gets its own, and all of them
-are torn down when the session ends. A gate command typed into a host bash session is
-recognised, checked, DB-pre-sequenced and rewritten into the equivalent `sbx exec`
-line, so there is no path where the host runs the tree's code.
+**Authoritative gates run in a gate VM.** A gate is authoritative only through the host: the
+forwarded commands are the ones declared in `WORKFLOW.md` — the scoped spec check,
+`make audit/static`, `make audit`, `make prove` — and the host does not execute them
+either. It creates a second, locked-down VM from the `pi-gate:v1` template:
+
+- One read-write mount of the worktree, because gates legitimately regenerate artifacts.
+- The main repo root mounted read-only when the worktree is linked, so `git` resolves
+  in-VM.
+- Egress for the Go module proxy only: no model, no secret sentinel.
+
+Gate VMs are session-scoped and keyed by worktree path, so a background job's fresh
+worktree gets its own, and all of them are torn down when the session ends. A gate command
+typed into a host bash session is recognised, checked, DB-pre-sequenced and rewritten into
+the equivalent `sbx exec` line, so there is no path where the host runs the tree's code.
 
 The gate VM carries its own Postgres on port 5433 — the port the repo's documented test
 DSN pins, baked into the `pi-gate:v1` image so that DSN is literally true inside the VM
@@ -120,13 +125,18 @@ survives the Makefile's `-include .envrc`. That is why a DB-backed gate needs no
 credential on the host at all.
 
 **The integrity check runs on the host, before any gate.** One `git diff --exit-code`
-against `HEAD` over the paths declared as `gate_file_paths` (plus the index variant, so
-a staged deviation counts too). Those paths are the definition of green — the gate
-commands, the checker, CI config, the policy file — so a batch that touched one has
-invalidated its own verdict, and the host stops instead of reasoning about it. The
-trade is stated honestly: this is a detector at the merge boundary, not a write barrier
-inside the VM. A worker can still write a non-gate file in its read-write mount; the
-full audit at merge plus the orchestrator's diff review is the backstop.
+against `HEAD` over the paths declared as `gate_file_paths`, plus the index variant, so a
+staged deviation counts too. Those paths are the definition of green:
+
+- the gate commands and the policy file.
+- the checker.
+- the CI config.
+
+A batch that touched one has invalidated its own verdict, and the host stops instead of
+reasoning about it. The trade is stated honestly: this is a detector at the merge
+boundary, not a write barrier inside the VM. A worker can still write a non-gate file in
+its read-write mount; the full audit at merge plus the orchestrator's diff review is the
+backstop.
 
 ## RED, GREEN, PROVE
 
@@ -137,10 +147,12 @@ mean something.
 `docs/spec/rules/<module>/` and its `@rule:<ID>` scenario under
 `docs/spec/features/**` are written and committed on the delegate branch on the host
 plane, and the batch is shown red *for the right reason* there: the new scenario fails
-and `spec check --strict` names the untraceable entry. Only then is a task text
-written. A missing or unjustified RED is a stop, not a task — and a worker never
-authors RED nor edits a scenario into agreement with its code; a scenario that looks
-wrong is a report.
+and `spec check --strict` names the untraceable entry. Only then is a task text written.
+Two stops follow from that:
+
+- A missing or unjustified RED is a stop, not a task.
+- A worker never authors RED and never edits a scenario into agreement with its code; a
+  scenario that looks wrong is a report.
 
 **GREEN is the worker loop.** Implement, annotate the new enforcement sites with
 `//rule:<ID>`, resolve the verification pointers the rule file names, regenerating the
@@ -151,15 +163,18 @@ cannot tell the difference between progress and thrash from the outside.
 
 **PROVE is a merge-back precondition, not a step.** `make prove args='--rule <id>'`
 runs the rule's mapped bypass scenarios — the ones that attempt the forbidden write
-around the application — and requires them to pass, so VERIFIED means the rule's refusal
-actually happened when something tried to break it. VACUOUS (the mapping asserts
-nothing observable) and BROKEN-TEST (a scenario fails against an intact tree) are hard
-fails and cannot be waived; UNVALIDATABLE is reported and stops for human sign-off,
-which the prove registry (`docs/spec/prove/<module>.yaml`) records as a git-attributed name rather
-than an executable scenario. It needs Postgres, so it lives in the gate VM. And it is
-enforced where it matters: the extension blocks a merge command in an orchestrator
-session when the job's scoped rules lack VERIFIED receipts, independently of how the
-approval arrived.
+around the application — and requires them to pass. Its verdicts:
+
+- VERIFIED — the rule's refusal actually happened when something tried to break it.
+- VACUOUS (the mapping asserts nothing observable) and BROKEN-TEST (a scenario fails
+  against an intact tree) — hard fails that cannot be waived.
+- UNVALIDATABLE — reported and stops for human sign-off, which the prove registry
+  (`docs/spec/prove/<module>.yaml`) records as a git-attributed name rather than an
+  executable scenario.
+
+It needs Postgres, so it lives in the gate VM. And it is enforced where it matters: the
+extension blocks a merge command in an orchestrator session when the job's scoped rules
+lack VERIFIED receipts, independently of how the approval arrived.
 
 ## Task packets
 
@@ -168,52 +183,59 @@ once, at the spawn boundary, by the one owner of that grammar
 (`.pi/extensions/delegate/protocol.ts`; the doc-of-record is `WORKFLOW.md` § Task
 packets — the table of line forms lives there and is not repeated here).
 
-Why one parse and one owner: the grammar used to be prose in several prompts, and the
-failure mode of prose is a line that looks meaningful and silently means nothing. Now
-the parse is strict and it is the spawn gate — `SPEC-SCOPE:` at most once, in a fixed
-token grammar; `CLAIMS-PATHS:` optional, comma-separated, every entry non-empty. A
-malformed packet writes no claim, creates no sandbox, starts no worker, and the
+The parse is strict and it is the spawn gate, because a line that looks meaningful and
+silently means nothing is the failure mode of a grammar kept in prose. The strict form:
+
+- `SPEC-SCOPE:` at most once, in a fixed token grammar.
+- `CLAIMS-PATHS:` optional, comma-separated, every entry non-empty.
+
+A malformed packet writes no claim, creates no sandbox, starts no worker, and the
 refusal naming the offending line *is* the tool result. A worker carrying a well-formed
 scope gets its normalized value in `PI_DELEGATE_SPEC_SCOPE`; a packet with no scope
 line gets no variable, which means the full spec check rather than a silently empty
 scope.
 
-The grammar is not decoration. The scope is what narrows the worker's advisory gates,
-what the claims log records, and what the merge-back and the approval relay resolve
-against — so a line the parser cannot read would have become a job that is
-relay-approved and merge-blocked on the same scope. That was a real defect; it is
-closed by having one resolver: `mergegate.ts` takes the rule ids from the job's spawn
-claims and reads the task text's `SPEC-SCOPE` line only when the claims name none, and
-both the approval relay and the merge block call it.
+The scope is what narrows the worker's advisory gates, what the claims log records, and
+what the merge-back and the approval relay resolve against, so a line the parser cannot
+read would otherwise become a job that is relay-approved and merge-blocked on the same
+scope. One resolver makes that combination impossible: `mergegate.ts` takes the rule ids
+from the job's spawn claims and reads the task text's `SPEC-SCOPE` line only when the
+claims name none, and both the approval relay and the merge block call it.
 
 ## Claims and receipts are host-only
 
 Two append-only records, both written by the host extension instance and only for
 things the host actually did.
 
-**Claims** live under the job directory and record two kinds of event: a `claim` at
-spawn (the spawned agent, its session, rule ids, module, owned paths, the
-`git status --porcelain` baseline) and a `completed` after the worker returns (the paths
-that changed against that baseline). The point is parallelism safety: before a spawn the
-extension reads the log and blocks an overlapping claim — same rule id, same module,
-same owned path — so two workers cannot rewrite each other's files and then both fail
-for reasons neither can see. The next worker's prompt carries a short broadcast of the most recent
-completions, so siblings start with context instead of duplicating it. Claims are
-telemetry: a `git` failure records an empty change set and a note rather than failing
-a spawn.
+**Claims** live under the job directory and record two kinds of event:
+
+- a `claim` at spawn: the spawned agent, its session, rule ids, module, owned paths and
+  the `git status --porcelain` baseline.
+- a `completed` after the worker returns: the paths that changed against that baseline.
+
+The point is parallelism safety: before a spawn the extension reads the log and blocks an
+overlapping claim — same rule id, same module, same owned path — so two workers cannot
+rewrite each other's files and then both fail for reasons neither can see. The next
+worker's prompt carries a short broadcast of the most recent completions, so siblings
+start with context instead of duplicating it. Claims are telemetry: a `git` failure
+records an empty change set and a note rather than failing a spawn.
 
 **Receipts** live in the receipts directory, one JSON line per gate run, appended per
-ISO date. A receipt records the agent, the session, every command with its exit code,
-timeout flag and duration, an `ok` flag, a free-text note and — additively, when the
-run happened there — the gate VM's name. Two metadata fields make the record useful
-across time: the `HEAD` SHA it ran at, and a **catalog hash** — a manifest SHA-256 over
-`docs/spec/rules/**`, so a reader can tell two receipts apart when the rule files
-changed between them. Receipts carry a `schema_version`; a receipt from an older
-schema is treated as superseded by the reconciliation comparison rather than
-"corrected", because guessing what an old hash meant is worse than saying it cannot be
-compared. Receipt metadata is fail-open (a missing catalog or a broken `git` records an
-empty field) while the commands stay fail-closed — only the record degrades, never a
-verdict.
+ISO date. A receipt records:
+
+- the agent, the session, and every command with its exit code, timeout flag and
+  duration.
+- an `ok` flag, a free-text note and — additively, when the run happened there — the
+  gate VM's name.
+- the `HEAD` SHA it ran at, and a **catalog hash**: a manifest SHA-256 over
+  `docs/spec/rules/**`, so a reader can tell two receipts apart when the rule files
+  changed between them.
+
+Receipts carry a `schema_version`; a receipt from an older schema is treated as
+superseded by the reconciliation comparison rather than "corrected", because guessing
+what an old hash meant is worse than saying it cannot be compared. Receipt metadata is
+fail-open (a missing catalog or a broken `git` records an empty field) while the commands
+stay fail-closed — only the record degrades, never a verdict.
 
 Host-only is not a stylistic choice. Both directories are gitignored, so a fresh
 worktree — and therefore every worker VM — has no `.pi/receipts/` and no `.pi/jobs/`.
@@ -253,11 +275,12 @@ in the job's pane or by relaying the same message from the main session through 
 **Approval is bound to a commit, not to a moment.** The decision is bound to the
 40-hex SHA the block named, so a worktree that moved after review needs a fresh
 approval — approving a diff you did not review is exactly the failure this prevents.
-Approving runs the merge-back; rejecting sends the orchestrator back to iterate and
-produce a new block. A rule-change batch has one extra stop in the same contract: the
-spec-only RED commit is the thing reviewed before GREEN starts, and its SHA is the one
-bound, so GREEN, PROVE, REFACTOR and the merge-back proceed only while `HEAD` still
-matches it.
+
+- Approving runs the merge-back; rejecting sends the orchestrator back to iterate and
+  produce a new block.
+- A rule-change batch has one extra stop in the same contract: the spec-only RED commit
+  is the thing reviewed before GREEN starts, and its SHA is the one bound, so GREEN,
+  PROVE, REFACTOR and the merge-back proceed only while `HEAD` still matches it.
 
 The terminal state is always the last line of the round's final message, drawn from
 the declared token set. The job registry (`jobs.ts`) reads them: a round that ends on

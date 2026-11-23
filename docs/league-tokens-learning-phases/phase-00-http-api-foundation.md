@@ -2,7 +2,7 @@
 
 ## Goal
 
-Build the smallest useful League Tokens HTTP API on top of the patterns learned in *Let's Go Further*.
+Build the smallest useful League Tokens HTTP API with plain `net/http` handlers, JSON decoding, validation, and structured logging.
 
 The objective is not architectural sophistication. It is to become comfortable taking an HTTP request, validating it, calling application logic, and returning a predictable response.
 
@@ -27,9 +27,11 @@ HTTP response
 
 The handler should not know how a ride is persisted or how game rules work. At this stage, the "application operation" can be a very small service object or function. Do not create a full application/domain/adapter hierarchy yet.
 
-This builds directly on *Let's Go Further*: routing, decoding JSON, validation, error handling, and response helpers are still the important skills.
+This assumes you can already write a `net/http` handler: routing, decoding JSON, validation, error handling, and response helpers are the skills that carry over. *Let's Go Further* is an optional companion if you want a worked tour of them.
 
-## What you already know from Let's Go Further
+## Prior knowledge this phase assumes
+
+The items below are assumed, not taught here: if any is unfamiliar, read up before the tasks. *Let's Go Further* is an optional companion that works through them.
 
 - `net/http`
 - routing
