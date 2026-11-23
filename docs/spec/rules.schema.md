@@ -149,8 +149,8 @@ named in the rule's `## Notes`.
 | value | meaning |
 |---|---|
 | `implemented` | The rule holds in code today, every named site exists, and at least one verification pointer exists. |
-| `specified-only` | Designed in a phase document; no code yet. `expert-ref` required, no `enforcement`, no `verification`. |
-| `drifted` | The rule's **content** disagrees between the expert docs and actual behavior: the code refuses what the doc allows (or vice versa), the formula/window/ordering differs, or a data-carrying copy has no tie. The `## Notes` body says what disagrees and which side the catalog believes. Notes required. |
+| `specified-only` | Designed from the domain sources; no code yet. `expert-ref` required, no `enforcement`, no `verification`. |
+| `drifted` | The rule's **content** disagrees with the domain sources (`domain-knowledge.md`, `domain-knowledge-game-engine.md`) or with actual behavior: the code refuses what the doc allows (or vice versa), the formula/window/ordering differs, or a data-carrying copy has no tie. The `## Notes` body says what disagrees and which side the catalog believes. Notes required. |
 
 **Rot is not drift.** A *rotted pointer* — a change-detector naming a dead file, a
 comment pointing at a deleted test, enforcement that moved away from where the docs
@@ -159,6 +159,10 @@ implemented` and record the rot in the rule's `stale_pointer` field (§2) — po
 refuses that field on any other status. Both `drifted` rules and every `stale_pointer`
 MUST be surfaced by `spec/check`, which owns the verdict — `spec work` surfaces drifted
 rules as its first queue priority, but it never evaluates `stale_pointer`.
+
+When a rule conflicts with the domain sources (`domain-knowledge.md`,
+`domain-knowledge-game-engine.md`), the domain sources win: the rule is marked `drifted`
+and fixed; the source is not bent to the code.
 
 Applied migrations are immutable history; when rot is caused by stale prose in an
 applied migration, the fix is the catalog (and a comment at the current site), not a
@@ -274,8 +278,8 @@ exactly **one** YAML document.
 | `verification.unit` | list of strings | yes for `implemented` (one of three) | `path::TestSymbol` (add `::Subtest` text only if the subtest name is stable). One of `unit`/`e2e`/`gherkin`: **any one** satisfies policy 3. Must exist **today** — grep it. |
 | `verification.e2e` | list of strings | no | `path::TestSymbol` for existing E2E coverage. Counts toward policy 3 exactly like `unit`; a rule proved only by an e2e test is covered. Must exist **today**. |
 | `verification.gherkin` | list of strings | no | `<feature-file>::<scenario name>` under `docs/spec/features/**`; every scenario carries an `@rule:R-...` tag. Counts toward policy 3 like `unit`/`e2e`; policy 10 resolves every pointer against the feature tree. |
-| `expert-ref` | string (path) | required for `specified-only` | The phase document the rule comes from. Omitted where no doc covers the rule (an ADR referenced only in code is not a path that exists in this repo). |
-| `knowledge-ref` | string (path) | no | The knowledge-base note behind the rule, relative to the repository root. It must exist and sit under `docs/league-tokens-learning-phases/` (policy 16). It is **additional** to `expert-ref`, never a replacement: a `specified-only` rule keeps its `expert-ref` and may add this beside it. |
+| `expert-ref` | string (path) | required for `specified-only` | The domain source the rule comes from — a section of `docs/league-tokens-learning-phases/domain-knowledge.md` or `domain-knowledge-game-engine.md` (policy 4). Existing rules may still point at a phase guide (29 do today): the migration to domain-source refs is planned for the next phase, and the checker continues to accept any existing file under `docs/league-tokens-learning-phases/` until then. Omitted where no doc covers the rule. |
+| `knowledge-ref` | string (path) | no | An auxiliary knowledge note behind the rule, relative to the repository root, under `docs/league-tokens-learning-phases/` (policy 16) — typically the phase guide that implements the rule. It is **additional** to `expert-ref`, never a replacement. |
 | `stale_pointer` | string (block) \| null | no | A **rot** note: pointers that no longer resolve (a dead file, a deleted test, enforcement that moved). Legal **only** on `status: implemented` — policy 5 refuses it on any other status (`stale-pointer note on a <status> rule`). It replaces the retired `stale-pointer:` prefix that used to live inside `notes`; the two are not interchangeable and the old prefix in prose is just prose. |
 | `tie` | string (block) \| null | no | How a data-carrying copy is tied to its authority: the sentence that shows it cannot drift silently (wrong copy ⇒ the authority refuses, and its own test fails first). Policy 7 accepts a non-null `tie` in place of a `pinned_by` fixture for a `defense-in-depth` site; `advisory-copy` needs neither. It replaces the retired `Tie:` sentence convention inside `notes`. |
 

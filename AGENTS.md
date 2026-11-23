@@ -2,6 +2,7 @@
 
 ## Docs
 - `docs/league-tokens-learning-phases` is the source of truth for what to build and why. Never preload: read the smallest subset the task needs, then stop.
+- `docs/league-tokens-learning-phases/domain-knowledge.md` and `domain-knowledge-game-engine.md` are the domain source of truth; the phase guides, rule catalog and features derive from them; on conflict the domain sources win and the rule is drift to fix.
 
 ## Spec
 - The executable specification lives in `docs/spec/`: `docs/spec/rules/` is the canonical catalog, one authored markdown file per rule (YAML front matter + notes body); `features/` is the Gherkin; `docs/spec/business-rules.md` is the generated thin dashboard — never hand-edit it. `cmd/spec` is the checker; `docs/spec/README.md` is the workflow, `rules.schema.md` the format authority.

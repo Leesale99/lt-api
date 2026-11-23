@@ -98,10 +98,13 @@ player created
 ### `BuyFromReserve`
 
 ```text
-currency - price
-reserve - tokens
-wallet + tokens
+currency    - price
+common pool + price
+reserve     - tokens
+wallet      + tokens
 ```
+
+The player's Currency does not vanish: it moves into the common pool, which is the same pool that funds burns later in the season.
 
 ### `Lock`
 

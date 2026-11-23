@@ -28,6 +28,8 @@ Locked
 
 A `WonPending` ride can branch into three player choices. A terminal state cannot be modified.
 
+A fourth, automatic edge closes the same decision window: when the team's Action Phase ends with the decision still undecided, the engine burns the ride without any player action. The engine specification's `Ride lifecycle` graph (Section 4 of `domain-knowledge-game-engine.md`) carries this `Action Phase closes → Burned` edge alongside the three player-chosen ones.
+
 The goal is to make invalid states difficult or impossible to create through normal domain operations.
 
 ## Example type
@@ -152,6 +154,7 @@ stateDiagram-v2
     WonPending --> Locked : ride
     WonPending --> Burned : burn
     WonPending --> Unlocked : unlock
+    WonPending --> Burned : action phase closes
 ```
 
 ## Done when
