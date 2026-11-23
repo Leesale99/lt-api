@@ -168,11 +168,14 @@ Once the core operation is correct, you can safely introduce work that happens o
 
 This phase is a separate roadmap effort from the executable specification, and its
 first real pilot: the ledger is built *through* that pipeline rather than beside it.
-The catalog already carries the phase's rules. `docs/spec/rules.yaml` lists
-R-LEDGER-001..007 as `specified-only`, each with an `expert-ref` back to this
-document, so every rule above is stated once in machine-checkable form while this doc
-stays its design rationale. R-LEDGER-001/002 are the phase's first two catalog
-entries; the remaining ledger rules join them the same way as the design firm up.
+The catalog already carries the phase's rules. The catalog lives at
+`docs/spec/rules/<module>/<ID>.md` — one authored Markdown file per rule — and
+R-LEDGER-001..007 are authored there in that per-file format, at
+`docs/spec/rules/ledger/`. Each is marked `specified-only` with an `expert-ref`
+back to this document, so every rule above is stated once in machine-checkable
+form while this doc stays its design rationale. R-LEDGER-001/002 were the phase's
+first two catalog entries; the remaining ledger rules join them the same way as
+the design firms up.
 
 The order of work is fixed: **spec first, code second.**
 

@@ -139,7 +139,7 @@ After that the second role can run the migration against its own databases
 (it owns the tables it creates there, so the per-schema GRANTs always work;
 the membership grant makes `SET ROLE` possible).
 
-### Bounded contexts: who owns what (Phase 05, as built)
+### Bounded contexts: who owns what
 
 The schema split above mirrors the module split. **Schedule** owns teams,
 seasons, rounds and matches, mints their ids, and is the ACL for the upstream
