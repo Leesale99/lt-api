@@ -75,7 +75,7 @@ func genRepo(t *testing.T) (*testRepo, string) {
 	t.Helper()
 	repo := newTestRepo(t)
 	repo.writeCatalog(t, genCatalog())
-	out := filepath.Join(repo.root, "docs", "spec", "business-rules.md")
+	out := filepath.Join(repo.root, "docs", "spec", "coverage.md")
 	return repo, out
 }
 
@@ -118,7 +118,7 @@ func TestGenDeterministic(t *testing.T) {
 	// Header: generated marker, the authored per-rule files, regeneration, and
 	// the never-hand-edit warning.
 	assertContains(dashboard, "GENERATED — do not edit")
-	assertContains(dashboard, "# Business rules — dashboard")
+	assertContains(dashboard, "# Coverage — dashboard")
 	assertContains(dashboard, "derived from the per-rule files")
 	assertContains(dashboard, "under `"+displayPath(repo.rulesPath)+"`")
 	assertContains(dashboard, "Never hand-edit the dashboard")
@@ -240,7 +240,7 @@ func TestGenDiff(t *testing.T) {
 	if !strings.Contains(stdout.String(), "stale") {
 		t.Errorf("diff message = %q, want a stale notice", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "business-rules.md is stale") {
+	if !strings.Contains(stdout.String(), "coverage.md is stale") {
 		t.Errorf("diff message = %q, want the dashboard named", stdout.String())
 	}
 	if after := readGenerated(t, out); after != before {
@@ -260,7 +260,7 @@ func TestGenDiff(t *testing.T) {
 	if code := runGen([]string{"--rules", repo.rulesPath, "--out", out, "--diff"}, &stdout, &stderr); code != 1 {
 		t.Fatalf("diff of a hand-edited dashboard = %d, want 1 (stdout=%s)", code, stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "business-rules.md is stale") {
+	if !strings.Contains(stdout.String(), "coverage.md is stale") {
 		t.Errorf("diff message = %q, want the stale dashboard named", stdout.String())
 	}
 

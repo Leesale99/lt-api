@@ -1,15 +1,17 @@
 <!-- GENERATED — do not edit. -->
-# Business rules — dashboard
+# Coverage — dashboard
 
-> **GENERATED — do not edit.** This dashboard is derived from the per-rule files
-> under `docs/spec/rules`: one authored Markdown file per rule. Those files are the
-> canonical catalog; the dashboard is only a generated summary over them.
+> **GENERATED — do not edit.** This dashboard is the catalog's coverage view:
+> totals by status and module plus a link into each module's rule directory. It
+> is derived from the per-rule files under `docs/spec/rules`: one authored Markdown
+> file per rule. Those files are the canonical catalog; the dashboard is only a
+> generated summary over them.
 >
 > Never hand-edit the dashboard. Change the rule file, then regenerate with
 > `make spec/gen` (or the command below):
 
 ```sh
-go run ./cmd/spec gen --rules docs/spec/rules --out docs/spec/business-rules.md
+go run ./cmd/spec gen --rules docs/spec/rules --out docs/spec/coverage.md
 ```
 
 The catalog's schema, enums and conventions live in `rules.schema.md`;

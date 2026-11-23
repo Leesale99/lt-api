@@ -20,11 +20,13 @@ import (
 // Byte-identical output for identical input is a hard requirement: no clocks,
 // no map iteration order.
 const markdownHeader = `<!-- GENERATED — do not edit. -->
-# Business rules — dashboard
+# Coverage — dashboard
 
-> **GENERATED — do not edit.** This dashboard is derived from the per-rule files
-> under ` + "`%s`" + `: one authored Markdown file per rule. Those files are the
-> canonical catalog; the dashboard is only a generated summary over them.
+> **GENERATED — do not edit.** This dashboard is the catalog's coverage view:
+> totals by status and module plus a link into each module's rule directory. It
+> is derived from the per-rule files under ` + "`%s`" + `: one authored Markdown
+> file per rule. Those files are the canonical catalog; the dashboard is only a
+> generated summary over them.
 >
 > Never hand-edit the dashboard. Change the rule file, then regenerate with
 > ` + "`make spec/gen`" + ` (or the command below):
@@ -50,7 +52,7 @@ func runGen(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("spec gen", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	rulesPath := fs.String("rules", "docs/spec/rules", "path to the per-rule-file catalog directory")
-	outPath := fs.String("out", "docs/spec/business-rules.md", "path of the generated dashboard")
+	outPath := fs.String("out", "docs/spec/coverage.md", "path of the generated dashboard")
 	diff := fs.Bool("diff", false, "compare instead of writing; exit 1 if the dashboard would change")
 	if err := fs.Parse(args); err != nil {
 		return 2
