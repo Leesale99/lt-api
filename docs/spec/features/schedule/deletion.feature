@@ -16,9 +16,9 @@ Feature: Removing calendar records
     And round 2 is on the calendar
     And the teams "Team A", "Team B" and "Team C" are on the calendar
 
-  # The calendar answers every refused delete with the same in-use conflict
-  # (misalignment-report §6.4), so the scenarios assert the refusal and the
-  # record that is still there rather than a name the caller never hears.
+  # The calendar answers every refused delete with the same in-use conflict, so
+  # the scenarios assert the refusal and the record that is still there rather
+  # than a name the caller never hears.
   @rule:R-SCHEDULE-023
   Rule: A record whose matches have started is durable
 

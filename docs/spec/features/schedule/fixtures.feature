@@ -104,8 +104,8 @@ Feature: The fixture calendar
       And match day 1 records the calendar's own end
 
   # Only the bound is a refusal. The two places are a stored width, not a
-  # predicate — an odds of 1.234 arrives rounded to 1.23 (misalignment-report
-  # §6.3) — so these scenarios prove the price above evens.
+  # predicate — an odds of 1.234 arrives rounded to 1.23 — so these scenarios
+  # prove the price above evens.
   @rule:R-SCHEDULE-009
   Rule: Odds are a price above evens
 

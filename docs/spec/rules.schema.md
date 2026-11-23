@@ -92,8 +92,8 @@ PL/pgSQL is a rule nobody can see, test or rename.
 Seeded reference data takes no mechanism value of its own: rows inserted by an applied
 migration (e.g. `R-IDENTITY-014`'s roles, permission codes and grants) are catalogued as
 `mechanism: constraint`, because what refuses a conflicting seed is the keys and what
-keeps the seeded values true is migration immutability. (Gate B5 — no `seed` /
-`reference-data` value is added.)
+keeps the seeded values true is migration immutability. No `seed` /
+`reference-data` value is added.
 
 ### `write_scope` — decides constraint vs trigger
 
@@ -113,7 +113,7 @@ rule belongs to — that is what `module` and `expert-ref` are for.
 | value | meaning |
 |---|---|
 | `handler` | Transport: DTO validation, status mapping, headers. |
-| `composition-root` | Cross-context wiring / facade binding — the composition-root layer where modules are handed their collaborators (a `cmd/...` wiring function, a facade binding, an ACL adapter chosen at assembly). It also names the startup/assembly seam, where a program is composed once at boot (the `main.go` that calls the wiring function, resolves configuration and starts the process) — so a fact about what happens exactly once before anything is served belongs here. Distinguished from `handler`, which is transport framing: nothing here sees a request. (Gate B5.) |
+| `composition-root` | Cross-context wiring / facade binding — the composition-root layer where modules are handed their collaborators (a `cmd/...` wiring function, a facade binding, an ACL adapter chosen at assembly). It also names the startup/assembly seam, where a program is composed once at boot (the `main.go` that calls the wiring function, resolves configuration and starts the process) — so a fact about what happens exactly once before anything is served belongs here. Distinguished from `handler`, which is transport framing: nothing here sees a request. |
 | `validator` | A `ValidateX` function: request shape/bounds arithmetic, called from the handler before the use case. |
 | `service` | Use case: ordering, transaction boundary, idempotency claim. |
 | `domain` | Entity/operation or pure function. |
@@ -250,7 +250,7 @@ exactly **one** YAML document.
 
 | field | type | required | notes |
 |---|---|---|---|
-| `id` | string | yes | `R-<MODULE>-NNN`, flat per module, stable once assigned. Must equal the file's stem. Never renumber. A retired rule's file is deleted from the catalog and recorded in `rules/README.md`'s retired-ids note; its id is never reused (gate B5 — supersedes "retired rules are marked, not deleted"). |
+| `id` | string | yes | `R-<MODULE>-NNN`, flat per module, stable once assigned. Must equal the file's stem. Never renumber. A retired rule's file is deleted from the catalog and recorded in `rules/README.md`'s retired-ids note; its id is never reused. |
 | `title` | string | yes | Short imperative name ("Rides are born locked"). |
 | `statement` | string (block) | yes | 1–3 sentences of business language. What the business demands, no code-speak. It is a **front-matter** field, not body prose (ADR-030: the statement stays machine-readable — greppable and carried by the one strict-decoded document — rather than swallowed into body prose, so no generated view has to parse it back out). |
 | `module` | enum | yes | Owner context of the *rule*, not of every enforcement site. Must equal the name of the directory the file sits in (§2 loader strictness). |
@@ -266,7 +266,7 @@ exactly **one** YAML document.
 | `enforcement[].role` | enum | yes | §1. |
 | `enforcement[].pinned_by` | string \| null | yes (explicit) | Fixture id. `null` is allowed only with the copy policy above: a `tie:` note for defense-in-depth, nothing needed for advisory-copy. |
 | `refusal` | map \| null | recommended | See the refusal table below. Omitted for rules that cannot refuse (pure computation) and for `specified-only` rules whose refusal surface is undesigned. |
-| `refusal.code` | string | in refusal | A 5-character SQLSTATE, or the reserved word `synthetic` (a Go-only refusal with no SQLSTATE). **Illustrative, not a closed list:** `P0001`, `23514`, `23503`, `23001` are the codes the house table below shows most often; any real SQLSTATE (`23505`, `23502`, `22003`, `42501`, …) is valid. `cmd/spec` warns — never errors — on a code outside the illustrative set (gate B5). |
+| `refusal.code` | string | in refusal | A 5-character SQLSTATE, or the reserved word `synthetic` (a Go-only refusal with no SQLSTATE). **Illustrative, not a closed list:** `P0001`, `23514`, `23503`, `23001` are the codes the house table below shows most often; any real SQLSTATE (`23505`, `23502`, `22003`, `42501`, …) is valid. `cmd/spec` warns — never errors — on a code outside the illustrative set. |
 | `refusal.constraint` | string \| list \| null | in refusal | The named refusal (constraint name, or the name the trigger `RAISE`s). A list when a rule carries several constraints. |
 | `refusal.sentinel` | string \| null | in refusal | The domain sentinel the repository/ACL maps to (`ErrInvalidTransition`, …). `null` = unmapped. |
 | `refusal.http` | int \| null | in refusal | Status the handler writes; must be a real status (100–599). `null` = falls through to 500. |
@@ -335,7 +335,7 @@ The directory layout is strict, because a misplaced file would silently drop a r
 | unmapped `23514` | — | 500 (a gap: see `R-GAME-004`) |
 
 The table is the house convention's *illustrative* set, not a closed vocabulary: any
-5-character SQLSTATE may be catalogued (gate B5) — the mapping is the rule, the code
+5-character SQLSTATE may be catalogued — the mapping is the rule, the code
 list is the frequency.
 
 ---
@@ -584,8 +584,3 @@ appear in.
 6. **Run `make spec/gen`.** The dashboard `docs/spec/business-rules.md` is regenerated;
    the rule file is not — nothing under `rules/` is ever machine-written.
 7. **Run `make audit` again.** Green, including `spec/diff`, is done.
-
-## 6. Open decisions (user gate A2)
-
-> Resolved at gate A2 (D1–D6) and closed at gate B5; the resolutions are recorded in
-> the catalog's own rule notes.

@@ -44,4 +44,4 @@ tie: |-
 
 ## Notes
 
-The validator is the authority (it produces the field error and the 422); the table's CHECK is the path-independent backstop, carrying the same 255-byte bound. The namespace and the lifetime are not this rule's: since migration 000022 the claim row is (key, user_id), so keys are scoped to their caller (and 000010's rows carried over as system claims, user_id 0), and the kernel's claim sweeps rows older than a day. R-KERNEL-003 owns both facts; misalignment-report §6 item 13 recorded the defect this closes.
+The validator is the authority (it produces the field error and the 422); the table's CHECK is the path-independent backstop, carrying the same 255-byte bound. The namespace and the lifetime are not this rule's: since migration 000022 the claim row is (key, user_id), so keys are scoped to their caller (and 000010's rows carried over as system claims, user_id 0), and the kernel's claim sweeps rows older than a day. R-KERNEL-003 owns both facts.

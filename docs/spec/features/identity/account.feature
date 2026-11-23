@@ -112,7 +112,7 @@ Feature: Account registration and activation
     # The request endpoint's answer carries no existence bit: an address no
     # account holds and an account that is already active are answered exactly
     # as a genuine request is — same status, same body — and neither is mailed
-    # anything (misalignment-report §6.9, neutralized by decision).
+    # anything.
     Scenario: An activated account collects no second activation mail
       Given a member is activated as "Ana" with the email "ana@example.com"
       And a member is registered as "Bea" with the email "bea@example.com"

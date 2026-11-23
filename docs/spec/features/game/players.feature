@@ -58,7 +58,7 @@ Feature: A registration (a season entry)
 
   # A withdrawal the database refuses is still a named refusal: the registration
   # is referenced by its rides, so the caller is told that rather than only that
-  # the server failed (misalignment-report §6 item 2, fixed).
+  # the server failed.
   @rule:R-GAME-035
   Rule: A registration its rides still name cannot be withdrawn
 

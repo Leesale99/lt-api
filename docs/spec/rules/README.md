@@ -27,11 +27,11 @@ directories carry that grouping now:
 
 Retired ids (kept as a note because ids are never reused):
 
-> Retired at gate B5 (dupe policy): R-GAME-019 merged into R-KERNEL-003, R-GAME-022
+> Retired (dupe policy): R-GAME-019 merged into R-KERNEL-003, R-GAME-022
 > merged into R-KERNEL-014 — kernel owns the statement, game call-sites are
 > enforcement sites on it. Ids are never reused.
 
-## Deliberately NOT catalogued yet (still deferred after the Phase B merge)
+## Deliberately NOT catalogued yet
 
 - the accepted crash gap between a committed round close and the settlement
   transaction that consumes RoundCompleted (close durable, settlement may be
@@ -40,7 +40,7 @@ Retired ids (kept as a note because ids are never reused):
   value for the context; phase 05 defers them to Phase 09+.
 - the phase-03 "inject a failure halfway through any major operation" test
   obligation — a verification gap across several rules, not a business
-  statement (see the misalignment report).
+  statement.
 - the doc-vs-doc conflict over the buy-tokens legs (phase-03's three legs vs
   phase-06's four incl. the common pool) — needs a product decision before a
   rule can be stated; recorded in R-LEDGER-007's notes.
