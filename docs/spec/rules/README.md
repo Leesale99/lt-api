@@ -1,17 +1,16 @@
-# docs/spec/rules — the business-rule catalog, one file per rule
+# docs/spec/rules — the business-rule catalog
 
-This directory is the CANONICAL, HAND-EDITED business-rule catalog. Each rule
-lives in its own Markdown file at `<module>/<ID>.md`: a strict YAML front matter
-between two `---` fences (the machine fields, exactly the fields `cmd/spec`
-decodes — no `scope:` and no `notes:` key any more), followed by an optional
-authored body whose `## Notes` section is the rule's `Notes`. `<module>` must be a
-value of the frozen module enum and `<ID>` must equal the front matter's `id`.
-The layout, the strict decoding and the ordering (module enum order, then id) are
-documented in `cmd/spec/catalog.go`; the field schema, enums and policies live in
-`../rules.schema.md`, and the workflow in `../README.md` §2.
+This directory is the canonical, hand-edited catalog of the project's business rules: one
+authored Markdown file per rule at `<module>/<ID>.md`, where the directory names the
+module and the file stem names the id.
 
-`../business-rules.md` is GENERATED from these files — never edit it. Regenerate with
-`go run ./cmd/spec gen` (or `make spec/gen`).
+- **The format** — the rule file's fields, the frozen enums and the loader's strictness:
+  [`../rules.schema.md`](../rules.schema.md) (§1 the frozen enums, §2 the rule file, §5
+  how to add a rule).
+- **The policies** — the catalog's 18 machine-checked invariants, one section each:
+  [`../policies.md`](../policies.md).
+- **The workflow** — rule-change protocol, `spec work`, check, gen and prove:
+  [`../README.md`](../README.md).
 
 The retired single-file catalog grouped rules under banner comments; the module
 directories carry that grouping now:

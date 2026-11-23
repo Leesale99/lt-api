@@ -1,17 +1,22 @@
 # Gherkin style guide — the executable specification
 
 `docs/spec/rules/` says **what** the business rules are and where they are enforced — one
-authored Markdown file per rule at `docs/spec/rules/<module>/R-XXX-nnn.md`, where the
-directory is the module and the file stem is the rule id. A `.feature` file says what
-those rules look like **from outside**, in words a product reader can check without
-opening Go: one capability, one file, scenarios the harness runs against real Postgres
-(`make test/spec`). The catalog is canonical for rule *content*; this file is canonical
-for *how a scenario is written*. If they disagree about wording, fix the scenario; if
-about the rule, fix the catalog.
+authored Markdown file per rule at `docs/spec/rules/<module>/<ID>.md`, where the
+directory is the module and the file stem is the rule id (`R-<MODULE>-NNN`). A
+`.feature` file says what those rules look like **from outside**, in words a product
+reader can check without opening Go: one capability, one file, scenarios the harness runs
+against real Postgres (`make test/spec`). The catalog is canonical for rule *content*;
+this file is canonical for *how a scenario is written*. If they disagree about wording,
+fix the scenario; if about the rule, fix the catalog.
 
 The mechanical parts of this guide are enforced, not merely advised:
 `go run ./cmd/spec check --strict` (`make spec/check`) is the verdict — the tag policy
-(§2, policy 12), the pointer policy (§3, policy 10), the vocabulary (§6, policy 13) and the
+(§2, [policy 12 (the feature tree and the catalog agree in both
+directions)](policies.md#policy-12--the-feature-tree-and-the-catalog-agree-in-both-directions)),
+the pointer policy (§3, [policy 10 (every `verification.gherkin` pointer resolves to a
+real scenario)](policies.md#policy-10--every-verificationgherkin-pointer-resolves-to-a-real-scenario)),
+the vocabulary (§6, [policy 13 (step text stays inside the
+vocabulary)](policies.md#policy-13--step-text-stays-inside-the-vocabulary)) and the
 sabotage mechanics (§8) all fail it. The prose sections around them (§1, §4, §5, §10) are
 the reviewer's half. The ripgrep recipes in §9 are the cheap pre-check that points at a
 line.
@@ -58,8 +63,12 @@ rg --files docs/spec/rules | rg '/R-GAME-002\.md$'   # must print docs/spec/rule
 - A rule is proved in exactly one feature file; another file may mention it in prose but may
   not tag it. A scenario that proves no rule does not belong in these files.
 - The tag and the rule file are the two halves of one artifact: the rule file names the
-  scenario in `verification.gherkin`, the scenario names the rule in `@rule`. Policy 10
-  resolves the pointer, policy 12 resolves the tag, and both directions are checked.
+  scenario in `verification.gherkin`, the scenario names the rule in `@rule`.
+  [Policy 10 (every `verification.gherkin` pointer resolves to a real
+  scenario)](policies.md#policy-10--every-verificationgherkin-pointer-resolves-to-a-real-scenario)
+  resolves the pointer, [policy 12 (the feature tree and the catalog agree in both
+  directions)](policies.md#policy-12--the-feature-tree-and-the-catalog-agree-in-both-directions)
+  resolves the tag, and both directions are checked.
 
 ---
 
@@ -118,8 +127,9 @@ the subject of the sentence. Concrete nouns, not abstractions: `"Spring 2026"`, 
 `"Ana"`, `match day 1`. Numbers: tokens whole (`10 tokens`), money to two decimals (`9.60`,
 `1.80`), scores as `2–1`.
 
-This section is enforced mechanically by checker policy 13 (`13-vocabulary`,
-`rules.schema.md` §3): the transport half of the denylist above is an ERROR in every
+This section is enforced mechanically by [policy 13 (step text stays inside the
+vocabulary)](policies.md#policy-13--step-text-stays-inside-the-vocabulary) under the
+checker id `13-vocabulary`: the transport half of the denylist above is an ERROR in every
 step, and every remaining step token must be declared in the module's section of
 `docs/spec/glossary.yaml` (or in `common`). The one exception is a §8-shaped step: an
 underscore-joined database object name there is exempt from the phrase denylist only
@@ -209,9 +219,10 @@ layer, because the database refuses the write itself.
   `rides_tokens_locked_check`) — including the default name Postgres gives an unnamed
   `UNIQUE`/`PKEY` when that is the name the refusal surfaces (`user_tokens_pkey`,
   `permissions_code_key`, `roles_permissions_pkey`).
-- The sabotage family is exempt from the SQL half of policy 13's step-vocabulary
-  denylist (`rules.schema.md` §3 policy 13): these steps legitimately say `insert` and
-  name database objects. The transport half still applies.
+- The sabotage family is exempt from the SQL half of the step-vocabulary denylist —
+  [policy 13 (step text stays inside the
+  vocabulary)](policies.md#policy-13--step-text-stays-inside-the-vocabulary): these steps
+  legitimately say `insert` and name database objects. The transport half still applies.
 - Sabotage is only for rules whose catalog `authority` is `database` (or where the database
   holds a load-bearing copy). For a `domain`- or `service`-authority rule a bypassing writer
   is **allowed by design**, so a sabotage scenario would be a false promise: prove those at
@@ -301,7 +312,8 @@ silently. Vocabulary rules remain §6.
 it runs the registry's mapped godog scenarios against the intact tree — the code is never
 altered — so those scenarios attempt the rule's bypass and must observe the refusal. The
 registry in `docs/spec/prove/<module>.yaml` addresses its scenarios the same way the catalog does —
-`<feature-file>::<scenario name>` (§3) — and a renamed scenario breaks that entry too.
+`<feature-file>::<scenario name>` (§3, scenario names) — and a renamed scenario breaks
+that entry too.
 
 ---
 
