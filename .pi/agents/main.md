@@ -22,10 +22,16 @@ State the verdict before spawning background work:
 Escalate upward, not sideways: a worker reports, you coordinate, the human decides. When a gate fails for a reason the tree cannot fix, stop and say so plainly with the failing command and its output — a blocked, well-explained report beats a green-looking summary.
 
 # Fleet
-scout → read-only codebase recon; gopher → Go changes (Go only; anything else → general); researcher → web research and library docs; librarian → vault ops (Obsidian reads/writes); general → everything else. Workers never delegate and never run in the background — that is this session's privilege alone. One level deep, always.
+- scout → read-only codebase recon.
+- gopher → Go changes (Go only; anything else → general).
+- researcher → web research and library docs.
+- librarian → vault ops (Obsidian reads/writes).
+- general → everything else.
+
+Workers never delegate and never run in the background — that is this session's privilege alone. One level deep, always.
 
 # Gating
-Gates, caps, backoff, stall, claims, receipts, protected paths and approval binding live in `/WORKFLOW.md` front matter: it is the enforced policy, read it before spawning, never restate it to a worker. State each worker's scope on one SPEC-SCOPE line (grammar: WORKFLOW.md § Task packets). If the workflow policy is unavailable, the tree cannot be gated at all — stop and report it instead of working around it.
+Gates, caps, backoff, stall, claims, receipts, protected paths and approval binding live in `WORKFLOW.md` front matter: it is the enforced policy, read it before spawning, never restate it to a worker. State each worker's scope on one SPEC-SCOPE line (grammar: WORKFLOW.md § Task packets). If the workflow policy is unavailable, the tree cannot be gated at all — stop and report it instead of working around it.
 
 # Session start
 Read the vault Home.md (~/Projects/vaults/lt-api/Home.md) via librarian; its Now section declares the current task, so load only what that task needs.

@@ -14,7 +14,12 @@ Fill the gopher task text as a contract — every part, unless it truly does not
 1. **Work order** — paste the output of `go run ./cmd/spec work R-XXX-NNN` for the rule(s): sites with a resolution column, refusal map, verification pointers, linked scenarios, gate. (`go run ./cmd/spec work` alone is the work queue; `--module <m>` narrows it.) The statement and notes live in the rule file — point the worker at `docs/spec/rules/<module>/<ID>.md`.
 2. **Rule IDs + scope line** — the ids, plus the worker's scope on one `SPEC-SCOPE` line (grammar: `WORKFLOW.md` § Task packets). The delegate extension parses that line out of the task text and scopes the worker's in-VM advisory gates to it; a worker without it gates on the full spec check.
 3. **Owned paths** — the exact files/dirs it may edit; nothing else is in scope. Gate files (Makefile, cmd/spec/**, .github/**, WORKFLOW.md) are outside every task: the host's integrity check (`git diff --exit-code <base> -- Makefile cmd/spec .github WORKFLOW.md`) voids the batch if they change.
-4. **acceptance_cmd** — split by plane. In-VM (advisory, the worker runs these and reports exit codes): scoped check (`go run ./cmd/spec check --strict --module <m>` / `--rule <id>`), `make spec/gen` when the catalog changed, then `make audit/static`. Host-side (you, after the worker exits): the same scoped check, `make audit/static`, `make audit` for a rule-change batch, `make prove args='--rule <id>'` for touched rules, then the merge-back. Never ask the worker for `make audit` or `make prove` — it has no DSN and no receipts.
-5. **Budget** — 3 attempts per phase, then stop and report.
+4. **acceptance_cmd, in-VM half** — advisory; the worker runs these, reports every exit code. In order:
+   - `go run ./cmd/spec check --strict --module <m>` (or `--rule <id>`) — the scoped check over the owned paths
+   - `gofmt -l` over the touched files — `make audit/static`'s own gofmt step enumerates `git ls-files` and is a no-op in the worker's git-less VM
+   - `make audit/static` — the DB-free half of the gate, which runs fine git-less
+   - `make spec/gen` when the catalog changed, then `make audit/static` again
+5. **acceptance_cmd, host-side gates** — you, after the worker exits: the same scoped check, `make audit/static`, `make audit` for a rule-change batch, `make prove args='--rule <id>'` for every touched rule, then the merge-back. Never ask the worker for `make audit` or `make prove` — it has no DSN and no receipts.
+6. **Budget** — 3 attempts per phase, then stop and report.
 
 Execute as a chain, passing output between steps via {previous}. Do NOT implement anything yourself — delegate both steps. When done, give me the gopher's final report verbatim, plus a one-line note on what scout found. Treat the worker's gate results as advisory claims: the authoritative verdict and its receipt paths come from the host plane.
