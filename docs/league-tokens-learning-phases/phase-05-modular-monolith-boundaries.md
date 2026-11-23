@@ -2,7 +2,8 @@
 
 ## Goal
 
-Organize the growing application into a few business modules without turning each module into a miniature enterprise architecture project.
+Organize the growing application into a few business modules without turning each module into a miniature
+enterprise architecture project.
 
 ## New concept
 
@@ -69,7 +70,8 @@ Owns:
 
 Start with a simple rule:
 
-> A module owns its state. Other modules use its public operations instead of reaching into its tables directly.
+> A module owns its state. Other modules use its public operations instead of reaching into its tables
+> directly.
 
 ```text
 HTTP
@@ -101,7 +103,8 @@ type Ledger interface {
 }
 ```
 
-You do not need `LedgerPort`, `LedgerAdapter`, `LedgerFactory`, and `LedgerProvider` unless a concrete problem appears.
+You do not need `LedgerPort`, `LedgerAdapter`, `LedgerFactory`, and `LedgerProvider` unless a concrete problem
+appears.
 
 ## Composition root
 
@@ -191,8 +194,10 @@ flowchart TD
 
 ## Done when
 
-You can explain each module's ownership in one sentence, and no module needs to know another module's table layout.
+You can explain each module's ownership in one sentence, and no module needs to know another module's table
+layout.
 
 ## What this prepares you for
 
-The next phase focuses deeply on the ledger because the game's balance rules justify stronger consistency boundaries than the rest of the system.
+The next phase focuses deeply on the ledger because the game's balance rules justify stronger consistency
+boundaries than the rest of the system.

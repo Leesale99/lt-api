@@ -2,9 +2,11 @@
 
 ## Goal
 
-Build the smallest useful League Tokens HTTP API with plain `net/http` handlers, JSON decoding, validation, and structured logging.
+Build the smallest useful League Tokens HTTP API with plain `net/http` handlers, JSON decoding, validation,
+and structured logging.
 
-The objective is not architectural sophistication. It is to become comfortable taking an HTTP request, validating it, calling application logic, and returning a predictable response.
+The objective is not architectural sophistication. It is to become comfortable taking an HTTP request,
+validating it, calling application logic, and returning a predictable response.
 
 ## New concept
 
@@ -25,13 +27,18 @@ application operation
 HTTP response
 ```
 
-The handler should not know how a ride is persisted or how game rules work. At this stage, the "application operation" can be a very small service object or function. Do not create a full application/domain/adapter hierarchy yet.
+The handler should not know how a ride is persisted or how game rules work. At this stage, the "application
+operation" can be a very small service object or function. Do not create a full application/domain/adapter
+hierarchy yet.
 
-This assumes you can already write a `net/http` handler: routing, decoding JSON, validation, error handling, and response helpers are the skills that carry over. *Let's Go Further* is an optional companion if you want a worked tour of them.
+This assumes you can already write a `net/http` handler: routing, decoding JSON, validation, error handling,
+and response helpers are the skills that carry over. *Let's Go Further* is an optional companion if you want a
+worked tour of them.
 
 ## Prior knowledge this phase assumes
 
-The items below are assumed, not taught here: if any is unfamiliar, read up before the tasks. *Let's Go Further* is an optional companion that works through them.
+The items below are assumed, not taught here: if any is unfamiliar, read up before the tasks. *Let's Go
+Further* is an optional companion that works through them.
 
 - `net/http`
 - routing

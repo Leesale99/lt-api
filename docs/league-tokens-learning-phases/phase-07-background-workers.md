@@ -2,7 +2,8 @@
 
 ## Goal
 
-Add system-driven operations such as automatic burn deadlines without turning the application into a distributed scheduling system.
+Add system-driven operations such as automatic burn deadlines without turning the application into a
+distributed scheduling system.
 
 ## New concept
 
@@ -139,8 +140,10 @@ flowchart LR
 
 ## Done when
 
-An expired ride can be automatically burned without a user request, and restarting the server does not cause duplicate rewards or corrupted state.
+An expired ride can be automatically burned without a user request, and restarting the server does not cause
+duplicate rewards or corrupted state.
 
 ## What this prepares you for
 
-Now you have a genuine reason for asynchronous side effects. The next phase introduces an outbox so those side effects can be delivered reliably after the main transaction commits.
+Now you have a genuine reason for asynchronous side effects. The next phase introduces an outbox so those side
+effects can be delivered reliably after the main transaction commits.

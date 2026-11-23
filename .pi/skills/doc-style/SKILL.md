@@ -13,7 +13,7 @@ Pattern lineage, for the curious: Diátaxis (types), Google and Microsoft style 
 
 1. **Active voice.** Imperative verbs for steps: "Run `make db/up`", never "the database should be started".
 2. **Sentence-case section headings.** Descriptive, never formatting-only. Document H1 titles keep their existing form; every `##`/`###` below them is sentence case. One case convention across sibling files.
-3. **Bullets of 2–7 parallel items.** Numbered lists only for true sequence or priority; one action per numbered step — a step carrying six commands is six steps. Exception: rule-file Notes paragraphs are single-line by renderer contract (see rule 16).
+3. **Bullets of 2–7 parallel items.** Numbered lists only for true sequence or priority; one action per numbered step — a step carrying six commands is six steps. Exception: rule-file Notes paragraphs are single-line by renderer contract (see rule 15).
 4. **Paragraphs of 3–7 lines**, leading with the point. A paragraph that enumerates is a list pretending not to be one — make it one.
 5. **Self-contained sections.** Restate the needed context where it is needed; "see above", "see below" and "the header note above" are banned — and a pointer must name its target's current file. Landing test: any section must survive being read first.
 6. **Expand every id inline at first use.** Never a bare "policy 12" — always "policy 12 (enforcement sites must exist in code today)". A §-citation may accompany the fact, never carry it: "§5 (how to add a rule)" passes; "it is a merge-back gate (§9)" fails.
@@ -24,7 +24,8 @@ Pattern lineage, for the curious: Diátaxis (types), Google and Microsoft style 
 11. **One skeleton per document type.** The reader recognizes the shape before reading the words. Harmonize one-off sections a sibling lacks instead of keeping them. A new document joins a family; if no family fits, ask before inventing a new skeleton.
 12. **Cross-file contradiction is a defect.** If two documents state different facts (a count, a gate's availability, a name), one is wrong — fix both to the truth; never leave both standing.
 13. **Templates are fenced.** A report or output template inside an instruction file sits in a fenced code block, never as headings — otherwise the template becomes document structure.
-14. **A file a machine reads is rewritten only after reading its consumer.** `agents.ts`/`persona.ts` (agent cards), `jobs.ts` (wire markers), `policy.ts` (`WORKFLOW.md` front matter), `catalog.go` (rule files), `prove.go` (registry). Prose is negotiable; wire format is not.
+14. **Hard-wrap narrative prose at column 110.** Every prose paragraph in `docs/**` and the root `README.md` wraps at 110 columns — git-diff-friendly on a 14-inch editor, and the de-facto ruler the widest workflow docs already follow. Never break inside a link URL, an inline code span or a table row. Exempt: rule files (`docs/spec/rules/**/R-*.md`, whose Notes paragraphs are single-line by renderer contract), instruction cards whose one-line-per-item form is deliberate (`.pi/agents/*.md`, `.pi/prompts/*.md`, `.pi/skills/*/SKILL.md`, `AGENTS.md`), tables, fenced code, YAML front matter and headings.
+15. **A file a machine reads is rewritten only after reading its consumer.** `agents.ts`/`persona.ts` (agent cards), `jobs.ts` (wire markers), `policy.ts` (`WORKFLOW.md` front matter), `catalog.go` (rule files), `prove.go` (registry). Prose is negotiable; wire format is not.
 
 ## Document families and their skeletons
 
@@ -62,6 +63,7 @@ Pick by the reader's need, then keep the shape fixed:
 
 - Any `docs/spec/**` edit: `go run ./cmd/spec check --strict` and `make audit/static`; if the catalog changed, `make spec/gen` too (the dashboard's freshness is part of the gate).
 - Rule-file Notes bodies: `go test ./cmd/spec/...` — the canonical renderer byte-compares every file; match its formatting (Notes paragraphs are single-line) or the round-trip fails.
+- A wrap pass over `docs/**` (rule 14) is a whitespace-only reflow: `git diff -- 'docs/spec/rules/**/R-*.md' docs/spec/coverage.md` must stay empty and `go run ./cmd/spec check --strict` must stay green afterwards.
 - Gate files (`Makefile`, `cmd/spec/**`, `.github/**`, `WORKFLOW.md`): host-side edits with a prompt commit — gates refuse while they are dirty.
 - `.pi/extensions/**`: the three smoke suites (`make smoke`) plus `npm run typecheck` on the host.
 - A claimed check is not a run check. Report what ran, with exit codes.

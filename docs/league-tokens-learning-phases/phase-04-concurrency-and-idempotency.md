@@ -85,7 +85,8 @@ WHERE id = $1
 
 Then check `RowsAffected`.
 
-Later, for HTTP commands, add an idempotency key table.
+For HTTP commands the answer is an idempotency key table — the table the schema carries (migration 000010,
+scoped per caller by 000022): the ride commands claim a key before they run and record the answer with it.
 
 ## Idempotency flow
 
@@ -150,8 +151,10 @@ flowchart TD
 
 ## Done when
 
-Your tests demonstrate that concurrent or repeated operations cannot duplicate a burn, duplicate a result settlement, or create negative balances.
+Your tests demonstrate that concurrent or repeated operations cannot duplicate a burn, duplicate a result
+settlement, or create negative balances.
 
 ## What this prepares you for
 
-You now have enough complexity to start seeing natural module boundaries. The next phase extracts those boundaries without introducing a giant architecture framework.
+You now have enough complexity to start seeing natural module boundaries. The next phase extracts those
+boundaries without introducing a giant architecture framework.

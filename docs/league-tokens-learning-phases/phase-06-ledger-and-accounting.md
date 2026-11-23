@@ -170,10 +170,14 @@ flowchart LR
 
 ## Done when
 
-You can trace a buy, lock, loss, and burn operation from the API to the ledger journal and back to the player's visible balance.
+You can trace a buy, lock, loss, and burn operation from the API to the ledger journal and back to the
+player's visible balance.
 
-The seven ledger rules are `specified-only` rule files at `docs/spec/rules/ledger/` — one authored file per rule, each with an `expert-ref` back to this document — so the phase is done when the trace above holds and every one of them is green in the executable specification.
+The seven ledger rules are `specified-only` rule files at `docs/spec/rules/ledger/` — one authored file per
+rule, each with an `expert-ref` back to this document — so the phase is done when the trace above holds and
+every one of them is green in the executable specification.
 
 ## What this prepares you for
 
-Once the core operation is correct, you can safely introduce work that happens outside the request lifecycle, such as automatic burns.
+Once the core operation is correct, you can safely introduce work that happens outside the request lifecycle,
+such as automatic burns.

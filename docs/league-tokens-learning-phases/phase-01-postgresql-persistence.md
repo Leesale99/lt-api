@@ -4,7 +4,8 @@
 
 Move the Phase 0 state into PostgreSQL while keeping the API behavior stable.
 
-The main learning objective is to understand where SQL belongs and how to work with real relational data without hiding PostgreSQL behind layers of abstractions.
+The main learning objective is to understand where SQL belongs and how to work with real relational data
+without hiding PostgreSQL behind layers of abstractions.
 
 ## New concept
 
@@ -88,7 +89,9 @@ func (s *PlayerStore) Create(ctx context.Context, teamID string) (Player, error)
 }
 ```
 
-The SQL stays deliberately plain `database/sql` — `QueryRowContext`, `Scan`, explicit column lists — so the migration and query path stays readable. *Let's Go Further* is an optional companion if you want a worked tour of the same style.
+The SQL stays deliberately plain `database/sql` — `QueryRowContext`, `Scan`, explicit column lists — so the
+migration and query path stays readable. *Let's Go Further* is an optional companion if you want a worked tour
+of the same style.
 
 ## Migration workflow
 
@@ -142,8 +145,10 @@ flowchart TD
 
 ## Done when
 
-A fresh machine can run migrations, start PostgreSQL, start the Go server, and use the API without any in-memory game state.
+A fresh machine can run migrations, start PostgreSQL, start the Go server, and use the API without any
+in-memory game state.
 
 ## What this prepares you for
 
-Now you have enough persistence knowledge to model the actual ride domain rather than trying to learn domain modeling and SQL at the same time.
+Now you have enough persistence knowledge to model the actual ride domain rather than trying to learn domain
+modeling and SQL at the same time.

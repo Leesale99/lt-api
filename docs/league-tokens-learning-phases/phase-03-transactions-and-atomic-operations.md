@@ -29,7 +29,8 @@ If a later step fails, the earlier changes must not remain committed.
 
 ## Why this matters here
 
-The game engine specification says one match result can affect many rides and related balances. Treating those updates independently would create impossible intermediate states.
+The game engine specification says one match result can affect many rides and related balances. Treating those
+updates independently would create impossible intermediate states.
 
 ## Example transaction
 
@@ -104,7 +105,8 @@ reserve     - tokens
 wallet      + tokens
 ```
 
-The player's Currency does not vanish: it moves into the common pool, which is the same pool that funds burns later in the season.
+The player's Currency does not vanish: it moves into the common pool, which is the same pool that funds burns
+later in the season.
 
 ### `Lock`
 
@@ -169,8 +171,10 @@ flowchart TD
 
 ## Done when
 
-A failure injected halfway through any major operation leaves the database exactly as it was before the operation started.
+A failure injected halfway through any major operation leaves the database exactly as it was before the
+operation started.
 
 ## What this prepares you for
 
-Once operations are atomic, the next question is: what happens when two requests try to perform the same operation at the same time?
+Once operations are atomic, the next question is: what happens when two requests try to perform the same
+operation at the same time?
