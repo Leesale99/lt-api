@@ -155,6 +155,18 @@ ride burned
 - event sourcing
 - separate database per module
 
+## Orientation graph
+
+```mermaid
+flowchart TD
+    Handler[HTTP handler] --> Operation[game operation]
+    Operation --> Store[store]
+    Store --> Tx[sql.Tx: one transaction]
+    Tx --> Match[(matches)]
+    Tx --> Ride[(rides)]
+    Tx --> Balance[(token balances)]
+```
+
 ## Done when
 
 A failure injected halfway through any major operation leaves the database exactly as it was before the operation started.

@@ -156,6 +156,18 @@ No asynchronous messaging is needed yet.
 - complex event sourcing
 - general accounting abstractions unrelated to the game
 
+## Orientation graph
+
+```mermaid
+flowchart LR
+    HTTP --> Game
+    Game -->|intent| Ledger
+    Ledger --> Accounts[(accounts)]
+    Ledger --> Journal[(journal_entries)]
+    Ledger --> Balances[(balances)]
+    Game -.->|must not write| Balances
+```
+
 ## Done when
 
 You can trace a buy, lock, loss, and burn operation from the API to the ledger journal and back to the player's visible balance.
