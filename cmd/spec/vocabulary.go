@@ -1,7 +1,7 @@
 package main
 
 // vocabulary.go implements checker policy 13 (`13-vocabulary`,
-// docs/spec/rules.schema.md §3): the step text's vocabulary is bounded from
+// docs/spec/policies.md): the step text's vocabulary is bounded from
 // both sides.
 //
 //   - A DENYLIST (gherkin-style.md §6): transport vocabulary — the words that

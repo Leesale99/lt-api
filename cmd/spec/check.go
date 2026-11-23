@@ -783,7 +783,7 @@ func printFindings(w io.Writer, rulesPath string, catalog Catalog, findings []Fi
 	}
 
 	if len(findings) == 0 {
-		fmt.Fprint(w, "No findings — the catalog satisfies docs/spec/rules.schema.md §3.\n\n")
+		fmt.Fprint(w, "No findings — the catalog satisfies docs/spec/policies.md.\n\n")
 	}
 
 	errorsFound, warnings := countFindings(findings)

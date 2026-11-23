@@ -1,5 +1,5 @@
 // Command spec generates the business-rule catalog's Markdown view and checks
-// the catalog against its own invariants (docs/spec/rules.schema.md §3).
+// the catalog against its own invariants (docs/spec/policies.md).
 //
 // It is deliberately thin (the standard library, yaml.v3 for the catalog and the
 // gherkin parser for the feature files): the catalog is a documentation
@@ -15,7 +15,7 @@ const usage = `usage: spec <command> [flags]
 
 Commands:
   gen    generate the Markdown view of docs/spec/rules
-  check  validate the catalog against docs/spec/rules.schema.md §3
+  check  validate the catalog against docs/spec/policies.md
   work   print the work queue, or one rule's work order (R-XXX-NNN), or --module <m>
   prove  run the DB-backed mutant registry for the rules a change touches
 

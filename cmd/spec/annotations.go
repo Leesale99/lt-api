@@ -1,7 +1,7 @@
 package main
 
 // annotations.go implements checker policy 15 (`15-annotations`,
-// docs/spec/rules.schema.md §3): the catalog and the Go tree name each other at
+// docs/spec/policies.md): the catalog and the Go tree name each other at
 // the enforcement site, in both directions.
 //
 //   - CATALOG → TREE. Every Go enforcement site named by an implemented rule

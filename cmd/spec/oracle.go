@@ -1,7 +1,7 @@
 package main
 
 // oracle.go implements checker policy 18 (`18-oracle`,
-// docs/spec/rules.schema.md §3): a scenario must assert something an observer
+// docs/spec/policies.md): a scenario must assert something an observer
 // can see, and the assertion must match the rule's category.
 //
 //   - VACUOUS THEN. A Then step (and every And/But continuation of one) that

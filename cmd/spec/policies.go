@@ -1,7 +1,7 @@
 package main
 
 // policies.go owns the one ordered policy registry: every invariant from
-// docs/spec/rules.schema.md §3 is one Policy in `policies`, in numeric order.
+// docs/spec/policies.md is one Policy in `policies`, in numeric order.
 // The table is the only dispatch site — collection, report ordering, the
 // feature/gherkin section and the summary table all derive from it — so adding
 // a policy means adding one row, never editing a second list.
@@ -30,7 +30,7 @@ const (
 	LevelFeature
 )
 
-// Policy is one numbered invariant from docs/spec/rules.schema.md §3.
+// Policy is one numbered invariant from docs/spec/policies.md.
 type Policy struct {
 	ID    string
 	Name  string
