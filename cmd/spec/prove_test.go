@@ -31,7 +31,7 @@ func realCatalogAndRoot(t *testing.T) (Catalog, string) {
 
 func TestProveRegistrySeedsTheThirtyRules(t *testing.T) {
 	catalog, root := realCatalogAndRoot(t)
-	registry, err := loadProveRegistry(filepath.Join(root, proveRegistryFile))
+	registry, err := loadProveRegistry(filepath.Join(root, proveRegistryDir))
 	if err != nil {
 		t.Fatalf("load prove registry: %v", err)
 	}
@@ -77,6 +77,105 @@ func TestProveRegistrySeedsTheThirtyRules(t *testing.T) {
 				t.Errorf("%s maps to %s, which is tagged %s", id, pointer, ref.Rule)
 			}
 		}
+	}
+
+	// The registry is one file per module, and each file holds only its own
+	// module's ids.
+	for module, wantCount := range map[string]int{"schedule": 17, "game": 8, "identity": 5} {
+		perFile, err := loadProveRegistry(filepath.Join(root, proveRegistryDir, module+".yaml"))
+		if err != nil {
+			t.Fatalf("load %s.yaml: %v", module, err)
+		}
+		if len(perFile) != wantCount {
+			t.Errorf("%s.yaml holds %d entries, want %d", module, len(perFile), wantCount)
+		}
+		prefix := "R-" + strings.ToUpper(module) + "-"
+		for id := range perFile {
+			if !strings.HasPrefix(id, prefix) {
+				t.Errorf("%s.yaml holds %s, which is not a %s rule", module, id, module)
+			}
+		}
+	}
+}
+
+// writeProveRegistryFile writes one registry fixture into dir. The file need not
+// carry scenarios that resolve: the loader validates shape, not pointers.
+func writeProveRegistryFile(t *testing.T, dir, name, body string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+}
+
+func TestProveRegistryStillAcceptsTheLegacySingleFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "prove.yaml")
+	writeProveRegistryFile(t, dir, "prove.yaml",
+		"R-GAME-001:\n  scenarios:\n    - f.feature::s\n")
+
+	registry, err := loadProveRegistry(path)
+	if err != nil {
+		t.Fatalf("load legacy single-file registry: %v", err)
+	}
+	if len(registry) != 1 || len(registry["R-GAME-001"].Scenarios) != 1 {
+		t.Fatalf("legacy registry = %v, want one R-GAME-001 entry", registry)
+	}
+}
+
+func TestProveRegistryDirectoryRejectsADuplicateIDAcrossFiles(t *testing.T) {
+	dir := t.TempDir()
+	// game.yaml repeats a schedule id: the duplicate must be reported before the
+	// file's module mismatch, naming both files.
+	writeProveRegistryFile(t, dir, "game.yaml",
+		"R-SCHEDULE-003:\n  scenarios:\n    - f.feature::a\n")
+	writeProveRegistryFile(t, dir, "schedule.yaml",
+		"R-SCHEDULE-003:\n  scenarios:\n    - f.feature::b\n")
+
+	_, err := loadProveRegistry(dir)
+	if err == nil {
+		t.Fatal("registry accepted an id declared in two files")
+	}
+	for _, want := range []string{"R-SCHEDULE-003", "game.yaml", "schedule.yaml"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to mention %q", err, want)
+		}
+	}
+}
+
+func TestProveRegistryDirectoryRejectsAModuleMismatch(t *testing.T) {
+	dir := t.TempDir()
+	// README.md is the directory's authored prose and must be skipped; the
+	// mismatch in game.yaml is still the only error.
+	writeProveRegistryFile(t, dir, "README.md", "# the registry\n")
+	writeProveRegistryFile(t, dir, "game.yaml",
+		"R-SCHEDULE-003:\n  scenarios:\n    - f.feature::a\n")
+
+	_, err := loadProveRegistry(dir)
+	if err == nil {
+		t.Fatal("registry accepted a schedule id inside game.yaml")
+	}
+	for _, want := range []string{"game.yaml", "R-SCHEDULE-003"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to mention %q", err, want)
+		}
+	}
+}
+
+func TestProveRegistryDirectoryRejectsAStrayFile(t *testing.T) {
+	dir := t.TempDir()
+	writeProveRegistryFile(t, dir, "game.yaml",
+		"R-GAME-001:\n  scenarios:\n    - f.feature::a\n")
+	writeProveRegistryFile(t, dir, "game.txt", "not a registry\n")
+
+	_, err := loadProveRegistry(dir)
+	if err == nil {
+		t.Fatal("registry accepted a non-YAML file")
+	}
+	if !strings.Contains(err.Error(), "game.txt") {
+		t.Errorf("error = %q, want it to name game.txt", err)
 	}
 }
 
@@ -315,6 +414,11 @@ func TestProveDerivesScopeFromDirtyTree(t *testing.T) {
 		proveRule("R-GAME-001", "game", "ride", "A ride is born locked"),
 	})
 	repo.addFile(t, "docs/spec/rules/README.md", "# rules\n")
+	repo.addFile(t, "docs/spec/prove/game.yaml",
+		"R-GAME-002:\n  scenarios:\n    - docs/spec/features/game/ride_lifecycle.feature::x\n")
+	repo.addFile(t, "docs/spec/prove/schedule.yaml",
+		"R-SCHEDULE-003:\n  scenarios:\n    - docs/spec/features/schedule/lifecycle.feature::y\n")
+	repo.addFile(t, "docs/spec/prove/README.md", "# prove\n")
 	repo.addFile(t, "docs/spec/features/kernel/thing.feature",
 		"@kernel\nFeature: a thing\n\n  @rule:R-KERNEL-002\n  Scenario: a scenario\n    Then the thing reads \"locked\"\n")
 	run("add", ".")
@@ -330,9 +434,66 @@ func TestProveDerivesScopeFromDirtyTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo.addFile(t, "docs/spec/rules/README.md", "# rules, edited\n")
+	repo.addFile(t, "docs/spec/prove/game.yaml",
+		"R-GAME-002:\n  scenarios:\n    - docs/spec/features/game/ride_lifecycle.feature::x\n  notes: \"edited\"\n")
 	repo.addFile(t, "internal/kernel/thing/thing.go", "package thing\n\n//rule:R-KERNEL-003\nfunc Do() {}\n")
 	repo.addFile(t, "docs/spec/features/kernel/thing.feature",
 		"@kernel\nFeature: a thing\n\n  @rule:R-KERNEL-004\n  Scenario: a scenario\n    Then the thing reads \"locked\"\n")
+
+	catalog, err := loadCatalog(repo.rulesPath)
+	if err != nil {
+		t.Fatalf("load the working catalog: %v", err)
+	}
+	index := (&checker{root: root}).indexFeatures()
+	scope, err := deriveProveScope(root, "HEAD", repo.rulesPath, "docs/spec/prove", catalog, index)
+	if err != nil {
+		t.Fatalf("derive scope: %v", err)
+	}
+	for _, want := range []string{
+		"R-KERNEL-001", // CHANGED rule file
+		"R-KERNEL-003", // //rule annotation in a touched Go file
+		"R-KERNEL-004", // tag in a touched feature file
+		"R-KERNEL-006", // ADDED rule file
+		"R-GAME-001",   // REMOVED rule file
+		"R-GAME-002",   // entry declared in the touched prove/game.yaml
+	} {
+		if !scope[want] {
+			t.Errorf("derived scope does not contain %s: %v", want, scope)
+		}
+	}
+	for _, unwanted := range []string{
+		"R-KERNEL-005",   // the file did not change
+		"README",         // the rules directory's README is not a rule
+		"R-SCHEDULE-003", // its registry file (prove/schedule.yaml) was not touched
+	} {
+		if scope[unwanted] {
+			t.Errorf("derived scope contains %s, which no touched rule file changed: %v", unwanted, scope)
+		}
+	}
+}
+
+func TestProveDerivesLegacyRegistryFileScope(t *testing.T) {
+	repo := newTestRepo(t)
+	root := repo.root
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q")
+	run("config", "user.email", "spec@example.test")
+	run("config", "user.name", "Spec Test")
+
+	repo.writeCatalog(t, Catalog{})
+	repo.addFile(t, "docs/spec/prove.yaml", "R-GAME-001:\n  scenarios:\n    - f.feature::x\n")
+	run("add", ".")
+	run("commit", "-q", "-m", "base")
+
+	// The legacy single file is edited: every entry it declares is in scope.
+	repo.addFile(t, "docs/spec/prove.yaml",
+		"R-GAME-001:\n  scenarios:\n    - f.feature::x\n  notes: \"edited\"\n")
 
 	catalog, err := loadCatalog(repo.rulesPath)
 	if err != nil {
@@ -343,24 +504,8 @@ func TestProveDerivesScopeFromDirtyTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("derive scope: %v", err)
 	}
-	for _, want := range []string{
-		"R-KERNEL-001", // CHANGED rule file
-		"R-KERNEL-003", // //rule annotation in a touched Go file
-		"R-KERNEL-004", // tag in a touched feature file
-		"R-KERNEL-006", // ADDED rule file
-		"R-GAME-001",   // REMOVED rule file
-	} {
-		if !scope[want] {
-			t.Errorf("derived scope does not contain %s: %v", want, scope)
-		}
-	}
-	for _, unwanted := range []string{
-		"R-KERNEL-005", // the file did not change
-		"README",       // the rules directory's README is not a rule
-	} {
-		if scope[unwanted] {
-			t.Errorf("derived scope contains %s, which no touched rule file changed: %v", unwanted, scope)
-		}
+	if len(scope) != 1 || !scope["R-GAME-001"] {
+		t.Errorf("derived scope = %v, want exactly R-GAME-001", scope)
 	}
 }
 

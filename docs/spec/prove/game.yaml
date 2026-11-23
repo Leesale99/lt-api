@@ -1,0 +1,42 @@
+# Registry for the game module. Entry schema, verdicts and scope rules:
+# docs/spec/README.md §7.
+
+R-GAME-001:
+  scenarios:
+    - docs/spec/features/game/ride_lifecycle.feature::A ride cannot be born in any other state
+  notes: "rides_state_insert_gate refuses a ride born outside locked"
+
+R-GAME-002:
+  scenarios:
+    - docs/spec/features/game/ride_lifecycle.feature::The database refuses the same moves for a direct writer
+  notes: "rides_state_gate refuses a move outside the five-state graph"
+
+R-GAME-003:
+  scenarios:
+    - docs/spec/features/game/ride_lifecycle.feature::The database refuses to revive a terminal ride
+  notes: "rides_state_gate refuses a transition out of a terminal state"
+
+R-GAME-004:
+  scenarios:
+    - docs/spec/features/game/settlement.feature::The database refuses a ride carrying money outside its domain
+  notes: "the ride money CHECKs refuse a value outside its domain"
+
+R-GAME-005:
+  scenarios:
+    - docs/spec/features/game/settlement.feature::The database refuses an unlock that keeps the bonus
+  notes: "rides_money_state_coupling refuses a retained bonus on unlock"
+
+R-GAME-014:
+  scenarios:
+    - docs/spec/features/game/players.feature::The database refuses a second registration for the same member
+  notes: "players_season_id_user_id_key refuses a second registration"
+
+R-GAME-025:
+  scenarios:
+    - docs/spec/features/game/ride_lifecycle.feature::No writer moves the ride to another match except by continuing it
+  notes: "rides_state_gate refuses a match re-point outside a continuation"
+
+R-GAME-035:
+  scenarios:
+    - docs/spec/features/game/players.feature::The database refuses to withdraw a registration its rides name
+  notes: "rides_player_id_fkey RESTRICT refuses the registration delete"

@@ -155,7 +155,7 @@ around the application — and requires them to pass, so VERIFIED means the rule
 actually happened when something tried to break it. VACUOUS (the mapping asserts
 nothing observable) and BROKEN-TEST (a scenario fails against an intact tree) are hard
 fails and cannot be waived; UNVALIDATABLE is reported and stops for human sign-off,
-which the prove registry (`docs/spec/prove.yaml`) records as a git-attributed name rather
+which the prove registry (`docs/spec/prove/<module>.yaml`) records as a git-attributed name rather
 than an executable scenario. It needs Postgres, so it lives in the gate VM. And it is
 enforced where it matters: the extension blocks a merge command in an orchestrator
 session when the job's scoped rules lack VERIFIED receipts, independently of how the

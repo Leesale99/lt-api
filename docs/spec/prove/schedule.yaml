@@ -1,0 +1,87 @@
+# Registry for the schedule module. Entry schema, verdicts and scope rules:
+# docs/spec/README.md §7.
+
+R-SCHEDULE-003:
+  scenarios:
+    - docs/spec/features/schedule/lifecycle.feature::A closed match cannot go back to running
+  notes: "matches_freeze_gate refuses a backward match status through the Owner pool"
+
+R-SCHEDULE-004:
+  scenarios:
+    - docs/spec/features/schedule/lifecycle.feature::A status the league never defined cannot be stored
+  notes: "the status CHECKs refuse an undefined status through the Owner pool"
+
+R-SCHEDULE-005:
+  scenarios:
+    - docs/spec/features/schedule/lifecycle.feature::The database refuses to postpone a started match
+  notes: "matches_freeze_gate refuses a started match's status regression"
+
+R-SCHEDULE-006:
+  scenarios:
+    - docs/spec/features/schedule/fixtures.feature::The database refuses a score that does not fit the match
+  notes: "the score CHECKs refuse a score outside the match status"
+
+R-SCHEDULE-007:
+  scenarios:
+    - docs/spec/features/schedule/fixtures.feature::The database refuses an end that does not fit the match
+  notes: "matches_ended_at_check refuses a missing or impossible end"
+
+R-SCHEDULE-008:
+  scenarios:
+    - docs/spec/features/schedule/fixtures.feature::A writer that supplies no end gets the calendar's own clock
+  notes: "the trigger stamps the end; the mutation is an Owner-pool close that omits it"
+
+R-SCHEDULE-009:
+  scenarios:
+    - docs/spec/features/schedule/fixtures.feature::The database refuses a fixture priced at evens or below
+  notes: "the odds CHECKs refuse a price at evens or below"
+
+R-SCHEDULE-010:
+  scenarios:
+    - docs/spec/features/schedule/fixtures.feature::The database refuses a fixture with one team on both sides
+  notes: "matches_teams_differ_check refuses a self-match"
+
+R-SCHEDULE-011:
+  scenarios:
+    - docs/spec/features/schedule/fixtures.feature::The database refuses a fixture moved into another season
+  notes: "the composite foreign key refuses a round from another season"
+
+R-SCHEDULE-013:
+  scenarios:
+    - docs/spec/features/schedule/fixtures.feature::The database refuses a round numbered outside the fixture list
+  notes: "rounds_number_check refuses a number outside 1–38"
+
+R-SCHEDULE-014:
+  scenarios:
+    - docs/spec/features/schedule/fixtures.feature::The database refuses a duplicate round number
+  notes: "rounds_season_id_number_key refuses a second round with the same number"
+
+R-SCHEDULE-015:
+  scenarios:
+    - docs/spec/features/schedule/lifecycle.feature::The database refuses a round opened behind an unclosed predecessor
+  notes: "rounds_progress_gate refuses an out-of-sequence open"
+
+R-SCHEDULE-016:
+  scenarios:
+    - docs/spec/features/schedule/lifecycle.feature::The database refuses a close over a match still running
+  notes: "rounds_close_gate refuses a close over an unfinished match"
+
+R-SCHEDULE-023:
+  scenarios:
+    - docs/spec/features/schedule/deletion.feature::The database refuses to delete a round with a started match
+  notes: "rounds_delete_gate refuses to delete a started round"
+
+R-SCHEDULE-024:
+  scenarios:
+    - docs/spec/features/schedule/deletion.feature::A direct delete of the season takes its fixtures with it
+  notes: "the cascade is the enforcement; the Owner-pool delete must succeed and remove the children"
+
+R-SCHEDULE-025:
+  scenarios:
+    - docs/spec/features/schedule/deletion.feature::The database refuses to delete a team a fixture names
+  notes: "matches_home_team_id_fkey RESTRICT refuses the delete"
+
+R-SCHEDULE-029:
+  scenarios:
+    - docs/spec/features/schedule/fixtures.feature::The database refuses a team with a part of its record missing
+  notes: "the team CHECKs refuse a half-described club"

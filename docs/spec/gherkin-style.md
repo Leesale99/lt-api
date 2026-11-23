@@ -300,7 +300,7 @@ silently. Vocabulary rules remain §6.
 `LT_API_TEST_DSN` and never runs on a cached result. `make prove` is the slow gate above it:
 it runs the registry's mapped godog scenarios against the intact tree — the code is never
 altered — so those scenarios attempt the rule's bypass and must observe the refusal. The
-registry in `docs/spec/prove.yaml` addresses its scenarios the same way the catalog does —
+registry in `docs/spec/prove/<module>.yaml` addresses its scenarios the same way the catalog does —
 `<feature-file>::<scenario name>` (§3) — and a renamed scenario breaks that entry too.
 
 ---

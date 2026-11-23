@@ -34,7 +34,8 @@ docs/spec/
 ├── rules.schema.md — format authority (enums §1, the rule file §2, policies §3)
 ├── features/ — the Gherkin tree, one capability per file
 ├── glossary.yaml — the per-module step-vocabulary allowlist (policy 13)
-├── prove.yaml — the registry: which scenario attempts each rule's bypass
+├── prove/ — the registry, one <module>.yaml per module: which scenario
+│            attempts each rule's bypass; prove/README.md is the directory's map
 ├── business-rules.md — GENERATED dashboard; never edit
 └── gherkin-style.md — Gherkin authoring style
 ```
@@ -362,13 +363,26 @@ catalog change without a regeneration fails the audit.
 `check`: not "is the rule still catalogued consistently?" but "does the rule's
 enforcement still refuse the bypass?".
 
-`docs/spec/prove.yaml` is the registry: for each provable rule, the executable
-scenarios that attempt its bypass, or a git-attributed human signoff when no executable
-scenario exists. Prove derives the rules a change touches (committed `base...HEAD` plus
-the dirty tree, so an uncommitted change is still proven), or takes an explicit
-`--rule <id>` / `--all`, rejects every mapping that is vacuous on inspection, then runs
-only the mapped godog scenarios (through `SPEC_FEATURE_PATHS`, so the suite visits those
-scenarios and no others).
+The registry is per module at `docs/spec/prove/<module>.yaml`: each file maps a
+module's rule ids to an entry carrying the executable scenarios that attempt the
+bypass, or a git-attributed human signoff when no executable scenario exists.
+Entries are added on demand: a rule enters prove only when a change touches it,
+and then a human must either map a scenario or sign an unvalidatable entry. Prove
+derives the rules a change touches (committed `base...HEAD` plus the dirty tree, so
+an uncommitted change is still proven) — editing one module's registry scopes that
+module's entries — or takes an explicit `--rule <id>` / `--all`, resolves every
+scenario pointer against the parsed feature tree, rejects every mapping that is
+vacuous on inspection, then runs only the mapped godog scenarios (through
+`SPEC_FEATURE_PATHS`, so the suite visits those scenarios and no others).
+
+An entry is `scenarios` (one or more `<feature-file>::<scenario name>` pointers,
+required for a verifiable entry), plus optionally `signoff` (only for an
+UNVALIDATABLE rule) and free-text `notes`. The registry is seeded with the 30
+database-authority rules; most map to an Owner-pool write/refusal scenario, while
+R-IDENTITY-011 and R-IDENTITY-014 have no sabotage scenario and map to their own
+executable proof, saying so in `notes`. `signoff` must carry a git-attributed
+identity and the commit that reviewed the exception: a signed UNVALIDATABLE rule
+passes, an unsigned one fails.
 
 The verdict per rule:
 

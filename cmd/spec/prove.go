@@ -5,11 +5,12 @@ package main
 // slow, needs Postgres, and is run by a human (or a nightly job) as the final
 // answer to "the rule's enforcement still refuses the bypass".
 //
-// The registry docs/spec/prove.yaml maps a rule to the executable scenarios
-// that detect its bypass. Prove derives the rules a change touches (or takes a
-// manual --rule), validates the registry statically, then runs only the mapped
-// godog scenarios. A rule with no registry entry is UNVALIDATABLE and fails
-// unless the registry carries a git-attributed signoff.
+// The registry at docs/spec/prove/<module>.yaml maps a rule to the executable
+// scenarios that detect its bypass; each module owns one file. Prove derives the
+// rules a change touches (or takes a manual --rule), validates the registry
+// statically, then runs only the mapped godog scenarios. A rule with no registry
+// entry is UNVALIDATABLE and fails unless the registry carries a git-attributed
+// signoff.
 //
 // The base ref defaults to the repository's default branch: origin/HEAD,
 // then origin/main, origin/master, main, master. The diff includes committed
@@ -34,7 +35,7 @@ import (
 )
 
 const (
-	proveRegistryFile = "docs/spec/prove.yaml"
+	proveRegistryDir  = "docs/spec/prove"
 	proveDSNEnv       = "LT_API_TEST_DSN"
 	proveFeaturePaths = "SPEC_FEATURE_PATHS"
 )
@@ -53,7 +54,8 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("spec prove", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	rulesPath := fs.String("rules", "docs/spec/rules", "path to the per-rule-file catalog directory")
-	registryPath := fs.String("registry", proveRegistryFile, "path to the per-rule mutant registry")
+	registryPath := fs.String("registry", proveRegistryDir,
+		"path to the per-rule mutant registry: a directory of <module>.yaml files, or a legacy single file")
 	base := fs.String("base", "", "git ref to diff against (default: the repository's default branch)")
 	ruleID := fs.String("rule", "", "prove one rule id, bypassing the diff-derived scope")
 	all := fs.Bool("all", false, "prove every rule in the registry (the seeded-registry gate)")
@@ -319,15 +321,36 @@ func printTail(w io.Writer, output string, lines int) {
 	}
 }
 
-// loadProveRegistry reads the per-rule mutant registry. Decoding is strict — an
-// unknown field is an error (a misspelled `scenarios` would otherwise register a
-// rule as UNVALIDATABLE without saying so) — and the registry is exactly one
-// YAML document, for the same reason the catalog is.
+// loadProveRegistry reads the per-rule mutant registry at path: a directory of
+// one <module>.yaml per module (the default form), or a single file (the legacy
+// form, kept working unchanged).
 func loadProveRegistry(path string) (proveRegistry, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat prove registry: %w", err)
+	}
+	if info.IsDir() {
+		return loadProveRegistryDir(path)
+	}
+	return loadProveRegistryFile(path)
+}
+
+// loadProveRegistryFile reads one registry document. Decoding is strict — an
+// unknown field is an error (a misspelled `scenarios` would otherwise register a
+// rule as UNVALIDATABLE without saying so) — and the file is exactly one YAML
+// document, for the same reason the catalog is.
+func loadProveRegistryFile(path string) (proveRegistry, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read prove registry: %w", err)
 	}
+	return decodeProveRegistry(data, path)
+}
+
+// decodeProveRegistry is the strict single-document decode every registry file
+// shares, so a legacy file and a per-module file can never disagree about what a
+// valid entry looks like.
+func decodeProveRegistry(data []byte, path string) (proveRegistry, error) {
 	var registry proveRegistry
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
@@ -350,6 +373,86 @@ func loadProveRegistry(path string) (proveRegistry, error) {
 	return registry, nil
 }
 
+// loadProveRegistryDir reads one <module>.yaml registry per module. The layout is
+// strict, because a misplaced file would silently unregister a rule: every
+// top-level entry is a YAML registry file, the single exception is the directory's
+// authored README (mirroring the rules catalog). A file's stem is its module, so
+// every entry must be that module's rule id; ids are unique across files.
+func loadProveRegistryDir(dir string) (proveRegistry, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read prove registry directory: %w", err)
+	}
+	type registryFile struct {
+		path     string
+		module   string
+		registry proveRegistry
+	}
+	var files []registryFile
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") {
+			return nil, fmt.Errorf("load prove registry %s: %q is a dotfile; the registry "+
+				"directory holds one <module>.yaml per module", dir, name)
+		}
+		if entry.IsDir() {
+			return nil, fmt.Errorf("load prove registry %s: %q is a directory; the registry "+
+				"directory holds one <module>.yaml per module", dir, name)
+		}
+		if name == catalogReadmeFile {
+			continue
+		}
+		if filepath.Ext(name) != ".yaml" {
+			return nil, fmt.Errorf("load prove registry %s: %q is not a YAML registry file "+
+				"(the only non-registry file allowed here is %s)", dir, name, catalogReadmeFile)
+		}
+		path := filepath.Join(dir, name)
+		registry, err := loadProveRegistryFile(path)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, registryFile{
+			path:     path,
+			module:   strings.TrimSuffix(name, ".yaml"),
+			registry: registry,
+		})
+	}
+
+	// Duplicates first, across the whole directory: a repeated id names both files,
+	// which is a more useful verdict than either file's module mismatch.
+	declaredIn := map[string]string{}
+	for _, file := range files {
+		for _, id := range sortedRegistryIDs(file.registry) {
+			if other, ok := declaredIn[id]; ok {
+				return nil, fmt.Errorf("load prove registry %s: %s is declared in both %s and "+
+					"%s; ids are unique across the registry", dir, id, other, file.path)
+			}
+			declaredIn[id] = file.path
+		}
+	}
+
+	merged := proveRegistry{}
+	for _, file := range files {
+		for _, id := range sortedRegistryIDs(file.registry) {
+			if !strings.HasPrefix(id, "R-"+strings.ToUpper(file.module)+"-") {
+				return nil, fmt.Errorf("load prove registry %s: %s is not a %s rule; a "+
+					"module's registry holds its own ids only", file.path, id, file.module)
+			}
+			merged[id] = file.registry[id]
+		}
+	}
+	return merged, nil
+}
+
+func sortedRegistryIDs(registry proveRegistry) []string {
+	ids := make([]string, 0, len(registry))
+	for id := range registry {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // defaultProveBase finds the repository's default branch, trying the remote
 // HEAD first and then the conventional branch names.
 func defaultProveBase(root string) (string, error) {
@@ -369,7 +472,9 @@ func defaultProveBase(root string) (string, error) {
 // deriveProveScope maps the touched files onto the rules they name. A touched
 // Go file contributes its //rule annotations, a touched per-rule file under the
 // catalog directory contributes that rule when its file changed (each file is
-// one rule), and a touched feature file contributes every rule it tags.
+// one rule), and a touched feature file contributes every rule it tags. A touched
+// registry contributes the entries it declares: all of them for the legacy
+// single-file form, exactly that file's entries for one <module>.yaml.
 func deriveProveScope(root, base, rulesPath, registryPath string, catalog Catalog, index *featureIndex) (map[string]bool, error) {
 	touched, err := touchedFiles(root, base)
 	if err != nil {
@@ -379,6 +484,16 @@ func deriveProveScope(root, base, rulesPath, registryPath string, catalog Catalo
 	relRules, _ := filepath.Rel(root, rulesPath)
 	relRules = filepath.ToSlash(relRules)
 	rulesPrefix := strings.TrimSuffix(relRules, "/") + "/"
+	// The registry may be a directory (one file per module) or a legacy single
+	// file. Normalize the spelling so a trailing separator or a `./` cannot dodge
+	// the match; stat decides the form, and a path that does not exist is the
+	// legacy file form (runProve fails earlier when the registry is missing).
+	relRegistry := filepath.ToSlash(filepath.Clean(registryPath))
+	registryIsDir := false
+	if info, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(relRegistry))); statErr == nil && info.IsDir() {
+		registryIsDir = true
+	}
+	registryPrefix := strings.TrimSuffix(relRegistry, "/") + "/"
 	fileRules := map[string][]string{}
 	for _, file := range index.files {
 		fileRules[file.Path] = file.Rules
@@ -402,7 +517,8 @@ func deriveProveScope(root, base, rulesPath, registryPath string, catalog Catalo
 		}
 	}
 
-	for _, file := range touched {
+	for _, touchedFile := range touched {
+		file := filepath.ToSlash(filepath.Clean(touchedFile))
 		switch {
 		case strings.HasSuffix(file, ".go"):
 			data, err := readWorkingOrBase(root, base, file)
@@ -416,9 +532,31 @@ func deriveProveScope(root, base, rulesPath, registryPath string, catalog Catalo
 			for _, id := range fileRules[file] {
 				scope[id] = true
 			}
-		case file == registryPath:
-			// Editing the registry is itself a claim about these rules: prove
-			// every entry the edited file declares.
+		case registryIsDir && strings.HasPrefix(file, registryPrefix):
+			// Editing a module's registry is itself a claim about that module's
+			// entries: prove exactly the entries the edited file declares.
+			rel := strings.TrimPrefix(file, registryPrefix)
+			if rel == catalogReadmeFile {
+				continue
+			}
+			if strings.Contains(rel, "/") || filepath.Ext(rel) != ".yaml" {
+				return nil, fmt.Errorf("load prove registry %s: %q is not a registry file; "+
+					"the registry directory holds <module>.yaml files", relRegistry, rel)
+			}
+			data, err := readWorkingOrBase(root, base, file)
+			if err != nil {
+				return nil, err
+			}
+			registry, err := decodeProveRegistry(data, file)
+			if err != nil {
+				return nil, err
+			}
+			for id := range registry {
+				scope[id] = true
+			}
+		case !registryIsDir && file == relRegistry:
+			// Editing the legacy single-file registry claims every entry it
+			// declares.
 			registry, err := loadProveRegistry(filepath.Join(root, filepath.FromSlash(file)))
 			if err != nil {
 				return nil, err
