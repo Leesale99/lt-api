@@ -42,7 +42,7 @@ type UserToken struct {
 // validator refuses a credential of any other length — so generation must not
 // inherit the standard library's documented output shape. A stdlib change to
 // rand.Text's alphabet or letter count would otherwise silently make the
-// validator reject freshly minted tokens (misalignment-report §6.20).
+// validator reject the freshly minted tokens.
 //
 // The derivation is deliberately explicit: tokenEntropyBytes from crypto/rand,
 // RFC 4648 base32 (upper-case A–Z and 2–7, no padding), the first

@@ -97,9 +97,9 @@ Feature: Season and round lifecycle
       Then the write is refused by rounds_freeze_gate
       And the refusal names started_match_blocks_round_regression
 
-  # The calendar answers every refused lifecycle write with one shared conflict
-  # (misalignment-report §6.4), so the scenarios below assert the refusal and the
-  # record that did not move rather than a name the caller never hears.
+  # The calendar answers every refused lifecycle write with one shared conflict,
+  # so the scenarios below assert the refusal and the record that did not move
+  # rather than a name the caller never hears.
   @rule:R-SCHEDULE-015
   Rule: A round goes live only under a live season and in order
 

@@ -169,7 +169,7 @@ func insertSettledFutureMatch(ctx context.Context, t *testing.T, seasonID, round
 // close-first race relies on this ordering: without the wait, a slow
 // goroutine could see the committed close and be refused for the mundane
 // reason, proving nothing about the lock. The blocked statement is the
-// SchedulePort's round gate — schedule.round_open_guard (the FOR SHARE
+// Schedule port's round gate — schedule.round_open_guard (the FOR SHARE
 // lives inside schedule's definer function since 000018) — the ride write
 // runs only after the gate returns.
 func waitUntilInsertBlocked(ctx context.Context, t *testing.T) {
@@ -444,7 +444,7 @@ func TestService_RideCommandsRaceOnOneRide(t *testing.T) {
 					// The loser: either its domain read saw the winner's
 					// commit (burned/unlocked is outside won_pending's
 					// transitions) or its guarded write lost the CAS and
-					// classifyUpdateRefusal named the cause.
+					// classifyDecisionRefusal named the cause.
 				default:
 					t.Fatalf("ride command = %v, want nil or domain.ErrInvalidTransition", err)
 				}

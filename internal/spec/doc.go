@@ -91,12 +91,4 @@
 // credential's lifetime is read from the token's row — what was minted is the
 // fact — and the same holds for an aged credential, which the fixture ages by
 // moving the minted expiry (never by patching a clock the product reads).
-//
-// # @known-defect scenarios
-//
-// A scenario tagged @known-defect:<item> is red because of a catalogued
-// misalignment-report §6 defect. The default run excludes those scenarios and
-// prints a loud note for each one, so a green run never claims the behaviour is
-// correct; SPEC_KNOWN_DEFECTS=1 clears the filter and runs them (the harness's
-// findings).
 package spec

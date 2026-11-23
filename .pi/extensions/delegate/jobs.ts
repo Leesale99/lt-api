@@ -63,7 +63,8 @@ import {
   APPROVAL_MARKER,
   HANDOFF_TERMINAL_TOKENS,
 } from "./contracts.ts";
-import { runReconciliation, checkProveCoverage, parseSpecScope } from "./gates.ts";
+import { runReconciliation } from "./gates.ts";
+import { checkProveCoverage, resolveJobRuleIds } from "./mergegate.ts";
 import { getFinalOutput, parseChildJsonl, truncateParallelOutput } from "./output.ts";
 
 const execFileP = promisify(execFile);
@@ -107,7 +108,7 @@ export interface JobEntry {
   /**
    * The worktree the orchestrator does its work in: the conventional sibling
    * `../lt-api-wt-<id>` of the cwd that launched the job (the worktree handoff
-   * in .pi/delegate/orchestrator.md). Recorded ONCE at creation, for both
+   * in .pi/agents/orchestrator.md). Recorded ONCE at creation, for both
    * runner variants, instead of reconstructed at every probe: the registry does
    * not persist the job's cwd, and a relay derives the path from ITS OWN cwd,
    * so a caller in another checkout would otherwise probe the wrong tree. The
@@ -390,7 +391,7 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
   const runnerPath = base + ".sh";
   const tmuxSession = "pi-" + id;
   // The orchestrator's worktree, by convention a sibling of the launching
-  // checkout: .pi/delegate/orchestrator.md has the child create
+  // checkout: .pi/agents/orchestrator.md has the child create
   // `../lt-api-wt-<job-id>` on branch `delegate/<job-id>`. Recorded here (not
   // derived later) so the approval probe and the prove-coverage check read the
   // tree this job was launched for — see JobEntry.worktreePath.
@@ -419,7 +420,7 @@ export async function startBackgroundJob(opts: StartJobOptions): Promise<JobEntr
     lines.push("#!/bin/sh");
     lines.push("# pi delegate background job " + id + (interactive ? " (interactive TUI in tmux pane)" : " (headless fallback)"));
     // Scrub pi's session env (the same five keys the foreground spawn deletes in
-    // index.ts) so background children start clean: the runner inherits the full
+    // ./spawn.ts) so background children start clean: the runner inherits the full
     // parent env via tmux/detached spawn, including pi's bash-tool exports.
     lines.push("unset PI_SESSION_ID PI_SESSION_FILE PI_PROVIDER PI_MODEL PI_REASONING_LEVEL");
     lines.push("cd " + shq(opts.cwd) + " || exit 1");
@@ -769,9 +770,12 @@ export interface ApprovalRelayOutcome {
  *
  * This relay is also the extension's merge-back choke point, so it carries both
  * content bindings: the reviewed HEAD SHA (the worktree must not have moved)
- * and, for a task whose SPEC-SCOPE names rules, VERIFIED prove receipts for
- * EVERY named rule (checkProveCoverage). A refusal names the rule ids and
- * tells the caller to relay `rejected:` so the orchestrator runs prove and
+ * and, for a job whose RECORDED scope names rules, VERIFIED prove receipts for
+ * EVERY named rule. Both the scope (`resolveJobRuleIds`) and the receipt policy
+ * (`checkProveCoverage`) come from ./mergegate.ts — the same resolver and
+ * policy the merge-path hook in ./mergegate.ts uses, so the relay and the merge
+ * block can never disagree about a job's scope. A refusal names the rule ids
+ * and tells the caller to relay `rejected:` so the orchestrator runs prove and
  * re-emits a fresh approval request — never approve over missing evidence.
  */
 export async function relayApprovalDecision(cwd: string, id: string, message: string): Promise<ApprovalRelayOutcome> {
@@ -839,14 +843,21 @@ export async function relayApprovalDecision(cwd: string, id: string, message: st
     }
   }
 
-  // PROVE at merge-back: a task whose SPEC-SCOPE names rules must have VERIFIED
-  // prove receipts covering EVERY named rule before its approval is relayed —
-  // this relay IS a merge-back choke point (the merge execution path enforces
-  // the same precondition independently, so a decision typed straight into the
-  // pane cannot bypass it). Fail closed: missing/stale/failed evidence refuses
-  // with the rule ids named, because a green static check does not mean the
-  // behavior was exercised. Rejections and every other message pass through
+  // PROVE at merge-back: a job whose RECORDED scope names rules must have
+  // VERIFIED prove receipts covering EVERY named rule before its approval is
+  // relayed — this relay IS a merge-back choke point (the merge execution path
+  // enforces the same precondition independently, so a decision typed straight
+  // into the pane cannot bypass it). Fail closed: missing/stale/failed evidence
+  // refuses with the rule ids named, because a green static check does not mean
+  // the behavior was exercised. Rejections and every other message pass through
   // untouched (only an approval claims the merge-back).
+  //
+  // The scope comes from ./mergegate.ts `resolveJobRuleIds` — THE resolver, the
+  // same call the merge-path block makes. It used to be parsed here from
+  // `entry.task` while the merge path read the claims log, so a job whose claim
+  // named rules and whose task text named none could be relay-approved and then
+  // merge-blocked on the identical merge-back (defect 2). One resolver, one
+  // answer.
   //
   // Receipts are HOST-ONLY: `cwd` (the calling host session's own repo root) is
   // the receipts root, never the worktree — a worker's mount could otherwise
@@ -854,7 +865,7 @@ export async function relayApprovalDecision(cwd: string, id: string, message: st
   // the approval decision itself (above, `awaitingApprovalHeadSha`), not to the
   // coverage read: prove receipts are written by the orchestrator host session
   // and name the verifier plane's HEAD, not the worktree's.
-  const scopedRules = parseSpecScope(entry.task)?.rules ?? [];
+  const scopedRules = await resolveJobRuleIds(cwd, entry.id);
   const isApproval = /^approved\b/i.test(message.trim());
   if (isApproval && scopedRules.length > 0) {
     let coverage: Awaited<ReturnType<typeof checkProveCoverage>>;

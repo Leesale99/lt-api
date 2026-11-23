@@ -605,8 +605,8 @@ func TestDeletePlayerHandler(t *testing.T) {
 // TestDeletePlayerHandlerRecordInUse is the driver refusal's HTTP surface
 // (R-GAME-035): the fixture player still carries a ride, so
 // rides_player_id_fkey refuses the delete and the caller reads the named
-// record-in-use 409 instead of the opaque 500 it used to get
-// (misalignment-report §6 item 2).
+// record-in-use 409 instead of the opaque 500 an unmapped driver refusal
+// used to produce.
 func TestDeletePlayerHandlerRecordInUse(t *testing.T) {
 	requireDB(t)
 

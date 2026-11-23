@@ -43,7 +43,7 @@ func rulesNaming(site string, ids ...string) Catalog {
 func annotationMessages(findings []Finding) string {
 	var b strings.Builder
 	for _, f := range findings {
-		b.WriteString(f.RuleID + " :: " + f.Message + "\n")
+		b.WriteString(f.Subject + " :: " + f.Message + "\n")
 	}
 	return b.String()
 }
@@ -56,7 +56,7 @@ func TestAnnotationsMissingAtEnforcementSite(t *testing.T) {
 		t.Fatalf("%d findings, want 1:\n%s", len(findings), describeFindings(findings))
 	}
 	f := findings[0]
-	if f.Policy != policyAnnotations || f.Severity != severityError || f.RuleID != "R-KERNEL-001" {
+	if f.Policy != policyAnnotations || f.Severity != severityError || f.Subject != "R-KERNEL-001" {
 		t.Fatalf("finding = %+v, want an error attributed to R-KERNEL-001 under %s", f, policyAnnotations)
 	}
 	for _, want := range []string{
@@ -78,7 +78,7 @@ func TestAnnotationsRequireEveryRuleNamingOneSite(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("%d findings, want 1 (the missing second id):\n%s", len(findings), describeFindings(findings))
 	}
-	if findings[0].RuleID != "R-KERNEL-002" || !strings.Contains(findings[0].Message, "no //rule:R-KERNEL-002") {
+	if findings[0].Subject != "R-KERNEL-002" || !strings.Contains(findings[0].Message, "no //rule:R-KERNEL-002") {
 		t.Errorf("finding = %+v, want the missing R-KERNEL-002 annotation", findings[0])
 	}
 }

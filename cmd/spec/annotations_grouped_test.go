@@ -88,7 +88,7 @@ var (
 			len(findings), describeFindings(findings))
 	}
 	f := findings[0]
-	if f.RuleID != "R-KERNEL-001" || !strings.Contains(f.Message, "::Gadget") {
+	if f.Subject != "R-KERNEL-001" || !strings.Contains(f.Message, "::Gadget") {
 		t.Errorf("finding = %+v, want the missing R-KERNEL-001 annotation on Gadget", f)
 	}
 	if strings.Contains(f.Message, "::Widget") {

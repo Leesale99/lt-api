@@ -1,6 +1,8 @@
 # Go Modular Monolith Example
 
-This document provides a complete, runnable-style blueprint for a Go **Modular Monolith** that combines **Layered Architecture** for simpler CRUD modules (`catalog`) and **Hexagonal (Ports & Adapters) Architecture** for complex bounded contexts (`orders`).
+This document provides a complete, runnable-style blueprint for a Go **Modular Monolith** that combines
+**Layered Architecture** for simpler CRUD modules (`catalog`) and **Hexagonal (Ports & Adapters)
+Architecture** for complex bounded contexts (`orders`).
 
 ## 1. Directory Structure
 
@@ -49,10 +51,14 @@ shop-monolith/
 
 ## 2. Core Principles
 
-- **Compile-Time Boundaries**: Go's `internal/` package rule prevents any package outside `modules/<name>/` from importing `modules/<name>/internal/...`.
-- **Public Module Facade**: Each module exposes a single root file (`catalog.go`, `orders.go`) with its public interface, DTOs, and route registration.
-- **Schema Isolation**: Modules share a database connection pool in the monolith, but each module only queries its own schema (e.g., `catalog.*` vs. `orders.*`).
-- **Async-First Cross-Module Communication**: Modules publish and subscribe to domain events via `shared/events.Bus`, making future microservice extraction straightforward.
+- **Compile-Time Boundaries**: Go's `internal/` package rule prevents any package outside `modules/<name>/`
+  from importing `modules/<name>/internal/...`.
+- **Public Module Facade**: Each module exposes a single root file (`catalog.go`, `orders.go`) with its public
+  interface, DTOs, and route registration.
+- **Schema Isolation**: Modules share a database connection pool in the monolith, but each module only queries
+  its own schema (e.g., `catalog.*` vs. `orders.*`).
+- **Async-First Cross-Module Communication**: Modules publish and subscribe to domain events via
+  `shared/events.Bus`, making future microservice extraction straightforward.
 
 ---
 
@@ -68,7 +74,8 @@ go 1.23
 ```
 
 ### `shared/events/bus.go`
-Provides a lightweight, in-memory event bus so modules can communicate without direct coupling. Later, this interface can be backed by NATS or Kafka.
+Provides a lightweight, in-memory event bus so modules can communicate without direct coupling. Later, this
+interface can be backed by NATS or Kafka.
 
 ```go
 package events
@@ -123,7 +130,8 @@ func (b *InMemoryBus) Publish(ctx context.Context, event Event) error {
 ## 4. `catalog` Module (Layered Architecture)
 
 ### `modules/catalog/catalog.go`
-The public entry point for the `catalog` module. It exposes the `CatalogAPI` interface and `ProductDTO` for other modules, wires internal layers, and registers HTTP routes.
+The public entry point for the `catalog` module. It exposes the `CatalogAPI` interface and `ProductDTO` for
+other modules, wires internal layers, and registers HTTP routes.
 
 ```go
 package catalog
@@ -300,7 +308,8 @@ func (h *ProductHandler) Get(w http.ResponseWriter, r *http.Request) {
 ## 5. `orders` Module (Hexagonal Architecture)
 
 ### `modules/orders/orders.go`
-The public facade for `orders`. It wires the core service with its inbound/outbound adapters and registers routes.
+The public facade for `orders`. It wires the core service with its inbound/outbound adapters and registers
+routes.
 
 ```go
 package orders
@@ -388,7 +397,8 @@ type CatalogPort interface {
 ```
 
 ### `modules/orders/internal/core/service/order_service.go`
-Implements the `OrderService` inbound port, orchestrating validation, pricing via `CatalogPort`, persistence via `OrderRepository`, and event publishing.
+Implements the `OrderService` inbound port, orchestrating validation, pricing via `CatalogPort`, persistence
+via `OrderRepository`, and event publishing.
 
 ```go
 package service

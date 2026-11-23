@@ -266,33 +266,19 @@ report"*.
 
 ## Sandbox profiles: what a task VM actually gets
 
-One profile table (`.pi/extensions/delegate/sbx.ts`, `SANDBOX_PROFILES`) is the
-policy. A role gets exactly what its row lists — no mount it does not name, no
-egress it does not name, no secret it does not name. The profile also states the
-VM's resources; **no role relies on an sbx default** (`--cpus 0` means *all* host
-CPUs, and an omitted `--memory` means 50% of host RAM — both wrong for a task
-VM).
+Sandbox profiles — per-role mounts, egress, secret sentinels and VM resources — are declared in
+`SANDBOX_PROFILES` in `.pi/extensions/delegate/sbx.ts` and asserted by `smoke-sbx.mjs`; that table is the
+source of truth for this section.
 
-| role | workspace mounts | egress allowlist (`sbx policy allow network`) | secret sentinels | vCPUs | memory |
-|---|---|---|---|---|---|
-| `worker` | worktree `rw` | `opencode.ai`, `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com` (:443) | `OPENCODE_GO_API_KEY` | 4 | 8g |
-| `general` | worktree `rw` | same four as `worker` | `OPENCODE_GO_API_KEY` | 4 | 8g |
-| `scout` | scratch `rw` + worktree `ro` | `opencode.ai` (model only) | — | 2 | 4g |
-| `librarian` | vault `rw` + worktree `ro` | `opencode.ai` (model only) | — | 2 | 4g |
-| `researcher` | **none (mountless)** | `opencode.ai`, `*.opencode.ai`, `localhost:8787` (host codex relay), `context7.com` (:443) | `CONTEXT7_API_KEY` | 2 | 4g |
+A role gets exactly what its row lists — no mount, no egress, no secret it does not name. The profile also
+states the VM's resources; **no role relies on an sbx default** (`--cpus 0` means *all* host CPUs, and an
+omitted `--memory` means 50% of host RAM — both wrong for a task VM).
 
-Read-only/mountless roles (scout, librarian, researcher) are model-call-bound,
-not build-bound, hence 2 CPU / 4g; worker and general are the roles that run Go
-builds and gates and keep 4 CPU / 8g.
-
-The **researcher is sandboxed and genuinely mountless**: `sbx create` gets zero
-workspace positionals, so the VM has no copy of the repo, the vault, or the
-host. Its whole work surface is the network — the model provider, the **host
-codex search relay** (`localhost:8787`, which serves `web_search`) and the
-docs-lookup backend (`context7.com`) — which is why its agent frontmatter drops
-`read` and its prompt says a task needing repo/local access is a blocked report.
-Anything a `fetch_content` call reaches for outside that allowlist is denied by
-the default-deny proxy.
+The **researcher is sandboxed and genuinely mountless**: `sbx create` gets zero workspace positionals, so
+the VM has no copy of the repo, the vault, or the host. Its whole work surface is the network of its profile
+row — which is why its agent frontmatter drops `read` and its prompt says a task needing repo/local access is
+a blocked report. Anything a `fetch_content` call reaches for outside that allowlist is denied by the
+default-deny proxy.
 
 Its **toolset comes from the image, not from pi's core binary**: `web_search`,
 `fetch_content`, `source_check` and `get_search_content` are `pi-web-access`
@@ -311,8 +297,18 @@ Two fail-closed details of the spawn path:
 - `--deny-network <host>` at create time, from an optional per-profile
   `denyNetworkHosts` list. Create-time denies are in force *before* the
   per-sandbox allow rule (a separate, later `sbx policy allow` call), which
-  closes the post-create window. Every profile's list is currently empty; the
-  mechanism is the deliverable, not an invented deny.
+  closes the post-create window. The mechanism is the deliverable, not an
+  invented deny — what each role declares lives in `SANDBOX_PROFILES`.
+
+**The worktree mount must not point into a profile-declared vault or scratch mount.** A spawn's cwd
+becomes its worktree mount (a subagent started in a subdirectory mounts that subdirectory), so the
+extension refuses — before any `sbx` call — a cwd that *is* or *lies inside* the vault (for every role:
+a worker spawned in the vault would otherwise mount it read-write) or inside a profile's disposable
+scratch primary. The refusal is an actionable error naming both paths (`spawn refused: cwd … lies
+inside the sandbox's vault mount … — spawn with the repo root as cwd`), not an opaque CLI failure.
+Mounts that resolve to the *same* host path are deduplicated first-declaration-wins, so the profile's
+declared order stays authoritative (a librarian whose cwd is the vault emits one rw workspace, not
+`<vault>` plus `<vault>:ro`, which `sbx create` rejects as conflicting read-only settings).
 
 ### Host-side secret setup (once per host)
 
@@ -469,10 +465,7 @@ Pipeline (each step's wall-clock is recorded in `dist/timings.tsv` and
 Long, quiet steps (kit build, sandbox create, module warm, model call, snapshot,
 create from template) run **detached**: output goes to
 `dist/logs/step-*-<run>.log`, the script polls it and prints a heartbeat, and a
-per-step budget bounds the wait. That keeps the run from ever sitting silent for
-minutes — a silent pipe is what got an earlier run killed by a stall watchdog,
-and the same silence also delays the visible output of a short step, which is
-why the timing helper never lets its timeout watcher inherit the log pipe.
+per-step budget bounds the wait, so the run never sits silent for minutes.
 
 `bash -n` is enough to check an edit, but the script is normally validated by
 running it, since the whole point is the live proof in step 7.
@@ -491,35 +484,6 @@ assembled image behind (housekeeping: `sbx template ls`, then
 `sbx template rm <IMAGE-ID>` for orphans — the tag form 404s; never remove the
 image ID `pi-worker:v1` points at).
 
-## Behavior deltas vs. the v2 kit (deliberate)
-
-The v2 kit was `schemaVersion: "2"`, `kind: sandbox`, with `setup.install`,
-`setup.files` and `environment.variables` applied **per sandbox at create
-time**. Moving to v3 idiomatic changes four observable behaviors:
-
-1. **Env survives the snapshot (gap closed).** `GOTOOLCHAIN`, `GOPROXY`,
-   `GOSUMDB` and `PI_AGENT_HOME` are image `ENV` (plus the Go values written into
-   `/home/agent/.config/go/env`), so a sandbox created from `pi-worker:v1` alone
-   reports the strict values. Previously a template-only sandbox reported Go's
-   defaults (`https://proxy.golang.org,direct` / `auto`) and had no
-   `PI_AGENT_HOME`; step 7 above was the evidence, and it now asserts the fix.
-2. **Config files are not reset per boot.** `files/models.json` and
-   `files/settings.json` are `COPY`'d into the image instead of being written by
-   `setup.files` at create time. Consequence: if a worker edits
-   `~/.pi/agent/*.json` inside its sandbox, the edit sticks for that sandbox's
-   lifetime instead of being overwritten at the next create. Nothing in the
-   delegate flow writes those files, so this is a widening of what a worker can
-   do, not a change the normal path depends on.
-3. **No install-phase egress at create time.** Go and pi are installed by `RUN`
-   during the image build, so the network policy's `install.allow` list serves
-   the *build* only; a sandbox created from the kit or the template runs with
-   `runtime.allow` alone. In v2 every sandbox created with the kit carried the
-   install-time allowlist (npm, go.dev, dl.google.com) for its whole life.
-4. **The ZIP flow is gone.** `sbx kit pack`/`dist/pi-worker.zip` were the v2
-   distribution flow and were never used at runtime: the delegate extension's
-   fallback creates from the kit **directory**. Dropping the artifact removes
-   dead code from a gitignored output directory.
-
 ## Why the Go module cache is warmed
 
 `sbx template save` snapshots the **sandbox filesystem**, so anything written
@@ -530,8 +494,8 @@ lands in the snapshot instead of in some path the snapshot misses.
 
 Consequence: a task sandbox created from `pi-worker:v1` already holds every
 module of this repo's `go.mod` graph (45 zips, ~132 MB). `go build ./...` works
-without a single fetch (observed: 8.7 s on a cold sandbox, module fetch only from
-the cache). Without the warm cache every worker VM would start by re-downloading
+without a single fetch; module bytes come only from the warm cache. Without the
+warm cache every worker VM would start by re-downloading
 the dependency graph through the egress proxy — slow, chatty, and a failure mode
 when the network is having a day.
 
@@ -540,8 +504,8 @@ build in a task sandbox still compiles dependencies once.
 
 **The warm step is not read-only.** The worktree is mounted read-write in the
 sandbox, and `go mod download` writes `go.sum`: it records `h1:` hashes for the
-whole module graph, which `go mod tidy` then prunes (measured: 18 lines, no
-go.mod change). Left alone that dirties the author's checkout and fails
+whole module graph, which `go mod tidy` then prunes. Left alone that dirties the
+author's checkout and fails
 `go mod tidy -diff` in `make audit/static`. `build.sh` therefore snapshots
 `go.mod`/`go.sum` on the host before the warm and restores them afterwards,
 logging the `go.sum` sha256 before/after — the module cache stays warm, the
@@ -565,8 +529,8 @@ fetches fail loudly and immediately. `GOSUMDB=sum.golang.org` and
 `GOTOOLCHAIN=local` complete the same story — no unexpected toolchain downloads,
 only one verified checksum database.
 
-Unlike the v2 kit, these values are **image-level**, so they are present in a
-sandbox created from `pi-worker:v1` alone:
+These values are **image-level**, so they are present in a sandbox created from
+`pi-worker:v1` alone:
 
 ```
 $ sbx exec pi-worker-sanity go env GOPROXY GOTOOLCHAIN GOSUMDB
@@ -576,11 +540,6 @@ sum.golang.org
 $ sbx exec pi-worker-sanity printenv PI_AGENT_HOME
 /home/agent/.pi/agent
 ```
-
-(The v2 run of this same probe printed `https://proxy.golang.org,direct` /
-`auto` and no `PI_AGENT_HOME`, because kit `environment.variables` are
-sandbox-scoped and a filesystem snapshot cannot carry environment. That is the
-gap the `ENV` + `go env -w` + step-7 assertion close.)
 
 ## Secrets: the template contains none
 
@@ -623,7 +582,7 @@ capabilities:
     config:
       install:   # only the image build: npm, the Go tarball, its redirect + bucket
         allow: [registry.npmjs.org:443, go.dev:443, dl.google.com:443, storage.googleapis.com:443]
-      runtime:   # the v2 allow list, carried over verbatim (8 hosts)
+      runtime:   # a sandbox created with the kit: the build sandbox and the fallback
         allow: [registry.npmjs.org:443, opencode.ai:443, "*.opencode.ai:443", go.dev:443,
                 dl.google.com:443, storage.googleapis.com:443, proxy.golang.org:443,
                 sum.golang.org:443]
@@ -635,8 +594,8 @@ capabilities:
    absent there: nothing in the recipe fetches from them.
 2. **Sandbox created with the kit** (the build sandbox in `build.sh`, and the
    delegate extension's fallback path) — `runtime.allow` applies to the running
-   sandbox. That list is wide on purpose: it is the v2 list, unchanged, so a
-   kit-created VM can do everything the v2 one could.
+   sandbox. That list is wide on purpose: a kit-created VM is a build machine and
+   gets the build's reach.
 3. **Sandbox created from the template** (`sbx create -t pi-worker:v1 …` — the
    normal path). The template carries filesystem, not policy, so it inherits
    *nothing* from the kit's allow list. The delegate extension applies a
@@ -647,15 +606,13 @@ capabilities:
        opencode.ai:443,proxy.golang.org:443,sum.golang.org:443,storage.googleapis.com:443
    ```
 
-   Those four are the `worker`/`general` row of the profile table above: model
+   Those four are one row of `SANDBOX_PROFILES` (`worker`/`general`): model
    calls (`opencode.ai`), module and checksum fetches (`proxy.golang.org`,
-   `sum.golang.org`), and Go tooling artefacts (`storage.googleapis.com`). The
-   other roles get narrower or different lists from that same table (scout and
-   librarian: model provider only; researcher: model provider, the host codex
-   relay `localhost:8787`, and `context7.com`) — the table is authoritative,
-   this snippet is one row. If the policy fails to apply, the extension tears
-   the VM down and fails loudly — a VM without its declared egress is useless, a
-   VM with undeclared egress is dangerous.
+   `sum.golang.org`), and Go tooling artefacts (`storage.googleapis.com`). Other
+   roles declare narrower or different lists there — that table is
+   authoritative, this snippet is one row. If the policy fails to apply, the
+   extension tears the VM down and fails loudly — a VM without its declared
+   egress is useless, a VM with undeclared egress is dangerous.
 
 The reason for the split: baking the runtime list into every task VM would grant
 each of them npm and toolchain-download reach they never need. Per-sandbox
@@ -671,32 +628,18 @@ policy is where the narrow, role-specific answer belongs.
   `SANDBOX_ID`, `IS_SANDBOX`) only takes effect when a sandbox is created from
   the kit; the recipe build cannot prove it. The cold-boot probe in step 7 is
   the proof for the template path.
-- **`files/` config is image content now**, so a worker's edits to
-  `~/.pi/agent/*.json` persist for that sandbox's lifetime (see "Behavior
-  deltas", item 2). Nothing resets them per boot any more; a future need for
-  reset semantics belongs in a lifecycle `files` capability with
-  `overwrite: true`, not in `COPY`.
+- **`files/` config is image content**, so a worker's edits to
+  `~/.pi/agent/*.json` persist for that sandbox's lifetime. Nothing resets them
+  per boot; a future need for reset semantics belongs in a lifecycle `files`
+  capability with `overwrite: true`, not in `COPY`.
 - **Orphaned intermediate images**: a rebuild may leave the previous assembled
   image behind. Harmless, but prune occasionally (`sbx template rm <IMAGE-ID>`,
   keeping the one `pi-worker:v1` points at).
 
-Resolved by this change (kept as the record so they are not reintroduced):
+### Reference forms that work
 
-- **The delegate fallback used the wrong path and the wrong flag.** It probed
-  `.pi/sandbox/pi-worker-kit` (which never existed) and passed the kit with
-  `--kit`, a mixin-only flag. The kit lives at `.pi/sandboxes/kit` and is now
-  passed as the **first positional** (`sbx create AGENT|SANDBOX_KIT [PATH...]`),
-  with the workspaces after it.
-- **The template reference was bare.** `-t pi-worker` does not resolve to
-  `:v1` (verified: `image "pi-worker" is not cached locally and
-  pull_policy=never`); the extension now uses
-  `docker.io/library/pi-worker:v1`, which is the form `sbx template ls` prints.
-
-## Evidence
-
-Every run writes its full log to `dist/logs/build-<run>.log`, per-step logs to
-`dist/logs/step-*.log`, and the timing table to `dist/timings.tsv` +
-`dist/timings-<run>.md` (all of `dist/` is gitignored — the artifacts are
-per-host). The last verified build (all steps green, model call OK, cold-boot
-sanity from the template) is summarised on that host in
-`dist/logs/sandbox-kit-EVIDENCE.md`.
+- **Kit path and flag.** The kit lives at `.pi/sandboxes/kit` and is passed as
+  the **first positional** (`sbx create AGENT|SANDBOX_KIT [PATH...]`), with the
+  workspaces after it — `--kit` is a mixin-only flag.
+- **Template reference.** `-t pi-worker` does not resolve to `:v1`; use
+  `docker.io/library/pi-worker:v1`, the form `sbx template ls` prints.

@@ -252,8 +252,8 @@ Feature: Quantities and statuses are different figures
 	if !strings.Contains(joined, `bare number "409"`) {
 		t.Errorf("the transport-noun and step-end figures were not flagged:\n%s", joined)
 	}
-	if !strings.Contains(group[0].RuleID, "pinned.feature::A figure before a transport noun is a status") {
-		t.Errorf("the finding names %q, want the 409 scenario", group[0].RuleID)
+	if !strings.Contains(group[0].Pointer, "pinned.feature::A figure before a transport noun is a status") {
+		t.Errorf("the finding points at %q, want the 409 scenario", group[0].Pointer)
 	}
 }
 
@@ -313,11 +313,15 @@ Feature: Prose and cells are vocabulary too
 	if strings.Contains(joined, "pinned.feature::A sabotage step still writes raw SQL in its docstring") {
 		t.Errorf("a sabotage step's docstring was flagged for SQL vocabulary:\n%s", joined)
 	}
-	// Attribution: the docstring/cell findings name the scenario exactly as a
-	// verification.gherkin pointer does.
+	// Attribution: the docstring/cell findings point at the scenario exactly as
+	// a verification.gherkin pointer does, while the subject is the rule id a
+	// scope can match (or "" for a scenario with no @rule tag).
 	for _, f := range findings {
-		if !strings.HasPrefix(f.RuleID, "docs/spec/features/game/pinned.feature::") {
-			t.Errorf("finding %q names %q, want a file::scenario pointer", f.Message, f.RuleID)
+		if !strings.HasPrefix(f.Pointer, "docs/spec/features/game/pinned.feature::") {
+			t.Errorf("finding %q points at %q, want a file::scenario pointer", f.Message, f.Pointer)
+		}
+		if f.Subject != "" && !strings.HasPrefix(f.Subject, "R-") {
+			t.Errorf("finding %q has subject %q, want a rule id or the catalog", f.Message, f.Subject)
 		}
 	}
 }
@@ -435,7 +439,7 @@ Feature: SQL vocabulary is a shape, not a spelling
 	findings, _ := vocabularyFindings(t, repo)
 	byScenario := map[string]string{}
 	for _, f := range findings {
-		byScenario[f.RuleID] += f.Message + "\n"
+		byScenario[f.Pointer] += f.Message + "\n"
 	}
 	pointer := func(scenario string) string {
 		return "docs/spec/features/game/pinned.feature::" + scenario
@@ -604,7 +608,7 @@ Feature: A filler word does not launder the SQL shape
 
 	byScenario := map[string]string{}
 	for _, f := range findings {
-		byScenario[f.RuleID] += f.Message + "\n"
+		byScenario[f.Pointer] += f.Message + "\n"
 	}
 	pointer := func(scenario string) string {
 		return "docs/spec/features/game/pinned.feature::" + scenario
@@ -713,7 +717,7 @@ Feature: Only the curated followers quantify a figure
 	joined := strings.Join(messages, "\n")
 	byScenario := map[string]string{}
 	for _, f := range findings {
-		byScenario[f.RuleID] += f.Message + "\n"
+		byScenario[f.Pointer] += f.Message + "\n"
 	}
 	pointer := func(scenario string) string {
 		return "docs/spec/features/game/pinned.feature::" + scenario
@@ -834,7 +838,7 @@ func sabotagePinnedRepo(t *testing.T, glossary, feature string) *testRepo {
 // it exists in no rule and no migration. The reality gate makes the exemption
 // conditional: an underscore-joined name is exempt from the phrase only when it
 // is REAL — a value of some rule's `refusal.constraint`, a `refusal.sentinel`
-// value in docs/spec/rules.yaml, or a literal substring of a migrations/*.sql
+// value in the rule catalog, or a literal substring of a migrations/*.sql
 // file. A fabricated name falls back to the normal phrase pass (`step uses
 // "status code"`), while the SQL half of the §8 exemption (raw SQL words in
 // sabotage steps) and the absolute transport half are unchanged.
@@ -867,7 +871,7 @@ Feature: A database object name keeps its fragments only when it is real
 	joined := strings.Join(messages, "\n")
 	byScenario := map[string]string{}
 	for _, f := range findings {
-		byScenario[f.RuleID] += f.Message + "\n"
+		byScenario[f.Pointer] += f.Message + "\n"
 	}
 	pointer := func(scenario string) string {
 		return "docs/spec/features/game/pinned.feature::" + scenario
@@ -1001,7 +1005,7 @@ Feature: A digit-leading word is not a status
 	joined := strings.Join(messages, "\n")
 	byScenario := map[string]string{}
 	for _, f := range findings {
-		byScenario[f.RuleID] += f.Message + "\n"
+		byScenario[f.Pointer] += f.Message + "\n"
 	}
 	pointer := func(scenario string) string {
 		return "docs/spec/features/game/pinned.feature::" + scenario
@@ -1151,7 +1155,7 @@ Feature: A glossed concatenation of any length
 	findings, _ := vocabularyFindings(t, repo)
 	byScenario := map[string]string{}
 	for _, f := range findings {
-		byScenario[f.RuleID] += f.Message + "\n"
+		byScenario[f.Pointer] += f.Message + "\n"
 	}
 	pointer := func(scenario string) string {
 		return "docs/spec/features/game/pinned.feature::" + scenario
@@ -1308,7 +1312,7 @@ Feature: A letterspelled figure is a status however it is spelled
 	findings, _ := vocabularyFindings(t, repo)
 	byScenario := map[string]string{}
 	for _, f := range findings {
-		byScenario[f.RuleID] += f.Message + "\n"
+		byScenario[f.Pointer] += f.Message + "\n"
 	}
 	pointer := func(scenario string) string {
 		return "docs/spec/features/game/pinned.feature::" + scenario
@@ -1403,7 +1407,7 @@ Feature: A digit-leading word is not a status
 	joined := strings.Join(messages, "\n")
 	byScenario := map[string]string{}
 	for _, f := range findings {
-		byScenario[f.RuleID] += f.Message + "\n"
+		byScenario[f.Pointer] += f.Message + "\n"
 	}
 
 	// (a) Addable: no glossary finding, and the term is in the allowlist.

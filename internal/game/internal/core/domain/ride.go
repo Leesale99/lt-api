@@ -122,7 +122,10 @@ func (r *Ride) WonPending(phase Phase, odds decimal.Decimal) error {
 	return nil
 }
 
-// Lost records a lost match. Phase: MatchPhase; call when: Match lost; Ride transitions to lost
+// Lost records a lost match. Phase: MatchPhase; call when: Match lost; Ride transitions to lost.
+// The Acc zero is intent, not persistence: the ledger's ReleaseBonus zeroes
+// the row before the arrival (rides_money_state_coupling, 000013, refuses
+// an unlocked|lost row that still carries acc).
 // rule:R-GAME-005
 // rule:R-GAME-007
 func (r *Ride) Lost(phase Phase) error {
@@ -174,7 +177,10 @@ func (r *Ride) Burn(phase Phase) error {
 }
 
 // Unlock ends a won ride: state becomes RideUnlocked and the accumulated
-// bonus is cleared. Phase: DecisionPhase; call when: Player decides to Unlock tokens after the win
+// bonus is cleared. Phase: DecisionPhase; call when: Player decides to Unlock tokens after the win.
+// The Acc zero is intent, not persistence: the ledger's ReleaseBonus zeroes
+// the row before the arrival (rides_money_state_coupling, 000013, refuses
+// an unlocked|lost row that still carries acc).
 // rule:R-GAME-005
 // rule:R-GAME-007
 func (r *Ride) Unlock(phase Phase) error {

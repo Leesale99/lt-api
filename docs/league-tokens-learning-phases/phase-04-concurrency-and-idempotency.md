@@ -85,7 +85,8 @@ WHERE id = $1
 
 Then check `RowsAffected`.
 
-Later, for HTTP commands, add an idempotency key table.
+For HTTP commands the answer is an idempotency key table — the table the schema carries (migration 000010,
+scoped per caller by 000022): the ride commands claim a key before they run and record the answer with it.
 
 ## Idempotency flow
 
@@ -135,10 +136,25 @@ sequenceDiagram
 - exactly-once processing claims
 - multi-node schedulers
 
+## Orientation graph
+
+```mermaid
+flowchart TD
+    Client --> Handler[HTTP handler]
+    Handler --> Key[(idempotency keys)]
+    Handler --> Service[game service]
+    Service --> Guard[FOR UPDATE / version guard]
+    Guard --> Tx[sql.Tx: one transaction]
+    Tx --> Ride[(rides)]
+    Tx --> Match[(matches)]
+```
+
 ## Done when
 
-Your tests demonstrate that concurrent or repeated operations cannot duplicate a burn, duplicate a result settlement, or create negative balances.
+Your tests demonstrate that concurrent or repeated operations cannot duplicate a burn, duplicate a result
+settlement, or create negative balances.
 
 ## What this prepares you for
 
-You now have enough complexity to start seeing natural module boundaries. The next phase extracts those boundaries without introducing a giant architecture framework.
+You now have enough complexity to start seeing natural module boundaries. The next phase extracts those
+boundaries without introducing a giant architecture framework.

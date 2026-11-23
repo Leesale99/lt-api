@@ -124,6 +124,11 @@ tidy:
 # system gofmt older than the toolchain cannot parse newer language
 # features and misreports them as errors (e.g. generic methods in go1.27).
 GOFMT := $(shell go env GOROOT)/bin/gofmt
+# The gofmt step must never pass vacuously: in a git-less worktree `git ls-files`
+# yields nothing, gofmt with no path arguments reads stdin and prints nothing,
+# and the -z test would pass on a tree nobody looked at. Capture the list once
+# and refuse to run when it is empty.
+GOFILES := $(shell git ls-files '*.go' | grep -v '^vendor/')
 
 ## audit/static: run the static half of the merge gate (fails on any unformatted
 ## file, stale spec or spec-check error): go mod tidy -diff → go mod verify →
@@ -132,7 +137,8 @@ GOFMT := $(shell go env GOROOT)/bin/gofmt
 audit/static:
 	go mod tidy -diff
 	go mod verify
-	@test -z "$$( $(GOFMT) -l $$(git ls-files '*.go' | grep -v '^vendor/') )" || ( $(GOFMT) -l $$(git ls-files '*.go' | grep -v '^vendor/'); exit 1)
+	@test -n "$(GOFILES)" || (echo "audit/static: no Go files found (git-less worktree?) - refusing a vacuous gofmt pass" >&2; exit 1)
+	@test -z "$$( $(GOFMT) -l $(GOFILES) )" || ( $(GOFMT) -l $(GOFILES); echo "audit/static: unformatted Go files above" >&2; exit 1)
 	go vet ./...
 	go tool staticcheck ./...
 	$(MAKE) spec/diff
@@ -160,7 +166,8 @@ smoke:
 # SPEC CATALOG
 # ============================================================================================================================ #
 
-## spec/gen: regenerate the catalog Markdown — the dashboard plus one view per module
+## spec/gen: regenerate the catalog's Markdown — the thin dashboard (totals by module/status + links
+## into rules/<module>/); the rule files under docs/spec/rules/ are authored, never generated
 .PHONY: spec/gen
 spec/gen:
 	go run ./cmd/spec gen
@@ -170,17 +177,15 @@ spec/gen:
 spec/check:
 	go run ./cmd/spec check --strict
 
-## spec/brief args=R-XXX-NNN: print a Markdown work order for one rule (or args='--module game')
-.PHONY: spec/brief
-spec/brief:
-	go run ./cmd/spec brief $(args)
+## spec/work: print the work queue in priority order (drifted → specified-only → broken pointer).
+## args='R-XXX-NNN' prints one rule's work order instead (the overlay: resolved sites and
+## verification pointers, refusal map, linked scenarios, gate); args='--module game' scopes it.
+## It is a reading aid, never a verdict: the rules and their scenarios are the source of truth.
+.PHONY: spec/work
+spec/work:
+	go run ./cmd/spec work $(args)
 
-## spec/queue: print the read-only work queue (drifted → specified-only → broken pointer); args='--json' or args='--module game'
-.PHONY: spec/queue
-spec/queue:
-	go run ./cmd/spec queue $(args)
-
-## spec/diff: fail if the dashboard or any generated module view is stale (wired into `make audit`)
+## spec/diff: fail if the generated dashboard is stale (wired into `make audit`)
 .PHONY: spec/diff
 spec/diff:
 	go run ./cmd/spec gen --diff

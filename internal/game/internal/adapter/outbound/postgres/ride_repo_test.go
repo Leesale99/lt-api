@@ -539,7 +539,7 @@ func decisionWrite(ctx context.Context, t *testing.T, ride domain.Ride, ownMatch
 
 // TestRideRepository_DecisionGuardedTx covers the DecisionPhase commands'
 // guarded write (Phase 04 TOCTOU sweep) in its post-split shape: the round
-// facts are the SchedulePort gates (run here through decisionWrite), the
+// facts are the Schedule port's gates (run here through decisionWrite), the
 // rides-row-only UPDATE re-checks the row's own facts (state, version) at
 // the write instant. Three deliberate choices the cases pin:
 //
@@ -659,7 +659,7 @@ func TestRideRepository_DecisionGuardedTx(t *testing.T) {
 		// A second player command (or a retry) holding the pre-decision
 		// snapshot: the state predicate refuses it — the decision is
 		// re-checked at the write instant, not only in the domain. The
-		// round is still open, so classifyUpdateRefusal reads the moved
+		// round is still open, so classifyDecisionRefusal reads the moved
 		// row and names the CAS loss: domain.ErrInvalidTransition, the same
 		// answer the domain read side gives this race.
 		_, err := decisionWrite(ctx, t, ride, closedMatch, 0)

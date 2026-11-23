@@ -423,7 +423,7 @@ run_detached "exec: make audit/static (authoritative static gate)" 3000 30 \
     say "       This is the gate's verdict on the mounted worktree, not only an"
     say "       image check. Run \`make audit/static\` on the host and compare:"
     say "       a dirty go.sum (e.g. left behind by a \`go mod download\`) fails"
-    say "       \`go mod tidy -diff\`, and a stale docs/spec/business-rules.md fails"
+    say "       \`go mod tidy -diff\`, and a stale docs/spec/coverage.md fails"
     say "       \`make spec/diff\`. Both are repo state, not kit defects."
     say "       The image itself is otherwise proven; no template was saved."
     exit 1

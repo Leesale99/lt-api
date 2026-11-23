@@ -11,7 +11,7 @@ import (
 )
 
 // GameFacing is the narrow surface the game context consumes
-// (game.SchedulePort, satisfied structurally by the module facade —
+// (game's port.Schedule, satisfied structurally by the module facade —
 // ADR-028). The SQL here is schedule's own (matches/rounds), executed on the
 // CALLER's transaction where noted: the write-instant round guards of the
 // ride commands are schedule facts, so the lock-taking statements live on

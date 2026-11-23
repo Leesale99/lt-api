@@ -78,7 +78,7 @@ func (h *Handler) createPlayer(w http.ResponseWriter, r *http.Request) {
 	// players_user_id_fkey is gone). user_id is only ever the authenticated
 	// principal's ID, so this is the one spot the check belongs. The refusal
 	// is a field error on the reference that actually failed — the principal's
-	// user account, not the favourite team (misalignment-report §6 item 12).
+	// user account, not the favourite team, which was never at fault.
 	if h.users != nil {
 		if _, err := h.users.User(ctx, authenticatedUser.ID); err != nil {
 			switch {

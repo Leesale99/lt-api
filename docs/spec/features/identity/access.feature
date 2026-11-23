@@ -25,9 +25,9 @@ Feature: Who may act
     # Both refusals are the same one — same answer, same sentence — so a caller
     # cannot use signing in to learn whether an address is registered. They also
     # cost the same work: the unknown-email path burns a dummy password
-    # comparison before it refuses, so the timing is no longer an oracle
-    # (misalignment-report §6.8 is resolved). No scenario reads a clock — the
-    # work half is pinned by the service test TestAuthenticate instead.
+    # comparison before it refuses, so the timing is no longer an oracle. No
+    # scenario reads a clock — the work half is pinned by the service test
+    # TestAuthenticate instead.
     Scenario: An unknown email is refused as an invalid credential
       When the visitor signs in as "nobody@example.com" with the password "guessed-once"
       Then the sign-in is refused as an invalid credential

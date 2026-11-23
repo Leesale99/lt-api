@@ -42,7 +42,7 @@ func TestAnnotationsRequiredSiteInSkippedDirectoryFailsClosed(t *testing.T) {
 					len(findings), describeFindings(findings))
 			}
 			f := findings[0]
-			if f.Policy != policyAnnotations || f.Severity != severityError || f.RuleID != "R-KERNEL-001" {
+			if f.Policy != policyAnnotations || f.Severity != severityError || f.Subject != "R-KERNEL-001" {
 				t.Fatalf("finding = %+v, want an error attributed to R-KERNEL-001 under %s", f, policyAnnotations)
 			}
 			skippedDir := tt.dir[strings.LastIndex(tt.dir, "/")+1:]

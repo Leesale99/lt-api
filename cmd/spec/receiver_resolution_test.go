@@ -14,8 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
 // receiverRule is a minimal, otherwise-valid implemented rule whose single site
@@ -67,13 +65,14 @@ func newReceiverTree(t *testing.T, source string) (root string, catalog Catalog)
 	write("pkg/widget.go", source)
 	write("pkg/widget_test.go", "package pkg\n\nimport \"testing\"\n\nfunc TestRun(t *testing.T) {}\n")
 
-	data, err := yaml.Marshal(Catalog{receiverRule()})
+	rule := receiverRule()
+	file, err := renderRuleFile(rule)
 	if err != nil {
-		t.Fatalf("marshal catalog: %v", err)
+		t.Fatalf("render rule file: %v", err)
 	}
-	write("docs/spec/rules.yaml", string(data))
+	write(filepath.Join("docs", "spec", "rules", rule.Module, rule.ID+".md"), string(file))
 
-	catalog, err = loadCatalog(filepath.Join(root, "docs", "spec", "rules.yaml"))
+	catalog, err = loadCatalog(filepath.Join(root, "docs", "spec", "rules"))
 	if err != nil {
 		t.Fatalf("load catalog: %v", err)
 	}
@@ -184,8 +183,8 @@ func TestReceiverResolutionAtEnforcementSite(t *testing.T) {
 				t.Errorf("policy-15 findings = %d, want 1 mentioning %q:\n%s",
 					len(got15), tt.wantPolicy15, describeFindings(findings))
 			} else {
-				if got15[0].RuleID != "R-TEST-001" {
-					t.Errorf("policy-15 finding attributed to %q, want R-TEST-001", got15[0].RuleID)
+				if got15[0].Subject != "R-TEST-001" {
+					t.Errorf("policy-15 finding attributed to %q, want R-TEST-001", got15[0].Subject)
 				}
 				if !strings.Contains(got15[0].Message, tt.wantPolicy15File) {
 					t.Errorf("policy-15 message %q does not name %q", got15[0].Message, tt.wantPolicy15File)

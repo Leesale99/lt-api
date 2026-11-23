@@ -18,16 +18,17 @@
  *    never a `cd` target named inside a command. A worker cannot write here:
  *    the receipts dir is gitignored and absent from a fresh worktree, and the
  *    extension instance inside a sandbox is inert (`isSandboxedChild`).
- *    Receipt metadata is fail-open (a missing rules.yaml or a broken git just
- *    records an empty field) — ONLY the receipt degrades, never the verdict.
- * 4. THE WRITE BOUNDARY IS THE HYPERVISOR (sandbox era). The child-side deny
- *    paths, the bash write-channel scanner and the gate allowlist are DELETED,
- *    not disabled: a worker runs inside a per-task micro-VM whose only host
- *    surface is its mount (./sbx.ts chooses the mount per role). Their
- *    replacement is `checkWorktreeIntegrity` — a host-side detector at the
- *    merge boundary, run BEFORE any gate command: the gate files ARE the
- *    definition of green, so a worker that touched them has invalidated its
- *    own verdict and the host refuses to run gates at all.
+ *    Receipt metadata is fail-open (a missing docs/spec/rules catalog or a
+ *    broken git just records an empty field) — ONLY the receipt degrades,
+ *    never the verdict.
+ * 4. THE WRITE BOUNDARY IS THE HYPERVISOR (sandbox era). A worker runs inside
+ *    a per-task micro-VM whose only host surface is its mount (./sbx.ts
+ *    chooses the mount per role): what it may write is decided by what is
+ *    mounted, never by an in-process classifier. The net is
+ *    `checkWorktreeIntegrity` — a host-side detector at the merge boundary, run
+ *    BEFORE any gate command: the gate files ARE the definition of green, so a
+ *    worker that touched them has invalidated its own verdict and the host
+ *    refuses to run gates at all.
  * 5. THE POLICY IS DECLARED, NOT HARDCODED (batch 3). Gate commands, the
  *    receipt/claims dirs, the settle limits, the stall timeout and the
  *    concurrency cap come from the repo-root WORKFLOW.md front matter
@@ -35,10 +36,13 @@
  *    until the file exists and parses.
  * 6. PROVE IS EVIDENCE, NOT A PROMISE (merge-back). A job whose SPEC-SCOPE
  *    (recorded at spawn in the claims log) names rules needs a VERIFIED prove
- *    receipt for EVERY named rule before the merge executes
- *    (`checkProveCoverage`, enforced in the merge execution path in index.ts
- *    and in the approval relay in jobs.ts): receipts written by the host
- *    extension on a scoped `make prove args='--rule <id>'` run. The scoped gate
+ *    receipt for EVERY named rule before the merge executes. The scope read and
+ *    the whole prove-receipt policy (coverage check, `--rule` matching, the
+ *    prove-receipt note test) live in ./mergegate.ts, whose merge-path hook and
+ *    the approval relay in jobs.ts BOTH call — one
+ *    resolver, one answer, so a relay approval and a merge block can never
+ *    disagree about a job's scope: receipts written by the host extension on a
+ *    scoped `make prove args='--rule <id>'` run. The scoped gate
  *    (`runScopedGate`) checks the spec statically; only prove says the behavior
  *    was actually exercised.
  * 7. IN-VM GATES ARE ADVISORY. `runInVmAdvisoryGate` is the only gate ladder a
@@ -55,13 +59,9 @@
  *    mount is the worktree (rw: gates legitimately regenerate artifacts) plus,
  *    for a linked worktree, the main repo root (ro) so git resolves in-VM.
  *
- * Task-packet convention (SPEC-SCOPE):
- *   The orchestrator includes a line in the worker task text —
- *     SPEC-SCOPE: module=game rules=R-GAME-001,R-GAME-002
- *   (module and/or rules, both optional but at least one required for the line
- *   to count). `parseSpecScope` extracts it and index.ts exports the normalized
- *   form as PI_DELEGATE_SPEC_SCOPE into the sandbox's `-e` env; workers spawned
- *   without a scope line get NO env var and gate on the FULL spec check.
+ * Task packets (SPEC-SCOPE / CLAIMS-PATHS) are parsed by ./protocol.ts, the one
+ * owner of that grammar; this module only CONSUMES the normalized scope env
+ * (`parseSpecScopeEnv`) when it builds a scoped check.
  *
  * Loader gotcha (pi 1.5.2 extension parser): avoid `?:` ternaries containing
  * double-quoted strings inside a template literal's ${} — this module sticks to
@@ -72,18 +72,29 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
 import {
+  DEFAULT_GATE_FILE_PATHS,
   DEFAULT_RECEIPTS_DIR,
-  WORKFLOW_FILE_REL_PATH,
+  DEFAULT_SETTLE_BACKOFF_BASE_MS,
+  DEFAULT_SETTLE_BACKOFF_MAX_DOUBLINGS,
+  DEFAULT_SETTLE_IMMEDIATE_ATTEMPTS,
+  DEFAULT_SETTLE_MAX_ATTEMPTS,
   loadWorkflowPolicy,
   workflowPolicyRefusal,
 } from "./policy.ts";
-import { workerStallTimeoutMs } from "./runtime.ts";
+import { parseSpecScopeEnv } from "./protocol.ts";
+import { sleepMs, workerStallTimeoutMs } from "./runtime.ts";
 import {
+  GATE_DB_DSN,
   ensureGateSandbox,
-  execInSandbox,
+  execGateVmCommand,
   execSandboxArgs,
-  type SandboxExecResult,
+  gateVmExecEnv,
+  isSandboxedChild,
+  isWorkerChild,
+  prepareGateDbVm,
 } from "./sbx.ts";
 
 // ── Fail-closed command runner ───────────────────────────────────────────────
@@ -253,11 +264,6 @@ export interface GateRun {
   steps: GateStep[];
 }
 
-export interface SpecScope {
-  module?: string;
-  rules: string[];
-}
-
 function stepOf(result: GateResult, argv: string[], note?: string): GateStep {
   return {
     command: argv.join(" "),
@@ -293,227 +299,11 @@ async function runStep(argv: string[], cwd: string, timeoutMs: number, note?: st
 // `sbx exec` has no timeout flag, so the host keeps the watchdog: the executor
 // below passes the caller's timeout budget to the adapter, which SIGTERMs and
 // then SIGKILLs the exec. A timed-out exec is a failed gate, never a hang.
-
-/** Database the DB-backed gates use inside the gate VM (the repo's test DB). */
-export const GATE_DB_NAME = "lt_api_test";
-/** Role the throwaway in-VM DSN authenticates as (SUPERUSER in the image). */
-export const GATE_DB_USER = "lt_test";
-/** Throwaway in-VM password; plaintext on purpose — it protects nothing real. */
-export const GATE_DB_PASSWORD = "test";
-/**
- * How the DSN reaches the VM-local server. `127.0.0.1` (TCP) rather than the
- * image's unix socket: the suites connect over TCP anyway, and the pi-gate
- * image configures `listen_addresses = '127.0.0.1'` with `auth-host=trust`.
- */
-export const GATE_DB_HOST = "127.0.0.1";
-/**
- * 5433 on purpose: `internal/testdb.DefaultTestDSN` and the (gitignored)
- * `.envrc` both pin the test database to localhost:5433, and the Makefile
- * `-include .envrc` re-exports it — overriding any env-passed DSN. The gate
- * image's Postgres therefore LISTENS on 5433, so the repo's documented DSN is
- * literally true inside the gate VM.
- */
-export const GATE_DB_PORT = 5433;
-/**
- * The pi-gate image bakes an agent-owned cluster (PGDATA=/home/agent/pgdata)
- * because `sbx template save` snapshots the filesystem, not /var/lib/docker. It
- * starts it with the image's `pg-up` helper (Debian's `pg_ctlcluster`/
- * `service postgresql start` require root and the VM runs as `agent`), and its
- * unix socket lives here (image ENV `PGHOST`).
- */
-export const GATE_DB_SOCKET_DIR = "/home/agent/pgsock";
-/**
- * The DSN a DB-backed gate receives, mirroring the shape the Makefile and
- * internal/testdb expect (`<dsn-db>_<suite>` databases are created by the
- * suites themselves). It is delivered as a make COMMAND-LINE variable
- * (`make audit LT_API_TEST_DSN=…`), NOT via `-e`: the Makefile's
- * `-include .envrc` re-exports the repo DSN, and a makefile assignment beats
- * the process environment — only a command-line variable beats it, and fresh
- * worktrees (where the gitignored `.envrc` does not exist) still need one.
- */
-export const GATE_DB_DSN =
-  "postgres://" + GATE_DB_USER + ":" + GATE_DB_PASSWORD + "@" + GATE_DB_HOST + ":" +
-  String(GATE_DB_PORT) + "/" + GATE_DB_NAME + "?sslmode=disable";
-/** `pg_isready` attempts before the DB gate pre-sequence gives up. */
-export const GATE_PG_READY_ATTEMPTS = 30;
-/** Wait between `pg_isready` attempts (ms). */
-export const GATE_PG_READY_INTERVAL_MS = 500;
-/** Timeout for one DB pre-sequence command (start / drop / create). */
-export const GATE_DB_STEP_TIMEOUT_MS = 60_000;
-
-/**
- * Env for an `sbx exec` gate.
- *
- * `GIT_OPTIONAL_LOCKS=0` stops `git status` from taking the index lock in a
- * shared mount. The `safe.directory` config is load-bearing: the repo-root
- * mount is owned by another UID once it is read-only in the VM, and git refuses
- * to operate on a repo it considers foreign (dubious ownership) without it.
- * `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` is the env-only way to set it, so no
- * in-VM git config has to be written.
- *
- * A DB-backed gate gets `LT_API_TEST_DSN` as a make command-line variable
- * (see GATE_DB_DSN) — never via this env, which `-include .envrc` would
- * override. Static gates get nothing DB-related at all.
- */
-export function gateVmExecEnv(worktreePath: string, opts: { db?: boolean } = {}): Record<string, string> {
-  const env: Record<string, string> = {
-    GIT_OPTIONAL_LOCKS: "0",
-    GIT_CONFIG_COUNT: "1",
-    GIT_CONFIG_KEY_0: "safe.directory",
-    GIT_CONFIG_VALUE_0: "*",
-  };
-  void opts;
-  return env;
-}
-
-/** One command of the DB pre-sequence (argv + its exec env). */
-export interface GateDbPrestep {
-  argv: string[];
-  env: Record<string, string>;
-}
-
-/**
- * The DB gate pre-sequence, in order: start Postgres → wait for readiness →
- * drop the test DB → create it. The gate command itself runs AFTER this.
- *
- * `pg-up` is the pi-gate image's own helper (baked cluster + `pg_isready`
- * health check); Debian's `service postgresql start`/`pg_ctlcluster` are NOT
- * used because the VM runs as `agent` and the image deliberately keeps no
- * root-owned distro cluster. Readiness is re-checked explicitly so a failed
- * start cannot fall through to the gate. The role (`lt_test`, SUPERUSER) and
- * the cluster are baked into the image; only the throwaway database is reset
- * per gate run.
- */
-export function gateDbPresteps(): GateDbPrestep[] {
-  const clientEnv = { PGPASSWORD: GATE_DB_PASSWORD };
-  const endpoint = ["-h", GATE_DB_SOCKET_DIR, "-p", String(GATE_DB_PORT), "-U", GATE_DB_USER];
-  return [
-    { argv: ["pg-up"], env: {} },
-    {
-      argv: ["pg_isready", ...endpoint, "-d", GATE_DB_NAME],
-      env: {},
-    },
-    { argv: ["dropdb", "--if-exists", ...endpoint, GATE_DB_NAME], env: clientEnv },
-    { argv: ["createdb", ...endpoint, "-O", GATE_DB_USER, GATE_DB_NAME], env: clientEnv },
-  ];
-}
-
-function sleepGap(ms: number): Promise<void> {
-  return new Promise<void>((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * One `sbx exec` in the gate VM, mapped into the fail-closed GateResult shape.
- * A 125/127/timeout/spawn error is infrastructure (no verdict) and still a
- * FAILED gate: the caller never sees a silent pass.
- */
-async function execGateVmCommand(
-  sandbox: string,
-  argv: readonly string[],
-  opts: { cwd: string; timeoutMs: number; env: Record<string, string> },
-): Promise<{ result: GateResult; sandbox: string }> {
-  const startedAt = Date.now();
-  let raw: SandboxExecResult;
-  try {
-    raw = await execInSandbox(sandbox, argv, {
-      worktreePath: opts.cwd,
-      env: opts.env,
-      timeoutMs: opts.timeoutMs,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      sandbox,
-      result: {
-        ok: false,
-        exitCode: null,
-        stdout: "",
-        stderr: message,
-        timedOut: false,
-        spawnError: message,
-        durationMs: Date.now() - startedAt,
-        reason: "gate VM exec threw: " + message,
-      },
-    };
-  }
-
-  let reason = "";
-  if (!raw.ok) {
-    if (raw.timedOut) reason = "timed out after " + String(opts.timeoutMs) + "ms";
-    else if (raw.classification.infraFailure) reason = raw.classification.reason;
-    else if (raw.exitCode === null) reason = "no exit code";
-    else reason = "exited with code " + String(raw.exitCode);
-  }
-  return {
-    sandbox,
-    result: {
-      ok: raw.ok,
-      exitCode: raw.exitCode,
-      stdout: raw.stdout,
-      stderr: raw.stderr,
-      timedOut: raw.timedOut,
-      spawnError: raw.spawnError,
-      durationMs: raw.durationMs,
-      reason,
-    },
-  };
-}
-
-/**
- * Run the DB gate pre-sequence in the gate VM. Returns ok:true when Postgres is
- * ready and the test DB was recreated; ok:false carries a failed GateStep so
- * the gate report names exactly which step stopped the run. The pre-sequence is
- * NOT part of the receipt's command list on success (it produces no verdict);
- * a failure IS reported as a step.
- */
-export async function prepareGateDbVm(
-  worktreePath: string,
-  opts: { timeoutMs?: number; readyAttempts?: number; intervalMs?: number } = {},
-): Promise<{ ok: boolean; step: GateStep | null; sandbox: string }> {
-  const sandbox = await ensureGateSandbox(worktreePath);
-  const timeoutMs = opts.timeoutMs ?? GATE_DB_STEP_TIMEOUT_MS;
-  const attempts = Math.max(1, opts.readyAttempts ?? GATE_PG_READY_ATTEMPTS);
-  const intervalMs = Math.max(0, opts.intervalMs ?? GATE_PG_READY_INTERVAL_MS);
-  const [start, ready, drop, create] = gateDbPresteps();
-
-  const fail = (argv: string[], failure: GateResult): { ok: false; step: GateStep; sandbox: string } => ({
-    ok: false,
-    sandbox,
-    step: stepOf(failure, argv, "gate VM db pre-sequence"),
-  });
-
-  const started = await execGateVmCommand(sandbox.name, start.argv, {
-    cwd: worktreePath,
-    timeoutMs,
-    env: { ...gateVmExecEnv(worktreePath), ...start.env },
-  });
-  if (!started.result.ok) return fail(start.argv, started.result);
-
-  let readyRun = await execGateVmCommand(sandbox.name, ready.argv, {
-    cwd: worktreePath,
-    timeoutMs,
-    env: { ...gateVmExecEnv(worktreePath), ...ready.env },
-  });
-  for (let attempt = 1; !readyRun.result.ok && attempt < attempts; attempt++) {
-    if (intervalMs > 0) await sleepGap(intervalMs);
-    readyRun = await execGateVmCommand(sandbox.name, ready.argv, {
-      cwd: worktreePath,
-      timeoutMs,
-      env: { ...gateVmExecEnv(worktreePath), ...ready.env },
-    });
-  }
-  if (!readyRun.result.ok) return fail(ready.argv, readyRun.result);
-
-  for (const step of [drop, create]) {
-    const run = await execGateVmCommand(sandbox.name, step.argv, {
-      cwd: worktreePath,
-      timeoutMs,
-      env: { ...gateVmExecEnv(worktreePath), ...step.env },
-    });
-    if (!run.result.ok) return fail(step.argv, run.result);
-  }
-  return { ok: true, step: null, sandbox };
-}
+//
+// The IMAGE and DATABASE knowledge moved to ./sbx.ts (B3.4): `GATE_DB_*`, the
+// DB pre-sequence (`gateDbPresteps`/`prepareGateDbVm`) and the exec adapter
+// (`gateVmExecEnv`/`execGateVmCommand`) describe the gate VM the sandbox module
+// creates, so they live there. This file is only the RUNNER: argv in, step out.
 
 /**
  * Run one gate command argv in the gate VM (lazily creating/reusing the VM for
@@ -614,7 +404,7 @@ export function shellQuote(token: string): string {
 
 /**
  * The DB DSN as a make COMMAND-LINE variable, for both delivery paths
- * (`runDeclaredGateStep` and the bash-rewrite in index.ts). See GATE_DB_DSN
+ * (`runDeclaredGateStep` and this module's bash-rewrite hook). See GATE_DB_DSN
  * for why command-line and not env: the Makefile's `-include .envrc` re-exports
  * the repo DSN and a makefile assignment beats the process environment.
  */
@@ -777,58 +567,7 @@ export function resolveDeclaredGateCommand(
   return null;
 }
 
-// ── SPEC-SCOPE parsing (task text → env → scoped check) ─────────────────────
-
-/**
- * Parse a SPEC-SCOPE body ("module=game rules=R-A-1,R-B-2") into a scope.
- * Returns null when neither module nor rules is present — a bare "SPEC-SCOPE:"
- * line must not silence the full check.
- */
-function parseScopeBody(body: string): SpecScope | null {
-  const moduleMatch = /module=([A-Za-z0-9_./-]+)/.exec(body);
-  const rulesMatch = /rules=([A-Za-z0-9_.,/-]+)/.exec(body);
-  const module = moduleMatch ? moduleMatch[1].replace(/[.\/]+$/, "") : undefined;
-  const rules = rulesMatch
-    ? rulesMatch[1]
-        .split(",")
-        .map((rule) => rule.trim())
-        .filter((rule) => /^[A-Za-z0-9_-]+$/.test(rule))
-    : [];
-  if (!module && rules.length === 0) return null;
-  return { module, rules };
-}
-
-/**
- * Extract the scope from a task packet. Only lines whose trimmed form starts
- * with `SPEC-SCOPE:` count; the first such line with usable content wins.
- */
-export function parseSpecScope(text: string): SpecScope | null {
-  for (const rawLine of text.split("\n")) {
-    const line = rawLine.trim();
-    if (!line.toUpperCase().startsWith("SPEC-SCOPE:")) continue;
-    const scope = parseScopeBody(line.slice("SPEC-SCOPE:".length));
-    if (scope) return scope;
-  }
-  return null;
-}
-
-/**
- * Parse the PI_DELEGATE_SPEC_SCOPE env value (already normalized by index.ts).
- * Lenient: a hand-set value in either "module=… rules=…" or bare "rules=…"
- * form is accepted; unusable values yield null (→ full check).
- */
-export function parseSpecScopeEnv(value: string | undefined): SpecScope | null {
-  if (!value || !value.trim()) return null;
-  return parseScopeBody(value);
-}
-
-/** Normalized single-line form exported into PI_DELEGATE_SPEC_SCOPE. */
-export function formatSpecScope(scope: SpecScope): string {
-  const parts: string[] = [];
-  if (scope.module) parts.push("module=" + scope.module);
-  if (scope.rules.length > 0) parts.push("rules=" + scope.rules.join(","));
-  return parts.join(" ");
-}
+// ── Scoped-check argv (normalized scope env → scoped check) ─────────────────
 
 /**
  * Split a declared policy command string ("go run ./cmd/spec check --strict")
@@ -1045,8 +784,9 @@ export function receiptsDirFor(cwd: string): string {
  * file path, or null when even the receipt could not be written (the caller
  * logs; a receipt failure never changes a gate verdict).
  *
- * Metadata is fail-open: rulesHash is "" when docs/spec/rules.yaml is missing,
- * headSha is "" when git fails. The gate commands themselves stay fail-closed.
+ * Metadata is fail-open: catalogHash is "" when the docs/spec/rules catalog is
+ * missing, headSha is "" when git fails. The gate commands themselves stay
+ * fail-closed.
  */
 export async function writeReceipt(input: ReceiptInput): Promise<string | null> {
   const dir = receiptsDirFor(input.cwd);
@@ -1057,7 +797,10 @@ export async function writeReceipt(input: ReceiptInput): Promise<string | null> 
     agent: input.agent,
     session: input.session ?? "",
     commands: input.commands,
-    rulesHash: await hashSpecRules(input.cwd),
+    // Catalog schema v2 (per-rule-file catalog): `schema_version` lets a reader
+    // tell a v1 receipt (rules.yaml hash) from a v2 one and supersede it.
+    schema_version: RECEIPT_SCHEMA_VERSION,
+    catalogHash: await catalogHash(input.cwd),
     headSha: await headShaOf(input.cwd),
     ok: input.ok === true,
     note: input.note ?? "",
@@ -1076,14 +819,60 @@ export async function writeReceipt(input: ReceiptInput): Promise<string | null> 
   }
 }
 
-/** sha256 of docs/spec/rules.yaml; "" when unreadable (fail-open, receipt only). */
-export async function hashSpecRules(cwd: string): Promise<string> {
+/** Current receipt schema: 2 = per-rule-file catalog manifest hash. */
+export const RECEIPT_SCHEMA_VERSION = 2;
+
+/**
+ * MANIFEST sha256 over the rule catalog `docs/spec/rules/**`; "" when the
+ * directory is missing/unreadable (fail-open, receipt only — never stricter
+ * than the old single-file hash it replaces).
+ *
+ * Recipe (deterministic across platforms and filesystems):
+ *   1. Walk `docs/spec/rules` recursively from `cwd`. Skip dot-entries only
+ *      (a path segment whose name starts with "."); every other file counts,
+ *      including `README.md` and non-`.md` files.
+ *   2. For every file, form the pair (relpath, content) where relpath is
+ *      relative to `cwd` and slash-normalized (`path.sep` → "/"). File bytes
+ *      are used verbatim (no newline translation, no re-encoding).
+ *   3. Sort the pairs by relpath (plain code-unit order).
+ *   4. Feed ONE running sha256 with, per entry in that order, the UTF-8 bytes
+ *      of  relpath + "\0" + content + "\0"  and return the lowercase hex
+ *      digest. The NUL separators make the framing unambiguous.
+ *
+ * Any walk/read error yields "": a partly-read catalog must not masquerade as
+ * a valid checkpoint hash.
+ */
+export async function catalogHash(cwd: string): Promise<string> {
+  const pairs: Array<{ rel: string; content: Buffer }> = [];
+  const walk = async (dir: string): Promise<void> => {
+    const dirents = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const dirent of dirents) {
+      if (dirent.name.startsWith(".")) continue;
+      const abs = path.join(dir, dirent.name);
+      if (dirent.isDirectory()) {
+        await walk(abs);
+        continue;
+      }
+      pairs.push({
+        rel: path.relative(cwd, abs).split(path.sep).join("/"),
+        content: await fs.promises.readFile(abs),
+      });
+    }
+  };
   try {
-    const raw = await fs.promises.readFile(path.join(cwd, "docs", "spec", "rules.yaml"));
-    return createHash("sha256").update(raw).digest("hex");
+    await walk(path.join(cwd, "docs", "spec", "rules"));
   } catch {
     return "";
   }
+  pairs.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+  const hash = createHash("sha256");
+  for (const pair of pairs) {
+    hash.update(pair.rel, "utf8");
+    hash.update("\0", "utf8");
+    hash.update(pair.content);
+    hash.update("\0", "utf8");
+  }
+  return hash.digest("hex");
 }
 
 /** `git rev-parse HEAD` in cwd; "" on any failure (fail-open, receipt only). */
@@ -1102,6 +891,60 @@ export function receiptCommandsOf(run: GateRun): ReceiptCommand[] {
     timedOut: step.timedOut,
     durationMs: step.durationMs,
   }));
+}
+
+/**
+ * Receipt append that never throws and never changes a verdict (the host gate
+ * writes: post-exit verification, stall timeouts, a refused pre-gate integrity
+ * check). Moved out of index.ts (B3.4) — the RECEIPT WRITER is this module's.
+ */
+export async function safeHostReceipt(input: {
+  cwd: string;
+  agent: string;
+  commands: ReceiptCommand[];
+  ok: boolean;
+  note: string;
+  sandbox?: string;
+}): Promise<string | null> {
+  try {
+    return await writeReceipt({
+      cwd: input.cwd,
+      agent: input.agent,
+      session: process.env.PI_SESSION_ID,
+      commands: input.commands,
+      ok: input.ok,
+      note: input.note,
+      ...(input.sandbox ? { sandbox: input.sandbox } : {}),
+    });
+  } catch (error) {
+    console.error("[delegate] host receipt failed:", error);
+    return null;
+  }
+}
+
+/** Receipt append for a settle/worker attempt; a failure never changes a verdict. */
+export async function writeSettleReceipt(input: {
+  cwd: string;
+  agent: string;
+  commands: ReceiptCommand[];
+  ok: boolean;
+  note: string;
+  sandbox?: string;
+}): Promise<string | null> {
+  try {
+    return await writeReceipt({
+      cwd: input.cwd,
+      agent: input.agent,
+      session: process.env.PI_SESSION_ID,
+      commands: input.commands,
+      ok: input.ok,
+      note: input.note,
+      ...(input.sandbox ? { sandbox: input.sandbox } : {}),
+    });
+  } catch (error) {
+    console.error("[delegate] settle receipt failed:", error);
+    return null;
+  }
 }
 
 /** Best-effort debug log for gate decisions (debounce skips, fallbacks). */
@@ -1162,7 +1005,7 @@ export function markPostWriteGateEnd(sessionKey: string): void {
 // ── Worker-settle gate attempts + backoff ───────────────────────────────────
 
 /**
- * Batch 2: attempts 1..SETTLE_GATE_IMMEDIATE_ATTEMPTS behave EXACTLY like batch
+ * Batch 2: attempts 1..DEFAULT_SETTLE_IMMEDIATE_ATTEMPTS behave EXACTLY like batch
  * 1 (immediate block + continue). Every later attempt waits an exponential
  * backoff before its continuation (`base * 2^(n-4)`: 2s, 4s at the default
  * base) and the LAST attempt is the hard stop. Backoff exists because a worker
@@ -1173,16 +1016,13 @@ export function markPostWriteGateEnd(sessionKey: string): void {
 /**
  * Batch 3: the settle knobs are declared in WORKFLOW.md. Resolution order per
  * knob — a field PRESENT and well-typed in the policy wins; otherwise the
- * batch-2 env override applies; otherwise the code default. `cwd` is the
+ * batch-2 env override applies; otherwise the CODE DEFAULT. `cwd` is the
  * project root (process.cwd() by default; callers pass ctx.cwd).
+ *
+ * B3.4: the defaults are ./policy.ts's `DEFAULT_SETTLE_*` — that module is the
+ * single source (it also documents them as fixture-fallbacks), so this file
+ * keeps no numbers of its own.
  */
-export const SETTLE_GATE_MAX_ATTEMPTS = 5;
-/** First backoff wait (ms); doubled per attempt past the immediate window. */
-export const SETTLE_BACKOFF_BASE_MS = 2_000;
-/** Attempts that retry with no wait (batch-1 semantics). */
-export const SETTLE_GATE_IMMEDIATE_ATTEMPTS = 3;
-/** Doublings cap, so a hand-set huge max cannot make the gate wait for hours. */
-export const SETTLE_BACKOFF_MAX_DOUBLINGS = 5;
 
 /** Immediate (no-wait) attempts: policy field → default. */
 export function settleImmediateAttempts(cwd: string = process.cwd()): number {
@@ -1190,7 +1030,7 @@ export function settleImmediateAttempts(cwd: string = process.cwd()): number {
   if (loaded.ok && loaded.declared.has("settle_immediate_attempts")) {
     return loaded.policy.settleImmediateAttempts;
   }
-  return SETTLE_GATE_IMMEDIATE_ATTEMPTS;
+  return DEFAULT_SETTLE_IMMEDIATE_ATTEMPTS;
 }
 
 /** Backoff doublings cap: policy field → default. */
@@ -1199,7 +1039,7 @@ export function settleBackoffMaxDoublings(cwd: string = process.cwd()): number {
   if (loaded.ok && loaded.declared.has("settle_backoff_max_doublings")) {
     return loaded.policy.settleBackoffMaxDoublings;
   }
-  return SETTLE_BACKOFF_MAX_DOUBLINGS;
+  return DEFAULT_SETTLE_BACKOFF_MAX_DOUBLINGS;
 }
 
 /** Total attempts: policy field → env override → default (never below immediate). */
@@ -1210,7 +1050,7 @@ export function settleGateMaxAttempts(cwd: string = process.cwd()): number {
     return Math.max(loaded.policy.settleMaxAttempts, immediate);
   }
   const raw = Number(process.env.PI_DELEGATE_SETTLE_MAX_ATTEMPTS);
-  if (!Number.isFinite(raw) || raw < immediate) return SETTLE_GATE_MAX_ATTEMPTS;
+  if (!Number.isFinite(raw) || raw < immediate) return DEFAULT_SETTLE_MAX_ATTEMPTS;
   return Math.floor(raw);
 }
 
@@ -1221,7 +1061,7 @@ export function settleBackoffBaseMs(cwd: string = process.cwd()): number {
     return loaded.policy.settleBackoffBaseMs;
   }
   const raw = Number(process.env.PI_DELEGATE_BACKOFF_BASE_MS);
-  if (!Number.isFinite(raw) || raw < 0) return SETTLE_BACKOFF_BASE_MS;
+  if (!Number.isFinite(raw) || raw < 0) return DEFAULT_SETTLE_BACKOFF_BASE_MS;
   return Math.floor(raw);
 }
 
@@ -1403,8 +1243,7 @@ export function repoRelativePath(repoRoot: string, inputPath: string): string | 
  * stay inside one segment. Everything else is literal (regex metacharacters
  * escaped). Patterns and paths are repo-root-relative posix strings.
  *
- * Still used by the claims log (owned-path overlap detection); the gate-allowlist
- * caller it was written for is deleted.
+ * Used by the claims log for owned-path overlap detection.
  */
 export function matchGlob(pattern: string, relPath: string): boolean {
   const normalized = toPosix(pattern).replace(/^\.\//, "").replace(/\/+$/, "");
@@ -1455,14 +1294,20 @@ export function isGateRelevantWrite(repoRoot: string, inputPath: string): boolea
   return rel.endsWith(".go") || rel.endsWith(".feature") || rel.endsWith(".yaml");
 }
 
-// ── Host-side integrity check (the replacement for the deleted mechanisms) ──
+// ── Host-side integrity check (the merge-boundary detector) ──
 
 /**
- * The paths whose content DEFINES green. A worker that changes any of them has
- * voided its own verdict: the host must never execute a Makefile, cmd/spec
- * binary, CI workflow or WORKFLOW.md that differs from HEAD.
+ * The paths the integrity check covers: the `gate_file_paths` DECLARED in the
+ * worktree's WORKFLOW.md front matter, or `DEFAULT_GATE_FILE_PATHS` when the
+ * field is absent. An unreadable policy also yields the defaults — the gate
+ * path refuses on the policy itself in that case, and the check must keep
+ * covering the canonical gate files rather than trust a broken policy file.
  */
-export const GATE_FILE_PATHS: readonly string[] = ["Makefile", "cmd/spec", ".github", WORKFLOW_FILE_REL_PATH];
+export function gateFilePathsFor(worktreePath: string): string[] {
+  const loaded = loadWorkflowPolicy(worktreePath);
+  if (!loaded.ok) return [...DEFAULT_GATE_FILE_PATHS];
+  return [...loaded.policy.gateFilePaths];
+}
 
 /** Exit code `git diff --exit-code` uses for "there is a diff". */
 export const GIT_DIFF_DIRTY_EXIT = 1;
@@ -1476,19 +1321,21 @@ export interface IntegrityCheckResult {
   report: string;
   /** The executed checks, so a receipt can record them verbatim. */
   steps: GateStep[];
-  /** Paths covered by the check (the four gate paths). */
+  /** Paths covered by the check (the declared `gate_file_paths`). */
   paths: string[];
 }
 
 /**
  * HOST-SIDE integrity check, run in the worktree BEFORE any gate command.
  *
- *   git diff --exit-code HEAD -- Makefile cmd/spec .github WORKFLOW.md
- *   git diff --cached --exit-code HEAD -- Makefile cmd/spec .github WORKFLOW.md
+ *   git diff --exit-code HEAD -- <gate_file_paths…>
+ *   git diff --cached --exit-code HEAD -- <gate_file_paths…>
  *
- * The index variant matters for the same reason: workers are git-less, so only
- * the host moves HEAD, and any working-tree OR index deviation from HEAD in
- * these paths is worker-introduced poison.
+ * The paths are the ones the policy DECLARES (`gate_file_paths` in WORKFLOW.md),
+ * with the four canonical gate files (Makefile, cmd/spec, .github, WORKFLOW.md)
+ * as the default when the field is absent: a worker that changes any of them has
+ * voided its own verdict, because the host must never execute a Makefile,
+ * cmd/spec binary, CI workflow or WORKFLOW.md that differs from HEAD.
  *
  * FAIL CLOSED: exit 1 = dirty (refuse the gates and route to human review).
  * Anything else that is not a clean exit 0 — a missing git, a broken HEAD, a
@@ -1499,7 +1346,7 @@ export async function checkWorktreeIntegrity(
   worktreePath: string,
   opts: { timeoutMs?: number } = {},
 ): Promise<IntegrityCheckResult> {
-  const paths = [...GATE_FILE_PATHS];
+  const paths = gateFilePathsFor(worktreePath);
   const timeoutMs = opts.timeoutMs ?? GIT_TIMEOUT_MS;
   const commands: string[][] = [
     ["diff", "--exit-code", "HEAD", "--", ...paths],
@@ -1729,7 +1576,9 @@ export interface ReceiptRecord {
   agent: string;
   session: string;
   commands: ReceiptCommand[];
-  rulesHash: string;
+  /** Receipt schema; 2 = catalogHash is the docs/spec/rules manifest hash. */
+  schema_version: number;
+  catalogHash: string;
   headSha: string;
   ok: boolean;
   note: string;
@@ -1745,10 +1594,10 @@ export function receiptsFileFor(cwd: string, day: string = new Date().toISOStrin
 /**
  * Parse one day's JSONL text into records, oldest first. Malformed lines are
  * skipped: the receipt log is telemetry and must never throw. Shared by the
- * per-day reader and the all-days prove reader below so both stay lenient in
- * exactly the same way.
+ * per-day reader here and ./mergegate.ts's all-days prove reader, so both stay
+ * lenient in exactly the same way (exported for that second reader only).
  */
-function parseReceiptLines(raw: string): ReceiptRecord[] {
+export function parseReceiptLines(raw: string): ReceiptRecord[] {
   const records: ReceiptRecord[] = [];
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
@@ -1760,7 +1609,10 @@ function parseReceiptLines(raw: string): ReceiptRecord[] {
         agent: typeof parsed.agent === "string" ? parsed.agent : "",
         session: typeof parsed.session === "string" ? parsed.session : "",
         commands: Array.isArray(parsed.commands) ? (parsed.commands as ReceiptCommand[]) : [],
-        rulesHash: typeof parsed.rulesHash === "string" ? parsed.rulesHash : "",
+        // Absent = v1 (the deleted docs/spec/rules.yaml hash); keep it as 0 so
+        // diffReceiptAgainst can supersede it instead of comparing hashes.
+        schema_version: typeof parsed.schema_version === "number" ? parsed.schema_version : 0,
+        catalogHash: typeof parsed.catalogHash === "string" ? parsed.catalogHash : "",
         headSha: typeof parsed.headSha === "string" ? parsed.headSha : "",
         ok: parsed.ok === true,
         note: typeof parsed.note === "string" ? parsed.note : "",
@@ -1805,7 +1657,7 @@ export async function latestPassingReceipt(cwd: string, day?: string): Promise<R
 
 export interface ReconciliationCurrent {
   headSha: string;
-  rulesHash: string;
+  catalogHash: string;
   commands: ReceiptCommand[];
 }
 
@@ -1821,10 +1673,21 @@ export function diffReceiptAgainst(record: ReceiptRecord | null, current: Reconc
   if (record.headSha !== current.headSha) {
     discrepancies.push("headSha: receipt " + recordedSha + ", now " + currentSha);
   }
-  const recordedHash = record.rulesHash || "(not recorded)";
-  const currentHash = current.rulesHash || "(not recorded)";
-  if (record.rulesHash !== current.rulesHash) {
-    discrepancies.push("rulesHash: receipt " + recordedHash + ", now " + currentHash);
+  // Catalog schema v2 (one authored file per rule under docs/spec/rules/): a v2
+  // receipt's catalogHash is the manifest hash of that tree, so it compares
+  // directly. A v1 receipt (no schema_version, or < 2) hashed the DELETED
+  // docs/spec/rules.yaml — comparing it would be a permanent false mismatch, so
+  // it is SUPERSEDED: headSha and exit codes still count, the hash is reported
+  // once as not compared. That one-time note is accepted; do NOT loosen the v2
+  // comparison to silence it.
+  if (!(typeof record.schema_version === "number" && record.schema_version >= 2)) {
+    discrepancies.push("catalogHash: receipt predates catalog schema v2 \u2014 superseded, not compared");
+  } else {
+    const recordedHash = record.catalogHash || "(not recorded)";
+    const currentHash = current.catalogHash || "(not recorded)";
+    if (record.catalogHash !== current.catalogHash) {
+      discrepancies.push("catalogHash: receipt " + recordedHash + ", now " + currentHash);
+    }
   }
   for (const recorded of record.commands) {
     const fresh = current.commands.find((entry) => entry.command === recorded.command);
@@ -1855,8 +1718,9 @@ export interface ReconciliationResult {
 /**
  * Reconciliation-lite: re-run the cheap gate ladder (`make audit/static` +
  * the scoped spec check via runScopedGate) and diff the fresh result against
- * the newest passing receipt of the day — HEAD sha, rules.yaml hash, and every
- * recorded command's exit code. Any difference is a mismatch, and a failing
+ * the newest passing receipt of the day — HEAD sha, the docs/spec/rules
+ * catalog manifest hash, and every recorded command's exit code. Any difference
+ * is a mismatch, and a failing
  * fresh ladder is always a mismatch (fail closed on the ladder, fail open on
  * the receipt metadata).
  */
@@ -1907,7 +1771,7 @@ export async function runReconciliation(
 
   const current: ReconciliationCurrent = {
     headSha: await headShaOf(cwd),
-    rulesHash: await hashSpecRules(cwd),
+    catalogHash: await catalogHash(cwd),
     commands: receiptCommandsOf(fresh),
   };
   const recorded = await latestPassingReceipt(cwd, opts.day);
@@ -1955,180 +1819,511 @@ export function reconciliationGateRun(result: ReconciliationResult): GateRun {
   return { ok: false, steps: result.steps.length > 0 ? [...result.steps.filter((entry) => !entry.ok), step] : [step] };
 }
 
-// ── PROVE coverage (merge-back gate) ────────────────────────────────────────
+// ── Hook registration: the gate plane's entry into pi ───────────────────────
+//
+// Moved out of index.ts by B3.4 (pure motion): every hook below enforces or
+// records what THIS module owns — the in-VM advisory ladder, the bash re-
+// dispatch into the gate VM, the post-write gate, and the worker-settle gate
+// with its receipts/reconciliation. The root registers them, in the order the
+// pipeline requires; the bodies live here so the root stays entry/wiring only.
 
 /**
- * The merge-back PROVE verdict. `missing` is what the caller prints: every rule
- * id that has no VERIFIED prove receipt behind it, verbatim.
+ * Append a note to a tool result's content without dropping the original text:
+ * the LAST text part is extended in place (a new text part when there is none).
+ * Used by the scoped gates to report failures/skips on top of the tool output.
  */
-export interface ProveCoverageResult {
-  ok: boolean;
-  covered: string[];
-  missing: string[];
-  report: string;
-}
-
-/** Escape one rule id for the `--rule` matcher (ids are [A-Za-z0-9_-]). */
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * The `--rule <id>` / `--rule=<id>` matcher for ONE rule. The trailing token
- * boundary is load-bearing: a receipt for R-GAME-001 must never count as
- * covering R-GAME-0011 (nor the reverse) — a substring match would silently
- * widen what a green scoped run is allowed to prove.
- */
-function ruleFlagPattern(rule: string): RegExp {
-  return new RegExp("--rule(?:=|\\s+)" + escapeRegExp(rule) + "(?![A-Za-z0-9_-])");
-}
-
-/** Did any command of this receipt mention `--rule <rule>`? */
-function receiptMentionsRule(record: ReceiptRecord, pattern: RegExp): boolean {
-  return record.commands.some(
-    (entry) => typeof entry?.command === "string" && pattern.test(entry.command),
-  );
-}
-
-/** Did a command mentioning this rule actually exit 0? */
-function receiptVerifiesRule(record: ReceiptRecord, pattern: RegExp): boolean {
-  return record.commands.some(
-    (entry) => entry?.exitCode === 0 && typeof entry.command === "string" && pattern.test(entry.command),
-  );
-}
-
-/**
- * Every readable `<dir>/*.jsonl` record, all days, oldest file name first.
- * Jobs cross midnight and a prove run can land in yesterday's file, so the
- * reader takes the whole (small) receipts dir rather than today's log only.
- * Malformed lines are skipped exactly like readDayReceipts; a missing or
- * unreadable dir is "no receipts", never a throw — the receipt log is
- * telemetry. Fail-closed decisions are made on top of it, in checkProveCoverage.
- */
-async function readAllReceipts(dir: string): Promise<{ records: ReceiptRecord[]; files: number }> {
-  let names: string[];
-  try {
-    names = await fs.promises.readdir(dir);
-  } catch {
-    return { records: [], files: 0 };
-  }
-  const dayFiles = names.filter((name) => name.endsWith(".jsonl")).sort();
-  const records: ReceiptRecord[] = [];
-  for (const name of dayFiles) {
-    try {
-      records.push(...parseReceiptLines(await fs.promises.readFile(path.join(dir, name), "utf8")));
-    } catch {
-      /* unreadable day file — skip (telemetry only) */
+function appendToolResultNote(
+  content: (TextContent | ImageContent)[],
+  note: string,
+): (TextContent | ImageContent)[] {
+  const copy: (TextContent | ImageContent)[] = [...content];
+  for (let index = copy.length - 1; index >= 0; index--) {
+    const part = copy[index];
+    if (part.type === "text") {
+      copy[index] = { type: "text", text: part.text + note };
+      return copy;
     }
   }
-  return { records, files: dayFiles.length };
+  copy.push({ type: "text", text: note.replace(/^\n+/, "") });
+  return copy;
 }
 
 /**
- * Merge-back PROVE coverage: does the HOST receipts root hold a VERIFIED prove
- * receipt for EVERY rule the job's SPEC-SCOPE named?
- *
- * `receiptsRoot` is the HOST SESSION's own repo root (its cwd) — receipts are
- * host-only artifacts and are never read out of a worker's worktree, where a
- * worker could pre-forge one. The optional `opts.worktreePath` is reported for
- * context only; it does not change where evidence is read from.
- *
- * A rule R is covered iff one receipt record carries ALL of:
- *   - `ok === true`,
- *   - a note starting with "prove" (the extension-written prove receipt; an
- *     ordinary green gate receipt is not prove evidence),
- *   - a commands entry with `exitCode === 0` whose command mentions
- *     `--rule <R>` or `--rule=<R>` on a token boundary,
- *   - and, when `expectedHeadSha` is given, `headSha` equal to it.
- *
- * FAIL CLOSED: an unavailable WORKFLOW.md policy is `ok:false` (no receipts
- * dir, no declared prove command ⇒ no evidence can be trusted), and every
- * missing rule is named verbatim in `report` with the reason it does not
- * count (no receipt at all / non-VERIFIED exit / stale headSha).
+ * The worker gate ladder with the batch-1 fail-closed crash fallback: a throw
+ * in the runner becomes a failed GateRun, never a silent pass.
  */
-export async function checkProveCoverage(
-  receiptsRoot: string,
-  rules: string[],
-  opts: { expectedHeadSha?: string; worktreePath?: string } = {},
-): Promise<ProveCoverageResult> {
-  const scoped = rules
-    .filter((rule): rule is string => typeof rule === "string")
-    .map((rule) => rule.trim())
-    .filter((rule) => rule.length > 0);
-  if (scoped.length === 0) {
-    return {
-      ok: true,
-      covered: [],
-      missing: [],
-      report: "PROVE coverage: no scoped rules \u2014 the merge-back needs no prove receipts.",
-    };
-  }
-
-  const loaded = loadWorkflowPolicy(receiptsRoot);
-  if (!loaded.ok) {
+async function runWorkerGate(cwd: string, scopeEnv: string | undefined): Promise<GateRun> {
+  try {
+    return await runScopedGate({ cwd, scopeEnv });
+  } catch (error) {
+    console.error("[delegate] worker gate crashed:", error);
     return {
       ok: false,
-      covered: [],
-      missing: scoped,
-      report:
-        "PROVE coverage REFUSED: " + workflowPolicyRefusal(loaded.reason) +
-        " (scoped rules: " + scoped.join(", ") + ")",
+      steps: [
+        {
+          command: "(worker gate)",
+          argv: [],
+          ok: false,
+          exitCode: null,
+          timedOut: false,
+          durationMs: 0,
+          stdout: "",
+          stderr: error instanceof Error ? error.message : String(error),
+          spawnError: null,
+          reason: "gate runner threw",
+        },
+      ],
     };
   }
+}
 
-  const dir = path.join(receiptsRoot, loaded.policy.receiptsDir);
-  const { records, files } = await readAllReceipts(dir);
-  // Only extension-written prove receipts are prove evidence: the writer notes
-  // them "prove rules=…". Anything else may share a command line (a settle
-  // gate whose scope env ran `--rule`) and must not launder into coverage.
-  const proveRecords = records.filter((record) => /^prove\b/i.test(record.note.trim()));
-  const expectedHeadSha = opts.expectedHeadSha ? opts.expectedHeadSha.trim().toLowerCase() : "";
+/**
+ * IN-VM (sandboxed) registration: ADVISORY ONLY.
+ *
+ * The extension also loads inside the worker's micro-VM. There it must register
+ * nothing that enforces or records — no enforcing hook, no receipts, no claims,
+ * no subagent tool, no job surfaces, no merge hook. The only thing it does is
+ * append clearly-marked ADVISORY notes after a gate-relevant write and at
+ * settle, so the worker's own loop is shorter and it knows a gate is due. Every
+ * note says the host re-runs the authoritative gates after exit — an in-VM green
+ * is not a verdict.
+ *
+ * The ladder is `runInVmAdvisoryGate`: the declared scoped spec check plus a
+ * direct `gofmt -l` over the changed Go files. `make audit/static` is never run
+ * here (its gofmt step enumerates `git ls-files`, and the mount carries no
+ * usable `.git`).
+ */
+export function registerInVmAdvisory(pi: ExtensionAPI): void {
+  const ADVISORY_FOOTER =
+    "This is ADVISORY only: the host re-runs the authoritative gates after your sandbox exits, " +
+    "and its verdict — not this note — decides. Never quote this note as evidence of green.";
 
-  const covered: string[] = [];
-  const missing: string[] = [];
-  const notes: string[] = [];
-  for (const rule of scoped) {
-    const pattern = ruleFlagPattern(rule);
-    const candidates = proveRecords.filter((record) => receiptMentionsRule(record, pattern));
-    if (candidates.length === 0) {
-      missing.push(rule);
-      notes.push("- " + rule + ": MISSING \u2014 no prove receipt at all");
-      continue;
+  pi.on("tool_result", async (event, ctx) => {
+    if (event.toolName !== "edit" && event.toolName !== "write") return;
+    if (event.isError) return;
+    const input = event.input as { path?: unknown };
+    if (typeof input.path !== "string" || input.path.length === 0) return;
+    if (!isGateRelevantWrite(ctx.cwd, input.path)) return;
+
+    let run: GateRun;
+    try {
+      run = await runInVmAdvisoryGate({
+        cwd: ctx.cwd,
+        scopeEnv: process.env.PI_DELEGATE_SPEC_SCOPE,
+        changedPaths: [input.path],
+      });
+    } catch (error) {
+      return {
+        content: appendToolResultNote(
+          event.content,
+          "\n[ADVISORY] in-VM gate check crashed (" +
+            (error instanceof Error ? error.message : String(error)) +
+            "). \n" + ADVISORY_FOOTER,
+        ),
+      };
     }
-    const verified = candidates.filter((record) => record.ok === true && receiptVerifiesRule(record, pattern));
-    if (verified.length === 0) {
-      missing.push(rule);
-      notes.push("- " + rule + ": MISSING \u2014 receipt exists but non-VERIFIED (the scoped run did not exit 0)");
-      continue;
+    if (run.ok) return;
+    const report = formatGateReport(run, {
+      header: "\u2500\u2500 ADVISORY GATE (in-VM \u2014 not a verdict) \u2500\u2500",
+      footer: ADVISORY_FOOTER,
+      maxLines: 20,
+    });
+    return { content: appendToolResultNote(event.content, "\n" + report) };
+  });
+
+  // Settle advisory: same ladder, no forced continuation (nothing here may
+  // consume a turn or block the run) and no receipt.
+  pi.on("agent_before_settle", async (event, ctx) => {
+    if (event.outcome !== "completed") return;
+    let run: GateRun;
+    try {
+      run = await runInVmAdvisoryGate({ cwd: ctx.cwd, scopeEnv: process.env.PI_DELEGATE_SPEC_SCOPE });
+    } catch (error) {
+      return {
+        entries: [
+          ...event.entries,
+          {
+            type: "custom_message",
+            customType: "delegate-gate",
+            content:
+              "[ADVISORY] in-VM settle check crashed: " +
+              (error instanceof Error ? error.message : String(error)) + "\n" + ADVISORY_FOOTER,
+            display: true,
+          },
+        ],
+      };
     }
-    if (expectedHeadSha) {
-      const atReviewedHead = verified.filter((record) => record.headSha.toLowerCase() === expectedHeadSha);
-      if (atReviewedHead.length === 0) {
-        const recorded = verified.map((record) => record.headSha || "(not recorded)").join(", ");
-        missing.push(rule);
-        notes.push(
-          "- " + rule + ": MISSING \u2014 receipt stale (headSha mismatch: expected " + expectedHeadSha +
-          ", recorded " + recorded + ")",
-        );
-        continue;
+    if (run.ok) return;
+    const report = formatGateReport(run, {
+      header: "\u2500\u2500 ADVISORY SETTLE GATE (in-VM \u2014 not a verdict) \u2500\u2500",
+      footer: ADVISORY_FOOTER,
+      maxLines: 20,
+    });
+    return {
+      entries: [
+        ...event.entries,
+        { type: "custom_message", customType: "delegate-gate", content: report, display: true },
+      ],
+    };
+  });
+}
+
+/**
+ * GATE-VM EXECUTION (host shell → gate VM). The authoritative gates used to
+ * be typed into the host's bash tool, so the host shell executed the
+ * worktree's Makefile / cmd/spec directly. They now run in the locked-down
+ * gate VM instead: a declared gate command typed here is recognised
+ * (`resolveDeclaredGateCommand`), the host integrity check runs FIRST (the
+ * trust anchor — dirty gate files ⇒ refuse, never execute), the DB-backed
+ * gates get the Postgres pre-sequence, and the bash input is REWRITTEN to the
+ * equivalent `sbx exec` line. The host therefore executes only `sbx`; the
+ * gate argv is passed verbatim to the VM. A compound command (pipe, redirect,
+ * several segments) is not rewritten: it is not the declared invocation.
+ */
+export function registerGateVmDispatchHook(pi: ExtensionAPI): void {
+  pi.on("tool_call", async (event, ctx) => {
+    if (isSandboxedChild()) return;
+    if (event.toolName !== "bash") return;
+    const input = event.input as { command?: unknown };
+    if (typeof input.command !== "string" || input.command.trim().length === 0) return;
+    const resolved = resolveDeclaredGateCommand(input.command, ctx.cwd);
+    if (!resolved) return;
+
+    // 1. Host-side integrity check — unchanged, and still BEFORE any gate
+    // execution: the four gate paths must match HEAD in this worktree.
+    let integrity: IntegrityCheckResult;
+    try {
+      integrity = await checkWorktreeIntegrity(resolved.cwd);
+    } catch (error) {
+      integrity = {
+        clean: false,
+        refused: true,
+        report:
+          "\u2500\u2500 INTEGRITY CHECK (host, pre-gate) \u2500\u2500\nintegrity check crashed: " +
+          (error instanceof Error ? error.message : String(error)),
+        steps: [],
+        paths: [],
+      };
+    }
+    if (integrity.refused || !integrity.clean) {
+      await safeHostReceipt({
+        cwd: ctx.cwd,
+        agent: process.env.PI_DELEGATE_ROLE ?? "agent",
+        commands: integrity.steps.map((step) => ({
+          command: step.command,
+          exitCode: step.exitCode,
+          timedOut: step.timedOut,
+          durationMs: step.durationMs,
+        })),
+        ok: false,
+        note: "integrity check (host, pre-gate VM): REFUSED \u2014 gate command not executed",
+      });
+      return {
+        block: true,
+        reason:
+          integrityRefusalReason(integrity) +
+          "\n\nThe gate command was NOT executed anywhere (no gate VM exec): " + resolved.segment,
+      };
+    }
+
+    // 2. DB-backed gates only: start Postgres, wait, reset the test DB. A
+    // failure here stops the gate with a named step instead of running it
+    // against a broken database.
+    try {
+      if (resolved.db) {
+        const prep = await prepareGateDbVm(resolved.cwd);
+        if (!prep.ok && prep.step) {
+          const failing = prep.step;
+          return {
+            block: true,
+            reason:
+              "GATE VM DB PRE-SEQUENCE FAILED \u2014 the gate command was not run (no verdict).\n" +
+              "- " + failing.command + " \u2014 " +
+              (failing.exitCode === null ? "no exit code" : "exit " + String(failing.exitCode)) +
+              " \u00b7 " + failing.reason + "\n" + tailLines(failing.stdout + failing.stderr, 20),
+          };
+        }
+      }
+
+      // 3. Lazily create/reuse the session's gate VM for this worktree path and
+      // rewrite the bash input to the equivalent `sbx exec` argv.
+      const sandbox = await ensureGateSandbox(resolved.cwd);
+      const rewritten = gateVmShellCommand(
+        sandbox.name,
+        resolved.cwd,
+        gateVmExecEnv(resolved.cwd, { db: resolved.db }),
+        appendGateDbOverride(resolved.argv, resolved.db),
+      );
+      (input as { command: string }).command = rewritten;
+      // The host-side watchdog for the bash-dispatched gate: sbx exec has no
+      // timeout flag, so bound the host command with the declared stall budget.
+      // The bash tool's `timeout` parameter is in SECONDS (pi schema), so the
+      // ms budget is converted up. A caller that already asked for MORE time
+      // keeps its value.
+      const stallMs = workerStallTimeoutMs(process.env, ctx.cwd);
+      if (stallMs > 0) {
+        const stallSeconds = Math.ceil(stallMs / 1000);
+        const requested = (input as { timeout?: number }).timeout;
+        (input as { timeout?: number }).timeout =
+          typeof requested === "number" && requested > stallSeconds ? requested : stallSeconds;
+      }
+      void logGateDebug(
+        ctx.cwd,
+        "gate command re-dispatched to gate VM " + sandbox.name + " (worktree " + resolved.cwd +
+          "): " + resolved.argv.join(" "),
+      );
+    } catch (error) {
+      return {
+        block: true,
+        reason:
+          "GATE VM UNAVAILABLE \u2014 the gate command was not run (no verdict): " +
+          (error instanceof Error ? error.message : String(error)) +
+          "\nThe gate set has no host fallback: a gate that cannot run in the gate VM FAILS.",
+      };
+    }
+  });
+}
+
+/**
+ * Batch 1: POST-WRITE scoped gate. Sandboxed workers are inert in-VM and
+ * verified by the HOST after exit (the gate VM executes), so this hook serves
+ * only a HOST-PASSTHROUGH child — a role no profile defines today, since the
+ * researcher is mountless; the seam stays for a future deliberate host role:
+ * after a successful edit/write of a gate-relevant file (.go / .feature /
+ * .yaml / docs/spec/**) the extension runs `make audit/static` + the scoped
+ * spec check and appends a failure block to the tool result. Successes stay
+ * silent (context stays small); a debounced skip still leaves a one-line note
+ * so the worker knows a gate is due. The extension writes the receipt, never
+ * the worker.
+ */
+export function registerPostWriteGateHook(pi: ExtensionAPI): void {
+  pi.on("tool_result", async (event, ctx) => {
+    if (!isWorkerChild()) return;
+    if (event.toolName !== "edit" && event.toolName !== "write") return;
+    if (event.isError) return;
+    const input = event.input as { path?: unknown };
+    if (typeof input.path !== "string" || input.path.length === 0) return;
+    if (!isGateRelevantWrite(ctx.cwd, input.path)) return;
+
+    const sessionKey = process.env.PI_SESSION_ID ?? "proc:" + String(process.pid);
+    if (shouldRunPostWriteGate(sessionKey) !== "run") {
+      void logGateDebug(ctx.cwd, "post-write gate skipped (debounce) after " + event.toolName + " " + input.path);
+      return {
+        content: appendToolResultNote(
+          event.content,
+          "\n[scoped gate] run skipped (debounced ~10s) — a gate run is due/running; results land after the next write or at settle.",
+        ),
+      };
+    }
+
+    markPostWriteGateStart(sessionKey);
+    let run: GateRun;
+    try {
+      run = await runScopedGate({ cwd: ctx.cwd, scopeEnv: process.env.PI_DELEGATE_SPEC_SCOPE });
+    } catch (error) {
+      // Internal error ⇒ failure, never a silent pass (fail closed).
+      console.error("[delegate] post-write gate crashed:", error);
+      run = {
+        ok: false,
+        steps: [
+          {
+            command: "(scoped gate)",
+            argv: [],
+            ok: false,
+            exitCode: null,
+            timedOut: false,
+            durationMs: 0,
+            stdout: "",
+            stderr: error instanceof Error ? error.message : String(error),
+            spawnError: null,
+            reason: "gate runner threw",
+          },
+        ],
+      };
+    } finally {
+      markPostWriteGateEnd(sessionKey);
+    }
+    try {
+      await writeReceipt({
+        cwd: ctx.cwd,
+        agent: process.env.PI_DELEGATE_ROLE ?? "worker",
+        session: process.env.PI_SESSION_ID,
+        commands: receiptCommandsOf(run),
+        ok: run.ok,
+        note: "post-write gate after " + event.toolName + " " + input.path,
+        sandbox: run.steps.find((step) => step.gateSandbox)?.gateSandbox,
+      });
+    } catch (error) {
+      console.error("[delegate] post-write receipt failed:", error);
+    }
+    if (run.ok) return;
+    return {
+      content: appendToolResultNote(
+        event.content,
+        "\n" +
+          formatGateReport(run, {
+            header: "\u2500\u2500 SCOPED GATE FAILED \u2500\u2500",
+            footer:
+              "Fix these before reporting done. The gate reruns after your next write; " +
+              "make audit/static and spec check must pass before settle.",
+            maxLines: 30,
+          }),
+      ),
+    };
+  });
+}
+
+/**
+ * One-shot: the settle gate emitted its HARD STOP message with continue:true
+ * (the worker's terminal turn, for its verbatim failure report). The NEXT
+ * agent_before_settle consumes it: no receipt, no gate run, return undefined.
+ *
+ * Why the hard stop is NOT an entries-only return: pi's
+ * `_runBeforeSettleBoundary` commits the drafts and, with `continue` false,
+ * ends the run with that committed CUSTOM message as the last message. Print
+ * mode derives stdout from `state.messages[last].role === "assistant"`, so a
+ * custom/user-role draft last means exit 0 with EMPTY stdout and no failure
+ * report (observed live, deterministic). Ending on a real assistant turn keeps
+ * the buffered output and hands the parent the worker's report.
+ * Cleared on read; a PASSING gate run also clears it.
+ *
+ * (Gate state, not surfacing state: it stays with the worker-settle gate.)
+ */
+let settleGateTerminal = false;
+
+/**
+ * Batch 1 + batch 2: WORKER-SETTLE gate. A worker child may not settle as
+ * "done" while the scoped gate fails: the same two commands as the
+ * post-write gate run again (no debounce), the extension writes a receipt,
+ * and a bounded continue:true hands the worker turns to fix the failures.
+ *
+ * Batch 2 additions: (a) past the batch-1 immediate window the continuation
+ * waits an exponential backoff (2s, 4s at the default base) and its reason
+ * text is ESCALATING; after the last attempt the hard stop prints the full
+ * per-attempt receipt trail. (b) A PASSING ladder is followed by
+ * reconciliation-lite: the ladder is re-run and diffed against the newest
+ * passing receipt (HEAD sha, docs/spec/rules catalog hash, exit codes). The
+ * receipt for
+ * THIS attempt is written first, so the checkpoint is the tree state the
+ * green ladder just described — the drift it catches is a concurrent writer
+ * (another worker committing mid-ladder), not a day-old receipt from a
+ * sibling. That matters: `<cwd>/.pi/receipts/` is per REPO, not per worker,
+ * and a mismatch against a stale day-long checkpoint would block a
+ * legitimately green worker forever. A mismatch still counts as a failed
+ * attempt and is reported in full.
+ *
+ * Loop safety: continue is conditional on NEW state — the attempt counter
+ * (module state, reset by a PASSING run) strictly increases per failure, so
+ * the attempt cap hands out the HARD STOP message as a TERMINAL turn
+ * (continue:true once, bounded by the one-shot settleGateTerminal flag)
+ * rather than an entries-only return. The flag is consumed by the very next
+ * settle, which runs no gate and returns undefined — the proven-safe ending
+ * (assistant message last ⇒ print mode flushes the worker's output).
+ */
+export function registerWorkerSettleHook(pi: ExtensionAPI): void {
+  pi.on("agent_before_settle", async (event, ctx) => {
+    if (!isWorkerChild()) return;
+    // Terminal turn already handed out: end unconditionally, exactly once.
+    if (settleGateTerminal) {
+      settleGateTerminal = false;
+      resetSettleGateAttempts();
+      return undefined;
+    }
+    if (event.outcome !== "completed") return;
+
+    const maxAttempts = settleGateMaxAttempts(ctx.cwd);
+    const baseMs = settleBackoffBaseMs(ctx.cwd);
+    const attempt = settleGateStateFor().attempts + 1;
+    const agentName = process.env.PI_DELEGATE_ROLE ?? "worker";
+    const scopeEnv = process.env.PI_DELEGATE_SPEC_SCOPE;
+
+    let run = await runWorkerGate(ctx.cwd, scopeEnv);
+
+    // Receipt FIRST (note names the attempt number for every attempt): on a
+    // green ladder this receipt is the reconciliation checkpoint.
+    const receiptPath = await writeSettleReceipt({
+      cwd: ctx.cwd,
+      agent: agentName,
+      commands: receiptCommandsOf(run),
+      ok: run.ok,
+      note: "settle gate attempt " + String(attempt) + "/" + String(maxAttempts),
+      sandbox: run.steps.find((step) => step.gateSandbox)?.gateSandbox,
+    });
+
+    let reconciliation: ReconciliationResult | undefined;
+    if (run.ok) {
+      // Reconciliation-lite: only worth running on a green ladder, and only
+      // once per settle. A crash is a failure (fail closed), never a pass.
+      try {
+        reconciliation = await runReconciliation(ctx.cwd, {
+          agent: agentName,
+          session: process.env.PI_SESSION_ID,
+          scopeEnv,
+        });
+      } catch (error) {
+        console.error("[delegate] reconciliation crashed:", error);
+        reconciliation = {
+          ok: false,
+          report:
+            "── RECONCILIATION ──\nstatus: MISMATCH — reconciliation crashed: " +
+            (error instanceof Error ? error.message : String(error)),
+          steps: [],
+          receipt: null,
+        };
+      }
+      if (!reconciliation.ok) {
+        run = reconciliationGateRun(reconciliation);
+        if (reconciliation.steps.length > 0) {
+          // The reconciliation ladder's own commands go into their own receipt
+          // so a later trail can name exactly which run drifted.
+          await writeSettleReceipt({
+            cwd: ctx.cwd,
+            agent: agentName,
+            commands: receiptCommandsOf({ ok: reconciliation.ok, steps: reconciliation.steps }),
+            ok: false,
+            note: "reconciliation attempt " + String(attempt) + "/" + String(maxAttempts),
+            sandbox: reconciliation.steps.find((step) => step.gateSandbox)?.gateSandbox,
+          });
+        }
       }
     }
-    covered.push(rule);
-    notes.push("- " + rule + ": covered by a VERIFIED prove receipt");
-  }
 
-  const lines: string[] = ["\u2500\u2500 PROVE COVERAGE (merge-back) \u2500\u2500"];
-  lines.push("receipts root (host): " + receiptsRoot);
-  if (opts.worktreePath) lines.push("worktree: " + opts.worktreePath);
-  lines.push(
-    "receipts: " + dir + " (" + String(files) + " jsonl file(s), " + String(records.length) + " record(s))",
-  );
-  if (expectedHeadSha) lines.push("reviewed HEAD: " + expectedHeadSha);
-  for (const note of notes) lines.push(note);
-  lines.push(
-    missing.length === 0
-      ? "status: ok \u2014 every scoped rule has a VERIFIED prove receipt."
-      : "status: BLOCKED \u2014 missing VERIFIED prove receipts for " + missing.join(", ") + ".",
-  );
-  return { ok: missing.length === 0, covered, missing, report: lines.join("\n") };
+    if (run.ok) {
+      resetSettleGateAttempts();
+      settleGateTerminal = false;
+      return undefined;
+    }
+
+    const plan = planSettleGateAttempt(attempt, { maxAttempts, baseMs, cwd: ctx.cwd });
+    bumpSettleGateAttempts();
+    recordSettleGateAttempt({ run, receiptPath });
+    // Wait BEFORE handing the continuation back: the backoff is the point, and
+    // an entries-only early return would burn the turn instead.
+    if (plan.waitMs > 0) await sleepMs(plan.waitMs);
+
+    const escalation = formatSettleEscalation(plan, recentSettleFailures());
+    const header =
+      "\u2500\u2500 SETTLE GATE BLOCKED (attempt " + String(attempt) + "/" + String(maxAttempts) + ") \u2500\u2500";
+    const failureFooter =
+      "HARD STOP \u2014 TERMINAL TURN: " + String(maxAttempts) + " failed gate attempts. " +
+      "This is your LAST turn: make NO further changes (no edits, no fixes), run no more gate commands, " +
+      "and reply with your verbatim failure report \u2014 each failing command, its exit code, the failing " +
+      "output lines above, and the receipt path. That report is what your parent receives.";
+    const footer = plan.terminal
+      ? escalation + "\n" + formatSettleTrail(settleGateStateFor()) + "\n" + failureFooter
+      : escalation + "\nDo not report done; fix the gate failures.";
+    const content =
+      formatGateReport(run, { header, footer, maxLines: plan.terminal ? 20 : 30 }) +
+      "\nreceipt: " + (receiptPath ?? "(not written)") +
+      (reconciliation && !reconciliation.ok ? "\n" + reconciliation.report : "");
+    const entries: SessionBoundaryDraft[] = [
+      ...event.entries,
+      { type: "custom_message", customType: "delegate-gate", content, display: true },
+    ];
+    // Hard stop: still continue ONCE (the terminal turn) so the run ends on an
+    // assistant message instead of an entries-only return (see the
+    // settleGateTerminal comment above).
+    if (plan.terminal) settleGateTerminal = true;
+    return { entries, continue: true };
+  });
 }

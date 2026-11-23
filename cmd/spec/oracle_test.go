@@ -20,7 +20,7 @@ func oracleRepo(t *testing.T, feature string) *testRepo {
 
 func oracleFindings(t *testing.T, repo *testRepo, catalog Catalog) []Finding {
 	t.Helper()
-	findings := collectOracle(catalog, repo.root)
+	findings := collectOracle(&policyEnv{catalog: catalog, root: repo.root})
 	if len(findings) != 0 {
 		for _, f := range findings {
 			if f.Policy != policyOracle {
@@ -55,8 +55,8 @@ func TestOracleRejectsVacuousThen(t *testing.T) {
 			t.Errorf("finding does not mention %q: %s", want, group[0].Message)
 		}
 	}
-	if group[0].RuleID != "R-KERNEL-001" {
-		t.Errorf("finding names rule %q, want R-KERNEL-001", group[0].RuleID)
+	if group[0].Subject != "R-KERNEL-001" {
+		t.Errorf("finding names rule %q, want R-KERNEL-001", group[0].Subject)
 	}
 }
 
@@ -119,11 +119,11 @@ func TestOracleExemptsDeclarationVocabulary(t *testing.T) {
 
 func TestOracleRealTreePasses(t *testing.T) {
 	root := filepath.Join("..", "..")
-	catalog, err := loadCatalog(filepath.Join(root, "docs", "spec", "rules.yaml"))
+	catalog, err := loadCatalog(filepath.Join(root, "docs", "spec", "rules"))
 	if err != nil {
 		t.Fatalf("load the real catalog: %v", err)
 	}
-	if findings := collectOracle(catalog, root); len(findings) != 0 {
+	if findings := collectOracle(&policyEnv{catalog: catalog, root: root}); len(findings) != 0 {
 		t.Fatalf("the real feature tree violates policy 18:\n%s", describeFindings(findings))
 	}
 }

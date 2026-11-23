@@ -2,7 +2,8 @@
 
 ## Goal
 
-Introduce events only where they solve a real problem: reacting to committed game changes without coupling the core operation directly to every downstream concern.
+Introduce events only where they solve a real problem: reacting to committed game changes without coupling the
+core operation directly to every downstream concern.
 
 ## New concept
 
@@ -125,7 +126,8 @@ func (r *Rankings) HandleRideBurned(ctx context.Context, e RideBurned) error {
 
 You already know transactions, concurrency, idempotency, modules, and workers by this point.
 
-The outbox becomes a small combination of concepts you already understand rather than a new architecture dropped on top of the project.
+The outbox becomes a small combination of concepts you already understand rather than a new architecture
+dropped on top of the project.
 
 ## Tasks
 
@@ -178,8 +180,11 @@ sequenceDiagram
 
 ## Done when
 
-You can crash the process after a game transaction commits but before the ranking consumer runs, restart the application, and still process the event successfully.
+You can crash the process after a game transaction commits but before the ranking consumer runs, restart the
+application, and still process the event successfully.
 
 ## What this prepares you for
 
-At the end of Phase 8 you have a real modular monolith with meaningful domain boundaries, strong transactions, concurrency safety, background processing, and reliable asynchronous side effects. The production architecture can now be studied as an evolution from this foundation rather than something you must imitate from day one.
+At the end of Phase 8 you have a real modular monolith with meaningful domain boundaries, strong transactions,
+concurrency safety, background processing, and reliable asynchronous side effects. The production architecture
+can now be studied as an evolution from this foundation rather than something you must imitate from day one.

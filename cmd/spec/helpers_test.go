@@ -4,13 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
 func ptr[T any](v T) *T { return &v }
 
-// testRepo is a synthetic checkout: a docs/spec catalog plus the Go files its
+// testRepo is a synthetic checkout: a per-rule-file catalog plus the Go files its
 // sites and verification pointers name. Tests never read the real catalog.
 type testRepo struct {
 	root      string
@@ -22,7 +20,7 @@ func newTestRepo(t *testing.T) *testRepo {
 	root := t.TempDir()
 	repo := &testRepo{
 		root:      root,
-		rulesPath: filepath.Join(root, "docs", "spec", "rules.yaml"),
+		rulesPath: filepath.Join(root, "docs", "spec", "rules"),
 	}
 	repo.addFile(t, "internal/kernel/thing/thing.go", "package thing\n\n//rule:R-KERNEL-001\nfunc Do() {}\n")
 	repo.addFile(t, "internal/kernel/thing/other.go", "package thing\n\nfunc Other() {}\n\ntype Token struct{}\n")
@@ -56,13 +54,32 @@ func (r *testRepo) addFile(t *testing.T, rel, content string) {
 	}
 }
 
+// writeCatalog writes the rules as a per-rule-file catalog: one file per rule at
+// docs/spec/rules/<module>/<ID>.md, rendered by the canonical writer
+// (catalog.go renderRuleFile — the writer rulefile_test.go round-trips over the
+// live catalog). Fixtures are therefore
+// minimal-valid front matter plus a `## Notes` body when the rule carries one,
+// and a test that mutates a Rule writes the new format, never legacy YAML.
 func (r *testRepo) writeCatalog(t *testing.T, catalog Catalog) {
 	t.Helper()
-	data, err := yaml.Marshal(catalog)
-	if err != nil {
-		t.Fatalf("marshal catalog: %v", err)
+	dir := filepath.Join(r.root, "docs", "spec", "rules")
+	// Replace the tree so a second writeCatalog call cannot leave a stale rule
+	// file behind (the loader would decode both).
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("reset catalog dir: %v", err)
 	}
-	r.addFile(t, "docs/spec/rules.yaml", string(data))
+	// An empty catalog is a legal state (the queue renders it); the directory
+	// exists and holds no rule file.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create catalog dir: %v", err)
+	}
+	for _, rule := range catalog {
+		file, err := renderRuleFile(rule)
+		if err != nil {
+			t.Fatalf("render %s: %v", rule.ID, err)
+		}
+		r.addFile(t, filepath.ToSlash(filepath.Join("docs", "spec", "rules", rule.Module, rule.ID+".md")), string(file))
+	}
 }
 
 // baseRule is a minimal catalog entry that satisfies every policy: one

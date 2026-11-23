@@ -101,7 +101,7 @@ var pool *pgxpool.Pool
 // cross-schema ones (matches/rounds/teams are the schedule context's).
 var gamePool *pgxpool.Pool
 
-// schedulePool runs as schedule_app: the SchedulePort half of the service
+// schedulePool runs as schedule_app: the Schedule port half of the service
 // tests (the resolve/close scripts and the calendar reads) run on the
 // schedule context's own pool, the composition shape.
 var schedulePool *pgxpool.Pool

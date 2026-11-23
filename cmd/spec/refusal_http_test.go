@@ -20,15 +20,15 @@ func TestPinnedRefusalHTTPRange(t *testing.T) {
 		fixture string
 		http    int
 	}{
-		{"zero", "catalog/refusal-http-zero.yaml", 0},
-		{"nine hundred ninety nine", "catalog/refusal-http-999.yaml", 999},
+		{"zero", "catalog/refusal-http-zero", 0},
+		{"nine hundred ninety nine", "catalog/refusal-http-999", 999},
 	}
 	for _, tt := range rejected {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := newTestRepo(t)
 			findings := collectFindings(loadFixtureCatalog(t, tt.fixture), repo.root)
 
-			group := findingsFor(findings, "refusal")
+			group := findingsFor(findings, "17-refusal")
 			if len(group) != 1 {
 				t.Fatalf("%d refusal findings, want 1:\n%s", len(group), describeFindings(findings))
 			}
@@ -49,7 +49,7 @@ func TestPinnedRefusalHTTPRange(t *testing.T) {
 			rule := baseRule()
 			rule.Refusal = &Refusal{Code: "synthetic", HTTP: ptr(http)}
 			findings := collectFindings(Catalog{rule}, repo.root)
-			if group := findingsFor(findings, "refusal"); len(group) != 0 {
+			if group := findingsFor(findings, "17-refusal"); len(group) != 0 {
 				t.Fatalf("refusal http %d produced findings:\n%s", http, describeFindings(group))
 			}
 		})

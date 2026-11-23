@@ -5,11 +5,12 @@ package main
 // slow, needs Postgres, and is run by a human (or a nightly job) as the final
 // answer to "the rule's enforcement still refuses the bypass".
 //
-// The registry docs/spec/prove.yaml maps a rule to the executable scenarios
-// that detect its bypass. Prove derives the rules a change touches (or takes a
-// manual --rule), validates the registry statically, then runs only the mapped
-// godog scenarios. A rule with no registry entry is UNVALIDATABLE and fails
-// unless the registry carries a git-attributed signoff.
+// The registry at docs/spec/prove/<module>.yaml maps a rule to the executable
+// scenarios that detect its bypass; each module owns one file. Prove derives the
+// rules a change touches (or takes a manual --rule), validates the registry
+// statically, then runs only the mapped godog scenarios. A rule with no registry
+// entry is UNVALIDATABLE and fails unless the registry carries a git-attributed
+// signoff.
 //
 // The base ref defaults to the repository's default branch: origin/HEAD,
 // then origin/main, origin/master, main, master. The diff includes committed
@@ -17,10 +18,10 @@ package main
 // files), so a proof is never skipped because the work is not committed yet.
 
 import (
+	"bytes"
+	"errors"
 	"flag"
 	"fmt"
-	"go/parser"
-	"go/token"
 	"io"
 	"os"
 	"os/exec"
@@ -34,7 +35,7 @@ import (
 )
 
 const (
-	proveRegistryFile = "docs/spec/prove.yaml"
+	proveRegistryDir  = "docs/spec/prove"
 	proveDSNEnv       = "LT_API_TEST_DSN"
 	proveFeaturePaths = "SPEC_FEATURE_PATHS"
 )
@@ -52,8 +53,9 @@ type proveRegistry map[string]proveEntry
 func runProve(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("spec prove", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	rulesPath := fs.String("rules", "docs/spec/rules.yaml", "path to the canonical YAML catalog")
-	registryPath := fs.String("registry", proveRegistryFile, "path to the per-rule mutant registry")
+	rulesPath := fs.String("rules", "docs/spec/rules", "path to the per-rule-file catalog directory")
+	registryPath := fs.String("registry", proveRegistryDir,
+		"path to the per-rule mutant registry: a directory of <module>.yaml files, or a legacy single file")
 	base := fs.String("base", "", "git ref to diff against (default: the repository's default branch)")
 	ruleID := fs.String("rule", "", "prove one rule id, bypassing the diff-derived scope")
 	all := fs.Bool("all", false, "prove every rule in the registry (the seeded-registry gate)")
@@ -76,33 +78,37 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	known := map[string]bool{}
-	for _, rule := range catalog {
-		known[rule.ID] = true
-	}
-
 	registry, err := loadProveRegistry(filepath.Join(root, filepath.FromSlash(*registryPath)))
 	if err != nil {
 		fmt.Fprintf(stderr, "spec prove: %v\n", err)
 		return 1
 	}
 
-	scope := map[string]bool{}
+	var scope Scope
 	baseLabel := ""
-	if *all {
+	// One parse of the feature tree for the whole run: the diff-derived scope
+	// reads its per-file rule tags, and the oracle pass reads its steps.
+	index := (&checker{root: root}).indexFeatures()
+	switch {
+	case *all:
+		ids := make([]string, 0, len(registry))
 		for id := range registry {
-			scope[id] = true
+			ids = append(ids, id)
 		}
+		scope = Scope{Rules: ids}
 		baseLabel = "registry (--all)"
-	} else if *ruleID != "" {
-		if !known[*ruleID] {
-			fmt.Fprintf(stderr, "spec prove: unknown rule id %q; %s is the catalog\n",
-				*ruleID, displayPath(*rulesPath))
+	case *ruleID != "":
+		scope, err = ParseCLI("", *ruleID)
+		if err != nil {
+			fmt.Fprintf(stderr, "spec prove: %v\n", err)
+			return 2
+		}
+		if err := scope.Resolve(catalog, displayPath(*rulesPath)); err != nil {
+			fmt.Fprintf(stderr, "spec prove: %v\n", err)
 			return 1
 		}
-		scope[*ruleID] = true
 		baseLabel = "manual --rule"
-	} else {
+	default:
 		if *base == "" {
 			*base, err = defaultProveBase(root)
 			if err != nil {
@@ -110,17 +116,20 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 		}
-		index := (&checker{root: root}).indexFeatures()
 		derived, err := deriveProveScope(root, *base, *rulesPath, registryRelPath(root, *registryPath), catalog, index)
 		if err != nil {
 			fmt.Fprintf(stderr, "spec prove: %v\n", err)
 			return 1
 		}
-		scope = derived
+		ids := make([]string, 0, len(derived))
+		for id := range derived {
+			ids = append(ids, id)
+		}
+		scope = Scope{Rules: ids}
 		baseLabel = *base + "...HEAD + dirty tree"
 	}
 
-	if len(scope) == 0 {
+	if scope.Empty() {
 		fmt.Fprintln(stdout, "spec prove: nothing to prove (no touched rule in the diff and no --rule)")
 		return 0
 	}
@@ -134,17 +143,12 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	index := (&checker{root: root}).indexFeatures()
 	scenarioByPointer := map[string][]oracleScenario{}
-	for _, scenario := range (&checker{root: root}).parseOracleScenarios(index) {
+	for _, scenario := range oracleScenarios(index) {
 		scenarioByPointer[scenario.ref.pointer()] = append(scenarioByPointer[scenario.ref.pointer()], scenario)
 	}
 
-	ids := make([]string, 0, len(scope))
-	for id := range scope {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := scope.IDs()
 
 	var verified, unvalidatable, brokenTest, vacuous, signedOff, hardFailures int
 	fmt.Fprintf(stdout, "spec prove: scope %s — %d rule(s)\n\n", baseLabel, len(ids))
@@ -317,16 +321,136 @@ func printTail(w io.Writer, output string, lines int) {
 	}
 }
 
+// loadProveRegistry reads the per-rule mutant registry at path: a directory of
+// one <module>.yaml per module (the default form), or a single file (the legacy
+// form, kept working unchanged).
 func loadProveRegistry(path string) (proveRegistry, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat prove registry: %w", err)
+	}
+	if info.IsDir() {
+		return loadProveRegistryDir(path)
+	}
+	return loadProveRegistryFile(path)
+}
+
+// loadProveRegistryFile reads one registry document. Decoding is strict — an
+// unknown field is an error (a misspelled `scenarios` would otherwise register a
+// rule as UNVALIDATABLE without saying so) — and the file is exactly one YAML
+// document, for the same reason the catalog is.
+func loadProveRegistryFile(path string) (proveRegistry, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read prove registry: %w", err)
 	}
+	return decodeProveRegistry(data, path)
+}
+
+// decodeProveRegistry is the strict single-document decode every registry file
+// shares, so a legacy file and a per-module file can never disagree about what a
+// valid entry looks like.
+func decodeProveRegistry(data []byte, path string) (proveRegistry, error) {
 	var registry proveRegistry
-	if err := yaml.Unmarshal(data, &registry); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&registry); err != nil {
 		return nil, fmt.Errorf("parse prove registry %s: %w", path, err)
 	}
+	// Keep decoding until EOF: a second document is a merge accident, not a
+	// registry.
+	trailing := fmt.Errorf("parse prove registry %s: trailing YAML document after the first — "+
+		"the registry must be exactly one document", path)
+	var extra yaml.Node
+	switch err := decoder.Decode(&extra); {
+	case errors.Is(err, io.EOF):
+		// Exactly one document: the registry.
+	case err != nil:
+		return nil, fmt.Errorf("%w: %w", trailing, err)
+	default:
+		return nil, trailing
+	}
 	return registry, nil
+}
+
+// loadProveRegistryDir reads one <module>.yaml registry per module. The layout is
+// strict, because a misplaced file would silently unregister a rule: every
+// top-level entry is a YAML registry file, the single exception is the directory's
+// authored README (mirroring the rules catalog). A file's stem is its module, so
+// every entry must be that module's rule id; ids are unique across files.
+func loadProveRegistryDir(dir string) (proveRegistry, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read prove registry directory: %w", err)
+	}
+	type registryFile struct {
+		path     string
+		module   string
+		registry proveRegistry
+	}
+	var files []registryFile
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") {
+			return nil, fmt.Errorf("load prove registry %s: %q is a dotfile; the registry "+
+				"directory holds one <module>.yaml per module", dir, name)
+		}
+		if entry.IsDir() {
+			return nil, fmt.Errorf("load prove registry %s: %q is a directory; the registry "+
+				"directory holds one <module>.yaml per module", dir, name)
+		}
+		if name == catalogReadmeFile {
+			continue
+		}
+		if filepath.Ext(name) != ".yaml" {
+			return nil, fmt.Errorf("load prove registry %s: %q is not a YAML registry file "+
+				"(the only non-registry file allowed here is %s)", dir, name, catalogReadmeFile)
+		}
+		path := filepath.Join(dir, name)
+		registry, err := loadProveRegistryFile(path)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, registryFile{
+			path:     path,
+			module:   strings.TrimSuffix(name, ".yaml"),
+			registry: registry,
+		})
+	}
+
+	// Duplicates first, across the whole directory: a repeated id names both files,
+	// which is a more useful verdict than either file's module mismatch.
+	declaredIn := map[string]string{}
+	for _, file := range files {
+		for _, id := range sortedRegistryIDs(file.registry) {
+			if other, ok := declaredIn[id]; ok {
+				return nil, fmt.Errorf("load prove registry %s: %s is declared in both %s and "+
+					"%s; ids are unique across the registry", dir, id, other, file.path)
+			}
+			declaredIn[id] = file.path
+		}
+	}
+
+	merged := proveRegistry{}
+	for _, file := range files {
+		for _, id := range sortedRegistryIDs(file.registry) {
+			if !strings.HasPrefix(id, "R-"+strings.ToUpper(file.module)+"-") {
+				return nil, fmt.Errorf("load prove registry %s: %s is not a %s rule; a "+
+					"module's registry holds its own ids only", file.path, id, file.module)
+			}
+			merged[id] = file.registry[id]
+		}
+	}
+	return merged, nil
+}
+
+func sortedRegistryIDs(registry proveRegistry) []string {
+	ids := make([]string, 0, len(registry))
+	for id := range registry {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // defaultProveBase finds the repository's default branch, trying the remote
@@ -346,9 +470,11 @@ func defaultProveBase(root string) (string, error) {
 }
 
 // deriveProveScope maps the touched files onto the rules they name. A touched
-// Go file contributes its //rule annotations, a touched rules.yaml contributes
-// the rules whose YAML changed, and a touched feature file contributes every
-// rule it tags.
+// Go file contributes its //rule annotations, a touched per-rule file under the
+// catalog directory contributes that rule when its file changed (each file is
+// one rule), and a touched feature file contributes every rule it tags. A touched
+// registry contributes the entries it declares: all of them for the legacy
+// single-file form, exactly that file's entries for one <module>.yaml.
 func deriveProveScope(root, base, rulesPath, registryPath string, catalog Catalog, index *featureIndex) (map[string]bool, error) {
 	touched, err := touchedFiles(root, base)
 	if err != nil {
@@ -357,36 +483,80 @@ func deriveProveScope(root, base, rulesPath, registryPath string, catalog Catalo
 	scope := map[string]bool{}
 	relRules, _ := filepath.Rel(root, rulesPath)
 	relRules = filepath.ToSlash(relRules)
+	rulesPrefix := strings.TrimSuffix(relRules, "/") + "/"
+	// The registry may be a directory (one file per module) or a legacy single
+	// file. Normalize the spelling so a trailing separator or a `./` cannot dodge
+	// the match; stat decides the form, and a path that does not exist is the
+	// legacy file form (runProve fails earlier when the registry is missing).
+	relRegistry := filepath.ToSlash(filepath.Clean(registryPath))
+	registryIsDir := false
+	if info, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(relRegistry))); statErr == nil && info.IsDir() {
+		registryIsDir = true
+	}
+	registryPrefix := strings.TrimSuffix(relRegistry, "/") + "/"
 	fileRules := map[string][]string{}
 	for _, file := range index.files {
 		fileRules[file.Path] = file.Rules
 	}
 
+	// The catalog is one file per rule, so the touched-set comparison runs once
+	// over every touched file under the rules directory.
+	var touchedRules []string
 	for _, file := range touched {
+		if strings.HasPrefix(file, rulesPrefix) {
+			touchedRules = append(touchedRules, file)
+		}
+	}
+	if len(touchedRules) > 0 {
+		changed, err := changedRuleIDs(root, base, relRules, catalog, touchedRules)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range changed {
+			scope[id] = true
+		}
+	}
+
+	for _, touchedFile := range touched {
+		file := filepath.ToSlash(filepath.Clean(touchedFile))
 		switch {
 		case strings.HasSuffix(file, ".go"):
 			data, err := readWorkingOrBase(root, base, file)
 			if err != nil {
 				continue
 			}
-			for _, id := range goAnnotationIDs(file, data) {
-				scope[id] = true
-			}
-		case file == relRules:
-			changed, err := changedRuleIDs(root, base, relRules, catalog)
-			if err != nil {
-				return nil, err
-			}
-			for _, id := range changed {
+			for _, id := range annotatedRuleIDs(file, data, annotationDeclared) {
 				scope[id] = true
 			}
 		case strings.HasSuffix(file, ".feature"):
 			for _, id := range fileRules[file] {
 				scope[id] = true
 			}
-		case file == registryPath:
-			// Editing the registry is itself a claim about these rules: prove
-			// every entry the edited file declares.
+		case registryIsDir && strings.HasPrefix(file, registryPrefix):
+			// Editing a module's registry is itself a claim about that module's
+			// entries: prove exactly the entries the edited file declares.
+			rel := strings.TrimPrefix(file, registryPrefix)
+			if rel == catalogReadmeFile {
+				continue
+			}
+			if strings.Contains(rel, "/") || filepath.Ext(rel) != ".yaml" {
+				return nil, fmt.Errorf("load prove registry %s: %q is not a registry file; "+
+					"the registry directory holds <module>.yaml files", relRegistry, rel)
+			}
+			data, err := readWorkingOrBase(root, base, file)
+			if err != nil {
+				return nil, err
+			}
+			registry, err := decodeProveRegistry(data, file)
+			if err != nil {
+				return nil, err
+			}
+			for id := range registry {
+				scope[id] = true
+			}
+		case !registryIsDir && file == relRegistry:
+			// Editing the legacy single-file registry claims every entry it
+			// declares.
 			registry, err := loadProveRegistry(filepath.Join(root, filepath.FromSlash(file)))
 			if err != nil {
 				return nil, err
@@ -399,61 +569,64 @@ func deriveProveScope(root, base, rulesPath, registryPath string, catalog Catalo
 	return scope, nil
 }
 
-// goAnnotationIDs reads the //rule: annotations from parsed Go comments, not
-// from raw text: a `//rule:` inside a string literal (a test fixture, a doc
-// example) is not an annotation and must not widen prove's scope.
-func goAnnotationIDs(filename string, data []byte) []string {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, filename, data, parser.ParseComments|parser.SkipObjectResolution)
-	if err != nil {
-		return nil
-	}
-	var ids []string
-	for _, group := range file.Comments {
-		for _, id := range annotationIDsOf(group) {
-			if idPattern.MatchString(id) {
-				ids = append(ids, id)
-			}
-		}
-	}
-	return ids
-}
-
-// changedRuleIDs compares the base catalog with the working-tree catalog. A
-// rule changed when its YAML differs; a rule added or removed is also touched.
-func changedRuleIDs(root, base, relRules string, current Catalog) ([]string, error) {
-	out, err := gitOutput(root, "show", base+":"+relRules)
-	if err != nil {
-		// A catalog that did not exist on the base is wholly new.
+// changedRuleIDs compares the touched per-rule files with their base revision.
+// The catalog is one file per rule, so every file under the rules directory is
+// exactly one rule and the file's stem is its id:
+//
+//   - the base tree has no file there: the rule is ADDED;
+//   - the working tree no longer has the file: the rule is REMOVED;
+//   - both sides exist: the two are parsed with the live strict rule-file parser
+//     and a deep-equality difference makes the rule CHANGED.
+//
+// A file that is identical on both sides contributes nothing. When the base tree
+// has no rules directory at all (the catalog is wholly new), every rule of the
+// current catalog counts as added.
+func changedRuleIDs(root, base, relRules string, current Catalog, touched []string) ([]string, error) {
+	if _, err := gitOutput(root, "cat-file", "-e", base+":"+relRules); err != nil {
+		// A catalog directory that did not exist on the base is wholly new.
 		ids := make([]string, 0, len(current))
 		for _, rule := range current {
 			ids = append(ids, rule.ID)
 		}
+		sort.Strings(ids)
 		return ids, nil
 	}
-	var old Catalog
-	if err := yaml.Unmarshal([]byte(out), &old); err != nil {
-		return nil, fmt.Errorf("parse base catalog %s:%s: %w", base, relRules, err)
-	}
-	oldByID := map[string]Rule{}
-	for _, rule := range old {
-		oldByID[rule.ID] = rule
-	}
-	currentByID := map[string]Rule{}
-	for _, rule := range current {
-		currentByID[rule.ID] = rule
-	}
+
 	changed := map[string]bool{}
-	for id, rule := range currentByID {
-		if before, ok := oldByID[id]; !ok || !reflect.DeepEqual(before, rule) {
-			changed[id] = true
+	for _, file := range touched {
+		name := filepath.Base(filepath.FromSlash(file))
+		// The rules directory's authored README is not a rule, and the loader
+		// would reject anything else that is not <module>/<ID>.md.
+		if name == catalogReadmeFile || filepath.Ext(name) != ".md" {
+			continue
+		}
+		id := strings.TrimSuffix(name, filepath.Ext(name))
+
+		out, baseErr := gitOutput(root, "show", base+":"+file)
+		working, workErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(file)))
+		switch {
+		case baseErr != nil && workErr != nil:
+			// Neither side has the file: nothing changed.
+			continue
+		case baseErr != nil:
+			changed[id] = true // ADDED
+		case workErr != nil:
+			changed[id] = true // REMOVED
+		default:
+			before, err := parseRuleFile([]byte(out), base+":"+file)
+			if err != nil {
+				return nil, fmt.Errorf("parse base rule file %s:%s: %w", base, file, err)
+			}
+			after, err := parseRuleFile(working, file)
+			if err != nil {
+				return nil, fmt.Errorf("parse rule file %s: %w", file, err)
+			}
+			if !reflect.DeepEqual(before, after) {
+				changed[id] = true // CHANGED
+			}
 		}
 	}
-	for id := range oldByID {
-		if _, ok := currentByID[id]; !ok {
-			changed[id] = true
-		}
-	}
+
 	ids := make([]string, 0, len(changed))
 	for id := range changed {
 		ids = append(ids, id)
@@ -513,7 +686,10 @@ func readWorkingOrBase(root, base, rel string) ([]byte, error) {
 	return []byte(out), nil
 }
 
-func gitOutput(root string, args ...string) (string, error) {
+// gitOutput runs git in root and returns its standard output. It is a variable
+// so a test can stub the git seam — the per-file comparison needs a base tree
+// the test controls — while production code always uses the real command.
+var gitOutput = func(root string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
 	out, err := cmd.Output()
 	if err != nil {

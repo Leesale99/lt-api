@@ -387,8 +387,8 @@ func parseCORSOrigins(raw string) ([]string, error) {
 // environment variable and the flag. validate cannot know which of the two
 // supplied the value — the stdlib flag package exposes no "was this flag
 // passed" for a typed var — so every refusal names both. A message that named
-// only the env var told an operator who ran with -port to go change a variable
-// they never set (misalignment-report §6 item 17).
+// only the env var would send an operator who ran with -port to go change a
+// variable they never set.
 func knob(env, flag string) string {
 	return fmt.Sprintf("env %s or %s flag", env, flag)
 }
@@ -450,9 +450,9 @@ func validate(cfg Config) error {
 	}
 	// The mail settings are judged here for the same reason every other
 	// setting is: a port outside 1-65535 or a sender that is not an address
-	// must fail at boot, not at the first send (misalignment-report §6 item
-	// 16). An unusable pair that reached the mailer would accept requests the
-	// process cannot honour (R-PLATFORM-006).
+	// must fail at boot, not at the first send. An unusable pair that reached
+	// the mailer would accept requests the process cannot honour
+	// (R-PLATFORM-006).
 	if cfg.SMTP.Port < 1 || cfg.SMTP.Port > 65535 {
 		return fmt.Errorf("invalid SMTP_PORT %d: must be in range 1-65535 (%s)", cfg.SMTP.Port, knob("SMTP_PORT", "-smtp-port"))
 	}

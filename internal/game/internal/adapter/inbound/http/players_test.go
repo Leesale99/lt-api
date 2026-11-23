@@ -29,10 +29,10 @@ func (absentUserDirectory) User(context.Context, int) (identity.User, error) {
 }
 
 // TestCreatePlayerNamesTheUserField pins the identity refusal's wire shape
-// (R-GAME-013's handler site, misalignment-report §6 item 12): the reference
-// that failed is the authenticated principal's user account, so the 422 names
-// user_id. It used to name favorite_team_id with the team's message — a
-// leftover of the FK-era shape that pointed the caller at the wrong field.
+// (R-GAME-013's handler site): the reference that failed is the authenticated
+// principal's user account, so the 422 names user_id. It used to name
+// favorite_team_id with the team's message — a leftover of the FK-era shape
+// that pointed the caller at the wrong field.
 func TestCreatePlayerNamesTheUserField(t *testing.T) {
 	h := &Handler{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	h.UseIdentity(absentUserDirectory{})

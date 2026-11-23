@@ -1,0 +1,28 @@
+# Registry for the identity module. Entry schema, verdicts and scope rules:
+# docs/spec/README.md §7.
+
+R-IDENTITY-006:
+  scenarios:
+    - docs/spec/features/identity/account.feature::The database refuses the same token a second time
+  notes: "user_tokens_pkey refuses a second fingerprint"
+
+R-IDENTITY-011:
+  scenarios:
+    - docs/spec/features/identity/account.feature::An email already taken in another case is refused as a duplicate
+  notes: "the case-insensitive users_email_key is the enforcement; this is the rule's executable proof (no Owner-pool scenario exists today)"
+
+R-IDENTITY-013:
+  scenarios:
+    - docs/spec/features/identity/access.feature::The database refuses a permission code the seed already carries
+    - docs/spec/features/identity/access.feature::The database refuses the same grant written twice
+  notes: "permissions_code_key refuses a duplicate code; roles_permissions_pkey refuses the same grant twice"
+
+R-IDENTITY-014:
+  scenarios:
+    - docs/spec/features/identity/access.feature::The standard user may read the calendar and manage her own player
+  notes: "seed reference data is enforced by the permission keys; this is the rule's executable proof (no Owner-pool scenario exists today)"
+
+R-IDENTITY-020:
+  scenarios:
+    - docs/spec/features/identity/account.feature::The database refuses an account that names its own id
+  notes: "the GENERATED ALWAYS id refuses a caller-supplied value (428C9)"

@@ -30,7 +30,7 @@ description: Write mechanics and content rules for the lt-api Obsidian vault (~/
 5. **Bulk edits: list first, then edit.** Grep for the pattern, list every matching file, then edit them one by one. Never a vault-wide substitution whose blast radius you have not enumerated.
 6. **Move / rename / delete needs explicit approval plus a link sweep.** Before: grep the vault for `[[<name>` and list every reference in the report; after: re-grep to prove nothing dangles. One file per operation, never a batch you cannot describe.
 7. **Recovery net.** This vault has no git history (checked: no `.git`) and the librarian never commits — the host/user does. Recovery is `.trash/` (Obsidian's deletions are recoverable), Obsidian's own file-recovery snapshots, and the user's backups. If a `.git` ever appears, `git log -- <path>` (read-only) is the fast way to see a note's history; you still never commit. Because the net is thin, verify before a destructive op rather than after.
-8. **Report path + one line per touched note.** The parent cannot see the vault; a summary without exact paths cannot be checked.
+8. **Report path + one line per touched note.** The parent may read the vault with the same plain file tools (verified 2026-11-23: the host runs no obsidian tool or MCP, so reads are ordinary file reads), but every write stays with you — a summary without exact paths cannot be checked.
 
 ## vault-check (pre-write sanity)
 

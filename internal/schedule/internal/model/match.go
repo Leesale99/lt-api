@@ -49,16 +49,16 @@ type Match struct {
 
 // Winner is site 1 of 3 for the score→state rule: a closed match's final
 // scores decide a ride's destination, a draw crowns no winner. The other
-// two encodings: the payload derivation in game's MatchResultRecorded
-// settlement handler (internal/game/events.go — the event consumer of
-// the Game/Schedule split) and the result-agreement check in that same
-// handler, which
-// re-verifies the payload against the committed result through the
-// SchedulePort (the app-level enforcement home since migration 000017;
-// the old rides_state_gate check 5 read schedule's table from a game
-// trigger, the cross-context read the split removed). Winner and the
-// handler are derived copies tied by the shared fixture in
-// internal/game/score_state_rule_test.go — change one, change all three.
+// two encodings live in game's settlement use case
+// (internal/game/internal/core/service/settlement.go): the payload
+// derivation in Service.settleRideFromResult, and resultAgreement, the
+// enforcement home since migration 000017 — it re-reads the committed
+// result through the Schedule port (the port's Match method returns the
+// MatchSnapshot; the old rides_state_gate check 5 read schedule's table
+// from a game trigger, the cross-context read the split removed). Winner
+// and the settlement copies are tied by the shared fixture in
+// internal/game/internal/core/service/score_state_rule_test.go — change
+// one, change all three.
 // rule:R-GAME-010
 func (m Match) Winner() *int {
 	switch {

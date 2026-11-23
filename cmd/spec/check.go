@@ -17,58 +17,22 @@ const (
 	statusSpecifiedOnly = "specified-only"
 	statusDrifted       = "drifted"
 
-	stalePointerPrefix = "stale-pointer:"
-
 	// policyCategory binds a rule's category to the verification and refusal
 	// surface it must carry; policyKnowledgeRef keeps the knowledge-base
 	// pointer honest.
 	policyCategory     = "14-category"
 	policyKnowledgeRef = "16-knowledge-ref"
+	// policyRefusal is the refusal-code sanity policy; it closes the numbered
+	// gap between 16 and 18.
+	policyRefusal = "17-refusal"
 
 	// knowledgeRefRoot is the only tree a knowledge-ref may point into: the
 	// expert documents that are the source of truth for what to build.
 	knowledgeRefRoot = "docs/league-tokens-learning-phases"
 )
 
-// policy is one numbered invariant from docs/spec/rules.schema.md §3. The
-// refusal policy carries WARN lines (the SQLSTATE set is illustrative).
-type policy struct {
-	ID    string
-	Title string
-}
-
-var policies = []policy{
-	{"1-id", "id format, uniqueness, flat per module"},
-	{"2-enums", "frozen enum membership"},
-	{"3-implemented", "implemented ⇒ sites and verification that resolve today"},
-	{"4-specified-only", "specified-only ⇒ expert-ref, no sites, no verification, no refusal"},
-	{"5-drifted", "drifted ⇒ notes; stale-pointer only on implemented rules"},
-	{"6-authority", "database ⇒ mechanism + scope; any other authority ⇒ no mechanism"},
-	{"7-copy-policy", "non-authoritative sites tied by pinned_by or a Tie: note"},
-	{"8-authority-default", "authority ≠ category default ⇒ notes"},
-	{"9-site-ref", "path::Symbol, never a bare path or a line number"},
-	{"10-gherkin", "verification.gherkin resolves to a real scenario"},
-	{"11-fixture", "pinned_by names a declared fixture"},
-	{"12-features", "feature files parse; every scenario names exactly one known rule"},
-	{policyVocabulary, "step text: denylisted transport tokens, SQL adjacency, and the seeded glossary"},
-	{policyCategory, "category ⇒ verification and refusal binding"},
-	{policyAnnotations, "Go enforcement sites carry //rule: annotations, and every annotation resolves"},
-	{policyKnowledgeRef, "knowledge-ref is a real path under the learning phases"},
-	{policyOracle, "scenarios assert an observable outcome, bound to their category"},
-	{"refusal", "refusal code sanity"},
-}
-
-var policyIndex = func() map[string]int {
-	m := make(map[string]int, len(policies))
-	for i, p := range policies {
-		m[p.ID] = i
-	}
-	return m
-}()
-
 // Frozen enums, docs/spec/rules.schema.md §1.
 var (
-	moduleEnum   = enum("schedule", "game", "identity", "ledger", "kernel", "platform")
 	categoryEnum = enum("invariant", "policy", "orchestration", "interface",
 		"persistence-fact", "refusal-mapping", "boundary")
 	statusEnum    = enum(statusImplemented, statusSpecifiedOnly, statusDrifted)
@@ -117,28 +81,6 @@ func enum(values ...string) map[string]bool {
 	return m
 }
 
-type severity int
-
-const (
-	severityError severity = iota
-	severityWarn
-)
-
-func (s severity) String() string {
-	if s == severityWarn {
-		return "WARN"
-	}
-	return "ERROR"
-}
-
-// Finding is one policy violation (or WARN line) for one rule.
-type Finding struct {
-	Policy   string
-	RuleID   string
-	Severity severity
-	Message  string
-}
-
 type checker struct {
 	root     string
 	fixtures map[string]bool
@@ -148,30 +90,42 @@ type checker struct {
 	findings    []Finding
 }
 
-func (c *checker) add(policyID, ruleID string, sev severity, format string, args ...any) {
+func (c *checker) add(policyID, subject string, sev severity, format string, args ...any) {
 	c.findings = append(c.findings, Finding{
 		Policy:   policyID,
-		RuleID:   ruleID,
+		Subject:  subject,
 		Severity: sev,
 		Message:  fmt.Sprintf(format, args...),
 	})
 }
 
-func (c *checker) errorf(policyID, ruleID, format string, args ...any) {
-	c.add(policyID, ruleID, severityError, format, args...)
+func (c *checker) errorf(policyID, subject, format string, args ...any) {
+	c.add(policyID, subject, severityError, format, args...)
 }
 
-func (c *checker) warnf(policyID, ruleID, format string, args ...any) {
-	c.add(policyID, ruleID, severityWarn, format, args...)
+// errorCatalog reports a catalog-level finding: the violation belongs to the
+// repository (a file, a tree-wide fact), not to a rule, so it carries no subject
+// and scoping can never narrow it. pointer is the human address the reader opens.
+func (c *checker) errorCatalog(policyID, pointer, format string, args ...any) {
+	c.findings = append(c.findings, Finding{
+		Policy:   policyID,
+		Pointer:  pointer,
+		Severity: severityError,
+		Message:  fmt.Sprintf(format, args...),
+	})
+}
+
+func (c *checker) warnf(policyID, subject, format string, args ...any) {
+	c.add(policyID, subject, severityWarn, format, args...)
 }
 
 func runCheck(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("spec check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	rulesPath := fs.String("rules", "docs/spec/rules.yaml", "path to the canonical YAML catalog")
+	rulesPath := fs.String("rules", "docs/spec/rules", "path to the per-rule-file catalog directory")
 	strict := fs.Bool("strict", false, "exit 1 when any ERROR finding exists (warnings never fail)")
-	module := fs.String("module", "", "report only findings for one module; catalog-level findings (empty rule id) are hidden while scoped")
-	ruleID := fs.String("rule", "", "report only findings for one rule id; catalog-level findings (empty rule id) are hidden while scoped")
+	module := fs.String("module", "", "report only findings for one module; catalog-level findings are still reported, as warnings")
+	ruleID := fs.String("rule", "", "report only findings for one rule id; catalog-level findings are still reported, as warnings")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -179,13 +133,9 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "spec check: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
-	if *module != "" && *ruleID != "" {
-		fmt.Fprintln(stderr, "spec check: --module and --rule are mutually exclusive")
-		return 2
-	}
-	if *module != "" && !moduleEnum[*module] {
-		fmt.Fprintf(stderr, "spec check: unknown module %q; one of %s\n",
-			*module, strings.Join(catalogModules(), ", "))
+	scope, err := ParseCLI(*module, *ruleID)
+	if err != nil {
+		fmt.Fprintf(stderr, "spec check: %v\n", err)
 		return 2
 	}
 
@@ -194,19 +144,9 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "spec check: %v\n", err)
 		return 1
 	}
-	if *ruleID != "" {
-		known := false
-		for _, rule := range catalog {
-			if rule.ID == *ruleID {
-				known = true
-				break
-			}
-		}
-		if !known {
-			fmt.Fprintf(stderr, "spec check: unknown rule id %q; %s is the catalog (try `go run ./cmd/spec check`)\n",
-				*ruleID, displayPath(*rulesPath))
-			return 1
-		}
+	if err := scope.Resolve(catalog, displayPath(*rulesPath)); err != nil {
+		fmt.Fprintf(stderr, "spec check: %v (try `go run ./cmd/spec check`)\n", err)
+		return 1
 	}
 	root, err := repoRoot(*rulesPath)
 	if err != nil {
@@ -214,41 +154,18 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	findings := collectFindings(catalog, root)
-	gherkinFindings, index := collectGherkin(catalog, root)
-	findings = append(findings, gherkinFindings...)
-	findings = append(findings, collectVocabulary(root)...)
-	findings = append(findings, collectAnnotationsAgainst(catalog, root, *rulesPath)...)
-	findings = append(findings, collectOracle(catalog, root)...)
+	env := &policyEnv{catalog: catalog, root: root, rulesPath: *rulesPath}
+	var findings []Finding
+	for _, p := range policies {
+		findings = append(findings, p.Run(env)...)
+	}
 	sortFindings(findings)
 
-	scopeLabel := ""
-	if *module != "" || *ruleID != "" {
-		scopeIDs := map[string]bool{}
-		switch {
-		case *module != "":
-			for _, rule := range catalog {
-				if rule.Module == *module {
-					scopeIDs[rule.ID] = true
-				}
-			}
-			scopeLabel = "module " + *module
-		default:
-			scopeIDs[*ruleID] = true
-			scopeLabel = "rule " + *ruleID
-		}
-		inScope := findings[:0]
-		for _, f := range findings {
-			// Catalog-level findings carry no rule id, so no --rule or --module
-			// can implicate them: they are reported only unscoped.
-			if f.RuleID != "" && scopeIDs[f.RuleID] {
-				inScope = append(inScope, f)
-			}
-		}
-		findings = inScope
+	if !scope.Empty() {
+		findings = narrowToScope(findings, scope)
 	}
 
-	printFindings(stdout, *rulesPath, catalog, findings, index, scopeLabel)
+	printFindings(stdout, *rulesPath, catalog, findings, env.featureIndex(), scope.String())
 
 	errorsFound, _ := countFindings(findings)
 	if *strict && errorsFound > 0 {
@@ -257,35 +174,57 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// collectFindings runs every policy over the catalog. It is pure apart from
-// reading the repo (files referenced by sites, tests and expert refs).
-func collectFindings(catalog Catalog, root string) []Finding {
-	c := &checker{root: root, fixtures: map[string]bool{}}
-	for _, rule := range catalog {
-		if rule.Fixture != nil && *rule.Fixture != "" {
-			c.fixtures[*rule.Fixture] = true
+// narrowToScope is the one scoped-reporting rule, driven by a finding's subject
+// and its policy's Level:
+//
+//   - a rule-attributed finding (a non-empty subject) is kept when the rule is in
+//     scope, so --module/--rule narrows exactly the rules the worker owns;
+//   - a catalog-level finding (an empty subject) names no rule, so no scope can
+//     implicate it: it is always reported, downgraded to WARN so global rot stays
+//     visible without failing a scoped --strict gate on someone else's problem.
+//     An untagged scenario's finding is the feature-level case of this: it names
+//     no rule either, so it warns rather than fails;
+//   - a feature-level policy's rule-attributed finding (a broken gherkin pointer,
+//     a scenario tagged with an unknown id) is reported even when the rule is out
+//     of scope, at its natural severity, because the feature tree is one artifact
+//     and a half-printed cross-validation would read as if the rest of the tree
+//     were verified.
+func narrowToScope(findings []Finding, scope Scope) []Finding {
+	level := make(map[string]Level, len(policies))
+	for _, p := range policies {
+		level[p.ID] = p.Level
+	}
+
+	inScope := make([]Finding, 0, len(findings))
+	for _, f := range findings {
+		switch {
+		case f.Subject == "":
+			f.Severity = severityWarn
+			inScope = append(inScope, f)
+		case scope.Contains(f.Subject):
+			inScope = append(inScope, f)
+		case level[f.Policy] == LevelFeature:
+			inScope = append(inScope, f)
 		}
 	}
+	return inScope
+}
 
-	seenIDs := map[string]bool{}
-	for _, rule := range catalog {
-		c.checkID(rule, seenIDs)
-		c.checkEnums(rule)
-		c.checkImplemented(rule)
-		c.checkSpecifiedOnly(rule)
-		c.checkDrifted(rule)
-		c.checkAuthority(rule)
-		c.checkCopyPolicy(rule)
-		c.checkAuthorityDefault(rule)
-		c.checkSiteReferences(rule)
-		c.checkCategory(rule)
-		c.checkKnowledgeRef(rule)
-		c.checkFixtureRefs(rule)
-		c.checkRefusal(rule)
+// collectFindings runs the rule-level policies over the catalog. It is the
+// catalog-only half of a check (no feature, vocabulary, annotation or oracle
+// pass); runCheck dispatches the whole registry instead. It is pure apart from
+// reading the repo (files referenced by sites, tests and expert refs).
+func collectFindings(catalog Catalog, root string) []Finding {
+	env := &policyEnv{catalog: catalog, root: root, rulesPath: filepath.Join("docs", "spec", "rules")}
+	var findings []Finding
+	for _, p := range policies {
+		if p.Level != LevelRule {
+			continue
+		}
+		findings = append(findings, p.Run(env)...)
 	}
-
-	sortFindings(c.findings)
-	return c.findings
+	sortFindings(findings)
+	return findings
 }
 
 // policy 1: id matches ^R-[A-Z]+-\d{3}$ and is unique (flat per module).
@@ -317,8 +256,8 @@ func (c *checker) checkEnums(rule Rule) {
 	if rule.Mechanism != nil {
 		check("mechanism", *rule.Mechanism, mechanismEnum, false)
 	}
-	if rule.Scope != nil {
-		check("scope", *rule.Scope, scopeEnum, false)
+	if rule.WriteScope != nil {
+		check("write_scope", *rule.WriteScope, scopeEnum, false)
 	}
 	for _, site := range rule.Enforcement {
 		check("enforcement.layer", site.Layer, layerEnum, false)
@@ -428,27 +367,27 @@ func (c *checker) checkSpecifiedOnly(rule Rule) {
 	}
 }
 
-// policy 5: drifted needs notes saying what disagrees; stale-pointer notes are
-// rot and only allowed on implemented rules.
+// policy 5: drifted needs notes saying what disagrees; a stale_pointer is rot
+// and only allowed on implemented rules.
 func (c *checker) checkDrifted(rule Rule) {
 	if rule.Status == statusDrifted && strings.TrimSpace(rule.Notes) == "" {
 		c.errorf("5-drifted", rule.ID, "drifted rule has no notes naming the disagreement")
 	}
-	if rule.Status != statusImplemented && strings.Contains(rule.Notes, stalePointerPrefix) {
+	if rule.Status != statusImplemented && rule.StalePointer != nil {
 		c.errorf("5-drifted", rule.ID,
 			"stale-pointer note on a %s rule; rot notes are only allowed on implemented rules", rule.Status)
 	}
 }
 
-// policy 6: database authority must name mechanism + scope; every other
+// policy 6: database authority must name mechanism + write_scope; every other
 // authority must leave mechanism null.
 func (c *checker) checkAuthority(rule Rule) {
 	if rule.Authority == "database" {
 		if rule.Mechanism == nil {
 			c.errorf("6-authority", rule.ID, "database authority requires a mechanism")
 		}
-		if rule.Scope == nil {
-			c.errorf("6-authority", rule.ID, "database authority requires a scope")
+		if rule.WriteScope == nil {
+			c.errorf("6-authority", rule.ID, "database authority requires a write_scope")
 		}
 		return
 	}
@@ -459,8 +398,8 @@ func (c *checker) checkAuthority(rule Rule) {
 }
 
 // policy 7: a data-carrying copy must be tied to its authority by a pinned_by
-// fixture or a `Tie:` sentence. advisory-copy is exempt; authoritative sites
-// are the authority itself.
+// fixture or a `tie` note. advisory-copy is exempt; authoritative sites are the
+// authority itself.
 func (c *checker) checkCopyPolicy(rule Rule) {
 	for _, site := range rule.Enforcement {
 		if site.Role == "authoritative" || site.Role == "advisory-copy" {
@@ -472,11 +411,11 @@ func (c *checker) checkCopyPolicy(rule Rule) {
 		if site.PinnedBy != nil && *site.PinnedBy != "" {
 			continue
 		}
-		if strings.Contains(rule.Notes, "Tie:") {
+		if rule.Tie != nil {
 			continue
 		}
 		c.errorf("7-copy-policy", rule.ID,
-			"non-authoritative site %q has no pinned_by and no `Tie:` note", site.Site)
+			"non-authoritative site %q has no pinned_by and no tie note", site.Site)
 	}
 }
 
@@ -606,23 +545,23 @@ func (c *checker) checkRefusal(rule Rule) {
 	// independently of the code, because `synthetic` refusals (Go-only, no
 	// SQLSTATE) still name the status the caller sees.
 	if http := rule.Refusal.HTTP; http != nil && (*http < 100 || *http > 599) {
-		c.errorf("refusal", rule.ID,
+		c.errorf(policyRefusal, rule.ID,
 			"refusal http %d is outside the HTTP status range 100–599", *http)
 	}
 	code := rule.Refusal.Code
 	if code == "" {
-		c.errorf("refusal", rule.ID, "refusal has no code")
+		c.errorf(policyRefusal, rule.ID, "refusal has no code")
 		return
 	}
 	if code == syntheticCode {
 		return
 	}
 	if !sqlstatePattern.MatchString(code) {
-		c.errorf("refusal", rule.ID, "refusal code %q is neither 'synthetic' nor a 5-character SQLSTATE", code)
+		c.errorf(policyRefusal, rule.ID, "refusal code %q is neither 'synthetic' nor a 5-character SQLSTATE", code)
 		return
 	}
 	if !illustrativeSQLSTATEs[code] {
-		c.warnf("refusal", rule.ID,
+		c.warnf(policyRefusal, rule.ID,
 			"refusal code %q is outside the illustrative set {P0001, 23514, 23503, 23001}", code)
 	}
 }
@@ -759,12 +698,12 @@ func bareTypeName(ref string) string {
 
 func sortFindings(findings []Finding) {
 	sort.SliceStable(findings, func(i, j int) bool {
-		pi, pj := policyIndex[findings[i].Policy], policyIndex[findings[j].Policy]
+		pi, pj := policyOrder[findings[i].Policy], policyOrder[findings[j].Policy]
 		if pi != pj {
 			return pi < pj
 		}
-		if findings[i].RuleID != findings[j].RuleID {
-			return findings[i].RuleID < findings[j].RuleID
+		if findings[i].Subject != findings[j].Subject {
+			return findings[i].Subject < findings[j].Subject
 		}
 		if findings[i].Severity != findings[j].Severity {
 			return findings[i].Severity < findings[j].Severity
@@ -803,12 +742,18 @@ func printFindings(w io.Writer, rulesPath string, catalog Catalog, findings []Fi
 	for _, f := range findings {
 		grouped[f.Policy] = append(grouped[f.Policy], f)
 	}
+	printedFeatures := false
 
 	for _, p := range policies {
-		// The feature tree's findings are printed by the gherkin section
-		// below (one place for the feature cross-validation); the summary
-		// table still counts them by policy.
-		if p.ID == policyGherkinPointer || p.ID == policyGherkinFeature {
+		// A policy's Level chooses its report home: the feature-level
+		// policies print once in the gherkin section below, everything else
+		// prints as its own policy section. The summary table still counts
+		// every policy.
+		if p.Level == LevelFeature {
+			if !printedFeatures {
+				printGherkinSection(w, index, featureLevelFindings(grouped))
+				printedFeatures = true
+			}
 			continue
 		}
 		group := grouped[p.ID]
@@ -816,25 +761,29 @@ func printFindings(w io.Writer, rulesPath string, catalog Catalog, findings []Fi
 			continue
 		}
 		errorsFound, warnings := countFindings(group)
-		fmt.Fprintf(w, "## %s — %s (%d errors, %d warnings)\n\n", p.ID, p.Title, errorsFound, warnings)
+		fmt.Fprintf(w, "## %s — %s (%d errors, %d warnings)\n\n", p.ID, p.Name, errorsFound, warnings)
 		for _, f := range group {
 			prefix := ""
 			if f.Severity == severityWarn {
 				prefix = "WARN "
 			}
-			ruleID := f.RuleID
-			if ruleID == "" {
-				ruleID = "(catalog)"
+			subject := f.Subject
+			if subject == "" {
+				subject = "(catalog)"
 			}
-			fmt.Fprintf(w, "- %s**%s** %s\n", prefix, ruleID, f.Message)
+			message := f.Message
+			if f.Pointer != "" {
+				// The subject is the scope key (the rule), the pointer is where
+				// the reader opens: a step finding needs both.
+				message = f.Pointer + ": " + message
+			}
+			fmt.Fprintf(w, "- %s**%s** %s\n", prefix, subject, message)
 		}
 		fmt.Fprint(w, "\n")
 	}
 
-	printGherkinSection(w, index, findings)
-
 	if len(findings) == 0 {
-		fmt.Fprint(w, "No findings — the catalog satisfies docs/spec/rules.schema.md §3.\n\n")
+		fmt.Fprint(w, "No findings — the catalog satisfies docs/spec/policies.md.\n\n")
 	}
 
 	errorsFound, warnings := countFindings(findings)
